@@ -183,6 +183,101 @@ the one popnei's own loops run on, which `RAYON_NUM_THREADS` sizes, and
 one thread in wasm. The product of the block above takes Accelerate 10.5
 ms with the variable at 1 and 7.4 ms without it.
 
+### Calling the crate from two threads
+
+No function of this crate keeps anything between calls, so two threads of
+one process may both be inside it, and the numbers each gets are the
+numbers it would get alone. What the library underneath does is a
+separate matter, and on Accelerate one of its routines does not answer
+the same thing twice: `dpotri`, LAPACK's inverse of a Cholesky
+factorization, gives a numerically wrong inverse, and how often depends
+on how much else of Accelerate is running in the process.
+
+Measured on 24 September 2026 on the owner's Apple M5 Pro of 18 cores
+under macOS 27.0, on a 200 x 200 matrix built as `A'A`, the product of
+the transpose of A with A, for an A of 1000 rows and 200 columns filled
+with the numbers of the shift and exclusive or generator that "How it is
+verified" below gives, started at 7. `A'A` is symmetric and positive
+definite, which is what a Cholesky factorization needs, and this one has
+a condition number of 6.5, so the largest factor by which it stretches
+space is 6.5 times the smallest and it is nothing like a hard matrix to
+invert.
+
+One thread inverting that matrix 2000 times, with nothing else of popnei
+running, gave 2, 2, 1 and 0 answers different from the rest in four runs.
+The same 2000
+inversions beside seven threads doing nothing but the product of two 200 x
+200 matrices gave between 213 and 546 different in seven runs, the worst
+2.4e-4 away from the others on entries that reach 1.7e-2. So the threads
+Accelerate starts inside `dpotri` are enough by themselves, at about 1
+inversion in 1500, and other work in the process takes it to about 1 in 7.
+With `VECLIB_MAXIMUM_THREADS=1`, which holds Accelerate to one thread, both
+counts are 0 of 2000.
+
+Whether it shows at all depends on the size, which is why a test of it is
+at the 200 individuals of popnei's panels and not at a size that would
+make it quicker. With everything else the same, 2000 inversions gave 0
+different answers at 50 x 50 and at 100 x 100, 27 at 400 x 400 and 1127 at
+800 x 800.
+
+It is not the conditioning of the matrix: at a condition number of 6.5 a
+different order of summation moves an entry of the inverse by about
+1e-16, and these entries move by 2.4e-4. Nor is it the LAPACK interface
+the crate declares. Accelerate ships two of them, a legacy interface
+frozen at LAPACK 3.2.1, whose symbols are the Fortran ones with an
+underscore, `dpotri_`, and whose integers are 32 bits; and a newer one
+whose symbols carry `$NEWLAPACK`, with `$NEWLAPACK$ILP64` for the 64 bit
+integers a C caller asks for with `ACCELERATE_NEW_LAPACK` and
+`ACCELERATE_LAPACK_ILP64`. `lapack-sys` 0.15, which `lapack` 0.20 is
+built on, declares `dpotri_` over `c_int`, and `accelerate-src` 0.3.2
+emits `-framework Accelerate` and nothing else, so the interface declared
+and the interface linked are both the legacy one at 32 bits; `nm` on the
+test binary on 24 September 2026 shows `_dpotri_` undefined and no symbol
+with `$NEWLAPACK` in it. A mismatch of the two would give a wrong answer
+on one thread as well, and one thread gives the right one.
+
+`dpotri` is the only routine of the BLAS backend this was found in. Every
+other routine it calls went under the same test on the same day, one
+thread calling it beside seven doing products of two 200 x 200 matrices,
+and each of them gave the same answer every time:
+
+| routine | operation | shape | calls | different |
+|---|---|---|---|---|
+| `dpotri` | the inverse, the route not taken | 200 x 200 | 2000 | 213 to 546 |
+| `dtrtrs` and `dgemm` | the inverse, the route taken | 200 x 200 | 2000 | 0 |
+| `dtrtrs` | the triangular solve, 200 right hand sides | 200 x 200 | 2000 | 0 |
+| `dpotrs` | the solve with the factorization, 200 right hand sides | 200 x 200 | 2000 | 0 |
+| `dsyevd` | the eigendecomposition | 200 x 200 | 2000 | 0 |
+| `dsyevd` | the eigendecomposition | 500 x 500 | 300 | 0 |
+| `dgesdd` | the singular values | 1000 x 5 | 2000 | 0 |
+| `dgesdd` | the singular values | 200 x 200 | 500 | 0 |
+| `dgesdd` | the singular values | 1000 x 200 | 300 | 0 |
+| `dgeqrf` and `dorgqr` | the thin QR | 1000 x 5 | 2000 | 0 |
+| `dgeqrf` and `dorgqr` | the thin QR | 200 x 200 | 500 | 0 |
+| `dgeqrf` and `dorgqr` | the thin QR | 1000 x 200 | 300 | 0 |
+
+So the inverse is the one operation of the BLAS backend that does not
+call the routine LAPACK has for it. It is built from the second row of
+that table instead: the identity solved against the Cholesky factor,
+whose answer is the inverse of that factor, and then the product of the
+answer with its own transpose, which "What the seven give" of this spec
+states in full. On
+the matrix above the two routes agree to 3.1e-17 on the lower half, whose
+entries reach 1.7e-2, so the change does not move a caller's numbers.
+What it costs is between 1.2 and 2.0 times the one call from 1000
+individuals up and 0.38 of it at 200, which "What the seven of the GWAS
+cost" of this spec has size by size, and two buffers of n x n where
+`dpotri` needed none.
+
+What is not known. faer's inverse was not put under this test, so what
+this says about concurrency is about Accelerate alone; no wheel of popnei
+links OpenBLAS yet, and when one does, its routines are to go through the
+same test. Nothing here says which macOS versions have it, only this one.
+`VECLIB_MAXIMUM_THREADS=1` is not what popnei does about it, although it
+makes the count 0: the variable is read when the process starts, popnei is
+a library inside somebody else's process, and holding Accelerate to one
+thread would slow down every other operation of this crate.
+
 ## The four operations of the PCA and the LD
 
 ### What they give
@@ -578,18 +673,29 @@ that sign is always 1 and nothing is lost.
 
 **The inverse of a factorized matrix.** For the `l` above, the lower
 half of the inverse of `a`, written into a buffer of n x n that the
-caller gives; its upper half is left as it was. It is `dpotri` in
-LAPACK, which the crate calls on a copy of `l` in that buffer and which
-needs no workspace, and `inverse` of faer's
+caller gives; its upper half is left as it was. LAPACK has `dpotri` for
+it, which inverts a factorization where it lies and needs no workspace,
+and the crate does not call it: on Accelerate that routine gives a
+numerically wrong inverse whenever another call of Accelerate is running
+on another thread of the same process, which "Calling the crate from two
+threads" above has measured. So the BLAS backend solves `l x = i` for the
+identity as n right hand sides, which gives the inverse of `l`, and
+multiplies that buffer by its own transpose, since `a` is `l l'` and the
+inverse of `a` is `l⁻¹' l⁻¹`. faer's is `inverse` of
 `linalg::cholesky::llt::inverse`, which writes into the buffer and asks
 for a scratch of n x n of its own, 8 bytes to a value, which faer 0.24.4
 says and which it was asked for at n = 1000, where it wanted 8000000
 bytes. So an inverse at 10000 individuals needs the two buffers the
-caller gives, 800 MB each, and in faer 800 MB more, which is
-`docs/rust_core.md`'s open question about the memory in the browser,
-where a kinship of 10000 individuals is already 800 MB. The crate asks
-for faer's scratch with `try_new` of `dyn_stack`, so that a machine
-without the memory gets `Memory` and not the end of the process.
+caller gives, 800 MB each, and 800 MB more in faer or 1.6 GB more on
+BLAS, which is `docs/rust_core.md`'s open question about the memory in
+the browser, where a kinship of 10000 individuals is already 800 MB. On
+BLAS the two are the identity, which the solve overwrites with its
+answer, and the buffer the product writes, since neither routine may
+write where it reads and the upper half of the caller's buffer is the
+caller's. Each backend asks for its memory instead of taking it, faer's
+scratch with `try_new` of `dyn_stack` and the two buffers with
+`try_reserve_exact`, so that a machine without the memory gets `Memory`
+and not the end of the process.
 
 **The thin QR of the design.** For `a` of `rows` x `cols` with `rows` at
 least `cols`, the `q` of `rows` x `cols` whose columns are of length 1
@@ -796,9 +902,9 @@ The solve and the inverse read that diagonal for the same `Singular`, and
 the inverse for the reason the triangular solve below does: the two
 backends do not agree on an `l` whose diagonal holds an entry that is not
 above 0. Measured on 23
-September 2026 on an `l` with a 0 at its row 1, `dpotri` gave an `info` of
-2 and faer's `inverse` gave no error at all and wrote infinities and NaN
-into the buffer. No `l` that `cholesky_lower` gave is such a matrix, since
+September 2026 on an `l` with a 0 at its row 1, `dpotri`, which the
+inverse called then, gave an `info` of 2, and faer's `inverse` gave no
+error at all and wrote infinities and NaN into the buffer. No `l` that `cholesky_lower` gave is such a matrix, since
 that is what it stops at, and a caller holds the two buffers apart and can
 pass one that never was a factorization. So the diagonal is read in the
 crate, above the backends, where it holds for both, and the caller gets
@@ -1490,6 +1596,31 @@ browser.
 | | 2000 | 0.0148 s | 0.0182 s | 0.1020 s |
 | | 5000 | 0.205 s | 0.183 s | 1.51 s |
 | | 10000 | 2.05 s | 1.29 s | 11.8 s |
+
+The Accelerate column of `invert_with_cholesky` is the single call to
+`dpotri`, which is not what the crate does any more. What the route it
+has now costs, the solve of `l x = i` and the product of the answer with
+its own transpose, was measured on 24 September 2026 on the same machine
+and the same matrices, through the crate and not the routines, in the test
+profile of `Cargo.toml`, `opt-level = 2`, the best of 5 runs at 1000 and
+2000 and of 3 above; the same measurement of `dpotri` is beside it, so
+that the two columns are the same thing measured the same way and the
+1000 and 2000 of the table above are one profile away.
+
+| n | `dpotri` | the solve and the product |
+|---|---|---|
+| 200 | 0.000209 s | 0.0000786 s |
+| 1000 | 0.0026 s | 0.0046 s |
+| 2000 | 0.0283 s | 0.0337 s |
+| 5000 | 0.2213 s | 0.4333 s |
+| 10000 | 2.108 s | 3.540 s |
+
+So the route the crate has now costs between 1.2 and 2.0 times the one
+call from 1000 individuals up, and 0.38 of it at 200, where `dpotri` is
+the slower of the two. The 200 is the size the association study forms
+its inverse at, and it is the row of this table that the study's running
+time turns on. Two buffers of n x n go with it, 320 KB at 200 and 1.6 GB
+at 10000, which "What the seven give" has.
 
 numpy 2.5.3 on the same machine and day took 0.723 s for `inv` of the
 5000 x 5000, against the 0.340 s of `cholesky_lower` and

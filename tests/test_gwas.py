@@ -1,4 +1,5 @@
-"""The association study of a continuous trait, from Python.
+"""The association study from Python, of a trait that is a measurement
+and of one that is 0 and 1.
 
 `docs/specs/gwas.md` has what is computed, the `GWASResult` it comes in and
 the numbers this file asserts. Every literal here is the spec's, or is read
@@ -6,7 +7,10 @@ from `tests/reference/gwas/`, which
 `tests/reference/gwas/make_reference.py` writes: the trait, the two
 covariates and the subpopulation of each of the 200 individuals in
 `phenotypes.csv`, what plink2 v2.0.0-a.7.7 answered for the panel with every
-genotype called in `plink2.panel_called.glm.linear.tsv`, and what GMMAT
+genotype called in `plink2.panel_called.glm.linear.tsv` and for the
+logistic model in `plink2.panel_called.glm.logistic.hybrid.tsv`, what R
+4.6.1's `anova(glm, test = "Rao")` answered for the logistic score test in
+`r.panel_called.glm.score.tsv`, and what GMMAT
 1.5.0 and rrBLUP 4.6.3 answered for the mixed model in
 `gmmat.null_models.tsv`, `gmmat.panel_called.lmm.score.tsv`,
 `gmmat.panel.lmm.score.tsv` and `rrblup.panel_called.lmm.tsv`, 1200 rows
@@ -105,6 +109,67 @@ PLINK2_DIGITS = 6
 # genotypes missing, and `OF_PYNEI_P_VALUE` is 2.5 times that.
 OF_PYNEI = 1.5e-14
 OF_PYNEI_P_VALUE = 1e-11
+
+# How far a `beta` of the logistic model may be from pyNei's, as a share of
+# the `se` of that variant, and how far an `se`, a p-value and an effect of
+# the null model may be, each as a share of itself.
+#
+# The bound against pyNei is per model, 1e-9 relative being the ceiling of
+# "How it is verified" of "What every model shares" and not its value, and
+# this model measures far inside it. Measured on 24 September 2026 over the
+# 1200 variants of each panel under each of the two tests, on Accelerate and
+# on faer, the furthest each of the four is from pyNei:
+#
+# - the p-value, which is the one the bound has to clear, 4.524e-14 of itself
+#   at `var1004` of the panel with every genotype called under the Wald test,
+#   on Accelerate; faer's furthest is 3.213e-14 at `var0833` of the panel
+#   with genotypes missing under the score test;
+# - the `beta`, as a share of the `se` of its variant, 1.151e-14 at `var0197`
+#   of the panel with every genotype called under the score test, on faer,
+#   and 1.090e-14 at `var0833` of the panel with genotypes missing under the
+#   score test, on Accelerate;
+# - the `se`, as a share of itself, 3.368e-15 at `var1151` of the panel with
+#   every genotype called under the Wald test, on Accelerate, and 1.920e-15
+#   at `var0122` of the panel with genotypes missing under the Wald test, on
+#   faer;
+# - the effects of the null model, 1.970e-16 of pyNei's and 2.220e-16
+#   absolute, the same in all four runs on both backends.
+#
+# So the bound breaks at the p-value's 4.524e-14, and this is 2.2 times it,
+# the ratio `OF_PYNEI` above takes. It is not set further out because the
+# errors this comparison is the only one able to catch are of that size: a
+# reviewer dropped each of the fit's two final reweightings in turn and
+# measured the columns moving by 1.1e-9 and 3.0e-9, which the comparisons
+# with plink2 and with R catch as well.
+OF_PYNEI_LOGISTIC = 1e-13
+
+# How far a `beta` and an `se` of the logistic Wald test may be from
+# plink2's, as a share of the `se` plink2 printed for that variant, and how
+# far a p-value may be, as a share of itself. They are the 1e-4, 5e-4 and
+# 5e-3 of "How it is verified" of "The logistic model".
+#
+# What they measure is the distance between two logistic fits and not the
+# accuracy of popnei's arithmetic: plink2 stops its fit earlier than popnei
+# does, which is why they are wider than the 5e-6 its six printed digits
+# round a value by and why a run that came within 1e-5 of plink2 would have
+# stopped early too. The 5e-4 on the `se` is the one that cannot be
+# tightened: popnei's worst is 1.334e-4 of the `se` of `var0179` and pyNei's
+# worst is 1.334e-4 at `var0179` as well, so a tighter bound would be a
+# bound on the oracle as much as on popnei.
+OF_PLINK2_LOGISTIC_BETA = 1e-4
+OF_PLINK2_LOGISTIC_SE = 5e-4
+OF_PLINK2_LOGISTIC_P_VALUE = 5e-3
+
+# How far the statistic `(beta / se)**2` of the logistic score test may be
+# from R's, absolute, and how far its p-value may be, as the distance between
+# the two in log10: the 1e-2 and 1e-3 of "How it is verified" of "The
+# logistic model".
+#
+# R's `glm` converges to 1e-8 in the deviance, which is what these measure,
+# and it prints both at full precision, so neither is the width of a printed
+# digit.
+OF_R_SCORE_STATISTIC = 1e-2
+OF_R_SCORE_P_VALUE = 1e-3
 
 # How many variants a batch of the vars file the panel is written to holds,
 # which is what the reader of that file gives the pass at a time.
@@ -380,9 +445,259 @@ def test_the_vars_reader_gives_the_study_the_vcf_reader_gives(
         )
 
 
-def _worked_example_vcf(path: pathlib.Path, individuals=WORKED_EXAMPLE_INDIVIDUALS):
+def _of_plink2_logistic() -> pandas.DataFrame:
+    """What plink2 `--glm hide-covar` answered for the panel with the
+    binomial trait, one row per variant in the order of the file.
+
+    `OR` is the odds ratio and `LOG(OR)_SE` the standard error of its
+    logarithm, which is what popnei gives as `beta` and `se`, and `FIRTH?` is
+    `Y` for the one variant plink2 fell back to a penalized regression for.
+    """
+    return pandas.read_csv(
+        REFERENCE_GWAS_DIR / "plink2.panel_called.glm.logistic.hybrid.tsv", sep="\t"
+    )
+
+
+def _of_r_score() -> pandas.DataFrame:
+    """What R 4.6.1's `anova(glm, test = "Rao")` answered for the panel, one
+    logistic regression per variant, at full precision: the score statistic
+    and its p-value."""
+    return pandas.read_csv(
+        REFERENCE_GWAS_DIR / "r.panel_called.glm.score.tsv", sep="\t"
+    )
+
+
+def _the_logistic_study(panel: pathlib.Path = PANEL, test=None):
+    """The study of the binomial trait `binom` of a panel with `cov1` and
+    `cov2`, which is what plink2, R and pyNei were given."""
+    phenotypes = _phenotypes()
+    return calc_gwas(
+        open_vcf(panel),
+        phenotypes["binom"],
+        TraitType.BINOMIAL,
+        covariates=phenotypes[["cov1", "cov2"]],
+        test=test,
+    )
+
+
+def _the_logistic_study_of_pynei(panel: pathlib.Path, test: str):
+    """The same study from pyNei, which is the oracle of every column."""
+    phenotypes = _phenotypes()
+    return pynei_gwas(
+        vars_from_vcf(panel),
+        phenotypes["binom"],
+        "binomial",
+        covariates=phenotypes[["cov1", "cov2"]],
+        test=test,
+    )
+
+
+def test_the_score_test_of_every_variant_of_the_panel_is_rs() -> None:
+    """The statistic and the p-value of all 1200 variants against the ones R
+    fitted one logistic regression per variant for.
+
+    R reports the score statistic, which popnei gives as `(beta / se)**2`,
+    and its p-value at full precision, so what these two tolerances measure
+    is how far apart the two null fits landed and not the width of a printed
+    digit. The ids are compared first, so that every row is matched to the
+    variant R wrote it for.
+
+    Measured over the 1200 on 24 September 2026, the same on Accelerate and
+    on faer to the four digits given: the worst statistic is 1.589e-3 away
+    from R's, at `var0784`, 16 per cent of what is allowed, and the worst
+    p-value is 3.749e-4 in `log10`, at `var0784` as well, 37 per cent of its
+    bound. The statistic is absolute where the reference is exact: R's own
+    run from 8.9e-6 to 27.9 over these 1200 variants, so on a panel whose
+    statistics are much larger this bound would fail a right answer rather
+    than pass a wrong one, which is the safe way round for a check to be
+    fragile.
+    """
+    result = _the_logistic_study(test="score")
+    of_r = _of_r_score()
+
+    assert result.null_model.model == GWASModel.GLM
+    assert result.test == popnei.TestType.SCORE
+    assert result.null_model.residual_variance is None
+    assert result.null_model.genetic_variance is None
+    assert result.null_model.heritability is None
+    assert len(result.stats.index) == PANEL_NUM_VARS
+    assert list(result.stats["id"]) == list(of_r["id"])
+    statistic = (result.stats["beta"].to_numpy() / result.stats["se"].to_numpy()) ** 2
+    numpy.testing.assert_allclose(
+        statistic, of_r["score"].to_numpy(), rtol=0, atol=OF_R_SCORE_STATISTIC
+    )
+    numpy.testing.assert_allclose(
+        numpy.log10(result.stats["p_value"].to_numpy()),
+        numpy.log10(of_r["p"].to_numpy()),
+        rtol=0,
+        atol=OF_R_SCORE_P_VALUE,
+    )
+
+
+def test_the_wald_test_of_every_variant_of_the_panel_is_plink2s() -> None:
+    """The four columns of the 1199 variants plink2 fitted a logistic
+    regression for, against what it wrote.
+
+    plink2 reports the odds ratio, so `beta` is compared with its logarithm,
+    and the standard error it prints is already of that logarithm. The one
+    variant it fell back to a penalized regression for is left out here and
+    is what the test below is about.
+
+    Measured over the 1199 on 24 September 2026, the same on Accelerate and
+    on faer to the four digits given: the worst effect is 2.103e-5 of the
+    `se` of its variant, at `var0395`, 21 per cent of what is allowed; the
+    worst standard error is 1.334e-4 of that `se`, at `var0179`, 27 per cent
+    of its bound and the number the 5e-4 was set from; and the worst p-value
+    is 1.924e-3 of itself, at `var0115`, 38 per cent of its bound. Every
+    `allele_freq` is plink2's `A1_FREQ` exactly.
+    """
+    result = _the_logistic_study()
+    of_plink2 = _of_plink2_logistic()
+
+    assert result.null_model.model == GWASModel.GLM
+    assert result.test == popnei.TestType.WALD
+    assert result.null_model.num_individuals == PANEL_NUM_INDIVIDUALS
+    assert len(result.stats.index) == PANEL_NUM_VARS
+    assert list(result.stats["id"]) == list(of_plink2["ID"])
+    fitted = of_plink2["FIRTH?"].to_numpy() == "N"
+    assert fitted.sum() == PANEL_NUM_VARS - 1
+    ids = numpy.asarray(of_plink2["ID"])[fitted]
+    se = of_plink2["LOG(OR)_SE"].to_numpy()[fitted]
+    numpy.testing.assert_allclose(
+        result.stats["allele_freq"].to_numpy(),
+        of_plink2["A1_FREQ"].to_numpy(),
+        rtol=0,
+        atol=OF_PLINK2_FREQUENCY,
+    )
+    for what, ours, theirs, bound in (
+        (
+            "the effect",
+            result.stats["beta"].to_numpy()[fitted],
+            numpy.log(of_plink2["OR"].to_numpy()[fitted]),
+            OF_PLINK2_LOGISTIC_BETA,
+        ),
+        (
+            "the standard error",
+            result.stats["se"].to_numpy()[fitted],
+            se,
+            OF_PLINK2_LOGISTIC_SE,
+        ),
+    ):
+        difference = numpy.abs(ours - theirs) / se
+        at = int(numpy.argmax(difference))
+        assert difference[at] <= bound, (
+            f"{what} of {ids[at]} is {difference[at]} of the `se` of its "
+            f"variant away from plink2 against the {bound} allowed"
+        )
+    numpy.testing.assert_allclose(
+        result.stats["p_value"].to_numpy()[fitted],
+        of_plink2["P"].to_numpy()[fitted],
+        rtol=OF_PLINK2_LOGISTIC_P_VALUE,
+        atol=0,
+    )
+
+
+def test_the_variants_with_no_answer_are_the_ones_plink2_marked() -> None:
+    """The variants whose Wald test gives NaN are exactly the rows plink2
+    wrote `Y` in `FIRTH?` for, which is `var0006` and no other.
+
+    A variant that separates the individuals that have the condition from
+    those that have not has no finite effect: plink2 falls back to a
+    penalized regression there and popnei gives NaN, as pyNei does. This is
+    the test that guards the three marks of a fit that runs away, since a
+    variant wrongly marked loses its p-value in silence and a variant wrongly
+    left unmarked reports the number an unsettled fit happened to stop at.
+    """
+    result = _the_logistic_study()
+    of_plink2 = _of_plink2_logistic()
+
+    assert list(result.stats["id"]) == list(of_plink2["ID"])
+    without_an_answer = numpy.isnan(result.stats["p_value"].to_numpy())
+    assert list(numpy.asarray(of_plink2["ID"])[without_an_answer]) == ["var0006"]
+    numpy.testing.assert_array_equal(
+        without_an_answer, of_plink2["FIRTH?"].to_numpy() == "Y"
+    )
+    assert numpy.isnan(result.stats["beta"].to_numpy()[without_an_answer]).all()
+    assert numpy.isnan(result.stats["se"].to_numpy()[without_an_answer]).all()
+    # The frequency of such a variant is still there, as it is for a variant
+    # with no variance: what it has not is a test.
+    assert not numpy.isnan(
+        result.stats["allele_freq"].to_numpy()[without_an_answer]
+    ).any()
+
+
+@pytest.mark.parametrize("panel", PANELS)
+@pytest.mark.parametrize("test", ["wald", "score"])
+def test_every_variant_of_a_logistic_panel_is_pyneis(
+    panel: pathlib.Path, test: str
+) -> None:
+    """Both libraries on the same VCF with the same binomial trait, over all
+    1200 variants of each panel and with each of the two tests.
+
+    pyNei gives no counts of the pass, so what is compared is the four
+    columns, the individuals that were tested, the coefficients of the null
+    model and which variants have no answer. Both panels are here because the
+    rule that gives a genotype with any allele missing the mean dosage of its
+    variant runs at scale on one of them and not on the other, and both tests
+    because they share the null fit and nothing else.
+
+    `residual_variance` is `None` for a binomial trait in both libraries,
+    whose variance is decided by its mean.
+
+    Measured on 24 September 2026 over the four pairs of panel and test on
+    both backends, the furthest number being the p-value of the Wald test of
+    the panel with every genotype called, 4.524e-14 of itself at `var1004` on
+    Accelerate. The comment on `OF_PYNEI_LOGISTIC` has the rest.
+    """
+    ours = _the_logistic_study(panel, test=test)
+    theirs = _the_logistic_study_of_pynei(panel, test)
+
+    assert ours.individuals == tuple(theirs.samples)
+    assert ours.null_model.model == theirs.null_model.model
+    assert ours.trait == theirs.trait
+    assert ours.test == theirs.test
+    assert ours.null_model.residual_variance is None
+    assert theirs.null_model.residual_variance is None
+    numpy.testing.assert_allclose(
+        ours.null_model.covariate_effects.to_numpy(),
+        theirs.null_model.covariate_effects.to_numpy(),
+        rtol=OF_PYNEI_LOGISTIC,
+        atol=0,
+    )
+    numpy.testing.assert_allclose(
+        ours.stats["allele_freq"].to_numpy(),
+        theirs.stats["allele_freq"].to_numpy(),
+        rtol=0,
+        atol=OF_PLINK2_FREQUENCY,
+    )
+    se = theirs.stats["se"].to_numpy()
+    for column, scale in (("beta", se), ("se", se), ("p_value", None)):
+        ours_column = ours.stats[column].to_numpy()
+        theirs_column = theirs.stats[column].to_numpy()
+        assert (numpy.isnan(ours_column) == numpy.isnan(theirs_column)).all(), (
+            f"the variants without a {column} are not the same ones"
+        )
+        against = numpy.abs(theirs_column) if scale is None else scale
+        difference = numpy.abs(ours_column - theirs_column) / against
+        assert numpy.nanmax(difference) <= OF_PYNEI_LOGISTIC, (
+            f"the worst {column} is {numpy.nanmax(difference)} of "
+            f"{'itself' if scale is None else 'the `se` of its variant'} "
+            f"against the {OF_PYNEI_LOGISTIC} allowed"
+        )
+
+
+def _worked_example_vcf(
+    path: pathlib.Path,
+    individuals=WORKED_EXAMPLE_INDIVIDUALS,
+    genotypes_of_the_variants=WORKED_EXAMPLE_GENOTYPES,
+):
     """The worked example of the spec as a VCF at `path`: three variants of
-    six diploid individuals, each variant with its own id and position."""
+    six diploid individuals, each variant with its own id and position.
+
+    `genotypes_of_the_variants` is one row of genotypes for each variant,
+    which the VCF of the approximation with no variant that varies gives one
+    of its own.
+    """
     lines = [
         "##fileformat=VCFv4.4",
         '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
@@ -391,7 +706,7 @@ def _worked_example_vcf(path: pathlib.Path, individuals=WORKED_EXAMPLE_INDIVIDUA
             + list(individuals)
         ),
     ]
-    for at, genotypes in enumerate(WORKED_EXAMPLE_GENOTYPES):
+    for at, genotypes in enumerate(genotypes_of_the_variants):
         lines.append(
             "\t".join(
                 [
@@ -410,6 +725,17 @@ def _worked_example_vcf(path: pathlib.Path, individuals=WORKED_EXAMPLE_INDIVIDUA
         )
     path.write_text("\n".join(lines) + "\n")
     return path
+
+
+def _a_vcf_of_one_variant_that_does_not_vary(path: pathlib.Path) -> pathlib.Path:
+    """A VCF at `path` of the six individuals of the worked example and one
+    variant, heterozygous in every one of them.
+
+    The factor of the approximation is the mean over the variants of the
+    first block of the second pass that vary, and this file leaves that block
+    with none of them.
+    """
+    return _worked_example_vcf(path, genotypes_of_the_variants=(("0/1",) * 6,))
 
 
 @pytest.fixture
@@ -600,17 +926,28 @@ def test_a_phenotype_of_a_frame_of_one_column_is_that_column(
         )
 
 
-def test_a_binomial_trait_is_refused_with_the_model_that_is_being_written(
+def test_the_wald_test_of_a_binomial_trait_with_a_kinship_is_refused(
     worked_example: pathlib.Path,
 ) -> None:
-    """The logistic regression is not written, and the study that needs it
-    says so."""
+    """The logistic mixed model has the score test alone, and asking for the
+    Wald test says why: it would fit one mixed model for every variant.
+
+    The same call with no test given, or with the score test, is the study
+    the panel is run with; what this pins is that the default of this model
+    is not the Wald test the other three default to.
+    """
     binomial = pandas.Series(
-        [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], index=list(WORKED_EXAMPLE_INDIVIDUALS)
+        [0.0, 0.0, 1.0, 1.0, 0.0, 1.0], index=list(WORKED_EXAMPLE_INDIVIDUALS)
     )
 
-    with pytest.raises(ValueError, match="logistic regression, which is being written"):
-        _the_worked_example(worked_example, phenotype=binomial, trait="binomial")
+    with pytest.raises(ValueError, match="one mixed model for every variant"):
+        _the_worked_example(
+            worked_example,
+            phenotype=binomial,
+            trait="binomial",
+            kinship=_the_kinship_of_the_worked_example(),
+            test="wald",
+        )
 
 
 def test_a_trait_of_another_name_is_refused_with_the_two_names(
@@ -645,28 +982,6 @@ def test_the_approximation_of_a_study_with_no_kinship_is_refused(
     """
     with pytest.raises(ValueError, match="has no such denominator"):
         _the_worked_example(worked_example, use_grammar_gamma_approx=True)
-
-
-def test_the_approximation_of_a_study_with_a_kinship_is_being_written() -> None:
-    """A mixed model that asks for the approximation is refused, and is not
-    given the exact test in silence.
-
-    The approximation is the plan `gwas-logistic`, being one item over both
-    mixed models. A study that made the exact test of every variant and
-    reported that it had approximated nothing would give the user no way to
-    tell that what they asked for did not happen.
-    """
-    phenotypes = _phenotypes()
-
-    with pytest.raises(ValueError, match="approximation is being written"):
-        calc_gwas(
-            open_vcf(PANEL),
-            phenotypes["cont"],
-            TraitType.CONTINUOUS,
-            covariates=phenotypes[["cov1", "cov2"]],
-            kinship=_the_kinship_of_the_panel(),
-            use_grammar_gamma_approx=True,
-        )
 
 
 def test_the_wald_test_is_the_linear_models_own_and_the_score_test_is_refused(
@@ -1199,7 +1514,12 @@ def _the_kinship_of_the_panel() -> Kinship:
     )
 
 
-def _the_mixed_study_of(panel: pathlib.Path, test: str | None, with_cov1: bool = True):
+def _the_mixed_study_of(
+    panel: pathlib.Path,
+    test: str | None,
+    with_cov1: bool = True,
+    use_grammar_gamma_approx: bool = False,
+):
     """The study of `panel` with the kinship plink2 wrote and the test
     `test`, `None` taking the default of the model.
 
@@ -1207,6 +1527,10 @@ def _the_mixed_study_of(panel: pathlib.Path, test: str | None, with_cov1: bool =
     intercept and the binary one. rrBLUP takes every fixed effect as a
     factor, so it was given `cov2` alone and popnei is run with that one
     covariate for its comparison; GMMAT was given both.
+
+    `use_grammar_gamma_approx` asks for the approximate denominator instead
+    of the exact one, which only the tests of the approximation do: every
+    comparison with a reference program is against the exact answer.
     """
     phenotypes = _phenotypes()
     columns = ["cov1", "cov2"] if with_cov1 else ["cov2"]
@@ -1217,6 +1541,7 @@ def _the_mixed_study_of(panel: pathlib.Path, test: str | None, with_cov1: bool =
         covariates=phenotypes[columns],
         kinship=_the_kinship_of_the_panel(),
         test=test,
+        use_grammar_gamma_approx=use_grammar_gamma_approx,
     )
 
 
@@ -1483,6 +1808,152 @@ def test_the_two_tests_of_the_mixed_model_differ_in_the_error_alone() -> None:
     assert differ.all()
 
 
+# How far the GRAMMAR-Gamma approximation may be from the exact answer on the
+# panel, under the linear mixed model and under the logistic one. The three
+# are pyNei's own numbers in `test_grammar_gamma_approx`, which "How it is
+# verified" of the approximation in `docs/specs/gwas.md` carries: the median
+# of `log10(p_approx / p_exact)` within 0.1 of 0, the largest of those within
+# 1.5, and `beta` within 0.5 of itself.
+#
+# They are not bounds measured here and lowered until they broke, which is
+# how every other tolerance of this file was chosen: the spec gives these
+# three, and what a run of popnei does is fill them or not. The third is
+# nearly full, and that is a property of the method and not a defect. The
+# factor is one number standing in for a quantity that differs from variant
+# to variant, and on this panel the 100 ratios it is the mean of run from
+# 0.312 to 0.670 around a mean of 0.517, a standard deviation of 12.9 per
+# cent of the mean, which the cargo tests of `grammar_gamma.rs` hold; a
+# variant's effect moves by the share its own ratio sits from that mean.
+#
+# Measured on 24 September 2026 on the panel with every genotype called.
+# On Accelerate the median is -5.1885e-04, the largest 0.51185 and the worst
+# `beta` 0.48966; on faer, through a wheel built with `--no-default-features`,
+# the same three are -5.1885e-04, 0.51185 and 0.48966, the two backends
+# agreeing to 1e-11 of each other. So the `beta` bound is 98 per cent spent
+# and the other two are not near theirs. A run that broke the 0.5 would be a
+# question for the spec and not a tolerance to widen.
+#
+# The same three under the logistic mixed model, on the same panel and the
+# same day: on Accelerate the median is -1.0467e-03, the largest 0.52373 and
+# the worst `beta` 0.39335, and the node suite, which runs faer in
+# WebAssembly, measures the same three to six digits. That model spends less
+# of the `beta` bound than the linear one and a little more of the other two.
+OF_THE_APPROXIMATION_MEDIAN = 0.1
+OF_THE_APPROXIMATION_LARGEST = 1.5
+OF_THE_APPROXIMATION_BETA = 0.5
+
+# How far the worst effect of the panel has to move under the approximation
+# for the approximation to have been made at all: 0.05 of it.
+#
+# The three bounds above are ceilings, and a run that made no approximation
+# would pass every one of them, an exact answer being at no distance from
+# itself. It is not a hypothesis: a reviewer replaced the approximation with
+# the exact denominator in the core on 24 September 2026, and this suite and
+# the node one stayed green under both mixed models. So the worst effect is
+# held above a floor as well, which is the assertion that a study which had
+# quietly stopped approximating would fail.
+#
+# The floor is 0.05 where the worst effect measured that day on the panel
+# with every genotype called is 0.489655 under the linear mixed model and
+# 0.393349 under the logistic one, a factor of eight of room. The p-values
+# carry no floor: they are where the approximation moves least, the median
+# being 5.2e-04 and 1.0e-03 in log10, and a floor near those would go red on
+# a panel the approximation happens to suit.
+THE_APPROXIMATION_MOVES_THE_EFFECT = 0.05
+
+
+def test_the_approximation_of_the_panel_is_near_the_exact_answer() -> None:
+    """The panel with the linear mixed model, approximated and exact, over
+    the 1200 variants.
+
+    The approximation replaces `x' p x`, the denominator of the test, with
+    one factor times the squared length of the variant's centered dosages,
+    which costs a walk over the variant instead of a product with an
+    individuals by individuals matrix. There is no program outside popnei to
+    check it against, since GMMAT and rrBLUP compute the exact denominator,
+    so what is checked is the relation to popnei's own exact answer, which is
+    pyNei's own check of it.
+
+    The bound is loose by design: a p-value out by a factor of 30 passes it.
+    What it does catch is an approximation that has stopped tracking the
+    exact answer at all, and the cargo tests of `grammar_gamma.rs` check the
+    factor itself against the ratios it is the mean of, which is the part
+    this cannot see.
+    """
+    approximated = _the_mixed_study_of(PANEL, None, use_grammar_gamma_approx=True)
+    exact = _the_mixed_study_of(PANEL, None)
+
+    assert approximated.used_grammar_gamma_approx is True
+    assert exact.used_grammar_gamma_approx is False
+    assert len(approximated.stats) == PANEL_NUM_VARS
+    # A variant the exact test leaves with no answer is answered under the
+    # approximation, which "Open 2's threshold under the approximation" of
+    # the spec says: the approximate denominator is a positive factor times a
+    # sum of squares and holds no cancellation, so nothing there falls
+    # through the threshold. The two are compared where both have an answer,
+    # and this panel has no such variant, which the count asserts.
+    of_the_exact = numpy.asarray(exact.stats["p_value"])
+    of_the_approximation = numpy.asarray(approximated.stats["p_value"])
+    answered = numpy.isfinite(of_the_exact) & numpy.isfinite(of_the_approximation)
+    assert int(answered.sum()) == PANEL_NUM_VARS
+    moved = numpy.log10(of_the_approximation[answered] / of_the_exact[answered])
+    median = float(numpy.median(moved))
+    largest = float(numpy.max(numpy.abs(moved)))
+    assert abs(median) <= OF_THE_APPROXIMATION_MEDIAN, (
+        f"the median of log10(p_approx / p_exact) over the panel is {median}"
+    )
+    assert largest <= OF_THE_APPROXIMATION_LARGEST, (
+        f"the largest |log10(p_approx / p_exact)| over the panel is {largest}"
+    )
+    beta_of_the_exact = numpy.asarray(exact.stats["beta"])[answered]
+    beta_of_the_approximation = numpy.asarray(approximated.stats["beta"])[answered]
+    # `beta` is compared with a share of itself here, and not with a share of
+    # the `se` of its variant as every comparison with a reference program of
+    # this file is. What the approximation moves is the denominator both the
+    # effect and its error are divided by, so the effect moves by the share
+    # the variant's own ratio sits from the factor, and that share is what
+    # the 0.5 of the spec bounds.
+    apart = numpy.abs(beta_of_the_approximation - beta_of_the_exact) / numpy.abs(
+        beta_of_the_exact
+    )
+    worst = float(numpy.max(apart))
+    assert worst <= OF_THE_APPROXIMATION_BETA, (
+        f"the worst `beta` of the panel is {worst} of itself away from the exact one"
+    )
+    # Every bound above is a ceiling on how far the two runs lie apart, and a
+    # study that had silently stopped approximating would pass all of them,
+    # being the exact answer compared with itself. This is what would fail
+    # there.
+    assert worst >= THE_APPROXIMATION_MOVES_THE_EFFECT, (
+        f"the worst `beta` of the panel is {worst} of itself away from the "
+        f"exact one, and an approximation that was made moves it by "
+        f"{THE_APPROXIMATION_MOVES_THE_EFFECT} at least"
+    )
+
+
+def test_the_result_of_the_approximation_says_that_it_was_used() -> None:
+    """The result of a study that asked for the approximation says so.
+
+    It is the one place a user can tell the two apart: the columns of `stats`
+    have the same names and the same shape either way, and a study that had
+    quietly made the exact test would look the same. The panel with genotypes
+    missing is the one taken here, with the score test, so that the flag is
+    read on a study the test above does not make.
+    """
+    approximated = _the_mixed_study_of(
+        PANEL_WITH_MISSING, "score", use_grammar_gamma_approx=True
+    )
+
+    assert approximated.used_grammar_gamma_approx is True
+    assert approximated.null_model.model == GWASModel.LMM
+    assert len(approximated.stats) == PANEL_NUM_VARS
+    assert numpy.isfinite(approximated.stats["p_value"]).all()
+    # The pass that estimates the factor reads the same variants as the one
+    # that tests them, and it is the counts of the first that come back, so a
+    # study that read the source twice reports the variants once.
+    assert approximated.pass_stats.num_vars == PANEL_NUM_VARS
+
+
 def test_a_tested_individual_the_kinship_has_not_is_refused_by_name() -> None:
     """A kinship of half the panel, with a phenotype of all of it.
 
@@ -1650,6 +2121,369 @@ def test_a_kinship_that_is_not_a_kinship_is_refused_by_its_type() -> None:
         )
 
 
+# What GMMAT 1.5.0's `glmmkin` fitted for the logistic mixed model of the
+# panel with every genotype called, from the `glmm` row of
+# `tests/reference/gwas/gmmat.null_models.tsv`, which the reference script
+# writes at full precision: the variance of the random effect of the kinship,
+# which GMMAT calls `tau`, and the effects of the intercept, of `cov1` and of
+# `cov2`.
+#
+# Its `sigma2` is 1 and is not read here: a logistic model has no free
+# residual variance, since the variance of a binomial trait is decided by its
+# mean, and popnei gives `None` for it. What the test asserts is that `None`.
+OF_GMMAT_GLMM_NULL = {
+    "genetic_variance": 1.50805673038211,
+    "intercept": -1.41646389453321,
+    "cov1": 0.753476451040228,
+    "cov2": 1.58320993785049,
+}
+
+# How far each of those four may be from GMMAT's: 1e-5 absolute, the bound of
+# "How it is verified" of "The logistic mixed model" of the spec. It is how
+# far two penalized quasi-likelihood fits land apart, and nothing of it is
+# spent on rounding, the file being at full precision.
+#
+# Measured over the four on 24 September 2026, the same to five digits on
+# both backends: the worst is the genetic variance, 6.033e-6 away, 60 per
+# cent of what is allowed; the intercept is 1.045e-6 away, `cov2` 1.119e-6
+# and `cov1` 3.390e-7. `docs/reports/glmm-method/README.md` measured pyNei's
+# fit and the cheaper one alike at 6.3e-6 of GMMAT's variance, so that
+# distance is the two programs and not the route popnei takes. The bound is
+# the spec's and is not lowered to two or three times it, as the bounds on
+# popnei's own arithmetic are.
+OF_GMMAT_GLMM_NULL_MODEL = 1e-5
+
+# How far `1 / se**2` of the logistic mixed model's score test may be from
+# GMMAT's `VAR`, as a share of it, and how far a p-value may be from GMMAT's
+# in `log10`: 1e-5 and 1e-4, both from the spec and both over all 1200
+# variants of both panels.
+#
+# The two files are printed to six significant digits, which rounds a value
+# by up to 5e-6 of itself, so a share of the first bound goes on GMMAT's
+# printing. `log10` shrinks a relative difference, so the second has more.
+#
+# Measured over the 1200 of each panel on 24 September 2026, the same to five
+# digits on both backends: the worst `1 / se**2` is 5.342e-6 of `VAR` at
+# `var1032` of the panel with every genotype called and 4.940e-6 at `var0584`
+# of the panel with genotypes missing, 53 per cent of what is allowed; the
+# worst p-value is 8.497e-6 in `log10` at `var0520` of the first panel and
+# 8.615e-6 at `var0892` of the second, 9 per cent of what is allowed.
+#
+# How much of each of those is popnei's. GMMAT prints `var1032`'s `VAR` as
+# 10.1591, so half of its last digit is 4.92e-6 of the value against the
+# 5.342e-6 measured: at most 4.2e-7 of that difference is popnei's
+# arithmetic, and the bound still fails if the variance is about 5.7e-6
+# relative off, which is fourteen times above the signal it can resolve. The
+# p-value half has more room: GMMAT prints `var0520`'s p-value as 0.0130101,
+# whose last digit is 1.67e-6 in `log10`, against the 8.497e-6 measured.
+#
+# That 8.497e-6 is the number to look at if this ever moves.
+# `docs/reports/glmm-method/README.md` measured pyNei's fit and the cheaper
+# one popnei takes giving the same largest `|log10(p / p_GMMAT)|` to every
+# digit it printed, 8.497e-06, and popnei reaches it to every digit here.
+OF_GMMAT_GLMM_VARIANCE = 1e-5
+OF_GMMAT_GLMM_P_VALUE = 1e-4
+
+# How far a number of the logistic mixed model may be from pyNei's: the
+# variance of the kinship effect and the effects of the null model as a share
+# of pyNei's, a `beta` and an `se` as a share of the `se` of their variant,
+# and a p-value as the distance between the two in `log10`.
+#
+# The bound against pyNei is per model, 1e-9 relative being the ceiling of
+# "How it is verified" of "What every model shares" and not its value. This
+# is the one model popnei does not fit pyNei's way: pyNei inverts an
+# individuals by individuals matrix once per linearization and popnei factors
+# it with a Cholesky and solves, so what is compared here is two routes to
+# the same fit and not one route written twice.
+#
+# Lowered until it failed, on both backends, over all 1200 variants of both
+# panels, on 24 September 2026. The furthest each of the five is from pyNei:
+#
+# - the p-value, as the distance in `log10`, which is the one the bound has
+#   to clear, 6.794e-14 at `var0115` of the panel with genotypes missing, on
+#   faer; Accelerate's furthest is 6.384e-14 at `var0892` of the same panel;
+# - the `beta`, as a share of the `se` of its variant, 3.916e-14 at `var0543`
+#   of the panel with genotypes missing on faer, and 3.468e-14 at `var0543`
+#   of the panel with every genotype called on Accelerate;
+# - the variance of the kinship effect, as a share of itself, 5.801e-14 on
+#   faer and 5.404e-14 on Accelerate, the same on both panels since the null
+#   is fitted from the trait, the design and the kinship alone;
+# - the `se`, as a share of the `se` of its variant, 1.327e-14 at `var0007`
+#   of the panel with every genotype called on faer, and 1.223e-14 at that
+#   same variant on Accelerate;
+# - the effects of the null model, as a share of pyNei's, 8.976e-15 at `cov2`
+#   on faer and 8.415e-15 at `cov2` on Accelerate.
+#
+# So it breaks at the p-value's 6.794e-14 and this is 2.2 times it, the ratio
+# the logistic model's own bound takes. No quantity has its worst on the same
+# backend and the same panel as any other, which is why each of the five
+# carries both.
+#
+# 1e-9, which `docs/plans/gwas-logistic.md` writes for this model, is the
+# spec's ceiling and not a measured value: it is 15000 times the worst here
+# and would let through an error of the 1e-11 class. What this comparison is
+# the only one able to catch is a difference between popnei's route to the
+# null model and pyNei's, since GMMAT's six printed digits stop at 5e-6.
+OF_PYNEI_LOGISTIC_MIXED = 1.5e-13
+
+
+def _the_logistic_mixed_study_of(
+    panel: pathlib.Path,
+    test: str | None = None,
+    use_grammar_gamma_approx: bool = False,
+):
+    """The study of the binomial trait `binom` of a panel with `cov1`,
+    `cov2` and the kinship plink2 wrote, which is what GMMAT was given.
+
+    `test` is `None` here where the other three models default to the Wald
+    test: the logistic mixed model has the score test alone, and that is what
+    `None` takes.
+
+    `use_grammar_gamma_approx` asks for the approximate denominator instead
+    of the exact one, which only the test of the approximation does: every
+    comparison with GMMAT and with pyNei is against the exact answer.
+    """
+    phenotypes = _phenotypes()
+    return calc_gwas(
+        open_vcf(panel),
+        phenotypes["binom"],
+        TraitType.BINOMIAL,
+        covariates=phenotypes[["cov1", "cov2"]],
+        kinship=_the_kinship_of_the_panel(),
+        test=test,
+        use_grammar_gamma_approx=use_grammar_gamma_approx,
+    )
+
+
+def test_the_logistic_mixed_null_of_the_panel_is_gmmats() -> None:
+    """The variance of the kinship effect and the three covariate effects
+    against GMMAT's `glmmkin`, within 1e-5 absolute, with the two fields a
+    logistic model has not.
+
+    The fit is the core's and the cargo test of the same four asserts them
+    there; what this one adds is that they reach Python under the names
+    `NullModel` gives them, where GMMAT calls the variance `tau`, and that
+    `residual_variance` and `heritability` are `None`. A logistic model has
+    no free residual variance, GMMAT writes 1 for it, and a heritability
+    built from a 1 that means nothing would read as a number the user could
+    act on.
+    """
+    of_gmmat = pandas.read_csv(
+        REFERENCE_GWAS_DIR / "gmmat.null_models.tsv", sep="\t"
+    ).set_index("model")
+
+    result = _the_logistic_mixed_study_of(PANEL)
+
+    null = result.null_model
+    assert null.model == GWASModel.GLMM
+    assert result.test == "score"
+    assert result.trait == "binomial"
+    assert null.num_individuals == PANEL_NUM_INDIVIDUALS
+    # The file is read as well, so that a number of it that moved away from
+    # the literals above would fail here and not quietly widen the check.
+    assert dict(
+        zip(
+            OF_GMMAT_GLMM_NULL,
+            of_gmmat.loc["glmm", ["tau", "intercept", "cov1", "cov2"]],
+            strict=True,
+        )
+    ) == pytest.approx(OF_GMMAT_GLMM_NULL, rel=0, abs=0)
+    found = {
+        "genetic_variance": null.genetic_variance,
+        "intercept": null.covariate_effects["intercept"],
+        "cov1": null.covariate_effects["cov1"],
+        "cov2": null.covariate_effects["cov2"],
+    }
+    for name, expected in OF_GMMAT_GLMM_NULL.items():
+        assert found[name] == pytest.approx(
+            expected, rel=0, abs=OF_GMMAT_GLMM_NULL_MODEL
+        ), f"{name} is {found[name]} and GMMAT gives {expected}"
+    assert null.residual_variance is None
+    assert null.heritability is None
+
+
+@pytest.mark.parametrize("panel", PANELS)
+def test_every_variant_of_a_panel_is_gmmats_logistic_score_test(
+    panel: pathlib.Path,
+) -> None:
+    """The variance of the score and the p-value of all 1200 variants of both
+    panels against GMMAT's `glmm.score`.
+
+    GMMAT reports the variance of the score, which is `x' p x`, the
+    denominator of the test and what popnei gives as `1 / se**2`, and the
+    p-value, which is compared in `log10` because what a user reads of a
+    p-value is its exponent.
+
+    The second panel is what says that a missing genotype takes the mean
+    dosage of its variant, which GMMAT calls `impute2mean`: 3 in 100 of its
+    genotypes are missing whole, and it is scored against the null model
+    fitted with the kinship of the panel where none is, as the reference
+    script scores it.
+    """
+    name = "panel_called" if panel == PANEL else "panel"
+    of_gmmat = pandas.read_csv(
+        REFERENCE_GWAS_DIR / f"gmmat.{name}.glmm.score.tsv", sep="\t"
+    )
+
+    result = _the_logistic_mixed_study_of(panel)
+
+    assert result.null_model.model == GWASModel.GLMM
+    assert len(of_gmmat.index) == PANEL_NUM_VARS
+    assert list(result.stats["id"]) == list(of_gmmat["SNP"])
+    se = result.stats["se"].to_numpy()
+    ours = 1.0 / (se * se)
+    theirs = of_gmmat["VAR"].to_numpy()
+    share = numpy.abs(ours - theirs) / theirs
+    worst = int(numpy.argmax(share))
+    assert share[worst] <= OF_GMMAT_GLMM_VARIANCE, (
+        f"1 / se**2 of {of_gmmat['SNP'][worst]} of {name} is {ours[worst]} "
+        f"and GMMAT gives {theirs[worst]}, which is {share[worst]} of it "
+        f"against the {OF_GMMAT_GLMM_VARIANCE} allowed"
+    )
+    ours_p = result.stats["p_value"].to_numpy()
+    theirs_p = of_gmmat["PVAL"].to_numpy()
+    apart = numpy.abs(numpy.log10(ours_p / theirs_p))
+    worst = int(numpy.argmax(apart))
+    assert apart[worst] <= OF_GMMAT_GLMM_P_VALUE, (
+        f"the p-value of {of_gmmat['SNP'][worst]} of {name} is "
+        f"{ours_p[worst]} and GMMAT gives {theirs_p[worst]}, {apart[worst]} "
+        f"apart in log10 against the {OF_GMMAT_GLMM_P_VALUE} allowed"
+    )
+
+
+@pytest.mark.parametrize("panel", PANELS)
+def test_every_variant_of_a_logistic_panel_with_a_kinship_is_pyneis(
+    panel: pathlib.Path,
+) -> None:
+    """Both libraries on the same VCF with the same kinship, over all 1200
+    variants of each panel.
+
+    This is the comparison that says popnei's route to the null model gives
+    pyNei's numbers: pyNei inverts an individuals by individuals matrix once
+    per linearization and popnei factors it with a Cholesky and solves
+    against it, and `docs/reports/glmm-method/README.md` measured the two
+    fits taking the same steps in the same order. Both are given the kinship
+    plink2 wrote, so what is compared is the fit and the test and not two
+    kinships. The variants that have no answer are asserted to be the same
+    ones, which on both panels is none of them.
+    """
+    phenotypes = _phenotypes()
+    theirs = pynei_gwas(
+        vars_from_vcf(panel),
+        phenotypes["binom"],
+        "binomial",
+        covariates=phenotypes[["cov1", "cov2"]],
+        kinship=PyneiKinship(
+            matrix=_the_kinship_of_the_panel().matrix, num_vars=PANEL_NUM_VARS
+        ),
+    )
+
+    ours = _the_logistic_mixed_study_of(panel)
+
+    assert ours.individuals == tuple(theirs.samples)
+    assert ours.null_model.model == theirs.null_model.model
+    assert ours.test == theirs.test
+    assert ours.null_model.residual_variance is None
+    assert theirs.null_model.residual_variance is None
+    assert ours.null_model.genetic_variance == pytest.approx(
+        theirs.null_model.genetic_variance, rel=OF_PYNEI_LOGISTIC_MIXED
+    )
+    numpy.testing.assert_allclose(
+        ours.null_model.covariate_effects.to_numpy(),
+        theirs.null_model.covariate_effects.to_numpy(),
+        rtol=OF_PYNEI_LOGISTIC_MIXED,
+        atol=0,
+    )
+    numpy.testing.assert_allclose(
+        ours.stats["allele_freq"].to_numpy(),
+        theirs.stats["allele_freq"].to_numpy(),
+        rtol=0,
+        atol=OF_PLINK2_FREQUENCY,
+    )
+    # `beta` and `se` are measured against the `se` of their variant, the
+    # scale of what the study estimates, and never against `beta`, which
+    # cancels to near 0 wherever the null is true.
+    se = theirs.stats["se"].to_numpy()
+    for column in ("beta", "se"):
+        difference = numpy.abs(
+            ours.stats[column].to_numpy() - theirs.stats[column].to_numpy()
+        )
+        worst = numpy.nanmax(difference / se)
+        assert worst <= OF_PYNEI_LOGISTIC_MIXED, (
+            f"the worst {column} is {worst} of the `se` of its variant "
+            f"against the {OF_PYNEI_LOGISTIC_MIXED} allowed"
+        )
+    ours_p = ours.stats["p_value"].to_numpy()
+    theirs_p = theirs.stats["p_value"].to_numpy()
+    assert (numpy.isnan(ours_p) == numpy.isnan(theirs_p)).all()
+    numpy.testing.assert_allclose(
+        numpy.log10(ours_p),
+        numpy.log10(theirs_p),
+        rtol=0,
+        atol=OF_PYNEI_LOGISTIC_MIXED,
+    )
+
+
+def test_the_logistic_approximation_of_the_panel_is_near_the_exact_answer() -> None:
+    """The panel with the logistic mixed model, approximated and exact, over
+    the 1200 variants.
+
+    Both mixed models take the approximation, and until this test the layers
+    above the core ran it on the continuous trait alone: the study here is
+    the one GMMAT was given, the binomial trait `binom` with both covariates
+    and the kinship plink2 wrote, with the approximate denominator asked for.
+
+    What it is checked against is popnei's own exact answer, as the linear
+    mixed model's is: GMMAT computes the exact denominator, so there is no
+    program outside popnei that answers the approximated question. The three
+    bounds are the spec's and are the same for the two models, and the fourth
+    assertion is the floor, without which a study that had stopped
+    approximating would pass.
+    """
+    approximated = _the_logistic_mixed_study_of(PANEL, use_grammar_gamma_approx=True)
+    exact = _the_logistic_mixed_study_of(PANEL)
+
+    assert approximated.null_model.model == GWASModel.GLMM
+    assert approximated.used_grammar_gamma_approx is True
+    assert exact.used_grammar_gamma_approx is False
+    assert len(approximated.stats) == PANEL_NUM_VARS
+    # A variant the exact test leaves with no answer is answered under the
+    # approximation, which "Open 2's threshold under the approximation" of
+    # the spec says, so the two are compared where both have an answer. This
+    # panel has no such variant, which the count asserts.
+    of_the_exact = numpy.asarray(exact.stats["p_value"])
+    of_the_approximation = numpy.asarray(approximated.stats["p_value"])
+    answered = numpy.isfinite(of_the_exact) & numpy.isfinite(of_the_approximation)
+    assert int(answered.sum()) == PANEL_NUM_VARS
+    moved = numpy.log10(of_the_approximation[answered] / of_the_exact[answered])
+    median = float(numpy.median(moved))
+    largest = float(numpy.max(numpy.abs(moved)))
+    assert abs(median) <= OF_THE_APPROXIMATION_MEDIAN, (
+        f"the median of log10(p_approx / p_exact) over the panel is {median}"
+    )
+    assert largest <= OF_THE_APPROXIMATION_LARGEST, (
+        f"the largest |log10(p_approx / p_exact)| over the panel is {largest}"
+    )
+    # `beta` is compared with a share of itself, as it is under the linear
+    # mixed model: what the approximation moves is the denominator both the
+    # effect and its error are divided by, so the effect moves by the share
+    # the variant's own ratio sits from the factor.
+    beta_of_the_exact = numpy.asarray(exact.stats["beta"])[answered]
+    beta_of_the_approximation = numpy.asarray(approximated.stats["beta"])[answered]
+    apart = numpy.abs(beta_of_the_approximation - beta_of_the_exact) / numpy.abs(
+        beta_of_the_exact
+    )
+    worst = float(numpy.max(apart))
+    assert worst <= OF_THE_APPROXIMATION_BETA, (
+        f"the worst `beta` of the panel is {worst} of itself away from the exact one"
+    )
+    assert worst >= THE_APPROXIMATION_MOVES_THE_EFFECT, (
+        f"the worst `beta` of the panel is {worst} of itself away from the "
+        f"exact one, and an approximation that was made moves it by "
+        f"{THE_APPROXIMATION_MOVES_THE_EFFECT} at least"
+    )
+
+
 def _the_kinship_of_the_worked_example(without: str | None = None) -> Kinship:
     """The kinship of the six individuals of the worked example, or of the
     five that are not `without`: the identity, which is the relatedness of
@@ -1665,6 +2499,32 @@ def _the_kinship_of_the_worked_example(without: str | None = None) -> Kinship:
     ]
     return Kinship(
         matrix=pandas.DataFrame(numpy.eye(len(names)), index=names, columns=names),
+        num_vars=3,
+    )
+
+
+def _a_kinship_that_is_not_a_covariance() -> Kinship:
+    """The kinship of the six individuals of the worked example with `i0` and
+    `i1` given a relatedness of 100, which no covariance has.
+
+    The 2 by 2 block of that pair has an eigenvalue of -99, and a weight of
+    the logistic mixed model is at most 0.25, so the reciprocals put 4 at
+    least on every diagonal entry of the covariance of the working trait: a
+    variance of the kinship effect above about 0.04 takes that covariance
+    below 0 and the Cholesky factorization refuses it. The fit starts at half
+    the variance of the first working trait, which is far above that, so the
+    first linearization is where it stops.
+
+    What a user reaches it with is a kinship built from variants with many
+    genotypes missing, where every pair is counted over its own variants;
+    this is that matrix pushed far enough to fail on six individuals.
+    """
+    names = list(WORKED_EXAMPLE_INDIVIDUALS)
+    matrix = numpy.eye(len(names))
+    matrix[0, 1] = 100.0
+    matrix[1, 0] = 100.0
+    return Kinship(
+        matrix=pandas.DataFrame(matrix, index=names, columns=names),
         num_vars=3,
     )
 
@@ -1718,6 +2578,23 @@ def _the_calls_that_are_refused(
     binomial = pandas.Series(
         [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], index=list(WORKED_EXAMPLE_INDIVIDUALS)
     )
+    # The covariate of the worked example is 0, 1, 0, 1, 0, 1, so `binomial`
+    # above is the one trait it separates and every fit of it runs away. The
+    # two calls that have to reach a logistic mixed model take this one,
+    # which the covariate does not separate.
+    binomial_that_is_not_separated = pandas.Series(
+        [0.0, 0.0, 1.0, 1.0, 0.0, 1.0], index=list(WORKED_EXAMPLE_INDIVIDUALS)
+    )
+    # The dosages of `v0` and of `v1`, the two variants of the worked example
+    # that vary: the `./.` of `i3` at `v1` takes the mean dosage of the
+    # called genotypes of its variant, which is 0.8.
+    the_dosages_of_the_two_that_vary = pandas.DataFrame(
+        {
+            "of_v0": [0.0, 1.0, 2.0, 0.0, 1.0, 2.0],
+            "of_v1": [0.0, 1.0, 2.0, 0.8, 1.0, 0.0],
+        },
+        index=list(WORKED_EXAMPLE_INDIVIDUALS),
+    )
     return {
         "a kinship that is not a kinship": lambda: _the_worked_example(
             worked_example, kinship="a matrix"
@@ -1725,10 +2602,29 @@ def _the_calls_that_are_refused(
         "the grammar gamma approximation with no kinship": lambda: _the_worked_example(
             worked_example, use_grammar_gamma_approx=True
         ),
-        "the grammar gamma approximation with a kinship": lambda: _the_worked_example(
-            worked_example,
+        # The factor of the approximation is the mean over the variants of
+        # the first block of the second pass that vary, and this file has
+        # one variant, heterozygous in everybody, so that block gives it no
+        # ratio at all.
+        "a first block in which no variant varies": lambda: _the_worked_example(
+            _a_vcf_of_one_variant_that_does_not_vary(
+                worked_example.parent / "one_variant_that_does_not_vary.vcf"
+            ),
             kinship=_the_kinship_of_the_worked_example(),
             use_grammar_gamma_approx=True,
+        ),
+        # The two variants of the worked example that vary, written as the
+        # covariates beside the intercept: the design then explains both of
+        # them, what the projection leaves of each is the rounding of a
+        # cancellation, and the mean of the ratios that are kept is the mean
+        # of none, which is NaN.
+        "a factor of the approximation that is not above 0": lambda: (
+            _the_worked_example(
+                worked_example,
+                covariates=the_dosages_of_the_two_that_vary,
+                kinship=_the_kinship_of_the_worked_example(),
+                use_grammar_gamma_approx=True,
+            )
         ),
         "a tested individual the kinship has not": lambda: _the_worked_example(
             worked_example,
@@ -1741,8 +2637,45 @@ def _the_calls_that_are_refused(
         "a trait of another name": lambda: _the_worked_example(
             worked_example, trait="quantitative"
         ),
-        "a binomial trait": lambda: _the_worked_example(
-            worked_example, phenotype=binomial, trait="binomial"
+        "the wald test of a binomial trait with a kinship": lambda: _the_worked_example(
+            worked_example,
+            phenotype=binomial_that_is_not_separated,
+            trait="binomial",
+            kinship=_the_kinship_of_the_worked_example(),
+            test="wald",
+        ),
+        "a kinship the logistic mixed model cannot factor": lambda: _the_worked_example(
+            worked_example,
+            phenotype=binomial_that_is_not_separated,
+            trait="binomial",
+            kinship=_a_kinship_that_is_not_a_covariance(),
+        ),
+        # The trait of the worked example is 2, 3, 5, 4, 4, 7, so the first
+        # tested individual is the one the message names.
+        "a binomial trait that is neither 0 nor 1": lambda: _the_worked_example(
+            worked_example, trait="binomial"
+        ),
+        # The covariate of the worked example is 0, 1, 0, 1, 0, 1, which is
+        # this phenotype, so it separates the individuals that have the
+        # condition from the ones that have not and the null fit walks
+        # towards an infinite effect for it instead of settling.
+        "a binomial null model that walks towards an infinite coefficient": (
+            lambda: _the_worked_example(
+                worked_example, phenotype=binomial, trait="binomial"
+            )
+        ),
+        # The same trait and the same covariate with a kinship, which makes
+        # it a logistic mixed model. That model starts from the plain
+        # logistic null above, so it is that null that runs away, and the
+        # message names the model the user asked for and not the one the
+        # starting fit is.
+        "a binomial null model with a kinship that runs away": (
+            lambda: _the_worked_example(
+                worked_example,
+                phenotype=binomial,
+                trait="binomial",
+                kinship=_the_kinship_of_the_worked_example(),
+            )
         ),
         "a covariate named intercept": lambda: _the_worked_example(
             worked_example, covariates=covariates.rename(columns={"cov": "intercept"})
@@ -1886,6 +2819,25 @@ def _the_calls_that_typescript_alone_refuses(worked_example: pathlib.Path) -> di
     }
 
 
+# The cases of the `refusals` of that file whose message names the file the
+# variants were read from, which are the only ones the test below lets name
+# it and of which it asks that they do.
+#
+# How many individuals a study tests is the individuals of the source that
+# have a phenotype, so that count is of the dataset and not of the arguments
+# alone; the two of the GRAMMAR-Gamma approximation are of the variants the
+# second pass gave, and which file was read is what tells a user whether it
+# is that file or the steps of their pass that left them with those variants.
+# All three go through the wildcard arm of
+# `crates/popnei-python/src/errors.rs`, which puts the path in front of the
+# message. Whether the first belongs there is the owner's to say.
+_THE_CASES_THAT_NAME_THE_FILE = (
+    "fewer individuals than the design has columns plus two",
+    "a first block in which no variant varies",
+    "a factor of the approximation that is not above 0",
+)
+
+
 def _the_calls_of(which: str, calls: dict) -> list[tuple[dict, object]]:
     """Each case of the list `which` of `refusals_of_both_layers.json` with
     the call this suite writes for it.
@@ -1923,14 +2875,33 @@ def test_both_layers_refuse_the_same_calls(worked_example: pathlib.Path) -> None
     the wrong type altogether, which this layer has an exception of its own
     for and which JavaScript has not: it is the class that differs and not
     the message, and the message is what the file binds.
+
+    All but three of these calls are refused for what the user wrote, which
+    is wrong whatever file the study is given, so their messages name no
+    file. That is what puts each of their errors in the arm of
+    `crates/popnei-python/src/errors.rs` that raises them bare, and not in
+    the wildcard arm at the end, which glues the path of the source to the
+    front of the message. `match` alone would not notice the difference,
+    since `pytest.raises` searches the message rather than anchoring at its
+    start, which is how `GwasFitDidNotSettle` spent a day in the wrong arm.
+    The three that do name the file are the ones the comment on
+    `_THE_CASES_THAT_NAME_THE_FILE` above gives, and their messages are
+    asserted to start with the path of the file the call read, which is the
+    worked example for two of them and a VCF of its own for the third.
     """
     for case, call in _the_calls_of(
         "refusals", _the_calls_that_are_refused(worked_example)
     ):
         raises = TypeError if case.get("python_raises") == "TypeError" else ValueError
         match = case.get("match", case.get("match_in_python"))
-        with pytest.raises(raises, match=match):
+        with pytest.raises(raises, match=match) as refusal:
             call()
+
+        message = str(refusal.value)
+        if case["case"] in _THE_CASES_THAT_NAME_THE_FILE:
+            assert message.startswith(str(worked_example.parent)), case["case"]
+        else:
+            assert str(worked_example) not in message, case["case"]
 
 
 def test_both_layers_read_a_value_that_is_not_a_number_as_the_number_it_holds(

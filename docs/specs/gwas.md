@@ -202,12 +202,7 @@ and one column for each covariate. The covariates are a frame indexed by
 individual, which must cover every tested individual and hold no missing
 value and no value that is not a number; each of the three raises a
 `ValueError`, and the one for a value that is not a number says to code a
-categorical covariate, with `pandas.get_dummies` for instance. A covariate
-named `intercept` is a `ValueError` too: the effects of the null model come
-back under the names of the columns of the design, and the column of ones is
-`intercept` among them, so a covariate of that name would be the same entry
-of `covariate_effects` and a user would read one of the two without knowing
-which.
+categorical covariate, with `pandas.get_dummies` for instance.
 
 A covariate named `intercept` is refused, in Python and in TypeScript alike,
 with a `ValueError` saying that the name is the intercept's. The effects
@@ -240,43 +235,6 @@ Asking for a test the model does not have is a `ValueError`: the score test
 for a continuous trait with no kinship, since the only test of a linear
 model is its t test; and the Wald test for a binomial trait with a kinship,
 since it would fit one mixed model per variant.
-
-The core crate is given the tested individuals as their positions among the
-individuals the source has, with their phenotype and the design already
-built, as "The Rust interface" below has it. So the refusals about a name
-and about a frame are made where those are, in the Python and the TypeScript
-layers: an individual of the phenotype that the `Variants` has not, a
-covariate that does not cover a tested individual, and a covariate value
-that is missing or is not a number. The core makes the rest over the
-positions and the numbers it holds, and four more that only it can see.
-
-The positions rise, and any other order is a `ValueError`. They are the
-order the source has the individuals in, and the phenotype, the rows of the
-design and the dosages of a block are read together row by row, so an order
-that is not the source's measures one individual's trait against another
-individual's genotypes. A position that repeats the one before it is the
-repeated individual above, and one that falls back is refused as an order
-that is not the source's, which is also what a repeat with another
-individual between its two halves gives. A phenotype that is not a finite
-number is a `ValueError` naming where it is: the individuals tested are
-those that have a phenotype, so a NaN is an individual that should not have
-been tested at all, and an infinity would carry through the null model into
-the effect of every variant. A value of the design that is not a finite
-number is a `ValueError` too, naming the individual whose row it is in, the
-column it is in and the value. The Python and the TypeScript layers refuse a
-covariate that is missing or is not a number, so what reaches this is a
-covariate that was a number and came out of the user's own arithmetic as an
-infinity, and a caller of the core crate; left in, it would reach the rank,
-which refuses what it is given and not what it produced, and the user would
-be told of a defect of popnei where they gave a wrong covariate. pyNei
-catches a NaN covariate at the frame, as a missing value, and an infinity
-reaches its rank, where numpy 2.5.3's `matrix_rank` gives 0 and the user is
-told the covariates are collinear; what popnei adds is the value and where
-it is. And the phenotype holds one value
-for each tested individual, the design one row of its columns for each, and
-the design has the column of ones at least; none of the three can be reached
-from Python or from TypeScript, which build the three from the same
-individuals, so each is a `RuntimeError`.
 
 ### The variants that have no answer
 
@@ -619,9 +577,8 @@ them missing whole.
 
 Over all 1200 variants: `allele_freq` within 1e-6 absolute, since it is a
 frequency and lies between 0 and 1; `beta` and `se` within 1e-5 times the
-`se` of that variant, for the reason above, **plus half a unit in the last
-digit plink2 printed for the value being compared**; and `p_value` within
-1e-5 relative.
+`se` of that variant, for the reason above, which on this panel is between
+1.2e-6 and 1.6e-6 absolute; and `p_value` within 1e-5 relative.
 
 **A tolerance against a printed reference is the sum of two terms**, not one
 number with the printing hidden inside it: what popnei's arithmetic is
@@ -1249,6 +1206,144 @@ It is `use_grammar_gamma_approx=True`, false by default, and asking for it
 without a kinship is a `ValueError`, since there is no projection matrix to
 approximate.
 
+The block those variants come from is the first block of the second pass,
+which "How it runs" of "What every model shares" gives, and `calc_gwas` of
+the core takes that pass as its second argument. Three more things are
+refused, each a `ValueError` in Python.
+
+- **The approximation asked for with no second pass given.** It is an
+  argument of the core's `calc_gwas` and names no file. Both packages open
+  the pass themselves, so a user of them does not meet it.
+- **A first block in which no variant varies** among the tested
+  individuals, which leaves no ratio to average. It is pyNei's own refusal
+  in `estimate_gamma` of `pynei/gwas.py`, and it names the file the pass
+  read.
+- **A `gamma` that is not a finite number above 0**, which a first block
+  whose variants the design explains would give, since the exact `x' p x`
+  of such a variant is the rounding of a cancellation and falls on either
+  side of 0. Every variant of the study would otherwise have no answer, and
+  a user who asked for the approximation would read a column of NaN with
+  nothing to say why. It names the file too, and carries the `gamma` the
+  block gave.
+
+**Open 2's threshold under the approximation.** Two rows of Open 2's table
+are about a mixed model, and the approximation does something different to
+each. The third row is `x' p x`, the denominator of both mixed models'
+score tests, judged against the variant's squared length times the largest
+value of the diagonal of the projection matrix. The fourth is `y' p y` less
+`num² / den`, what the linear mixed model's Wald test finds the variant
+leaves of the trait, judged against `y' p y`. In both, the comparison is
+made against whichever of the two denominators the study formed, and the
+scale is the one Open 2 gives.
+
+**The third row stops firing.** The approximate denominator is a positive
+`gamma` times a sum of squares, so it holds no cancellation and it is above
+0 for every variant that varies, whatever the projection would have left of
+that variant. A variant the design explains is then answered, with an
+effect near 0 and a p-value near 1 instead of the three NaNs, which is one
+more place where the approximation gives up accuracy for the individuals by
+individuals product it does not make.
+
+**The fourth row falls back to the exact denominator**, which the owner
+decided on 24 September 2026: applied to the approximate denominator the
+rule refuses variants the exact test answers, and skipped it answers them
+by halves. The rule was derived from a bound the approximation does not
+give: with the exact `x' p x` for `den`, `num² / den` cannot pass `y' p y`,
+since `num` is `x' p y` and the projection matrix is 0 or above as a
+quadratic form, so `num²` is at most `x' p x` times `y' p y`. A remainder
+at or below the threshold can then only be a cancellation. The approximate
+`den` is `gamma` times the squared length of the variant's centered
+dosages. Each variant has a ratio of its own, its exact `x' p x` divided by
+that squared length, and `gamma` is the mean of those ratios over the
+variants of the first block. A variant whose own ratio is above `gamma`
+gets a denominator smaller than its exact one, `num² / den` then passes
+`y' p y` honestly, the remainder goes below 0 by far more than rounding,
+and the rule refuses a variant the exact test answers.
+
+That failure names the variant, which is what makes the fallback possible:
+the remainder cannot go below 0 with the exact denominator, so a study that
+approximates and sees it go there has found a variant its one factor does
+not fit. The projection matrix is on the model for the whole pass, so one
+product of that one variant with it gives its exact `x' p x`. `beta`, the
+remainder and `se` are formed again from that, and the rule is applied to
+them as it is for a study that makes the exact denominator for every
+variant. So is the third row's rule, on that same denominator, and it
+cannot refuse a variant that reached the fallback: a numerator large enough
+for `num² / den` to reach `y' p y` leaves `x' p x` at least `num²` over
+`y' p y`, far above the floor. Every variant of an approximating study then
+comes back with a full row: the approximate answer where the approximation
+works, the exact answer where it does not, and the three NaNs only for a
+variant that has nothing left to test, which is what "The variants that
+have no answer" means.
+
+What triggers the fallback is the rule itself, a remainder at or below the
+tested individuals times 2.2e-16 of `y' p y`, and not a remainder below 0
+alone. The band between the two is 2.2e-16 of `y' p y` for each tested
+individual, and the exact denominator decides the same way anywhere in it;
+taking the rule as the trigger leaves the fourth row one behaviour under the
+approximation instead of two.
+
+What a variant that falls back costs is one product of one variant with the
+projection matrix, individuals by individuals, which is what a study that
+does not approximate pays for every variant of its pass. How often it is
+paid is bounded by how rare the regime is, and it takes both of two things:
+the variant's own ratio above `gamma`, and the variant explaining nearly all
+of what the null model left, which is the very strong hit. On the two panels
+of "How it is verified" below no variant falls back, measured on 24
+September 2026 over the 1200 variants of each under each test. In the worst
+case, every variant of a study falling back, the study costs what the same
+study costs with `use_grammar_gamma_approx` left alone.
+
+**popnei does better than pyNei here.** pyNei gives that variant a finite
+`beta` with `se` and `p_value` NaN, popnei's `beta` agreeing with it to
+fifteen digits, with a numpy warning that a square root met an invalid
+value; there it is the square root of a negative number and not a rule that
+makes the NaN. What settled it against doing the same is that such a row is
+the fourth kind of NaN the recommendation of Open 2 argues against: a user
+who filters on a missing effect keeps the row and reads the effect as
+measured, with nothing to say how uncertain it is.
+
+Reproduced on 24 September 2026, by two reviewers on different fixtures and
+then on this one: twelve individuals, an identity kinship, one covariate
+marking two groups of six, three variants, and the trait
+`2 + 3*cov + 5*dosage(v0) + noise * e` with `e` a fixed vector of twelve
+values that sum to 0. `v0` is the variant tested; the other two are there so
+that `gamma`, the mean of the three ratios, comes out 1.00787 below `v0`'s
+own ratio. The exact answers are what a study of the same fixture that makes
+no approximation gives for `v0`, and "what is left" is the remainder the
+approximate denominator leaves, as a share of `y' p y`.
+
+| `noise` | exact `beta` | exact `se` | exact `p_value` | what is left, of `y' p y` | approximated |
+|---|---|---|---|---|---|
+| 0.4 | 4.99500 | 0.0541688 | 1.0518e-14 | -0.0068 | the exact three, from the fallback |
+| 0.8 | 4.99000 | 0.108338 | 5.3636e-12 | -0.0036 | the exact three, from the fallback |
+| 1.6 | 4.98000 | 0.216675 | 2.6550e-09 | +0.0090 | `beta` 5.01921, `se` 0.15954, `p_value` 1.6250e-10 |
+
+At the two lower noise levels the fallback's three numbers agree with the
+exact study's to every bit on Accelerate, the two forming the same
+denominator by the same arithmetic and differing only in that one product
+covers the three variants of the block and the other one variant. At a noise
+of 1.6 the approximation answers `v0` itself, with a `beta` 0.0079 of the
+exact one above it, 5.01921 against 4.98000, which is the error of one
+factor standing in for each variant's own ratio.
+
+With the rule applied to the approximate denominator, the first two rows
+were three NaNs. With it skipped, which popnei did between two commits of
+24 September 2026, they were `beta` 5.03433 and 5.02929 with `se` and
+`p_value` NaN, which is pyNei's answer. The score test answers all three
+whatever is done here, because it forms no such subtraction: `beta` 5.03433,
+5.02929 and 5.01921 with an `se` of about 1.59.
+
+The three options the owner did not take were to leave the rule where it was
+and write the regime down, which gives three NaNs for a variant that is
+among the strongest of the study; to skip the rule, which gives the effect
+and no p-value; and to refuse the Wald test whenever the approximation is
+asked for, which takes the approximation from every user of that test for a
+regime neither panel reaches.
+
+On neither panel does a variant reach this, so the three numbers of "How it
+is verified" below are what they were.
+
 What it costs in accuracy grows with how strongly the panel is structured,
 because one `gamma` stands in for a quantity that really differs from
 variant to variant. On the panel, `test_grammar_gamma_approx` of pyNei
@@ -1265,6 +1360,15 @@ which is pyNei's test above: the median and the largest of
 `log10(p_approx / p_exact)`, and that `beta` agrees with the exact one
 within 0.5 relative. Also that `used_grammar_gamma_approx` is in the result
 and that asking for it without a kinship raises.
+
+That bound is loose: a p-value out by a factor of 30 passes it, and so
+would an approximation that is wrong in a way which does not grow with the
+structure of the panel. What is checked beside it is `gamma` itself against
+the `gamma` pyNei's `estimate_gamma` gives on the same panel and the same
+model, and the spread of the 100 ratios it is the mean of, whose smallest,
+largest and standard deviation are in the cargo test that asserts it. A
+`gamma` far from the ratios it was averaged from is the sign the loose
+bound cannot catch.
 
 ## The two distributions
 
@@ -1462,16 +1566,6 @@ one of them is finite. Neither is a thing a fit would notice. A matrix of
 the wrong length is read as another shape and gives numbers, and a NaN in
 one comes back much later as the linear algebra crate's refusal of a value
 that is not finite, naming a matrix at whichever routine met it first.
-
-A matrix of the wrong length is a `RuntimeError` in Python, as a phenotype
-or a design of another size is: both binding crates cut the kinship to the
-tested individuals themselves, so no user gives one of another length. A
-value of it that is not finite is a `ValueError` naming the row, the column
-and the value, since it is the matrix the user brought;
-`Kinship.__post_init__` of "Its Python function, and its TypeScript one" of
-`docs/specs/kinship.md` refuses a matrix that holds a value that is not a
-number, so what reaches this is a caller of the core crate or an infinity
-that came out of the user's own arithmetic.
 
 What a study gives back. `beta`, `se` and `p_value` hold NaN for a variant
 that has no answer.
@@ -1695,6 +1789,16 @@ there are numbers. Meanwhile the implementer refuses at that threshold in
 all four places, because a meanwhile that returns NaN where the score test
 returns 0.0455 is not a safe thing to build on; no literal moves, since no
 variant of either panel comes near.
+
+The fourth place has one exception, which the owner decided on 24 September
+2026 and which "Open 2's threshold under the approximation" of the
+GRAMMAR-Gamma section carries: when the study approximates the denominator
+and the comparison fires, the variant is answered from the exact `x' p x`
+instead of being refused. What the rule was derived from, that
+`num² / den` cannot pass `y' p y`, is a guarantee the approximate
+denominator does not give, so the comparison firing there does not mean
+that there is nothing left to test; it names the one variant whose exact
+denominator is worth the product it costs.
 
 **Open 3: a kinship that does not identify the two variances.** For a
 kinship close to a multiple of the identity, the model is the ordinary

@@ -13,14 +13,14 @@ of interest but has to be taken out, the field a plant grew in for instance,
 and the top principal components of the panel go in as covariates so that a
 variant which only marks ancestry does not look associated.
 
-What is built is the continuous half of the study, the two models of a trait
-that is a measurement. Without a kinship it is the linear model, which is
-what plink2's ``--glm`` computes, and its test is the t test of the effect:
-the effect divided by its standard error, which under the hypothesis that
-the variant has none follows a Student t distribution with as many degrees
-of freedom as there are individuals left once the covariates and the variant
-have been fitted, and the p-value is the chance that such a t falls further
-from 0 than this one did, either way.
+The trait and the kinship together decide which of four models a study fits.
+A trait that is a measurement without a kinship is the linear model, which is
+what plink2's ``--glm`` computes, and its test is the t test of the
+effect: the effect divided by its standard error, which under the hypothesis
+that the variant has none follows a Student t distribution with as many
+degrees of freedom as there are individuals left once the covariates and the
+variant have been fitted, and the p-value is the chance that such a t falls
+further from 0 than this one did, either way.
 
 With a kinship it is the linear mixed model, which a panel with families in
 it needs: the trait carries a random effect whose covariance is the kinship
@@ -29,9 +29,33 @@ each other before any variant is looked at. Its two tests are rrBLUP's Wald
 test, which estimates the scale of the two variances again with the variant
 in, and GMMAT's score test, which holds both at the null.
 
-The two logistic models of a binomial trait are being written, and so is the
-GRAMMAR-Gamma approximation that a mixed model can take instead of the exact
-denominator of its test; asking for one is a ``ValueError`` that says so.
+A trait that is 0 and 1 without a kinship is the logistic regression, which
+is what plink2's ``--glm`` computes for such a trait: the chance that an
+individual is a 1 is a logistic curve in the covariates and the variant, and
+the effect is a log odds ratio. Its default is the Wald test, one fit per
+variant with the variant in it, and it also takes the score test, which fits
+nothing per variant and which R's ``anova(glm, test = "Rao")`` computes. A
+variant that separates the individuals that have the condition from those
+that have not has no finite effect, and its Wald test gives NaN for all
+three numbers.
+
+A trait that is 0 and 1 with a kinship is the logistic mixed model, which is
+what GMMAT's ``glmm.score`` computes: the same logistic curve with a random
+effect of the kinship in it. It is fitted by penalized quasi-likelihood,
+which stands in for a likelihood that has no closed form once that random
+effect is in it: at a fixed variance of the effect the 0 and 1 are turned
+into a continuous working trait, one number per individual that says where
+the fit so far puts it, each individual carrying a weight that says how much
+its 0 or 1 tells us there, and a weighted linear mixed model is fitted to
+that working trait; the working trait and the weights are then made again
+from the new fit, and so on until the fit stops moving. Its only test is the
+score test, since a Wald test would fit one mixed model for every variant,
+and asking for the Wald test is a ``ValueError`` that says so.
+
+A mixed model can take the GRAMMAR-Gamma approximation instead of the exact
+denominator of its test, which makes the work of a variant linear in the
+individuals rather than quadratic, at a cost in accuracy that grows with how
+strongly the panel is structured.
 
 `docs/specs/gwas.md` has the four models, the numbers the tests assert and
 what popnei does differently from pyNei.
@@ -75,6 +99,12 @@ class TestType(StrEnum):
     Both ask whether the effect of the variant on the trait is 0, and under
     that they have the same distribution in large samples; they differ in
     what they cost.
+
+    The linear mixed model and the logistic regression take either. The
+    linear model has the Wald test alone, which for it is the t test of the
+    effect, and the logistic mixed model has the score test alone, since a
+    Wald test would fit one mixed model for every variant; asking either of
+    those two for the test it has not is a ``ValueError``.
     """
 
     WALD = "wald"
@@ -122,7 +152,8 @@ class NullModel:
 
     covariate_effects: pandas.Series
     """The effect of the column of ones, under the name ``intercept``, and of
-    every covariate, under the name it was given.
+    every covariate, under the name it was given, in the units of the trait
+    for a continuous one and as a log odds ratio for a binomial one.
 
     A covariate named ``intercept`` is refused at the call, since the two
     would be one row of this series."""
@@ -168,11 +199,23 @@ class GWASResult:
     casts the column first, ``stats['pos'].astype('int64')``.
     ``allele_freq`` is the frequency of the alleles that are not the major
     one over the tested individuals, ``beta`` the effect of one more copy of
-    such an allele, in the units of the trait, ``se`` the standard error of
-    that effect and ``p_value`` the probability of an effect that far from 0
-    when the variant has none. A variant whose dosages are all the same among
+    such an allele, in the units of the trait for a continuous one and as a
+    log odds ratio for a binomial one, ``se`` the standard error of that
+    effect and ``p_value`` the probability of an effect that far from 0 when
+    the variant has none. A variant whose dosages are all the same among
     the tested individuals has no variance and cannot be tested: its row is
-    here with its ``allele_freq``, and the other three are NaN."""
+    here with its ``allele_freq``, and the other three are NaN. So is a
+    variant whose logistic fit does not settle, under the Wald test of a
+    binomial trait alone: one that separates the individuals that have the
+    condition from those that have not, whose effect has no finite value to
+    walk towards, and one that repeats a covariate, which separates nobody
+    and leaves the fit a system with no one solution. The score test fits
+    nothing for a variant and gives all three numbers for either of them.
+    And so is a variant that the covariates and the kinship leave nothing
+    of, under the score test of a mixed model: what the projection of the
+    null model leaves of its dosages has fallen to the rounding of what
+    there was before the covariates were taken out, so an effect divided by
+    it would be noise."""
 
     null_model: NullModel
     """The model fitted with no variant in it."""
@@ -190,7 +233,7 @@ class GWASResult:
 
     used_grammar_gamma_approx: bool
     """Whether the GRAMMAR-Gamma approximation was used, which only a mixed
-    model can use and which is being written.
+    model can use.
 
     It stands in for the denominator of a mixed model's test, which is a
     product with the covariance of the random effect and costs one such
@@ -212,14 +255,7 @@ def calc_gwas(
     covariates: pandas.DataFrame | None = None,
     kinship: Kinship | None = None,
     test: TestType | str | None = None,
-    # The default is written here and not taken from the core's
-    # `DEFAULT_USE_GRAMMAR_GAMMA_APPROX`, which is what a study that can
-    # make the approximation takes when the user says nothing: popnei
-    # refuses the approximation until it is written, so a core whose default
-    # became true would turn every plain call into a refusal. Until then
-    # this default changes no result, since the approximation is refused
-    # whatever is written here.
-    use_grammar_gamma_approx: bool = False,
+    use_grammar_gamma_approx: bool = _core.DEFAULT_USE_GRAMMAR_GAMMA_APPROX,
     transform_to_biallelic: bool = _core.DEFAULT_TRANSFORM_TO_BIALLELIC,
 ) -> GWASResult:
     """Which of the variants of `variants` are associated with `phenotype`.
@@ -254,8 +290,24 @@ def calc_gwas(
 
     `trait` is ``"continuous"``, a measurement, or ``"binomial"``, 0 for an
     individual that has not a condition and 1 for one that has, the two
-    values of :class:`TraitType`. A binomial trait is a logistic model, which
-    is being written, and asking for one is a ``ValueError`` that says so.
+    values of :class:`TraitType`. A binomial trait whose value at a tested
+    individual is neither 0 nor 1 is a ``ValueError`` naming the place of
+    that individual, and so is one where every tested individual has the
+    same value, which leaves one of the two groups empty. Without a kinship
+    a binomial trait is a logistic regression and ``beta`` is a log odds
+    ratio; with one it is the logistic mixed model, whose only test is the
+    score test. A null model whose
+    fit walks towards an infinite coefficient instead of settling is a
+    ``ValueError`` too: what takes it there is a covariate that separates
+    the individuals that have the condition from those that have not, and
+    the user takes that covariate out. The logistic mixed model fits a
+    continuous working trait in place of the 0 and 1, one number per
+    individual that says where the fit so far puts it, and a kinship that
+    the covariance of that working trait cannot be factored from is a
+    ``ValueError`` as well, naming the row it stopped at: missing genotypes
+    leave every pair of individuals counted over its own variants, which can
+    give the matrix an eigenvalue below 0, and the user builds it from
+    variants with fewer genotypes missing.
 
     `covariates` is a frame indexed by individual with one column for each
     covariate, and the design of the study is a column of ones for the
@@ -274,7 +326,8 @@ def calc_gwas(
 
     `kinship` is the relatedness of every pair, what :func:`popnei.calc_kinship`
     gives or a :class:`popnei.Kinship` built from a matrix another program
-    wrote, and it makes the study a linear mixed model: the trait carries a
+    wrote, and it makes the study a mixed model, linear for a continuous
+    trait and logistic for a binomial one: the trait carries a
     random effect of that covariance, so that a variant which only marks the
     ancestry of a panel does not look associated. It has to hold every
     individual that is tested, and a tested individual it has not is a
@@ -288,17 +341,35 @@ def calc_gwas(
     model of a strongly subdivided panel.
 
     `test` is ``"wald"`` or ``"score"``, the two values of
-    :class:`TestType`, and ``None`` takes the default of the model, which is
-    the Wald test for both models of a continuous trait. The linear model's
+    :class:`TestType`, and ``None`` takes the default of the model: the Wald
+    test wherever a fit per variant is cheap, a continuous trait or a
+    binomial one without a kinship, and the score test for a binomial trait
+    with a kinship. The linear model's
     only test is the t test of the effect it fitted, which is the Wald test,
     so ``"score"`` is a ``ValueError`` that says so; the linear mixed model
-    takes either, the Wald test being rrBLUP's and the score test GMMAT's.
+    takes either, the Wald test being rrBLUP's and the score test GMMAT's,
+    and so does the logistic regression, whose Wald test fits one logistic
+    regression per variant and whose score test fits none. The logistic
+    mixed model has the score test alone, since a Wald test would fit one
+    mixed model for every variant, so ``"wald"`` is a ``ValueError`` there.
 
     `use_grammar_gamma_approx` stands in for the denominator of a mixed
     model's test, which costs a product with the covariance of the random
-    effect for every variant. It is being written, and asking for it is a
-    ``ValueError``: with no kinship because there is no such denominator to
-    approximate, and with one because popnei cannot approximate it yet.
+    effect for every variant, with one factor times the squared length of
+    the variant's centered dosages, which costs a walk over the variant. The
+    factor is estimated once, from the first 100 variants that vary of a
+    second pass over the same variants, which the call opens itself. What it
+    gives up is accuracy, and how much grows with how strongly the panel is
+    structured, since one factor stands in for a quantity that differs from
+    variant to variant: on the panel of ``docs/specs/gwas.md``, 200
+    individuals and 1200 variants, a p-value is out by a factor of 3.3 at
+    worst while the middle of them barely moves, where what that spec allows
+    the approximation is a factor of 32.
+    Only a mixed model has such a denominator, so asking for it without a
+    `kinship` is a ``ValueError``, and so is a first block in which no
+    variant varies among the tested individuals or whose variants the design
+    explains, which leaves no factor above 0 to multiply by. The result says
+    in ``used_grammar_gamma_approx`` whether it was used.
 
     `transform_to_biallelic` makes every allele that is not the major one
     count the same, which is what a variant of more than two different
@@ -308,7 +379,9 @@ def calc_gwas(
 
     The call makes one pass over the source of `variants`, through the steps
     that are on it, so the study is over the variants its filters kept, and
-    the ``Variants`` is as it was afterwards. A pass that gives no variant is
+    the ``Variants`` is as it was afterwards; `use_grammar_gamma_approx`
+    makes a second one, over the same variants and through the same steps,
+    of which only the first block is read. A pass that gives no variant is
     a ``ValueError`` whose message says whether the source held none or the
     steps kept none.
 
@@ -432,7 +505,7 @@ def _the_kinship_of_the_tested(
     `ascontiguousarray`: those are three copies of the matrix where the core
     needs one, because a frame of one dtype lies column after column and
     comes back from `to_numpy` the wrong way round for the core, which reads
-    it row after row. Measured at 3000 individuals, a matrix of 72 MB, on 25
+    it row after row. Measured at 3000 individuals, a matrix of 72 MB, on 24
     September 2026: 144.4 MB at the peak and 72.4 MB held with the three, and
     72.2 MB at the peak and 72.0 MB held with this, which at the 10000
     individuals of

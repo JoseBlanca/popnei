@@ -2,20 +2,21 @@
  * The association study: which of the variants of a dataset are associated
  * with a trait that was measured on its individuals.
  *
- * A trait is one number per individual, a measurement such as the height of
- * a plant. Covariates are other numbers per individual whose effect on the
- * trait is not of interest but has to be taken out, such as the field the
- * plant grew in. The model is fitted once with no variant in it, which is
+ * A trait is one number per individual: a measurement such as the height of
+ * a plant, or the 0 of an individual that has not a condition and the 1 of
+ * one that has. Covariates are other numbers per individual whose effect on
+ * the trait is not of interest but has to be taken out, such as the field
+ * the plant grew in. The model is fitted once with no variant in it, which is
  * the null model, and then every variant is tested against what that model
  * left unexplained: `beta` is the effect of one more copy of a non major
- * allele, in the units of the trait, `se` is how uncertain that effect is,
- * and `pValue` is the probability of seeing an effect that far from 0 when
- * the variant has none.
+ * allele, `se` is how uncertain that effect is, and `pValue` is the
+ * probability of seeing an effect that far from 0 when the variant has
+ * none.
  *
- * What `calcGwas` fits is the continuous half of the study, the two models
- * of a trait that is a measurement. Without a kinship it is the linear
- * model, which is what plink2's `--glm` computes, and its test is the t test
- * of the effect: the effect divided by its standard error, which under the
+ * The trait and the kinship together decide which of four models `calcGwas`
+ * fits. A trait that is a measurement without a kinship is the linear model,
+ * which is what plink2's `--glm` computes, and its test is the t test of the
+ * effect: the effect divided by its standard error, which under the
  * hypothesis that the variant has none follows a Student t distribution
  * with as many degrees of freedom as there are individuals left once the
  * covariates and the variant have been fitted, and `pValue` is the chance
@@ -27,14 +28,37 @@
  * of the panel does not look associated. Its two tests are rrBLUP's Wald
  * test and GMMAT's score test.
  *
- * The two logistic models of a binomial trait are being written, and so is
- * the GRAMMAR-Gamma approximation a mixed model can take instead of the
- * exact denominator of its test; asking for one is an `Error` that says so.
+ * A trait that is 0 and 1 without a kinship is the logistic regression: the
+ * chance that an individual is a 1 is a logistic curve in the covariates and
+ * the variant, and `beta` is a log odds ratio. Its default is the Wald
+ * test, which is plink2's: one fit per variant with the variant in it. It
+ * also takes the score test, which fits nothing per variant. A variant that
+ * separates the
+ * individuals that have the condition from those that have not has no finite
+ * effect, and its Wald test gives NaN for all three numbers.
+ *
+ * A trait that is 0 and 1 with a kinship is the logistic mixed model, which
+ * is GMMAT's `glmm.score`: the same logistic curve with a random effect of
+ * the kinship in it. It is fitted by penalized quasi-likelihood, which
+ * stands in for a likelihood that has no closed form once that random effect
+ * is in it: at a fixed variance of the effect the 0 and 1 are turned into a
+ * continuous working trait, one number per individual that says where the
+ * fit so far puts it, each individual carrying a weight that says how much
+ * its 0 or 1 tells us there, and a weighted linear mixed model is fitted to
+ * that working trait; the working trait and the weights are then made again
+ * from the new fit, and so on until the fit stops moving. Its only test is
+ * the score test, since a Wald test would fit one mixed model for every
+ * variant.
+ *
+ * A mixed model can take the GRAMMAR-Gamma approximation instead of the
+ * exact denominator of its test, which makes the work of a variant linear in
+ * the individuals instead of quadratic at a cost in accuracy.
  * `docs/specs/gwas.md` has the four models.
  */
 
 import {
   default_transform_to_biallelic as defaultTransformToBiallelic,
+  default_use_grammar_gamma_approx as defaultUseGrammarGammaApprox,
 } from "../wasm/popnei.js";
 
 import { aBoolean, aString, whatWasGiven } from "./arguments.js";
@@ -89,8 +113,11 @@ export type TraitType = "continuous" | "binomial";
  *
  * Under the hypothesis that the variant has no effect the two have the same
  * distribution in large samples; they differ in what they cost. The linear
- * model has the Wald test alone, which for it is the t test of the effect,
- * and asking it for the score test is an `Error`.
+ * mixed model and the logistic regression take either. The linear model has
+ * the Wald test alone, which for it is the t test of the effect, and the
+ * logistic mixed model has the score test alone, since a Wald test would fit
+ * one mixed model for every variant; asking either of those two for the test
+ * it has not is an `Error`.
  */
 export type TestType = "wald" | "score";
 
@@ -108,7 +135,17 @@ export type GwasModel = "lm" | "lmm" | "glm" | "glmm";
  * The rows are in the order the variants came. A variant whose dosages are
  * all the same among the tested individuals has no variance and cannot be
  * tested: its row is here with its `alleleFreq`, and its `beta`, its `se`
- * and its `pValue` are NaN.
+ * and its `pValue` are NaN. So is a variant whose logistic fit does not
+ * settle, under the Wald test of a binomial trait alone: one that separates
+ * the individuals that have the condition from those that have not, whose
+ * effect has no finite value to walk towards, and one that repeats a
+ * covariate, which separates nobody and leaves the fit a system with no one
+ * solution. The score test fits nothing for a variant and gives all three
+ * numbers for either of them. And so is a variant that the covariates and
+ * the kinship leave nothing of, under the score test of a mixed model: what
+ * the projection of the null model leaves of its dosages has fallen to the
+ * rounding of what there was before the covariates were taken out, so an
+ * effect divided by it would be noise.
  */
 export interface GwasStats {
   /**
@@ -135,7 +172,8 @@ export interface GwasStats {
   readonly alleleFreq: Float64Array;
   /**
    * The effect of one more copy of a non major allele, in the units of the
-   * trait, and NaN for a variant that has no answer.
+   * trait for a continuous one and as a log odds ratio for a binomial one,
+   * and NaN for a variant that has no answer.
    */
   readonly beta: Float64Array;
   /** The standard error of that effect, and NaN where `beta` is NaN. */
@@ -156,7 +194,8 @@ export interface GwasNullModel {
   readonly model: GwasModel;
   /**
    * The effect of the intercept, under the name `intercept`, and of every
-   * covariate, under the name it was given.
+   * covariate, under the name it was given, in the units of the trait for a
+   * continuous one and as a log odds ratio for a binomial one.
    */
   readonly covariateEffects: Readonly<Record<string, number>>;
   /**
@@ -222,8 +261,14 @@ export interface CalcGwasOptions {
   phenotype: Readonly<Record<string, number | string | boolean>>;
   /**
    * What the trait is: `"continuous"`, a measurement, or `"binomial"`, 0 for
-   * an individual that has not a condition and 1 for one that has. A
-   * binomial trait is a logistic regression, which is being written.
+   * an individual that has not a condition and 1 for one that has.
+   *
+   * A binomial trait whose value at a tested individual is neither 0 nor 1
+   * is an `Error` naming the place of that individual, and so is one where
+   * every tested individual has the same value, which leaves one of the two
+   * groups empty. Without a kinship it is a logistic regression and `beta`
+   * is a log odds ratio; with one it is the logistic mixed model, whose only
+   * test is the score test.
    */
   trait: TraitType;
   /**
@@ -248,12 +293,18 @@ export interface CalcGwasOptions {
   >;
   /**
    * Which test is made of every variant, and the default of the model when
-   * it is not given, which for both models of a continuous trait is `wald`.
+   * it is not given: `wald` wherever a fit per variant is cheap, a
+   * measurement or a 0 and 1 trait without a kinship, and `score` for a 0
+   * and 1 trait with one.
    *
-   * The linear model, a trait with no kinship, has the Wald test alone,
-   * which for it is the t test of the effect it fitted, so `score` is an
-   * `Error` that says so; the linear mixed model takes either, the Wald
-   * test being rrBLUP's and the score test GMMAT's.
+   * The linear model, a measurement with no kinship, has the Wald test
+   * alone, which for it is the t test of the effect it fitted, so `score` is
+   * an `Error` that says so; the linear mixed model takes either, the Wald
+   * test being rrBLUP's and the score test GMMAT's, and so does the logistic
+   * regression, whose Wald test fits one logistic regression per variant and
+   * whose score test fits none. The logistic mixed model has the score test
+   * alone, since a Wald test would fit one mixed model for every variant, so
+   * `wald` is an `Error` there.
    */
   test?: TestType;
   /**
@@ -278,10 +329,23 @@ export interface CalcGwasOptions {
   kinship?: Kinship;
   /**
    * Whether the GRAMMAR-Gamma approximation is made, which stands in for the
-   * denominator of a mixed model's test and which only a mixed model has.
-   * It is being written, and asking for it is an `Error`: with no kinship
-   * because there is no such denominator to approximate, and with one
-   * because popnei cannot approximate it yet.
+   * denominator of a mixed model's test, a product with the covariance of
+   * the random effect that costs one such product for every variant, with
+   * one factor times the squared length of the variant's centered dosages,
+   * which costs a walk over the variant. The factor is estimated from the
+   * first 100 variants that vary of a second pass over the same variants,
+   * which the call opens itself. What it gives up is accuracy, and how much
+   * grows with how strongly the panel is structured, since one factor stands
+   * in for a quantity that differs from variant to variant: on the panel of
+   * `docs/specs/gwas.md`, 200 individuals and 1200 variants, a p-value is out
+   * by a factor of 3.3 at worst while the middle of them barely moves, where
+   * what that spec allows the approximation is a factor of 32. Only a mixed
+   * model has such a denominator, so asking for it without a `kinship` is an
+   * `Error`,
+   * and so is a first block in which no variant varies among the tested
+   * individuals or whose variants the design explains, which leaves no
+   * factor above 0 to multiply by. The result says in
+   * `usedGrammarGammaApprox` whether it was used.
    */
   useGrammarGammaApprox?: boolean;
 }
@@ -321,17 +385,27 @@ export interface CalcGwasOptions {
  * when a covariate is named `intercept`, which is the name the effect of the
  * column of ones comes back under; when `kinship` is not a `Kinship` or has
  * not an individual that is tested; when `useGrammarGammaApprox` is asked
- * for, which is being written; when the score test is asked of a linear
+ * for by a study with no kinship, which has no denominator to approximate;
+ * when no variant of the first block its factor is estimated from varies
+ * among the tested individuals, or the design explains the variants of that
+ * block, which leaves no factor above 0 to multiply by;
+ * when the score test is asked of a linear
  * model, which has it not; when no individual is tested or they are fewer
  * than the columns of the design plus two; when a phenotype or a covariate
  * is not a finite number once it is read as one; when the trait is the same
  * in every tested individual, which leaves nothing for a variant to be
- * associated with; when the columns of the design are not independent; when the trait is binomial, which is a
- * logistic model and is being written; when the source cannot be read, a
- * wrong line of a VCF among the causes; when a variant has more than two
- * alleles among its called genotypes and `transformToBiallelic` is false;
- * when the pass gives no variant; when the linear algebra of the fit or of a
- * test could not be done; and when `init` has not been awaited.
+ * associated with; when the columns of the design are not independent; when
+ * a binomial trait holds a value that is neither 0 nor 1; when the Wald test
+ * is asked of a binomial trait with a kinship, which is the logistic mixed
+ * model and has only the score test; when the covariance of the continuous
+ * working trait that model fits in place of the 0 and 1 cannot be factored,
+ * which is a kinship that is not a covariance; when the null model of a
+ * binomial trait walks towards an infinite coefficient instead of settling;
+ * when the source cannot be read, a wrong line of a VCF among the causes;
+ * when a variant has more than two alleles among its called genotypes and
+ * `transformToBiallelic` is false; when the pass gives no variant; when the
+ * linear algebra of the fit or of a test could not be done; and when `init`
+ * has not been awaited.
  */
 export function calcGwas(
   variants: Variants,
@@ -354,7 +428,7 @@ export function calcGwas(
   // is what spreading an object of options over a call leaves behind.
   const useGrammarGammaApprox =
     options.useGrammarGammaApprox === undefined
-      ? false
+      ? defaultUseGrammarGammaApprox()
       : aBoolean("useGrammarGammaApprox", options.useGrammarGammaApprox);
   const kinship = theKinship(options.kinship);
   const individuals = theTestedIndividuals(

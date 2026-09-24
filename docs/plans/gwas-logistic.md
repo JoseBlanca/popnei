@@ -1,6 +1,10 @@
 # Plan: the association study of a binomial trait
 
-23 September 2026. State: draft, not yet approved by the owner. It builds
+23 September 2026. State: done on 24 September 2026. The owner approved it
+on 23 September 2026, it was carried out on the branch
+`plan/gwas-logistic`, and every task is ticked, every deliverable checked
+and all three work packages reviewed. The report of the work is
+`docs/reports/gwas-logistic.md`. It builds
 the rest of `docs/specs/gwas.md`: the logistic model, the logistic mixed
 model, the GRAMMAR-Gamma approximation that both mixed models can use, and
 the measurements. It is the last of three plans; `kinship` and `gwas-linear`
@@ -43,7 +47,7 @@ Not built, with where it goes:
   ratio of 1.88 to 2.06 is checked in Rust, which the report measured
   between two numpy programs and could not say would hold.
 
-The spec has one open point, and it changes one task of this plan.
+Two open points of the spec change work of this plan.
 
 **Open 1 of `docs/specs/gwas.md`, the variant that separates the cases from
 the controls.** Meanwhile, task 1.2 gives it NaN for its effect, its
@@ -53,6 +57,17 @@ owner chooses NaN with a reason, a task is added to work package 1 for the
 field and its column in both packages, and no number moves. If they choose
 the Firth regression, that is a work package of its own and a change to the
 spec first, and the plink2 comparison gains the variant it now leaves out.
+
+**Open 2 of `docs/specs/gwas.md`, a variant there is nothing left to test.**
+It is one rule in four places, and two of them are tests of this plan: the
+score test of the logistic model in task 1.1 and the score test of the
+logistic mixed model in task 2.3. Meanwhile, both refuse a variant of which
+the design leaves at most the tested individuals times 2.2e-16 of what there
+was, and give it the three NaNs a variant with no variance gets. No literal
+of either panel is near that threshold, so nothing in the deliverables moves
+either way. If the owner chooses to form the residual exactly instead, both
+tasks lose the comparison and gain the exact quantity, which for these two
+is a product with the projection matrix per variant.
 
 ## What has to be in place
 
@@ -93,8 +108,9 @@ on request.
    `(beta / se)**2` within 1e-2 absolute and `|log10(p / p_R)|` below 1e-3
    of `r.panel_called.glm.score.tsv` over all 1200 variants, and a cargo
    test asserts the six literals within 1e-3 and 1e-3.
-2. The Wald test is plink2's. The check: a pytest test gets `beta` and `se`
-   within 1e-4 absolute and `p_value` within 5e-3 relative of
+2. The Wald test is plink2's. The check: a pytest test gets `beta` within
+   1e-4 times the `se` of that variant, `se` within 5e-4 times it, and
+   `p_value` within 5e-3 relative of
    `plink2.panel_called.glm.logistic.hybrid.tsv` over the 1199 variants
    plink2 did not fall back to Firth for, and a cargo test asserts the six
    literals within 1e-5, 1e-4 and 5e-3.
@@ -102,9 +118,15 @@ on request.
    pytest test asserts that the variants whose `p_value` is NaN are exactly
    the rows with `FIRTH?` equal to `Y`, which is `var0006` and no other.
 4. popnei and pyNei agree, and TypeScript gives the same numbers. The check:
-   a pytest test runs both on the panel with each test and gets agreement
-   within 1e-9 relative with the same NaN variants, and `npm test` asserts
-   the six Wald literals.
+   a pytest test runs both on the panel with each test and gets `beta`
+   within 1e-13 of the `se` of that variant, `se` and `p_value` within 1e-13
+   relative, and the same NaN variants; and `npm test` asserts the six Wald
+   literals and the six score ones. The bound against pyNei is per model
+   since 24 September 2026, with 1e-9 its ceiling and not its value, and
+   1e-13 is 2.2 times where this model breaks. What it has to clear is the
+   p-value of `var1004` of `panel_called` under the Wald test on Accelerate,
+   4.524e-14, and not the effect, whose worst is 1.151e-14 at `var0197` of
+   `panel_called` under the score test on faer.
 
 ### What it stands on
 
@@ -112,18 +134,18 @@ The plans `gwas-linear` and `kinship`, merged.
 
 ### Its tasks
 
-- [ ] 1.1 The logistic null fit by iteratively reweighted least squares and
+- [x] 1.1 The logistic null fit by iteratively reweighted least squares and
       the score test, in `crates/popnei/src/gwas.rs`, with the six R
       literals as cargo tests. Built from "The logistic model" of
       `docs/specs/gwas.md`. Serves deliverable 1. Needs nothing of this
       plan.
-- [ ] 1.2 The per variant Wald fit, its three marks of a runaway and the
+- [x] 1.2 The per variant Wald fit, its three marks of a runaway and the
       NaN they give, with the six plink2 literals as cargo tests. It is its
       own task and its own commit because a variant wrongly marked as
       running away loses its p-value in silence, and deliverable 3 is what
       guards it. Built from the same section. Serves deliverables 2 and 3.
       Needs 1.1.
-- [ ] 1.3 The binomial trait through both bindings and both packages: the
+- [x] 1.3 The binomial trait through both bindings and both packages: the
       `trait` argument reaching the two new models, the error that
       `gwas-linear` left for a binomial trait now gone, and the pytest and
       node tests. Built from "Its Python function, and its TypeScript one"
@@ -171,7 +193,11 @@ already built.
    which is what "How popnei fits it, and why not pyNei's way" describes.
 4. popnei and pyNei agree, and TypeScript gives the same numbers. The check:
    a pytest test runs both on both panels with a kinship and gets agreement
-   within 1e-9 relative, and `npm test` asserts the six literals.
+   within 1.5e-13 relative, and `npm test` asserts the six literals. The
+   bound against pyNei is per model and set where it breaks, 1e-9 being the
+   spec's ceiling and not its value; 1.5e-13 is 2.2 times the worst, the
+   p-value of `var0115` of the panel with genotypes missing under the score
+   test on faer, 6.794e-14 in `log10`.
 
 ### What it stands on
 
@@ -179,21 +205,21 @@ Work package 1, whole, since the work packages run in order.
 
 ### Its tasks
 
-- [ ] 2.1 The linearization for one value of the variance component: the
+- [x] 2.1 The linearization for one value of the variance component: the
       working trait, the weights, the covariance factored with a Cholesky
       and applied by solving, and its stopping rule. Built from "What it
       gives" and "How popnei fits it, and why not pyNei's way" of "The
       logistic mixed model", and from
       `docs/reports/glmm-method/README.md` for why it is a Cholesky. Serves
       deliverable 3. Needs 1.1.
-- [ ] 2.2 The step on the variance component: the trace from the identity,
+- [x] 2.2 The step on the variance component: the trace from the identity,
       through the triangular solve reading the lower half, the average
       information, the bracket and the stopping rule, with the cargo test
       that counts the inverses. It is its own task and its own commit
       because a wrong trace moves the variance component and nothing
       crashes; deliverables 1 and 2 are what guard it. Built from the same
       sections. Serves deliverables 1 and 3. Needs 2.1.
-- [ ] 2.3 The score test on the projection matrix, the six literals of both
+- [x] 2.3 The score test on the projection matrix, the six literals of both
       panels as cargo tests, and the model through both bindings and both
       packages with its pytest and node tests. Built from "What it gives"
       and "How it is verified" of that item. Serves deliverables 1, 2 and 4.
@@ -248,11 +274,11 @@ mixed model it is also checked on.
 
 ### Its tasks
 
-- [ ] 3.1 The second pass, the factor, and the approximate denominator in
+- [x] 3.1 The second pass, the factor, and the approximate denominator in
       both mixed models, in the core, with the cargo tests. Built from "The
       GRAMMAR-Gamma approximation" of `docs/specs/gwas.md`. Serves
       deliverable 1. Needs 2.2.
-- [ ] 3.2 The argument through both bindings and both packages, with the
+- [x] 3.2 The argument through both bindings and both packages, with the
       pytest tests of the relation to the exact answer and of the refusal,
       and the node test. Built from the same item. Serves deliverables 2, 3
       and 4. Needs 3.1 and 2.3.

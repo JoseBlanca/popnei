@@ -155,11 +155,11 @@ sys.exit(2)
 # the one the test is about.
 _THE_RESULT_CAME_BACK = "the result came back before the interrupt"
 
-# The two processes that calculate over the whole VCF and send themselves
-# the SIGINT of a Ctrl-C while the pass runs: the distances between the
-# individuals, and the distances between two populations of them. The pass
-# of 400000 variants takes 0.53 s with the core that `maturin develop`
-# builds, and the interrupt is sent 0.05 s after it starts.
+# The process that calculates over the whole VCF and sends itself the SIGINT
+# of a Ctrl-C while the pass runs, one for each of the four calculations
+# below. The pass of 400000 variants takes 0.53 s with the core that
+# `maturin develop` builds, and the interrupt is sent 0.05 s after it starts.
+# pandas is imported because the study reads its phenotype as a series.
 #
 # The result is the first array numpy gives either process, and that array
 # is what imports the C API of numpy: an interrupt that is still pending
@@ -172,6 +172,7 @@ import sys
 import threading
 import time
 
+import pandas
 import popnei
 
 variants = popnei.open_vcf(sys.argv[1])
@@ -210,9 +211,18 @@ _POP_DISTANCES = (
     'jackknife_group=None, measures=("fst",), min_num_individuals=1)'
 )
 
-# The kinship of every pair of the three individuals, which is the third
-# calculation that reads a whole source in one call.
+# The kinship of every pair of the three individuals.
 _KINSHIP = "popnei.calc_kinship(variants)"
+
+# The association study of a trait measured on the three individuals, with
+# no covariate and no kinship, which is the linear model and its Wald test:
+# one regression per variant over the whole source. Three individuals are
+# two more than the one column its design has, which is the fewest a study
+# is fitted on.
+_GWAS = (
+    'popnei.calc_gwas(variants, pandas.Series({"ind1": 1.0, "ind2": 2.0, '
+    '"ind3": 4.0}), "continuous")'
+)
 
 
 def _vcf_of_many_variants(path: Path) -> Path:
@@ -304,8 +314,8 @@ def test_the_block_a_ctrl_c_lost_is_not_among_the_variants_of_the_pass(
 
 @pytest.mark.parametrize(
     "calculation",
-    [_KOSMAN_DISTANCES, _POP_DISTANCES, _KINSHIP],
-    ids=["kosman", "pop_dists", "kinship"],
+    [_KOSMAN_DISTANCES, _POP_DISTANCES, _KINSHIP, _GWAS],
+    ids=["kosman", "pop_dists", "kinship", "gwas"],
 )
 def test_a_ctrl_c_while_a_calculation_runs_raises_keyboard_interrupt(
     calculation: str, tmp_path: Path
@@ -320,9 +330,12 @@ def test_a_ctrl_c_while_a_calculation_runs_raises_keyboard_interrupt(
     that import fails with the interrupt still pending and leaves the numpy
     crate panicking.
 
-    Every calculation that reads a whole source in one call is run, because
-    each raises the interrupt itself and a missing raise in one of them says
-    nothing about the others.
+    Four calculations are run, because each raises the interrupt itself and
+    a missing raise in one of them says nothing about the others. They are
+    not every calculation that reads a whole source in one call:
+    `pca_of_variants`, `calc_rogers_huff_r2_matrix`, `calc_per_var_distribs`
+    and `calc_per_individual_stats` also do, and nothing here says that they
+    raise a Ctrl-C rather than panicking in numpy.
     """
     path = _vcf_of_many_variants(tmp_path / "many_variants.vcf")
     read = subprocess.run(

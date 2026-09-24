@@ -7,6 +7,18 @@
 //! of the two variants over the individuals called at both.
 //! `docs/specs/ld.md` is the spec of the module.
 //!
+//! The module gives r² in the two shapes that spec asks for.
+//! [`calc_r2_matrix`] reads a pass to its end and gives the r² of every
+//! pair of its variants as a square matrix, with the chromosome and the
+//! position of each variant. It is what a plot of one region is drawn
+//! from, and how many variants it takes is bounded by the memory of the
+//! matrix, which holds one value for each pair and so grows with the
+//! square of them. [`calc_ld_and_dist`] gives how r² falls off as the two
+//! variants of a pair move apart along a chromosome, for each population
+//! of the dataset on its own, in bins of distance. It holds only the
+//! variants that are still within reach of the newest one read, so it runs
+//! over a dataset whose matrix of every pair no machine would hold.
+//!
 //! The dosage of a genotype is how many of its alleles are not the major
 //! allele of its variant, 0, 1 or 2 in a diploid, and a genotype with an
 //! allele missing has none. [`LdDosages`] reads the genotypes of a block as
@@ -20,6 +32,12 @@
 //! [`r2_between`] gives the r² of every variant of one set of dosages
 //! against every variant of another, which is six products of those
 //! matrices and the formula of the spec over the six sums they give.
+//!
+//! [`fit_ld_decay`] puts the whole fall-off of one population into one
+//! shape, and the distance at which its r² has fallen to half into one
+//! number. It takes the pairs counted at each distance and no genotype, so
+//! the bins a user asked for do not move the curve, and it gives an
+//! [`LdDecay`].
 
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -32,6 +50,15 @@ use crate::error::{Error, Result};
 use crate::variant::{
     AlleleCounts, ChromTable, MISSING_ALLELE, Needs, count_alleles, the_major_allele,
     the_major_allele_frequency,
+};
+
+mod decay;
+mod dist;
+
+pub use decay::{LdDecay, fit_ld_decay};
+pub use dist::{
+    DEFAULT_MAX_ALLOWED_MAF, DEFAULT_MAX_DIST, DEFAULT_MIN_DIST, DEFAULT_NUM_DIST_BINS, LdAndDist,
+    LdAndDistOptions, LdBins, calc_ld_and_dist,
 };
 
 /// The most values one of the matrices of [`LdDosages`] holds, the variants
@@ -279,6 +306,7 @@ impl LdDosages {
             false => a_vector_of(false, block.num_individuals, &|| Error::LdNoMemory {
                 what: "the individuals asked for",
                 values: block.num_individuals,
+                bytes_per_value: size_of::<bool>(),
             })?,
         };
         for individual in individuals {
@@ -308,6 +336,7 @@ impl LdDosages {
             .map_err(|_| Error::LdNoMemory {
                 what: "the individuals of the dosages",
                 values: num_individuals,
+                bytes_per_value: size_of::<usize>(),
             })?;
         match individuals.is_empty() {
             true => of_them.extend(0..block.num_individuals),
@@ -316,22 +345,38 @@ impl LdDosages {
         let mut dosages = LdDosages {
             num_vars: block.num_vars,
             individuals: of_them,
-            dosages: a_vector_of(0.0, values, &the_memory_for("the dosages", values))?,
-            called: a_vector_of(0.0, values, &the_memory_for("the called genotypes", values))?,
+            dosages: a_vector_of(
+                0.0,
+                values,
+                &the_memory_for("the dosages", values, size_of::<f64>()),
+            )?,
+            called: a_vector_of(
+                0.0,
+                values,
+                &the_memory_for("the called genotypes", values, size_of::<f64>()),
+            )?,
             squares: a_vector_of(
                 0.0,
                 values,
-                &the_memory_for("the squares of the dosages", values),
+                &the_memory_for("the squares of the dosages", values, size_of::<f64>()),
             )?,
             has_variance: a_vector_of(
                 false,
                 block.num_vars,
-                &the_memory_for("the variants that have variance", block.num_vars),
+                &the_memory_for(
+                    "the variants that have variance",
+                    block.num_vars,
+                    size_of::<bool>(),
+                ),
             )?,
             maf: a_vector_of(
                 None,
                 block.num_vars,
-                &the_memory_for("the major allele frequency of each variant", block.num_vars),
+                &the_memory_for(
+                    "the major allele frequency of each variant",
+                    block.num_vars,
+                    size_of::<Option<f64>>(),
+                ),
             )?,
         };
         if values == 0 {
@@ -367,7 +412,11 @@ impl LdDosages {
                 a_vector_of(
                     MISSING_ALLELE,
                     alleles,
-                    &the_memory_for("the genotypes of the individuals asked for", alleles),
+                    &the_memory_for(
+                        "the genotypes of the individuals asked for",
+                        alleles,
+                        size_of::<i8>(),
+                    ),
                 )?
             }
         };
@@ -458,21 +507,39 @@ impl LdDosages {
             num_vars,
             individuals: the_copy_of(
                 &self.individuals,
-                &the_memory_for("the individuals of the dosages", self.individuals.len()),
+                &the_memory_for(
+                    "the individuals of the dosages",
+                    self.individuals.len(),
+                    size_of::<usize>(),
+                ),
             )?,
-            dosages: the_copy_of(dosages, &the_memory_for("the dosages", values))?,
-            called: the_copy_of(called, &the_memory_for("the called genotypes", values))?,
+            dosages: the_copy_of(
+                dosages,
+                &the_memory_for("the dosages", values, size_of::<f64>()),
+            )?,
+            called: the_copy_of(
+                called,
+                &the_memory_for("the called genotypes", values, size_of::<f64>()),
+            )?,
             squares: the_copy_of(
                 squares,
-                &the_memory_for("the squares of the dosages", values),
+                &the_memory_for("the squares of the dosages", values, size_of::<f64>()),
             )?,
             has_variance: the_copy_of(
                 has_variance,
-                &the_memory_for("the variants that have variance", num_vars),
+                &the_memory_for(
+                    "the variants that have variance",
+                    num_vars,
+                    size_of::<bool>(),
+                ),
             )?,
             maf: the_copy_of(
                 maf,
-                &the_memory_for("the major allele frequency of each variant", num_vars),
+                &the_memory_for(
+                    "the major allele frequency of each variant",
+                    num_vars,
+                    size_of::<Option<f64>>(),
+                ),
             )?,
         })
     }
@@ -764,10 +831,26 @@ impl TheSumsOfThePairs {
     /// one of the sums.
     fn of(a: &LdDosages, b: &LdDosages, num_values: usize) -> Result<TheSumsOfThePairs> {
         let (rows, inner, cols) = (a.num_vars, a.num_individuals(), b.num_vars);
-        let mut num_individuals = a_vector_of(0.0, num_values, &the_memory_for("n", num_values))?;
-        let mut products = a_vector_of(0.0, num_values, &the_memory_for("Σxy", num_values))?;
-        let mut of_a = a_vector_of(0.0, num_values, &the_memory_for("Σx", num_values))?;
-        let mut squares_of_a = a_vector_of(0.0, num_values, &the_memory_for("Σxx", num_values))?;
+        let mut num_individuals = a_vector_of(
+            0.0,
+            num_values,
+            &the_memory_for("n of the r²", num_values, size_of::<f64>()),
+        )?;
+        let mut products = a_vector_of(
+            0.0,
+            num_values,
+            &the_memory_for("Σxy of the r²", num_values, size_of::<f64>()),
+        )?;
+        let mut of_a = a_vector_of(
+            0.0,
+            num_values,
+            &the_memory_for("Σx of the r²", num_values, size_of::<f64>()),
+        )?;
+        let mut squares_of_a = a_vector_of(
+            0.0,
+            num_values,
+            &the_memory_for("Σxx of the r²", num_values, size_of::<f64>()),
+        )?;
         let sum_of = |of_the_variants: &[f64], of_the_others: &[f64], into: &mut [f64], sum| {
             // The three matrices of both sets hold one row for each
             // variant and one column for each individual, and the sums of
@@ -797,9 +880,16 @@ impl TheSumsOfThePairs {
             // and two of the six products are not taken.
             TheSumsOfTheSecondSet::TheOtherWayRound
         } else {
-            let mut of_b = a_vector_of(0.0, num_values, &the_memory_for("Σy", num_values))?;
-            let mut squares_of_b =
-                a_vector_of(0.0, num_values, &the_memory_for("Σyy", num_values))?;
+            let mut of_b = a_vector_of(
+                0.0,
+                num_values,
+                &the_memory_for("Σy of the r²", num_values, size_of::<f64>()),
+            )?;
+            let mut squares_of_b = a_vector_of(
+                0.0,
+                num_values,
+                &the_memory_for("Σyy of the r²", num_values, size_of::<f64>()),
+            )?;
             sum_of(&a.called, &b.dosages, &mut of_b, "Σy")?;
             sum_of(&a.called, &b.squares, &mut squares_of_b, "Σyy")?;
             TheSumsOfTheSecondSet::OfTheirOwn { of_b, squares_of_b }
@@ -1233,6 +1323,7 @@ impl TheTilesOfThePass {
                 .map_err(|_| Error::LdNoMemory {
                     what: "the genotypes of a tile",
                     values: genotypes.len(),
+                    bytes_per_value: size_of::<i8>(),
                 })?;
             self.gts.extend_from_slice(genotypes);
             self.vars_of_the_tile = self.vars_of_the_tile.saturating_add(taken);
@@ -1285,6 +1376,7 @@ impl TheTilesOfThePass {
         self.tiles.try_reserve(1).map_err(|_| Error::LdNoMemory {
             what: "the tiles of the products",
             values: self.tiles.len(),
+            bytes_per_value: size_of::<LdDosages>(),
         })?;
         self.tiles.push(tile);
         Ok(())
@@ -1308,6 +1400,7 @@ fn the_values_of_the_column<T: Copy>(
         .map_err(|_| Error::LdNoMemory {
             what,
             values: of_the_block.len(),
+            bytes_per_value: size_of::<T>(),
         })?;
     of_the_pass.extend_from_slice(of_the_block);
     Ok(())
@@ -1367,7 +1460,11 @@ fn the_r2_of_the_tiles(
     let mut matrix = a_vector_of(
         f64::NAN,
         values,
-        &the_memory_for("the matrix of every pair", values),
+        &the_memory_for(
+            "the matrix of the r² of every pair",
+            values,
+            size_of::<f64>(),
+        ),
     )?;
     // The r² of one pair of tiles, which every pair of them is written
     // into: the largest tile against itself, 512 KB at the 256 variants of
@@ -1377,7 +1474,7 @@ fn the_r2_of_the_tiles(
     let mut of_the_pair = a_vector_of(
         0.0,
         values,
-        &the_memory_for("the r² of a pair of tiles", values),
+        &the_memory_for("the r² of a pair of tiles", values, size_of::<f64>()),
     )?;
     let mut first_row = 0_usize;
     for (of_a, tile_a) in tiles.iter().enumerate() {
@@ -1504,10 +1601,20 @@ fn a_vector_of<T: Clone>(
     Ok(vector)
 }
 
-/// The error of `values` values of one of the matrices of the r² that this
-/// machine did not give the memory for, which `what` names.
-fn the_memory_for(what: &'static str, values: usize) -> impl Fn() -> Error {
-    move || Error::LdNoMemory { what, values }
+/// The error of `values` values of `bytes_per_value` bytes that this machine
+/// did not give the memory for, which `what` names.
+///
+/// `bytes_per_value` is `size_of` of the value the vector holds, and it is
+/// given at the call and not worked out here because the type of the vector
+/// is the one its value is inferred from: the r² is held in `f64`, the
+/// genotypes of the window of a population in `i8`, and a variant of that
+/// window in a chromosome and a position.
+fn the_memory_for(what: &'static str, values: usize, bytes_per_value: usize) -> impl Fn() -> Error {
+    move || Error::LdNoMemory {
+        what,
+        values,
+        bytes_per_value,
+    }
 }
 
 /// How many values a matrix of `num_vars` variants of `num_individuals`
@@ -2365,23 +2472,45 @@ mod tests {
         // of values whose bytes this machine does not count before it asks
         // the allocator for anything.
         let values = usize::MAX;
-        match a_vector_of(0.0_f64, values, &the_memory_for("the dosages", values)) {
+        match a_vector_of(
+            0.0_f64,
+            values,
+            &the_memory_for("the dosages", values, size_of::<f64>()),
+        ) {
             Err(Error::LdNoMemory {
                 what,
                 values: found,
+                bytes_per_value,
             }) => {
-                assert_eq!((what, found), ("the dosages", values));
+                assert_eq!(
+                    (what, found, bytes_per_value),
+                    ("the dosages", values, 8_usize)
+                );
             }
             Ok(given) => panic!("{} values of 8 bytes were given", given.len()),
             Err(other) => panic!("the memory failed with another error: {other:?}"),
         }
         let message = Error::LdNoMemory {
-            what: "Σxy",
+            what: "Σxy of the r²",
             values: 25,
+            bytes_per_value: 8,
         }
         .to_string();
-        assert!(message.contains("Σxy"), "{message}");
-        assert!(message.contains("25 values"), "{message}");
+        assert!(message.contains("Σxy of the r²"), "{message}");
+        assert!(message.contains("25 values of 8 bytes"), "{message}");
+        // What the pass of the fall-off of r² with distance keeps is not
+        // all of it values of 8 bytes: a genotype of the window is one
+        // byte, and the message says the size the values have.
+        let of_the_genotypes = Error::LdNoMemory {
+            what: "the genotypes of the variants of the window",
+            values: 1_500_000,
+            bytes_per_value: size_of::<i8>(),
+        }
+        .to_string();
+        assert!(
+            of_the_genotypes.contains("1500000 values of 1 bytes"),
+            "{of_the_genotypes}"
+        );
     }
 
     #[test]

@@ -107,16 +107,25 @@ pub(crate) enum Consumer {
     PopDists,
     /// `calcRogersHuffR2Matrix`.
     R2Matrix,
+    /// `calcLdAndDistPerPop`.
+    LdAndDist,
     /// `calcKinship`.
     Kinship,
-    /// `doPcaFromVariants`, the one consumer that reads the source twice.
+    /// `doPcaFromVariants`, which reads the source twice when it is asked
+    /// for the weights of the variants.
     PcaOfVariants {
         /// How many components the weight of each variant is asked for,
         /// the `numPrinComps` of the call, where 0 asks for no weight.
         num_prin_comps: usize,
     },
-    /// `calcGwas`.
-    Gwas,
+    /// `calcGwas`, which reads the source twice when it is asked for the
+    /// GRAMMAR-Gamma approximation.
+    Gwas {
+        /// Whether the denominator of the test of a mixed model is the
+        /// GRAMMAR-Gamma approximation instead of the exact one, the
+        /// `useGrammarGammaApprox` of the call.
+        use_grammar_gamma_approx: bool,
+    },
     /// `writeVars`.
     WriteVars,
     /// The iteration of `iterBlocks`.
@@ -126,11 +135,14 @@ pub(crate) enum Consumer {
 impl Consumer {
     /// How many passes over the source this consumer makes.
     ///
-    /// Every consumer reads the source once, except the principal
-    /// components of the variants asked for weights: a weight needs the
-    /// eigenvectors, which are known when the first pass ends, so the
-    /// variants are read a second time. `numPrinComps` 0 asks for no
-    /// weight and reads the source once.
+    /// Every consumer reads the source once, except two. The principal
+    /// components of the variants asked for weights read it twice: a weight
+    /// needs the eigenvectors, which are known when the first pass ends, so
+    /// the variants are read a second time, and `numPrinComps` 0 asks for
+    /// no weight and reads the source once. The association study asked for
+    /// the GRAMMAR-Gamma approximation reads it twice as well: the factor
+    /// of that approximation is estimated from the first block of a second
+    /// pass, and a study that does not ask for it reads the source once.
     ///
     /// It is what [`num_passes_of`] gives a page before a run starts, and
     /// it is also what a consumer opens its run with, so that every call
@@ -145,35 +157,52 @@ impl Consumer {
                     1
                 }
             }
+            Consumer::Gwas {
+                use_grammar_gamma_approx,
+            } => {
+                if use_grammar_gamma_approx {
+                    2
+                } else {
+                    1
+                }
+            }
             Consumer::PerVarDistribs
             | Consumer::PerIndividualStats
             | Consumer::KosmanDists
             | Consumer::PopDists
             | Consumer::R2Matrix
+            | Consumer::LdAndDist
             | Consumer::Kinship
-            | Consumer::Gwas
             | Consumer::WriteVars
             | Consumer::IterBlocks => 1,
         }
     }
 
     /// The consumer a user of the package named, with the `num_prin_comps`
-    /// of the call, which every consumer but the principal components of
-    /// the variants ignores.
+    /// and the `use_grammar_gamma_approx` of the call, which every consumer
+    /// but the principal components of the variants and the association
+    /// study ignores.
     ///
     /// # Errors
     ///
     /// When `name` is of no consumer of the package.
-    fn of_the_name(name: &str, num_prin_comps: usize) -> Result<Consumer, JsPopneiError> {
+    fn of_the_name(
+        name: &str,
+        num_prin_comps: usize,
+        use_grammar_gamma_approx: bool,
+    ) -> Result<Consumer, JsPopneiError> {
         match name {
             "calcPerVarDistribs" => Ok(Consumer::PerVarDistribs),
             "calcPerIndividualStats" => Ok(Consumer::PerIndividualStats),
             "calcPairwiseKosmanDists" => Ok(Consumer::KosmanDists),
             "calcPopDists" => Ok(Consumer::PopDists),
             "calcRogersHuffR2Matrix" => Ok(Consumer::R2Matrix),
+            "calcLdAndDistPerPop" => Ok(Consumer::LdAndDist),
             "calcKinship" => Ok(Consumer::Kinship),
             "doPcaFromVariants" => Ok(Consumer::PcaOfVariants { num_prin_comps }),
-            "calcGwas" => Ok(Consumer::Gwas),
+            "calcGwas" => Ok(Consumer::Gwas {
+                use_grammar_gamma_approx,
+            }),
             "writeVars" => Ok(Consumer::WriteVars),
             "iterBlocks" => Ok(Consumer::IterBlocks),
             _ => Err(JsPopneiError::Refused(format!(
@@ -187,12 +216,13 @@ impl Consumer {
 
 /// The name of each consumer as a user of the package writes it, for the
 /// message of a name that is of none of them.
-const THE_CONSUMERS: [&str; 10] = [
+const THE_CONSUMERS: [&str; 11] = [
     "calcPerVarDistribs",
     "calcPerIndividualStats",
     "calcPairwiseKosmanDists",
     "calcPopDists",
     "calcRogersHuffR2Matrix",
+    "calcLdAndDistPerPop",
     "calcKinship",
     "doPcaFromVariants",
     "calcGwas",
@@ -202,7 +232,8 @@ const THE_CONSUMERS: [&str; 10] = [
 
 /// How many passes over the source the consumer called `consumer` makes,
 /// with the `num_prin_comps` of the call, which every consumer but
-/// `doPcaFromVariants` ignores.
+/// `doPcaFromVariants` ignores, and the `use_grammar_gamma_approx` of the
+/// call, which every consumer but `calcGwas` ignores.
 ///
 /// A page that draws one bar for a whole run asks this before the run
 /// starts, and every call that tells the page how far a pass has got
@@ -213,8 +244,12 @@ const THE_CONSUMERS: [&str; 10] = [
 ///
 /// When `consumer` is of no consumer of the package.
 #[wasm_bindgen]
-pub fn num_passes_of(consumer: &str, num_prin_comps: usize) -> Result<u32, JsPopneiError> {
-    Ok(Consumer::of_the_name(consumer, num_prin_comps)?.num_passes())
+pub fn num_passes_of(
+    consumer: &str,
+    num_prin_comps: usize,
+    use_grammar_gamma_approx: bool,
+) -> Result<u32, JsPopneiError> {
+    Ok(Consumer::of_the_name(consumer, num_prin_comps, use_grammar_gamma_approx)?.num_passes())
 }
 
 /// A file of variants that was opened, which every pass reads again.

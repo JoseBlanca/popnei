@@ -1148,10 +1148,13 @@ pub enum Error {
         ploidy: usize,
     },
 
-    /// One of the matrices the r² of a set of variants is worked out
-    /// through, and that this machine did not give the memory for: one of
-    /// the three matrices of the dosages, or one of the six sums of the
-    /// pairs of two sets. The memory is asked for
+    /// Something the r² of a set of variants is worked out with, and that
+    /// this machine did not give the memory for: one of the three matrices
+    /// of the dosages, one of the six sums of the pairs of two sets, the r²
+    /// of a pair of tiles, and, in the pass of the fall-off of r² with
+    /// distance, the populations it counts, the bins of each of them, the
+    /// genotypes of the variants of the window of a population and where
+    /// each of those variants lies. The memory is asked for
     /// with `try_reserve_exact`, which gives it back as this error where
     /// `vec![0.0; n]` would end the process, and which also refuses a
     /// matrix whose bytes a `usize` does not count, as one of more than
@@ -1159,13 +1162,20 @@ pub enum Error {
     /// Python it is a `ValueError` that names no file, since what it
     /// refuses is the size of the calculation and not what any file holds:
     /// calculate over fewer variants or over fewer individuals.
-    #[error("this machine has not the memory for {what} of the r², {values} values of 8 bytes")]
+    #[error(
+        "this machine has not the memory for {what}, {values} values of {bytes_per_value} bytes"
+    )]
     LdNoMemory {
-        /// Which matrix could not be allocated, as "How it runs" of
+        /// What could not be allocated, as "How it runs" of
         /// `docs/specs/ld.md` names them.
         what: &'static str,
         /// How many values it holds.
         values: usize,
+        /// How many bytes one of those values holds, which is 8 for the
+        /// matrices and not for everything the pass of the fall-off keeps:
+        /// a genotype is one byte, and a variant of the window is a
+        /// chromosome and a position.
+        bytes_per_value: usize,
     },
 
     /// An individual was asked for more than once when a set of dosages
@@ -1257,6 +1267,162 @@ pub enum Error {
         /// How many variants the calculation was allowed to take.
         max_num_vars: usize,
     },
+
+    /// The `max_allowed_maf` of the fall-off of r² with distance is not a
+    /// number from 0 to 1, both included: it is NaN, it is below 0 or it
+    /// is above 1. A variant is counted in a population when its major
+    /// allele frequency there is at most that number, and a major allele
+    /// frequency is one count of the variant divided by another, so it
+    /// lies between 0 and 1: a threshold outside the range leaves every
+    /// variant of every population in or takes every one out, and a NaN
+    /// one takes every one out, since no comparison with NaN holds. In
+    /// Python it is a `ValueError` that names no file: it is the number a
+    /// user writes at the call.
+    #[error(
+        "`max_allowed_maf` is {value:?}, and it is a number from 0 to 1, both included: a variant is counted in a population when its major allele frequency there is at most that number, and a frequency is one count of the variant divided by another"
+    )]
+    LdMaxAllowedMafOutOfRange {
+        /// The number that was given for it.
+        value: f64,
+    },
+
+    /// A population of the fall-off of r² with distance names no
+    /// individual. The r² of a population is taken over its individuals,
+    /// so one with none holds no pair and no variant of its own; and a
+    /// population that names no individual is how a caller of the core
+    /// asks for every individual of the dataset, so one left empty by
+    /// mistake would be counted over all of them and not over its own. A
+    /// caller that wants one population of every individual gives no
+    /// population at all. In Python it is a `ValueError` that names no
+    /// file: it is the individuals a user wrote for that population.
+    ///
+    /// The message gives the position of the population and not its name,
+    /// which is what a caller of the core has, since it gives the
+    /// populations as the indices of their individuals. Neither binding
+    /// crate reaches this case: both look the individuals of each
+    /// population up by name before the pass and refuse an empty one with
+    /// [`Error::PopWithNoIndividual`], whose message names the
+    /// population.
+    #[error(
+        "the population at the position {pop} names no individual, and the r² of a population is taken over its individuals; a caller that wants one population of every individual gives no population at all"
+    )]
+    LdPopWithNoIndividual {
+        /// Where the population is among the ones given, from 0.
+        pop: usize,
+    },
+
+    /// The `min_dist` of the fall-off of r² with distance is above its
+    /// `max_dist`. A pair is counted when the distance of its two variants
+    /// is from `min_dist` to `max_dist`, both included, so a `min_dist`
+    /// above `max_dist` names an empty range and counts no pair at all,
+    /// which is a call written wrong and not a dataset with nothing in it.
+    /// In Python it is a `ValueError` that names no file: the two numbers
+    /// are what a user writes at the call.
+    #[error(
+        "`min_dist` is {min_dist} and `max_dist` is {max_dist}: a pair is counted when the distance of its two variants is from `min_dist` to `max_dist`, both included, so a `min_dist` above `max_dist` counts no pair at all"
+    )]
+    LdMinDistAboveMaxDist {
+        /// The smallest distance a pair is counted at, which was given
+        /// above `max_dist`.
+        min_dist: u64,
+        /// The largest distance a pair is counted at.
+        max_dist: u64,
+    },
+
+    /// The `num_bins` of the fall-off of r² with distance is 0. The pairs
+    /// are put into that many bins of equal width across the distances
+    /// from `min_dist` to `max_dist`, and no bin at all is a result with
+    /// no row: a caller that wants the pairs and not the curve of them
+    /// asks for one bin. In Python it is a `ValueError` that names no
+    /// file: it is the number a user writes at the call.
+    #[error(
+        "`num_bins` is 0, and the pairs are put into that many bins of equal width across the distances from `min_dist` to `max_dist`: a result of no bin holds nothing, and one bin holds every pair of that range"
+    )]
+    LdNoBins,
+
+    /// A population of a pass of the fall-off has no dosages when the pass
+    /// ends. The n of the curve fitted to a population is the individuals
+    /// its dosages were built over, and a population that has none has
+    /// taken no block. It is a defect of popnei and not anything a user
+    /// wrote: a pass that gave no variant is refused before any curve is
+    /// fitted, and a pass that gave one took its block into every
+    /// population. In Python it is a `RuntimeError`, as the other defects
+    /// of popnei are.
+    #[error(
+        "the population {pop} of the fall-off has no dosages when the pass has ended, and the individuals they were built over are the n of the curve fitted to it; the pass counted {num_vars} variants, so every population took a block, which is a defect of popnei; please report it"
+    )]
+    LdPopWithNoDosages {
+        /// Which population of the call it is, from 0, in the order they
+        /// were given.
+        pop: usize,
+        /// How many variants the pass gave, before the major allele
+        /// frequency of any population.
+        num_vars: u64,
+    },
+
+    /// The three arrays the curve of the fall-off is fitted to are not of
+    /// one length. They are the `dists` that hold a pair, the `num_pairs`
+    /// each of them holds and the `sum_r2` of those pairs, the three
+    /// arguments of `fit_ld_decay` of that name, and they are read
+    /// together, one entry at a time, so arrays of different lengths would
+    /// put the pairs of one distance against the sum of another. A pass
+    /// gives the three compacted together and does not reach this; a
+    /// caller of `fit_ld_decay` with a table of its own does. In Python it
+    /// is a `ValueError` that names no file.
+    #[error(
+        "the curve of the fall-off was given a `dists` of {num_dists} values, a `num_pairs` of {num_pairs} and a `sum_r2` of {num_sums}, and the three hold one value for each distance that holds a pair"
+    )]
+    LdDecayArraysOfDifferentLengths {
+        /// How many distances were given.
+        num_dists: usize,
+        /// How many counts of pairs were given.
+        num_pairs: usize,
+        /// How many sums of r² were given.
+        num_sums: usize,
+    },
+
+    /// The population the curve of the fall-off is fitted for has no
+    /// individual. The curve is the r² a population of n individuals is
+    /// expected to be in, and n divides the correction that holds it up at
+    /// long distances, so a population of none has no curve to fit rather
+    /// than a curve with nothing in it. In Python it is a `ValueError`
+    /// that names no file.
+    #[error(
+        "the curve of the fall-off was asked for a population of no individual, and the r² it expects is that of a sample of n individuals, which divides the correction for the sample being finite"
+    )]
+    LdDecayNoIndividuals,
+
+    /// A distance the curve of the fall-off was given holds no pair. The
+    /// distances given are the ones that hold a pair, and what each of
+    /// them weighs in the sum that is made smallest is how many pairs it
+    /// holds, so a distance of no pair weighs nothing and says that the
+    /// three arrays are not the ones a pass compacted. In Python it is a
+    /// `ValueError` that names no file.
+    #[error(
+        "the distance {dist} was given to the curve of the fall-off with no pair, and the distances it is fitted over are the ones that hold a pair"
+    )]
+    LdDecayDistWithNoPair {
+        /// The distance, in base pairs, that was given with no pair.
+        dist: u64,
+    },
+
+    /// A sum of r² the curve of the fall-off was given is not finite or is
+    /// below 0. It is the sum of the r² of the pairs at one distance, each
+    /// of them a square of a correlation and so a number from 0 to 1, and
+    /// the sum that is made smallest is linear in it, so an infinity or a
+    /// NaN there makes every ρ the same and a negative sum pulls the curve
+    /// up where no pair does. In Python it is a `ValueError` that names no
+    /// file.
+    #[error(
+        "the sum of the r² of the pairs at the distance {dist} is {sum_r2}, and it is a sum of squares of correlations: a finite number, 0 or above"
+    )]
+    LdDecaySumOfR2OutOfRange {
+        /// The distance, in base pairs, whose sum of r² was refused.
+        dist: u64,
+        /// The sum that was given for it.
+        sum_r2: f64,
+    },
+
     /// An individual a study was asked to test is not one the source has.
     /// The individuals of a study are given by their position among those
     /// the reader gives, from 0, and this one is at or beyond their count.
@@ -1465,6 +1631,28 @@ pub enum Error {
         and_back: f64,
     },
 
+    /// The covariance of the working trait of the logistic mixed model,
+    /// the kinship times the variance of its random effect plus the
+    /// reciprocals of the weights on the diagonal, could not be factored
+    /// at the row the value names, counting from 0, so it is not a
+    /// covariance. A weight is at most 0.25, so the reciprocals put 4 at
+    /// least on every diagonal entry, and what takes such a matrix below 0
+    /// is a kinship whose own smallest eigenvalue is below 0 times a
+    /// variance large enough to reach it. The per pair denominators of
+    /// `docs/specs/kinship.md` are what put that eigenvalue there: a pair
+    /// of individuals whose genotypes are missing in different variants is
+    /// counted over a different set of variants from the next pair. The
+    /// user gives a kinship built from variants with fewer genotypes
+    /// missing. It is neither a defect of popnei nor a wrong argument but
+    /// the matrix the data made, and in Python it is a `ValueError`.
+    #[error(
+        "the covariance of the working trait of the logistic mixed model, the kinship times the variance of its random effect plus the weights, could not be factored at its row {at}, counting from 0, so the kinship is not a covariance: missing genotypes leave every pair of individuals counted over its own variants, which can give the matrix an eigenvalue below 0; build the kinship from variants with fewer genotypes missing"
+    )]
+    GwasKinshipNotACovariance {
+        /// The row the factorization stopped at, counting from 0.
+        at: usize,
+    },
+
     /// The columns of the design of a study are not independent: a
     /// covariate is constant, or it is a combination of the others, such as
     /// a copy of one or the sum of two. The effects of such a design are
@@ -1567,6 +1755,58 @@ pub enum Error {
         num_with_variance: usize,
     },
 
+    /// The null model of a study was still moving when its fit ended, so
+    /// the effects it would report are the ones it happened to be at and
+    /// not the ones that fit the trait. The message names the model and
+    /// how many rounds it ran.
+    ///
+    /// A logistic fit reaches it when a covariate separates the
+    /// individuals that have the condition from the ones that have not:
+    /// there is then no finite effect for that covariate to have, and the
+    /// fit walks towards an infinite one. The user takes that covariate
+    /// out. Two things end such a fit, and both are the same runaway: the
+    /// 50 rounds it is given run out, or the chances it fits reach 0 and 1
+    /// and the design weighted by them is no longer a matrix that can be
+    /// factored, which stops it earlier. pyNei only meets the first,
+    /// because it solves each round with an LU factorization, which
+    /// answers a matrix that a Cholesky refuses.
+    ///
+    /// The logistic mixed model reaches it for a third reason, which is
+    /// the kinship, so the message it gets is not the one the two fits
+    /// without a kinship get: see
+    /// [`the_remedies_of_a_fit_that_did_not_settle`].
+    ///
+    /// The design alone reaches it too, with another remedy, which is why
+    /// the message names two causes. A study whose covariates are so
+    /// nearly a combination of each other that the factorization refuses
+    /// the system, while the rank check that `Design::of_the_study` makes
+    /// with numpy's tolerance lets them through, ends the same way with no
+    /// separation anywhere in it. "The logistic model" of
+    /// `docs/specs/gwas.md` measures that band on 200 individuals with two
+    /// covariates: at a correlation of 1 less 5e-13 the fit runs three
+    /// rounds and the factorization refuses the system, and only once the
+    /// two covariates agree to within about 1e-14 does the rank check
+    /// catch them first. The remedy there is to take one of the two
+    /// covariates out, not the one that separates the individuals.
+    ///
+    /// In Python it is a `ValueError`, as "The logistic mixed model" of
+    /// `docs/specs/gwas.md` decides for both fits: pyNei raises a
+    /// `RuntimeError` there, and under the rule of `docs/specs/variant.md`
+    /// a `RuntimeError` is a defect of popnei where a fit that will not
+    /// settle is the data.
+    #[error(
+        "{what}, and its null model did not settle in the {rounds} rounds it was fitted in. {remedies}",
+        what = model.what_it_is_of(),
+        remedies = the_remedies_of_a_fit_that_did_not_settle(*model)
+    )]
+    GwasFitDidNotSettle {
+        /// Which of the four models was being fitted, which the message
+        /// names with the trait and the kinship that chose it.
+        model: crate::gwas::GwasModel,
+        /// How many rounds the fit ran before it was given up.
+        rounds: usize,
+    },
+
     /// The GRAMMAR-Gamma approximation was asked for by a study with no
     /// kinship. It stands in for the denominator of a mixed model's test,
     /// which is a product with the covariance of the random effect the
@@ -1579,27 +1819,110 @@ pub enum Error {
     )]
     GwasGrammarGammaWithoutAKinship,
 
-    /// The GRAMMAR-Gamma approximation was asked for by a study that has a
-    /// kinship, which is the pair it is for, and popnei has not written it
-    /// yet. It is refused and not ignored: a study that made the exact test
-    /// of every variant and reported that it had approximated nothing would
-    /// give the user no way to tell that what they asked for did not
-    /// happen. Until it is written the user asks for no approximation and
-    /// gets the exact test, which is what every number of
-    /// `docs/specs/gwas.md` is. In Python it is a `ValueError`.
+    /// The GRAMMAR-Gamma approximation was asked for and no second pass was
+    /// given to estimate its factor from. The factor comes from the first
+    /// block of a pass over the same variants as the one that tests them,
+    /// and `calc_gwas` takes that pass as its second argument. Both binding
+    /// crates open it themselves, so it is a caller of the core crate that
+    /// meets this, and in Python it is a `ValueError` naming no file.
     #[error(
-        "the GRAMMAR-Gamma approximation is being written; ask for no approximation and every variant gets the exact denominator of its test, which is what it stands in for"
+        "the GRAMMAR-Gamma approximation estimates its factor from the first block of a second pass over the same variants, and none was given; open a second pass or ask for no approximation"
     )]
-    GwasGrammarGammaNotBuilt,
+    GwasGrammarGammaWithoutASecondPass,
 
-    /// The trait and the kinship of a study ask for one of the models
-    /// popnei has not written yet, which the message names. The two models
-    /// of a continuous trait are written, the linear one without a kinship
-    /// and the linear mixed one with it; the two logistic ones are being
-    /// written. In Python it is a `ValueError`, since it is the study the
-    /// user asked for that popnei cannot run.
+    /// The second pass the GRAMMAR-Gamma approximation was given reads
+    /// another dataset than the pass that tests the variants. The factor is
+    /// estimated from its first block, and the trait, the design and the
+    /// kinship are read positionally, by the place of each individual among
+    /// the individuals of the pass that tests them, so a second pass over
+    /// other individuals, or over the same ones in another order, would
+    /// give a factor from the genotypes of the wrong individuals and say
+    /// nothing. Both binding crates open the second pass over the source
+    /// the first one reads, so it is a caller of `calc_gwas` that meets
+    /// this, and in Python it is a `ValueError` naming no file.
     #[error(
-        "popnei cannot run this study yet: {what}, which is being written",
+        "the GRAMMAR-Gamma approximation estimates its factor from a second pass over the same variants, and the pass given reads {found_num_individuals} individuals at a ploidy of {found_ploidy} where the pass that tests the variants reads {num_individuals} at a ploidy of {ploidy}, or names those individuals in another order; open both passes over the same source"
+    )]
+    GwasGrammarGammaSecondPassOfAnotherSource {
+        /// How many individuals the pass that tests the variants reads.
+        num_individuals: usize,
+        /// The ploidy that pass reads them at.
+        ploidy: usize,
+        /// How many individuals the second pass reads.
+        found_num_individuals: usize,
+        /// The ploidy the second pass reads them at.
+        found_ploidy: usize,
+    },
+
+    /// The factor of the GRAMMAR-Gamma approximation was to be estimated
+    /// and the model that was fitted has no projection matrix to estimate
+    /// it against.
+    ///
+    /// A study that asks for the approximation with no kinship is refused
+    /// before any model is fitted, and a study with a kinship fits one of
+    /// the two mixed models, so the model that reaches the estimate has
+    /// that matrix. This is the arm where it has not: a kinship was given
+    /// and the model chosen for it is not a mixed one, which no study
+    /// reaches. Telling the user that a study with no kinship has no such
+    /// denominator, which is what [`Error::GwasGrammarGammaWithoutAKinship`]
+    /// says, would be telling them to give the kinship they gave. In Python
+    /// it is a `RuntimeError`: nothing a user asked for gives it, so
+    /// whoever gets one reports it instead of looking for what they typed
+    /// wrong.
+    #[error(
+        "popnei has a defect: the GRAMMAR-Gamma approximation stands in for the denominator of a mixed model's test, a kinship was given and the model fitted for it was `{name}`, which has no such denominator; report it",
+        name = model.name()
+    )]
+    GwasGrammarGammaOfAModelWithNoProjection {
+        /// Which of the four models was fitted, which the message names.
+        model: crate::gwas::GwasModel,
+    },
+
+    /// No variant of the first block of that second pass has any variance
+    /// among the tested individuals, so there is no ratio of the exact
+    /// denominator to the approximate one to average. It is pyNei's refusal
+    /// in `estimate_gamma` of `pynei/gwas.py`, and in Python it is a
+    /// `ValueError` naming the file the pass read.
+    #[error(
+        "the GRAMMAR-Gamma approximation estimates its factor from the variants of the first block that vary, and no variant of that block varies among the {num_individuals} tested individuals; test more variants or ask for no approximation"
+    )]
+    GwasGrammarGammaWithoutAVariantThatVaries {
+        /// How many individuals the study tests, over which the variants of
+        /// that block were found to have no variance.
+        num_individuals: usize,
+    },
+
+    /// The factor the first block gave is not a finite number above 0,
+    /// which the exact denominators of variants that the design explains
+    /// give: each of them is the rounding of a cancellation and falls on
+    /// either side of 0. Every variant of the study would be left with no
+    /// answer, so the study is refused instead. In Python it is a
+    /// `ValueError` naming the file the pass read.
+    #[error(
+        "the GRAMMAR-Gamma approximation multiplies the squared length of a variant's centered dosages by {factor:e}, which the {num_vars} variants of the first block that vary gave and which is not a number above 0; the design explains those variants, and a study of other variants or with no approximation is tested against the exact denominator"
+    )]
+    GwasGrammarGammaFactorNotAboveZero {
+        /// The factor those variants gave: 0, a number below it, or one
+        /// that is not finite.
+        factor: f64,
+        /// How many variants of the first block it was the mean over.
+        num_vars: usize,
+    },
+
+    /// A mixed model was to be fitted and the kinship that chose it was no
+    /// longer there.
+    ///
+    /// All four models have been written since 24 September 2026, and what
+    /// keeps this case is the shape of the pass: it chooses a mixed model
+    /// only for a study that brought a kinship, and then asks for that
+    /// kinship again to fit the model, so the arm where it is not there is
+    /// this error. No study reaches it, the same pair of the trait and the
+    /// kinship having chosen the model, and it is an error rather than a
+    /// panic because the core does not panic. In Python it is a
+    /// `RuntimeError`: nothing a user asked for gives it, so whoever gets
+    /// one reports it instead of looking for what they typed wrong.
+    #[error(
+        "popnei has a defect: {what}, and the kinship that chose that model was not there when it was fitted; report it",
         what = model.what_it_is_of()
     )]
     GwasModelNotBuilt {
@@ -2253,6 +2576,304 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
+impl Error {
+    /// Whether the file that was being read belongs with this error.
+    ///
+    /// An error of popnei carries the line, the column, the individual or
+    /// the value that finds the cause, and never the file: a reader is
+    /// built over bytes, and only the call that opened the path knows which
+    /// file they are. So each binding crate puts the file there itself, and
+    /// this says which errors it goes with. In Python it goes before the
+    /// message of a `ValueError` and of a `RuntimeError`, and into
+    /// `filename` for an `OSError`, where the standard library keeps it and
+    /// where Python prints it after the message.
+    ///
+    /// What a user wrote in the arguments of a call is wrong whatever file
+    /// is read, so those errors name no file although some of them are
+    /// raised while one is being opened. Everything else is of a file, of
+    /// what was read from it, or of a defect met while it was being read.
+    ///
+    /// The match is exhaustive, and that is what this method is for. The
+    /// Python binding crate listed by hand the errors that name no file and
+    /// let every other one fall through a wildcard arm, and twice an error
+    /// of the association study arrived with the path of the VCF glued in
+    /// front of a message about the user's own arguments, each time costing
+    /// a day to find: the GRAMMAR-Gamma approximation a study asked for and
+    /// could not be given, which was `GwasGrammarGammaNotBuilt` until 24
+    /// September 2026, and [`Error::GwasFitDidNotSettle`]. Both were in the
+    /// wrong place until that day. A case added to the enum now does not
+    /// compile until somebody has said which of the two it is.
+    #[must_use]
+    pub fn names_the_file(&self) -> bool {
+        match *self {
+            // The arguments a user writes at the call, which are wrong
+            // whatever file is read although some of them are refused while
+            // one is being opened: how many variants a block holds and how
+            // many alleles a genotype of the file has; the three of
+            // `docs/specs/filters.md`, the threshold of a filter that is
+            // not a number from 0 to 1, a second filter of a kind the
+            // variants are filtered by already, and a window of the filter
+            // by linkage disequilibrium that is no base pairs wide; the
+            // four of the filter of individuals and the four of the
+            // populations a statistic is calculated for, a name that is of
+            // nobody, a name that is there twice, a set that names nobody,
+            // and a second filter or no population at all; the three of the
+            // histogram of a statistic; the ploidy or the exponent of a
+            // statistic of one variant; and the threshold below which a
+            // variant counts as polymorphic.
+            Self::BlockOfNoVariants
+            | Self::BlockTooLarge { .. }
+            | Self::VcfPloidyOutOfRange { .. }
+            | Self::VarFilterThresholdOutOfRange { .. }
+            | Self::VarFilterOfAKindThatIsSet { .. }
+            | Self::LdFilterMaxDistTooSmall { .. }
+            | Self::IndividualNotInTheSource { .. }
+            | Self::IndividualNamedTwice { .. }
+            | Self::NoIndividualNamed
+            | Self::FilterOfIndividualsThatIsSet { .. }
+            | Self::IndividualOfAPopNotInThePass { .. }
+            | Self::IndividualNamedTwiceInAPop { .. }
+            | Self::PopWithNoIndividual { .. }
+            | Self::NoPop
+            | Self::HistWithNoBin
+            | Self::HistRangeNotGoingUp { .. }
+            | Self::HistLogRangeNotAboveZero { .. }
+            | Self::StatPloidyOutOfRange { .. }
+            | Self::PolyThresholdOutOfRange { .. }
+            // The six of the table of a principal component analysis,
+            // which a user writes and no file holds: a value of it that is
+            // not finite, a table to be standardized and not centered, one
+            // of fewer than 2 rows or of no traits, one in which no trait
+            // has variance once it is centered, the traits that have none,
+            // and a trait whose mean or whose deviation the arithmetic of
+            // an f64 cannot hold.
+            | Self::PcaValueNotFinite { .. }
+            | Self::PcaStandardizeWithoutCentering
+            | Self::PcaTableTooSmall { .. }
+            | Self::PcaNoTraitWithVariance
+            | Self::PcaTraitsWithNoVariance { .. }
+            | Self::PcaTraitOutOfRange { .. }
+            // The six of the r² of a set of variants that are of what a
+            // user wrote: an index that is not an individual of the dataset
+            // and one given twice, which are the individuals of a
+            // population as a user writes them; the three sizes the
+            // calculation cannot be done at, which a user answers by
+            // calculating over fewer variants or over fewer individuals;
+            // and the `max_num_vars` that is more variants than this
+            // machine counts the pairs of, which is looked at before the
+            // pass, so the same number is refused whatever the source
+            // holds.
+            | Self::LdIndividualNotInTheDataset { .. }
+            | Self::LdIndividualAskedForTwice { .. }
+            | Self::LdDosagesTooLarge { .. }
+            | Self::LdTooManyAllelesInAVariant { .. }
+            | Self::LdNoMemory { .. }
+            | Self::LdMaxNumVarsTooLarge { .. }
+            // The four arguments of the fall-off of r² with distance, a
+            // largest major allele frequency that is not a frequency, a
+            // population that names no individual, a smallest distance
+            // above the largest one and a count of bins of 0; and the four
+            // of the curve fitted to it, which are the arguments of
+            // `fit_ld_decay`: three arrays that are not one value for each
+            // distance that holds a pair, a population of no individual, a
+            // distance given with no pair, and a sum of r² that is not a
+            // sum of squares of correlations. A pass reaches none of the
+            // last four, since it hands the fit what it counted itself.
+            | Self::LdMaxAllowedMafOutOfRange { .. }
+            | Self::LdPopWithNoIndividual { .. }
+            | Self::LdMinDistAboveMaxDist { .. }
+            | Self::LdNoBins
+            | Self::LdDecayArraysOfDifferentLengths { .. }
+            | Self::LdDecayNoIndividuals
+            | Self::LdDecayDistWithNoPair { .. }
+            | Self::LdDecaySumOfR2OutOfRange { .. }
+            // The eighteen of the association study, which "The Rust
+            // interface" of `docs/specs/gwas.md` lists: a phenotype or a
+            // covariate that is not a finite number, a phenotype that is
+            // not 0 or 1 under a binomial trait and one that is the same in
+            // every individual under either trait, a kinship whose entries
+            // are not finite and one that is not symmetric, which is a
+            // frame written into after the `Kinship` that checked it was
+            // built, covariates that are not independent and covariates
+            // that explain the whole of the trait; the two pairs of a test
+            // and a model that no model has, and a trait or a test under a
+            // name that is of neither of the two; the GRAMMAR-Gamma
+            // approximation, asked for by a study with no kinship, asked
+            // of the core with no second pass to estimate its factor from
+            // and asked of it with a second pass over another dataset, all
+            // three of which are arguments of the call; a null model that
+            // walked towards an infinite
+            // coefficient instead of settling, which is a covariate the
+            // user takes out; a kinship that the covariance of the working
+            // trait of a logistic mixed model cannot be factored from,
+            // which is the matrix the user's missing genotypes made; and
+            // the two defects of the model that was fitted, the mixed model
+            // whose kinship was not there and the model with no projection
+            // matrix that the approximation was to be estimated against,
+            // which name no file either: what they are of is the model the
+            // trait and the kinship chose, which is settled before anything
+            // is read.
+            | Self::GwasPhenotypeNotFinite { .. }
+            | Self::GwasPhenotypeNotBinomial { .. }
+            | Self::GwasPhenotypeOfOneValue { .. }
+            | Self::GwasContinuousPhenotypeOfOneValue { .. }
+            | Self::GwasDesignValueNotFinite { .. }
+            | Self::GwasKinshipValueNotFinite { .. }
+            | Self::GwasKinshipNotSymmetric { .. }
+            | Self::GwasCovariatesCollinear { .. }
+            | Self::GwasDesignExplainsTheTrait
+            | Self::GwasScoreTestOfALinearModel
+            | Self::GwasWaldTestOfALogisticMixedModel
+            | Self::GwasGrammarGammaWithoutAKinship
+            | Self::GwasGrammarGammaWithoutASecondPass
+            | Self::GwasGrammarGammaSecondPassOfAnotherSource { .. }
+            | Self::GwasFitDidNotSettle { .. }
+            | Self::GwasKinshipNotACovariance { .. }
+            | Self::GwasModelNotBuilt { .. }
+            | Self::GwasGrammarGammaOfAModelWithNoProjection { .. }
+            | Self::GwasTraitOfAnUnknownName { .. }
+            | Self::GwasTestOfAnUnknownName { .. } => false,
+            // The dataset a user gave, which is a file: a pass that gave
+            // no variant with variance, a source of no individual, a
+            // variant of more than two alleles among its called genotypes
+            // and one of a ploidy the dosages cannot be written at, the
+            // pair of individuals of a kinship with no variant called in
+            // both, the variants of a resampling group and the order they
+            // came in, and the sizes a dataset is too large for. Which file
+            // was read is what tells a user whether it is that file or the
+            // steps of their pass that left them with it.
+            Self::PcaNoVariants
+            | Self::PcaNoVariantWithVariance
+            | Self::VariantWithMoreThanTwoAlleles { .. }
+            | Self::VariantPloidyTooLarge { .. }
+            | Self::PcaNoIndividual
+            | Self::PcaVariantsTooLarge { .. }
+            | Self::KinshipNoVariantWithVariance
+            | Self::KinshipNoIndividual
+            | Self::KinshipVariantsTooLarge { .. }
+            | Self::KinshipPairWithNoVariantCalled { .. }
+            | Self::LdTooManyVars { .. }
+            | Self::PopDistMeasureOfAnUnknownName { .. }
+            | Self::JackknifeGroupOfNoBasePairs
+            | Self::PopDistsOfFewerThanTwoPops { .. }
+            | Self::PopDistsOfTooManyPops { .. }
+            | Self::TooFewJackknifeGroups { .. }
+            | Self::JackknifeGroupsVariantGoesBack { .. }
+            | Self::JackknifeGroupsChromComesBack { .. }
+            | Self::PopDistSumsTooLarge { .. }
+            | Self::PopDistsPloidyOutOfRange { .. }
+            | Self::GwasTooFewIndividuals { .. }
+            | Self::GwasIndividualNotInTheDataset { .. }
+            | Self::GwasIndividualTestedTwice { .. }
+            | Self::GwasIndividualsOutOfOrder { .. }
+            // The two of the GRAMMAR-Gamma approximation that are of the
+            // variants the second pass gave: a first block in which nothing
+            // varies among the tested individuals, and a first block whose
+            // variants the design explains, which gives a factor that is
+            // not above 0. Which file was read is what tells a user whether
+            // it is that file or the steps of their pass that left them
+            // with those variants.
+            | Self::GwasGrammarGammaWithoutAVariantThatVaries { .. }
+            | Self::GwasGrammarGammaFactorNotAboveZero { .. }
+            | Self::GwasVariantsTooLarge
+            // The defects: a reader that gave blocks which do not hold
+            // one dataset, a block whose arrays are not of its size, a
+            // block of no variants, the counts and the indices a caller of
+            // the core passes it, a parse that did not come back, the
+            // buffers and the sizes a calculation builds for itself, and an
+            // operation of the linear algebra that did not run. A user who
+            // gets one of them reports it, and the file that was being read
+            // is part of that report.
+            | Self::IndividualToKeepNotInTheBlock { .. }
+            | Self::IndividualToKeepTwice { .. }
+            | Self::NoIndividualToKeep
+            | Self::GtsNotWholeGenotypes { .. }
+            | Self::MoreAllelesThanACountHolds { .. }
+            | Self::AlleleBelowTheMissingOne { .. }
+            | Self::IndividualBeyondTheVariant { .. }
+            | Self::BlocksDoNotFitTogether { .. }
+            | Self::BlockArrayOfAnotherSize { .. }
+            | Self::ReaderGaveABlockOfNoVariants
+            | Self::BlockWithNoGenotypeOfAVariant { .. }
+            | Self::KeepOfAnotherSize { .. }
+            | Self::VcfParseNotFinished { .. }
+            | Self::VarsBlockDoesNotFit { .. }
+            | Self::VarsBlockColumns { .. }
+            | Self::VarsChromNameMissing { .. }
+            | Self::PcaTableOfAnotherSize { .. }
+            | Self::PcaLinalg { .. }
+            | Self::PcaSecondPassMissing { .. }
+            | Self::PcaSecondPassDiffers { .. }
+            | Self::PcaWeightOutOfPlace { .. }
+            | Self::KinshipLinalg { .. }
+            | Self::LdRowsNotInTheDosages { .. }
+            | Self::LdDosagesOfOtherIndividuals { .. }
+            | Self::LdPopWithNoDosages { .. }
+            | Self::LdR2OfAnotherSize { .. }
+            | Self::LdLinalg { .. }
+            | Self::PopDistSumsOfAnotherSize { .. }
+            | Self::VarFilterOfTheLdCriterion
+            | Self::GwasInputOfAnotherSize { .. }
+            | Self::GwasAnswersOfAnotherSize { .. }
+            | Self::GwasLinalg { .. }
+            // The file itself: one that could not be opened or read, one
+            // that a call was writing, and the four ways the bytes of a
+            // file that was cut short or damaged no longer decode. These
+            // are an `OSError` in Python, which carries the file in
+            // `filename`.
+            | Self::FileNotOpened { .. }
+            | Self::Io(..)
+            | Self::VarsFileNotWritten { .. }
+            | Self::VcfBgzipEndMissing
+            | Self::VcfBgzipCorrupted { .. }
+            | Self::VarsFileCutShort { .. }
+            | Self::VarsBatchNotRead { .. }
+            // What a reader found in what it read, or was asked of a
+            // file it had read: a source that is not a VCF and one that is
+            // not a vars file, a header popnei cannot read, a wrong data
+            // line, a genotype of the wrong ploidy, the thirteen of the
+            // vars file that "The Rust interface" of `docs/specs/io_vars.md`
+            // lists, a variant whose position goes back within its
+            // chromosome, which the filter by linkage disequilibrium is the
+            // one reader of popnei to refuse, a pass that gave no variant,
+            // the fields a consumer asked a block for and the name of a
+            // field itself, a kinship of a file whose entries are not
+            // finite, and the sizes the distances between individuals
+            // cannot be calculated at over the individuals of that file.
+            | Self::FieldsNotInTheBlock { .. }
+            | Self::LdFilterVariantOutOfOrder { .. }
+            | Self::HistRangeTooWide { .. }
+            | Self::HistTooManyBins { .. }
+            | Self::StatOfAnUnknownName { .. }
+            | Self::HistBinsOfAnUnknownKind { .. }
+            | Self::PassGaveNoVariant { .. }
+            | Self::KinshipValueNotFinite { .. }
+            | Self::DistancesOfTooManyIndividuals { .. }
+            | Self::MorePairsThanAreCounted { .. }
+            | Self::KosmanSumsTooLarge { .. }
+            | Self::LdPloidyTooLarge { .. }
+            | Self::NotAFieldOfABlock { .. }
+            | Self::NotAVcf { .. }
+            | Self::VcfHeader { .. }
+            | Self::VcfDataLine { .. }
+            | Self::VcfGenotypePloidy { .. }
+            | Self::NotAVarsFile { .. }
+            | Self::VarsFormatVersion { .. }
+            | Self::VarsColumnType { .. }
+            | Self::VarsGtsWidth { .. }
+            | Self::VarsNullValue { .. }
+            | Self::VarsQualityNotFinite { .. }
+            | Self::VarsAlleleBelowMissing { .. }
+            | Self::VarsBatchesDoNotMatch { .. }
+            | Self::VarsBatchNumVars { .. }
+            | Self::VarsZstd
+            | Self::VarsIndividualTwice { .. }
+            | Self::VarsFileOfNoGenotypes { .. }
+            | Self::VarsTextTooLarge { .. } => true,
+        }
+    }
+}
+
 /// What [`Error::PassGaveNoVariant`] says: whether the source of the pass
 /// held no variant or its steps kept none of the ones they were given, and
 /// in the second case what each filter was given and kept.
@@ -2333,6 +2954,31 @@ fn a_pair_with_no_variant_called(
     )
 }
 
+/// The causes of [`Error::GwasFitDidNotSettle`] and the remedy of each,
+/// which are the model's own: a fit with a kinship has a third cause that a
+/// fit without one has not, and its remedy is the kinship and not a
+/// covariate.
+///
+/// The two covariates of the first message were the whole of it while the
+/// logistic regression was the only fit that ran in rounds. The logistic
+/// mixed model then took the same message, and a study of one covariate and
+/// a kinship that relates every pair alike was told to take one of its two
+/// covariates out, which it cannot do and which is not what went wrong.
+///
+/// A linear model and a linear mixed model are fitted without rounds and
+/// reach neither message; they take the one the logistic regression has, so
+/// that a case nobody has written yet says something true of any fit.
+fn the_remedies_of_a_fit_that_did_not_settle(model: crate::gwas::GwasModel) -> &'static str {
+    match model {
+        crate::gwas::GwasModel::Lm | crate::gwas::GwasModel::Lmm | crate::gwas::GwasModel::Glm => {
+            "Two things do that and they have different remedies: a covariate that separates the individuals that have the condition from the ones that have not has no finite effect for a fit to reach, and the fit walks towards an infinite one, so take that covariate out; or two covariates carry so nearly the same thing that the system of a round can no longer be factored, although they are independent enough for the study to have been accepted, so take one of the two out"
+        }
+        crate::gwas::GwasModel::Glmm => {
+            "Three things do that and they have different remedies: a covariate that separates the individuals that have the condition from the ones that have not has no finite effect for a fit to reach, and the fit walks towards an infinite one, so take that covariate out; or two covariates carry so nearly the same thing that the system of a round can no longer be factored, although they are independent enough for the study to have been accepted, so take one of the two out; or the kinship asks for a random effect that the trait cannot fit, which a kinship that relates every pair alike does, its effect being one number for every individual that the intercept already holds, and then it is the kinship to look at and not a covariate"
+        }
+    }
+}
+
 /// The five statistics of a variant under the names a user writes them, for
 /// the message that refuses a name that is of none of them: "`obs_het`,
 /// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
@@ -2357,8 +3003,46 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::Error;
+    use crate::gwas::GwasModel;
     use crate::io::vcf::VcfPlace;
     use crate::variant::Needs;
+
+    /// A fit that did not settle names the causes of the model it was
+    /// fitting: the logistic mixed model has the kinship among them, and
+    /// the logistic regression, which has no kinship, has not.
+    ///
+    /// What the message is for is what the user does next, and a study of
+    /// one covariate and a kinship that relates every pair alike was being
+    /// told to take one of its two covariates out.
+    #[test]
+    fn the_message_of_a_mixed_fit_that_did_not_settle_names_the_kinship() {
+        let of_the_mixed_model = Error::GwasFitDidNotSettle {
+            model: GwasModel::Glmm,
+            rounds: 200,
+        }
+        .to_string();
+        assert!(
+            of_the_mixed_model.contains("it is the kinship to look at"),
+            "the logistic mixed model was refused with {of_the_mixed_model}"
+        );
+        assert!(
+            of_the_mixed_model.contains("separates"),
+            "the logistic mixed model was refused with {of_the_mixed_model}"
+        );
+        let of_the_logistic = Error::GwasFitDidNotSettle {
+            model: GwasModel::Glm,
+            rounds: 50,
+        }
+        .to_string();
+        assert!(
+            !of_the_logistic.contains("it is the kinship to look at"),
+            "the logistic regression, which has no kinship, was refused with {of_the_logistic}"
+        );
+        assert!(
+            of_the_logistic.contains("separates"),
+            "the logistic regression was refused with {of_the_logistic}"
+        );
+    }
 
     /// The message has to name the fields, because that is what tells the
     /// caller which reader to ask or which calculation to drop.
@@ -2513,5 +3197,91 @@ mod tests {
         // this needs to be told both.
         assert!(message.contains("different ploidies"), "{message}");
         assert!(message.contains("argument"), "{message}");
+    }
+
+    /// The errors of a study that a user's own arguments are refused with
+    /// name no file, and the ones a file was read for do.
+    ///
+    /// The two the Python binding crate had in the wrong place are here by
+    /// name: the GRAMMAR-Gamma approximation a study asked for, and a null
+    /// model that did not settle, both of which are read from the
+    /// phenotype, the design and the kinship and from no variant of any
+    /// file. What this test cannot do is catch the case nobody classified,
+    /// which is what the exhaustive match of `names_the_file` is for.
+    #[test]
+    fn the_errors_of_what_a_user_wrote_name_no_file() {
+        for error in [
+            Error::GwasGrammarGammaWithoutASecondPass,
+            Error::GwasFitDidNotSettle {
+                model: GwasModel::Glmm,
+                rounds: 200,
+            },
+            Error::GwasModelNotBuilt {
+                model: GwasModel::Lmm,
+            },
+            Error::GwasGrammarGammaOfAModelWithNoProjection {
+                model: GwasModel::Lm,
+            },
+            Error::NoPop,
+        ] {
+            assert!(
+                !error.names_the_file(),
+                "{error} was said to name the file it happened in"
+            );
+        }
+        for error in [
+            Error::PcaNoVariants,
+            Error::VcfBgzipEndMissing,
+            Error::GwasVariantsTooLarge,
+            Error::GwasGrammarGammaWithoutAVariantThatVaries {
+                num_individuals: 200,
+            },
+            Error::GwasGrammarGammaFactorNotAboveZero {
+                factor: -1.5e-16,
+                num_vars: 3,
+            },
+        ] {
+            assert!(error.names_the_file(), "{error} was said to name no file");
+        }
+    }
+
+    /// The model a study could not be fitted for is a defect of popnei and
+    /// says so.
+    ///
+    /// All four models have been written since 24 September 2026, and the
+    /// message told a user to wait for one of them until then. What is left
+    /// of the case is a mixed model whose kinship was not there when it was
+    /// fitted, which no study reaches and which whoever meets reports.
+    #[test]
+    fn the_model_whose_kinship_was_not_there_is_a_defect() {
+        let message = Error::GwasModelNotBuilt {
+            model: GwasModel::Glmm,
+        }
+        .to_string();
+        assert!(message.contains("popnei has a defect"), "{message}");
+        assert!(
+            message.contains("a binomial trait with a kinship is a logistic mixed model"),
+            "{message}"
+        );
+        assert!(!message.contains("being written"), "{message}");
+    }
+
+    /// The model the GRAMMAR-Gamma approximation had no projection matrix
+    /// of is a defect of popnei and does not tell the user to give a
+    /// kinship.
+    ///
+    /// The arm it comes from is reached only when a kinship was given and
+    /// the model chosen for it is not a mixed one, so the message a study
+    /// with no kinship gets, "give a kinship or ask for no approximation",
+    /// would be telling the user to give the kinship they gave.
+    #[test]
+    fn the_model_the_approximation_had_no_projection_of_is_a_defect() {
+        let message = Error::GwasGrammarGammaOfAModelWithNoProjection {
+            model: GwasModel::Lm,
+        }
+        .to_string();
+        assert!(message.contains("popnei has a defect"), "{message}");
+        assert!(message.contains("`lm`"), "{message}");
+        assert!(!message.contains("give a kinship"), "{message}");
     }
 }

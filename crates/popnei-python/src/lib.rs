@@ -98,11 +98,31 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_MAX_NUM_VARS: usize = popnei::ld::MAX_NUM_VARS_OF_THE_MATRIX;
 
+    // The four of `calc_ld_and_dist_per_pop`, the bins of the distances a
+    // pair of variants is counted at and the major allele frequency a
+    // variant is counted at, which are the constants of the core as well.
+    #[pymodule_export]
+    const DEFAULT_MIN_DIST: u64 = popnei::ld::DEFAULT_MIN_DIST;
+    #[pymodule_export]
+    const DEFAULT_MAX_DIST: u64 = popnei::ld::DEFAULT_MAX_DIST;
+    #[pymodule_export]
+    const DEFAULT_NUM_DIST_BINS: usize = popnei::ld::DEFAULT_NUM_DIST_BINS;
+    #[pymodule_export]
+    const DEFAULT_MAX_ALLOWED_MAF: f64 = popnei::ld::DEFAULT_MAX_ALLOWED_MAF;
+
     // The two of `do_pca_from_variants`, from the core as well.
     #[pymodule_export]
     const DEFAULT_TRANSFORM_TO_BIALLELIC: bool = popnei::pca::DEFAULT_TRANSFORM_TO_BIALLELIC;
     #[pymodule_export]
     const DEFAULT_NUM_PRIN_COMPS: usize = popnei::pca::DEFAULT_NUM_PRIN_COMPS;
+
+    // Whether a mixed model of `calc_gwas` stands in for the denominator of
+    // its test with the GRAMMAR-Gamma approximation when the user says
+    // nothing. It is the exact denominator, since the approximation gives up
+    // accuracy that grows with how strongly a panel is structured, and a
+    // user asks for it.
+    #[pymodule_export]
+    const DEFAULT_USE_GRAMMAR_GAMMA_APPROX: bool = popnei::gwas::DEFAULT_USE_GRAMMAR_GAMMA_APPROX;
 
     #[pymodule_export]
     use super::dists::calc_pairwise_kosman_dists;
@@ -111,7 +131,7 @@ mod _core {
     #[pymodule_export]
     use super::kinship::{calc_kinship, kinship_principal_components};
     #[pymodule_export]
-    use super::ld::calc_rogers_huff_r2_matrix;
+    use super::ld::{calc_ld_and_dist_per_pop, calc_rogers_huff_r2_matrix};
     #[pymodule_export]
     use super::pca::{pca, pca_of_variants};
     #[pymodule_export]

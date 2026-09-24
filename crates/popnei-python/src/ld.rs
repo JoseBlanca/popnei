@@ -1,19 +1,28 @@
-//! The r² of every pair of the variants of a pass on its way to Python: one
-//! pass over a source, and the matrix of the pairs with the chromosome and
-//! the position of each variant beside it.
+//! The r² of the variants of a pass on its way to Python: one pass that
+//! gives the matrix of every pair with the chromosome and the position of
+//! each variant beside it, and one that gives, for each population, how the
+//! r² of a pair falls off with the distance between its two variants, in
+//! bins of distance and as the curve fitted to its pairs.
 //!
-//! The calculation is the core's, [`popnei::ld::calc_r2_matrix`], and what
+//! The calculations are the core's, [`popnei::ld::calc_r2_matrix`] and
+//! [`popnei::ld::calc_ld_and_dist`], and what
 //! this module does is what `calc_pairwise_kosman_dists` of `dists.rs` does
 //! for the distances: it builds the chain of readers of the pass from the
 //! steps of the `Variants`, lends it to the core with the interpreter
 //! released, and reads the counts of the filters from that chain when the
 //! call is over, since no block of the pass reaches this crate. How many
 //! variants the calculation took comes from the result, and the two together
-//! are the `pass_stats` of the `R2Matrix` the package builds.
+//! are the `pass_stats` of the `R2Matrix` and of the `LdAndDistPerPop` the
+//! package builds.
 //!
 //! A pair that has no r², which "What it gives" of `docs/specs/ld.md`
-//! defines, is NaN in the core already, so nothing of the missing value is
-//! decided here.
+//! defines, is NaN in the core already, and so are the three values of the
+//! curve of a population that has none, so nothing of those missing values
+//! is decided here. The one that is decided here is a bin with no pair, whose
+//! mean and standard deviation the core gives as `None` and which a user
+//! reads as NaN.
+
+use std::path::Path;
 
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2};
@@ -21,12 +30,14 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
 use popnei::block::BlockReader;
-use popnei::ld::R2Matrix;
+use popnei::ld::{LdAndDistOptions, LdBins, R2Matrix};
 
-use crate::errors::PyPopneiError;
+use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
 use crate::source::{
-    ChromColumn, OpenSource, PassCounts, chrom_column, count_of, read_only, source_of,
+    ChromColumn, OpenSource, PassCounts, chrom_column, count_of, distance_of, read_only, source_of,
+    threshold_of,
 };
+use crate::stats::{of_a_result, the_pops};
 use crate::steps::{Step, Steps, chain_of};
 
 /// What each filter of a pass was given and kept, under the kind of the
@@ -211,4 +222,209 @@ fn filtering_of(chain: &dyn BlockReader) -> Vec<(&'static str, u64, u64)> {
         .into_iter()
         .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
         .collect()
+}
+
+/// The curve of one population on its way to Python: the fitted ρ per base
+/// pair, the fitted curve at a distance of 0 and the distance at which it
+/// has fallen to half of that, which are [`popnei::ld::LdDecay`].
+///
+/// The three are NaN together for a population no curve was fitted to, and
+/// the core has them NaN already, so nothing of that missing value is
+/// decided here.
+type TheCurveOfAPop = (f64, f64, f64);
+
+/// The bins of one population on their way to Python: the smallest and the
+/// largest distance of each bin, both included, how many pairs it holds, the
+/// mean of their r² and its standard deviation, how many variants the
+/// population kept at its major allele frequency, and the curve fitted to
+/// its pairs.
+///
+/// The five arrays hold one value for each bin, in the order of the
+/// distances, and the package makes the rows of a pandas frame out of them.
+///
+/// The three counts are signed 64 bit integers, which
+/// [`crate::stats::of_a_result`] says why: a user subtracts the pairs of
+/// one bin from the pairs of another, or the smallest distance of a bin
+/// from the largest, and of unsigned counts they read 1.8e19 where the
+/// answer is negative. The three values of the curve are `f64` and cross as
+/// they are.
+type BinsOfAPop<'py> = (
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    u64,
+    TheCurveOfAPop,
+);
+
+/// What one pass of the fall-off gives Python: the names of the populations
+/// in their order, the bins of each of them in that same order, and the
+/// counts of the pass.
+type LdAndDistForPython<'py> = (Vec<String>, Vec<BinsOfAPop<'py>>, PassCounts);
+
+// The fall-off of the r² of a pair of variants with the distance between
+// them, in bins of distance and for each population, over the variants that
+// the steps of `steps` keep of `source`. A `///` comment here would become
+// the `__doc__` of `popnei._core.calc_ld_and_dist_per_pop`, and what a
+// Python user reads belongs to the package, which is the API.
+#[pyfunction]
+#[pyo3(signature = (source, steps, pops, min_dist, max_dist, num_bins, max_allowed_maf))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments of `calc_ld_and_dist_per_pop` of `docs/specs/ld.md`, the four \
+              of the bins taken as the object a Python user wrote so that what is refused \
+              names the argument; a struct of them would be built in Python, element by \
+              element"
+)]
+pub(crate) fn calc_ld_and_dist_per_pop<'py>(
+    py: Python<'py>,
+    source: &Bound<'py, PyAny>,
+    steps: &Bound<'py, Steps>,
+    pops: Option<Vec<(String, Vec<String>)>>,
+    min_dist: &Bound<'py, PyAny>,
+    max_dist: &Bound<'py, PyAny>,
+    num_bins: &Bound<'py, PyAny>,
+    max_allowed_maf: &Bound<'py, PyAny>,
+) -> Result<LdAndDistForPython<'py>, PyPopneiError> {
+    let source = source_of(source)?;
+    // The four numbers of the bins are taken as the objects a user wrote and
+    // converted here, and not by the signature: the conversion of pyo3
+    // raises an `OverflowError` for a negative distance and takes `True` as
+    // the number 1, and neither of those names the argument. A `min_dist`
+    // below 0 cannot reach the core, whose `min_dist` is a `u64`, so
+    // `distance_of` is what refuses it, under the name a user wrote and with
+    // the number they wrote there.
+    let options = LdAndDistOptions {
+        min_dist: distance_of("min_dist", 0, min_dist)?,
+        max_dist: distance_of("max_dist", 0, max_dist)?,
+        num_bins: count_of("num_bins", num_bins)?,
+        max_allowed_maf: threshold_of("max_allowed_maf", max_allowed_maf)?,
+    };
+    let steps = steps.get().of_a_pass()?;
+    // A Ctrl-C that was pending when this was called is raised here, before
+    // the file is opened.
+    py.check_signals()?;
+    let path = source.path().to_path_buf();
+    // The whole source is read inside this one call, and the products of the
+    // tiles of the window are the work of every core of the machine, so the
+    // interpreter is released for all of it: the threads of rayon deadlock
+    // on a caller that holds it. A Ctrl-C that arrives meanwhile is raised
+    // when the call is over and not between two blocks, as it is in
+    // `Blocks::__next__`: the loop over the blocks is the core's, and a pass
+    // that is interrupted loses only itself, since it writes no file and the
+    // `Variants` is as it was.
+    let (of_the_pass, pop_names, filtering) = py
+        .detach(|| -> popnei::Result<_> {
+            // The source is opened at the size of its own blocks: the bins
+            // are added up in the order of the variants of the pass, which
+            // no block cuts, so the same numbers come out whatever the size,
+            // and no `Reblock` is put over the chain.
+            let reader = source.reader(None)?;
+            // The chain of the pass stays here, lent to the core, so that
+            // the counts of its filters can be read when the call is over:
+            // the loop over the blocks is the core's, and no block of it
+            // reaches this crate.
+            let mut chain = chain_of(reader, &steps)?;
+            // The names a user wrote are looked up among the individuals the
+            // pass gives, which are those of the source after a filter of
+            // individuals when the `Variants` carries one, and only the pass
+            // knows them. It is the lookup the statistics per population
+            // make, so a name that is not an individual of the pass is
+            // refused in the same words by both.
+            let pops = the_pops(pops.as_deref(), chain.individuals())?;
+            let names = (0..pops.len())
+                .map(|pop| pops.name(pop).to_owned())
+                .collect();
+            let of_each_pop: Vec<&[usize]> =
+                (0..pops.len()).map(|pop| pops.individuals(pop)).collect();
+            let of_the_pass = popnei::ld::calc_ld_and_dist(&mut *chain, &of_each_pop, &options)?;
+            let filtering = filtering_of(chain.as_ref());
+            Ok((of_the_pass, names, filtering))
+        })
+        .map_err(|error| PyPopneiError::of_the_file(error, &path))?;
+    // The variants the pass gave are the core's count and are not worked out
+    // again here: the calculation was given them and counted them with the
+    // arithmetic that says what happens on overflow, and a count of this
+    // crate beside it would be a second answer to one question.
+    let num_vars = of_the_pass.num_vars();
+    // The Ctrl-C that arrived while the interpreter was released is raised
+    // here, before numpy is called.
+    raise_a_ctrl_c_before_numpy_is_called(py)?;
+    let mut per_pop = Vec::with_capacity(of_the_pass.num_pops());
+    for pop in 0..of_the_pass.num_pops() {
+        let bins = of_the_pass.bins_of_pop(pop).ok_or_else(|| {
+            PyPopneiError::broken_of_the_file(
+                format!(
+                    "the pass counted {num_pops} populations and has no bins for the \
+                     population {pop}",
+                    num_pops = of_the_pass.num_pops()
+                ),
+                &path,
+            )
+        })?;
+        per_pop.push(the_bins_for_python(py, bins, &path)?);
+    }
+    Ok((pop_names, per_pop, (num_vars, filtering)))
+}
+
+/// The bins of one population as the five arrays and the count the package
+/// builds its frame from, with the three values of the curve fitted to its
+/// pairs.
+///
+/// A bin with no pair has a mean and a standard deviation of NaN, which is
+/// where the `None` of the core becomes the missing value that numpy and
+/// pandas hold. The three values of the curve are the core's as they are,
+/// NaN included.
+///
+/// # Errors
+///
+/// [`PyPopneiError::Broken`] when the core gives no bounds and no count of
+/// pairs for a bin it says it has, which is a defect of popnei: a user
+/// reports it instead of looking for what they typed wrong; and when a
+/// distance or a count of pairs is above what a signed 64 bit integer
+/// holds.
+fn the_bins_for_python<'py>(
+    py: Python<'py>,
+    bins: &LdBins,
+    path: &Path,
+) -> Result<BinsOfAPop<'py>, PyPopneiError> {
+    let num_bins = bins.num_bins();
+    let mut smallest_dist = Vec::with_capacity(num_bins);
+    let mut largest_dist = Vec::with_capacity(num_bins);
+    let mut num_pairs = Vec::with_capacity(num_bins);
+    let mut mean_r2 = Vec::with_capacity(num_bins);
+    let mut sd_r2 = Vec::with_capacity(num_bins);
+    for bin in 0..num_bins {
+        let (smallest, largest) = bins
+            .bounds(bin)
+            .ok_or_else(|| not_a_bin("the distances", bin, num_bins, path))?;
+        let pairs = bins
+            .num_pairs(bin)
+            .ok_or_else(|| not_a_bin("the pairs", bin, num_bins, path))?;
+        smallest_dist.push(of_a_result(smallest)?);
+        largest_dist.push(of_a_result(largest)?);
+        num_pairs.push(of_a_result(pairs)?);
+        mean_r2.push(bins.mean_r2(bin).unwrap_or(f64::NAN));
+        sd_r2.push(bins.sd_r2(bin).unwrap_or(f64::NAN));
+    }
+    let curve = bins.decay();
+    Ok((
+        smallest_dist.into_pyarray(py),
+        largest_dist.into_pyarray(py),
+        num_pairs.into_pyarray(py),
+        mean_r2.into_pyarray(py),
+        sd_r2.into_pyarray(py),
+        bins.num_vars(),
+        (curve.rho_per_bp(), curve.r2_at_zero(), curve.half_dist()),
+    ))
+}
+
+/// What a user is told when the core says it has `num_bins` bins and gives
+/// nothing for one of them, `what` naming the values that were asked for.
+fn not_a_bin(what: &str, bin: usize, num_bins: usize, path: &Path) -> PyPopneiError {
+    PyPopneiError::broken_of_the_file(
+        format!("{what} of the bin {bin} of {num_bins} are not in the bins of a population"),
+        path,
+    )
 }

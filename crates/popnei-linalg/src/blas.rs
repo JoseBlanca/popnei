@@ -1,11 +1,16 @@
 //! The BLAS and LAPACK backend: the routines of the library of the
 //! system, `dsyrk` and `dgemm`, which the four products of this module
-//! call, and `dsyevd`, `dpotrf`, `dpotrs`, `dpotri`, `dgeqrf`, `dorgqr`,
-//! `dtrtrs` and `dgesdd`, which the other operations call.
+//! call, and `dsyevd`, `dpotrf`, `dpotrs`, `dgeqrf`, `dorgqr`, `dtrtrs`
+//! and `dgesdd`, which the other operations call. The inverse is the one
+//! operation here with no routine of its own: `dpotri`, which LAPACK has
+//! for it, is the one call of this backend that Accelerate computes
+//! wrongly under concurrency, so the inverse is built from the triangular
+//! solve and the product, as [`invert_with_cholesky`] says and as
+//! "Calling the crate from two threads" of `docs/specs/linalg.md` has it.
 //!
-//! Three of those numpy does not call: `dpotrs`, `dpotri` and `dtrtrs`,
-//! of which `_umath_linalg` of numpy 2.5.3 exports none, checked with
-//! `nm` on 23 September 2026. numpy solves a system and inverts a matrix
+//! Two of those numpy does not call: `dpotrs` and `dtrtrs`, of which
+//! `_umath_linalg` of numpy 2.5.3 exports neither, checked with `nm` on
+//! 23 September 2026. numpy solves a system and inverts a matrix
 //! through an LU of a general square matrix where this crate goes through
 //! a Cholesky of a symmetric positive definite one, and it solves
 //! `r c = q' y` with that same general solve where this crate has
@@ -482,73 +487,104 @@ pub(crate) fn solve_with_cholesky(l: &[f64], n: usize, b: &mut [f64], sides: usi
 /// filled and `inverse` of exactly `n` x `n`, and `n` 1 at least. The
 /// upper half of `inverse` is left as it was.
 ///
-/// `dpotri` inverts a factorization where it lies, so the lower half of
-/// the factorization is copied into the buffer the caller gave for the
-/// inverse and the routine works there: that copy is what keeps `l` as it
-/// was, which the interface of the crate promises, and the routine asks
-/// for no workspace besides it. The copy is of that half alone, and not of
-/// the whole buffer, because the upper half of `inverse` is the caller's
-/// and is left as it was, and because the routine reads nothing else.
+/// The inverse is built from the triangular solve and the product above
+/// and not from LAPACK's `dpotri`, which is the one routine of this
+/// backend that Accelerate computes wrongly: measured on this Mac on 24
+/// September 2026, 2000 inversions of one 200 x 200 matrix gave between
+/// 213 and 546 answers different from the rest beside seven threads doing
+/// nothing but `product`, the worst by 2.4e-4 on entries that reach
+/// 1.7e-2, and 2, 2, 1 and 0 different with nothing else of popnei
+/// running, since Accelerate's own threads inside the routine are enough.
+/// The route below gave 0 of 2000 in both cases. "Calling the crate from
+/// two threads" of `docs/specs/linalg.md` has the whole of what was
+/// measured, on which routines and at which sizes, and what this route
+/// costs in time.
+///
+/// The route is the identity solved against `l`, whose answer is the
+/// inverse of `l`, and then that answer times its own transpose: `a` is
+/// `l l'`, so the inverse of `a` is `l⁻¹' l⁻¹`. The solve is given the
+/// identity as `n` right hand sides and gives back one solution to a row,
+/// which is `l⁻¹` held column after column, and that buffer read as this
+/// crate reads one is `l⁻¹'`, so the product wanted is that buffer times
+/// its transpose, which is [`product_with_the_second_turned`].
+///
+/// It costs two buffers of `n` x `n` values, 320 KB each for the 200
+/// individuals of popnei's panels, that `dpotri` did not need: the solve
+/// overwrites the right hand sides it is given, so the identity is a
+/// buffer of its own, and the product may not write where it reads, nor
+/// into `inverse`, whose upper half is the caller's.
 ///
 /// # Errors
 ///
-/// [`Error::Dimension`] when `n` is larger than the `i32` the routine
-/// takes. [`Error::Singular`] when the diagonal of `l` holds a 0 at the
-/// row the error names, which the routine would divide by; `lib.rs` reads
-/// that diagonal before either backend runs, since faer's inverse does not
-/// look at it, so no caller of the crate reaches this one.
-/// [`Error::NoConvergence`] when the routine refused an argument it was
+/// [`Error::Dimension`] when `n` is larger than the `i32` the routines
+/// take. [`Error::Memory`] when this machine has not the memory for
+/// either buffer. [`Error::Singular`] when the diagonal of `l` holds a 0
+/// at the row the error names, which the solve would divide by; `lib.rs`
+/// reads that diagonal before either backend runs, since faer's inverse
+/// does not look at it, so no caller of the crate reaches this one.
+/// [`Error::NoConvergence`] when a routine refused an argument it was
 /// given, which is a defect of popnei.
 pub(crate) fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> Result<()> {
-    let order = the_i32_of(n, "n")?;
-    // Both buffers hold exactly n * n values, `lib.rs` having cut them to
-    // the dimensions, so each is n rows of n, and the lower half is the
-    // entries of column `j` at most `i` of row `i`. What is left of the
-    // row after those is the caller's and is not written.
+    // The dimension is checked here and not left to the calls below so
+    // that the error names `n`, which is the argument the caller passed,
+    // and not the `sides` the solve is given it as.
+    the_i32_of(n, "n")?;
+    // `l` holds exactly n * n values, `lib.rs` having cut it to the
+    // dimensions, so its length is the length of each buffer here.
+    let mut turned = the_buffer_of(l.len(), "the identity the inverse is solved against")?;
+    for (row, entries) in turned.chunks_exact_mut(n).enumerate() {
+        if let Some(entry) = entries.get_mut(row) {
+            *entry = 1.0;
+        }
+    }
+    if let Err(error) = solve_triangular(
+        l,
+        n,
+        TheHalfThatHoldsTheMatrix::TheLowerHalf,
+        &mut turned,
+        n,
+    ) {
+        // The solve names the triangular matrix `a`, which here is the
+        // factorization the caller gave as `l`.
+        if let Error::Singular { at, .. } = &error {
+            return Err(Error::Singular {
+                argument: "l",
+                at: *at,
+            });
+        }
+        return Err(error);
+    }
+    let mut whole = the_buffer_of(l.len(), "the inverse the product of the solve writes")?;
+    product_with_the_second_turned(&turned, n, n, &turned, n, &mut whole)?;
+    // Both buffers hold exactly n * n values, so each is n rows of n, and
+    // the lower half is the entries of column `j` at most `i` of row `i`.
+    // What is left of the row after those is the caller's and is not
+    // written.
     for (row, (into, from)) in inverse
         .chunks_exact_mut(n)
-        .zip(l.chunks_exact(n))
+        .zip(whole.chunks_exact(n))
         .enumerate()
     {
         for (into, from) in into.iter_mut().zip(from).take(row.saturating_add(1)) {
             *into = *from;
         }
     }
-    let mut info = 0_i32;
-    // SAFETY: with `uplo` U, `n` = n and `lda` = n the routine reads and
-    // writes the upper triangle of `inverse` as a column major matrix of n
-    // x n, which is the lower half of `inverse` in popnei's layout and is
-    // inside the n * n values it holds, the copy of `l` just written
-    // there. It reads and writes nothing else of that buffer and nothing
-    // at all of `l`, and `info` is one integer. `n` is not 0, which
-    // `lib.rs` refuses above both backends, and it fits in the `i32` the
-    // routine takes, which `the_i32_of` has just checked.
-    #[expect(
-        unsafe_code,
-        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
-    )]
-    unsafe {
-        ::lapack::dpotri(b'U', order, inverse, order, &mut info);
-    }
-    if info == 0 {
-        return Ok(());
-    }
-    // An `info` above 0 is the row of the diagonal entry of the
-    // factorization that is 0, counting from 1, which no `l` that
-    // `cholesky_lower` gave holds, since it stops at the first entry that
-    // is not above 0. An `info` below 0 is an argument the routine
-    // refused, and that is the arm the conversion fails in, since no
-    // negative number is a count.
-    match usize::try_from(info) {
-        Ok(row) => Err(Error::Singular {
-            argument: "l",
-            at: row.saturating_sub(1),
-        }),
-        Err(_) => Err(Error::NoConvergence {
-            routine: "dpotri",
-            info,
-        }),
-    }
+    Ok(())
+}
+
+/// A buffer of `values` floats, every one 0, whose memory is asked for and
+/// not taken, as [`the_column_major_copy_of`] asks for its own.
+///
+/// # Errors
+///
+/// [`Error::Memory`] when this machine has not the memory for it.
+fn the_buffer_of(values: usize, what: &'static str) -> Result<Vec<f64>> {
+    let mut buffer: Vec<f64> = Vec::new();
+    buffer
+        .try_reserve_exact(values)
+        .map_err(|_| Error::Memory { what, values })?;
+    buffer.resize(values, 0.0);
+    Ok(buffer)
 }
 
 /// The thin QR of `a`, of exactly `rows` x `cols` values row after row
@@ -1300,8 +1336,171 @@ fn the_smaller_dimension_of(rows: usize, cols: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
+        add_self_product_lower, cholesky_lower, invert_with_cholesky, product, solve_with_cholesky,
         the_workspace_of, the_workspace_of_the_singular_values, the_workspace_of_the_thin_qr,
     };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// The individuals of the covariance the inverse is measured on, which
+    /// is the 200 of popnei's panels.
+    const THE_INDIVIDUALS: usize = 200;
+
+    /// The rows of the matrix that covariance is the self product of, five
+    /// for each individual, which is what leaves it well conditioned.
+    const THE_ROWS_OF_THE_COVARIANCE: usize = 1000;
+
+    /// How many inversions the test below makes beside the other threads.
+    const THE_INVERSIONS: usize = 400;
+
+    /// How many threads do nothing but products while it inverts.
+    const THE_THREADS_IN_BLAS: usize = 7;
+
+    /// The covariance the inverse is measured on: A'A for the A of 1000
+    /// rows and 200 columns of the generator of "How the seven are
+    /// verified" of `docs/specs/linalg.md`, a 200 x 200 symmetric positive
+    /// definite matrix whose condition number is 6.5, so that nothing the
+    /// test sees comes from a matrix that is hard to invert. Only its
+    /// lower half is filled, which is what a Cholesky and an inverse read.
+    fn the_covariance_of_the_generator() -> Vec<f64> {
+        let mut state = 7_u64;
+        let a: Vec<f64> = (0..THE_ROWS_OF_THE_COVARIANCE * THE_INDIVIDUALS)
+            .map(|_| {
+                state ^= state.wrapping_shl(13);
+                state ^= state.wrapping_shr(7);
+                state ^= state.wrapping_shl(17);
+                // 2^53, below which a count is an exact f64.
+                state.wrapping_shr(11) as f64 / 9007199254740992.0 - 0.5
+            })
+            .collect();
+        let mut covariance = vec![0.0_f64; THE_INDIVIDUALS * THE_INDIVIDUALS];
+        add_self_product_lower(
+            &a,
+            THE_ROWS_OF_THE_COVARIANCE,
+            THE_INDIVIDUALS,
+            &mut covariance,
+        )
+        .unwrap();
+        covariance
+    }
+
+    /// The identity of 200 x 200, row after row, which is the 200 right
+    /// hand sides a solve inverts a 200 x 200 matrix with. Its diagonal is
+    /// one entry in every 201 of the buffer, a row and a column further on
+    /// each time.
+    fn the_identity_of_the_individuals() -> Vec<f64> {
+        let mut identity = vec![0.0_f64; THE_INDIVIDUALS * THE_INDIVIDUALS];
+        for entry in identity.iter_mut().step_by(THE_INDIVIDUALS + 1) {
+            *entry = 1.0;
+        }
+        identity
+    }
+
+    /// How far the lower halves of two `n` x `n` matrices are apart, the
+    /// largest difference of an entry of column `j` at most `i` in row
+    /// `i`.
+    fn the_largest_difference_of_the_lower_halves(one: &[f64], other: &[f64], n: usize) -> f64 {
+        let mut largest = 0.0_f64;
+        for (row, (entries, others)) in one.chunks_exact(n).zip(other.chunks_exact(n)).enumerate() {
+            for (entry, other) in entries.iter().zip(others).take(row.saturating_add(1)) {
+                largest = largest.max((entry - other).abs());
+            }
+        }
+        largest
+    }
+
+    /// What this guards: on Accelerate, LAPACK's `dpotri`, which inverts a
+    /// Cholesky factorization in one call, gives a numerically wrong
+    /// answer, most often while another call of Accelerate is running on
+    /// another thread of the same process, and `invert_with_cholesky` is
+    /// written as a triangular solve and a product for that reason. The
+    /// test inverts one matrix again and again while other threads do
+    /// nothing but products, and every answer has to be the answer the
+    /// same route gave before any of those threads was started, bit for
+    /// bit.
+    ///
+    /// Measured on this Mac on 24 September 2026, on this matrix and with
+    /// these seven threads: the route through `dpotri` gave between 213
+    /// and 546 answers different from the rest in seven runs of 2000
+    /// inversions, the worst off by 2.4e-4 on entries that reach 1.7e-2,
+    /// and the route the backend has now gave 0 of 2000 in five runs. At a
+    /// rate of about 1 in 8 the 400 inversions here would have to miss 400
+    /// times running to pass on the old route, and 20 runs of the test
+    /// against that route failed 20 times. The rate depends on the size,
+    /// which is why the test is at the 200 of popnei's panels and not at a
+    /// size that would make it quicker: with everything else the same,
+    /// 2000 inversions of a 50 x 50 and of a 100 x 100 gave 0 wrong, of a
+    /// 400 x 400, 27, and of an 800 x 800, 1127.
+    ///
+    /// The reference the answers are compared with is taken before the
+    /// other threads are started, so it is what one thread computes. That
+    /// the route gives the right matrix at all is what the comparison with
+    /// `solve_with_cholesky` checks, which inverts through `dpotrs` and
+    /// the identity instead and is a different routine of LAPACK.
+    #[test]
+    fn the_inverse_is_the_same_while_other_threads_are_in_blas() {
+        let mut l = the_covariance_of_the_generator();
+        cholesky_lower(&mut l, THE_INDIVIDUALS).unwrap();
+        let mut reference = vec![0.0_f64; THE_INDIVIDUALS * THE_INDIVIDUALS];
+        invert_with_cholesky(&l, THE_INDIVIDUALS, &mut reference).unwrap();
+
+        // The same inverse through `dpotrs`: the solution of a x = i for
+        // the identity is the inverse of a, and the buffer comes back with
+        // one solution to a row, which for a symmetric inverse is the
+        // inverse row after row.
+        let mut through_the_solve = the_identity_of_the_individuals();
+        solve_with_cholesky(&l, THE_INDIVIDUALS, &mut through_the_solve, THE_INDIVIDUALS).unwrap();
+        let apart = the_largest_difference_of_the_lower_halves(
+            &reference,
+            &through_the_solve,
+            THE_INDIVIDUALS,
+        );
+        assert!(
+            apart < 1e-15,
+            "the inverse and the solve against the identity are {apart:e} apart, and the two routes measured 3.1e-17 on 24 September 2026"
+        );
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut threads = Vec::new();
+        for _ in 0..THE_THREADS_IN_BLAS {
+            let stop = Arc::clone(&stop);
+            threads.push(std::thread::spawn(move || {
+                let a = the_covariance_of_the_generator();
+                let mut c = vec![0.0_f64; THE_INDIVIDUALS * THE_INDIVIDUALS];
+                while !stop.load(Ordering::Relaxed) {
+                    product(
+                        &a,
+                        THE_INDIVIDUALS,
+                        THE_INDIVIDUALS,
+                        &a,
+                        THE_INDIVIDUALS,
+                        &mut c,
+                    )
+                    .unwrap();
+                }
+            }));
+        }
+        let mut wrong = 0_usize;
+        let mut worst = 0.0_f64;
+        let mut inverse = vec![0.0_f64; THE_INDIVIDUALS * THE_INDIVIDUALS];
+        for _ in 0..THE_INVERSIONS {
+            invert_with_cholesky(&l, THE_INDIVIDUALS, &mut inverse).unwrap();
+            let apart =
+                the_largest_difference_of_the_lower_halves(&reference, &inverse, THE_INDIVIDUALS);
+            if apart > 0.0 {
+                wrong = wrong.saturating_add(1);
+                worst = worst.max(apart);
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(
+            wrong, 0,
+            "{wrong} of {THE_INVERSIONS} inversions differ from the one the same route gave on one thread, the worst by {worst:e}"
+        );
+    }
 
     /// The minimum `dgeqrf` and `dorgqr` document for a matrix of 3
     /// columns, which is those 3 floats.

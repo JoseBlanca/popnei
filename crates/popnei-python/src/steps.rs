@@ -205,7 +205,7 @@ impl Steps {
         max_dist: &Bound<'_, PyAny>,
     ) -> Result<(), PyPopneiError> {
         let max_allowed_r2 = threshold_of(MAX_ALLOWED_R2, max_allowed_r2)?;
-        let max_dist = distance_of(MAX_DIST, max_dist)?;
+        let max_dist = distance_of(MAX_DIST, 1, max_dist)?;
         // The filter of this criterion is the core's `LdFilter` and not its
         // `VarFilter`: whether a variant is kept turns on the variants kept
         // behind it, so `VarFilter::new` refuses this criterion. The filter

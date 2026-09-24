@@ -1,14 +1,20 @@
 # The ld module: how strongly two variants go together, and how that falls off with distance
 
-22 September 2026. Two variants are in linkage disequilibrium when the
-genotype of one tells something about the genotype of the other, which
-happens when they sit close enough on a chromosome that few
-recombinations have separated them. The `ld` module measures it, r² for
-every pair of a set of variants, and it gives the curve of that measure
-against the distance between the variants, for each population on its
-own, which is what a geneticist reads the recombination of a genome and
-the history of a population from. There is no code. This spec develops
-the row `ld` of the table in section 9 of `docs/architecture.md`.
+22 September 2026, with the curve fitted to the fall-off and the half
+distance added on 24 September 2026. Two variants are in linkage
+disequilibrium when the genotype of one tells something about the
+genotype of the other, which happens when they sit close enough on a
+chromosome that few recombinations have separated them. The `ld` module
+measures it, r² for every pair of a set of variants, and it gives how
+that measure falls off with the distance between the variants, for each
+population on its own: the fall-off in bins of distance, a curve fitted
+to the pairs, and the distance at which r² has fallen to half. That is
+what a geneticist reads the recombination of a genome and the history of
+a population from. The r² of two sets of variants and the matrix of every
+pair are built, in `crates/popnei/src/ld.rs` and in the Python and the
+TypeScript packages; nothing of the fall-off against distance is. This
+spec develops the row `ld` of the table in section 9 of
+`docs/architecture.md`.
 
 It depends on `docs/specs/block.md`, which has the block, the run of
 consecutive variants held as arrays, and `BlockReader`, the trait of
@@ -444,6 +450,224 @@ variant that hardly varies in a population rests on the one or two
 individuals that carry the rare allele, and leaving those variants in
 raises the curve everywhere.
 
+Beside the bins the result carries a curve fitted to the pairs and, read
+off it, the distance at which r² has fallen to half. The bins say what r²
+is where this dataset happens to have pairs; the curve puts the whole
+fall-off into one shape, and the half distance puts that shape into one
+number, which is what a plot of a population is labelled with and what
+two populations are compared by. "The curve that is fitted" below has the
+model, what is made smallest and how.
+
+### The curve that is fitted
+
+The model is the r² expected between two variants of a population under
+drift and recombination, Hill and Weir (1988) with the correction for a
+finite sample of Weir and Hill (1986). It is what the literature of
+linkage disequilibrium decay fits, as Remington et al. (2001) fitted it
+to maize. r² is a quantity of one pair of variants, and the model says what
+the average of it is expected to be at a given recombination, over the
+pairs of a genome and over the histories the population could have had.
+
+With ρ the scaled recombination between the two variants, four times the
+effective size of the population times the recombination fraction between
+them, and n how many were sampled,
+
+    E[r²] = (10 + ρ) / ((2 + ρ) · (11 + ρ))
+            · [1 + ((3 + ρ) · (12 + 12ρ + ρ²)) / (n · (2 + ρ) · (11 + ρ))]
+
+The first factor is the expectation, and it falls from 10/22, 0.4545, at
+ρ of 0 towards 0 as ρ grows: two variants that never recombine still do
+not reach an r² of 1, because their allele frequencies drift apart. The
+second corrects it for r² being measured on a sample and not on the whole
+population, and it is what holds the curve up at long distances, where
+the r² of a finite sample does not fall to 0.
+
+n is the individuals of the population, and not the individuals times the
+ploidy. Hill and Weir wrote n for the gametes sampled, because the r²
+they expect is between the alleles that travel together on one
+chromosome. popnei's is the estimate named after Rogers and Huff of "What
+it gives" above, the correlation across individuals of their dosages, and
+what such a correlation is biased upwards by is how many individuals it
+was taken over. `docs/reports/ld-method/decay_truth.py` measured it on 24
+September 2026 on a simulated population of 200 individuals with two
+chromosomes that assort independently: a pair of variants on different
+chromosomes carries no linkage disequilibrium, so the mean r² of such a
+pair is that bias plus what the population itself holds. Fitting that
+mean over samples of 25, 50, 100 and 200 individuals as a constant plus b
+divided by the individuals less one gives a b of 0.925, 0.971 and 0.984
+in three runs, where the individuals ask for 1 and the individuals times
+the ploidy for 0.5. It is the individuals of the population and not the
+individuals called at both variants of a pair, which a missing rate of
+0.03 puts at about 0.94 of them.
+
+popnei fits one number, the ρ per base pair: 4Nr, four times the
+effective size of the population times the recombination per base pair,
+which is the r of that product and not the r whose square this module
+measures. A pair d base pairs apart has a ρ of d times it. The effective
+size and the recombination rate enter only as that product, and one pass
+over one dataset does not separate them, so neither is given on its own.
+`rho_per_bp` in the results.
+
+Sved's curve, E[r²] = 1/(1 + ρ), is the other one the literature fits,
+and it is not the one used. Both estimate the same 4Nr, so the same
+simulation is asked which of them gets it back: over its three runs
+Sved's lands 69, 122 and 175 per 100 above the 4Nr the population was run
+at, where Hill and Weir's lands 12 per 100 below it, 20 above and 31
+above. Sved's has to pass through 1 at a distance of 0, so at 200 bp, the
+shortest distance those runs hold, it gives 0.92 to 0.94 where the mean
+r² measured there is 0.39 to 0.50; Hill and Weir's gives 0.45. What the
+simulation does not settle is n: the effective size its runs settled at
+is itself known only to about a quarter, 140, 221 and 274 against the 200
+individuals they were run with, which is wider than the three answers to
+n are apart. That is why n rests on the unlinked pairs above and not on
+this.
+
+The fitted value is the ρ per base pair at which the sum, over every pair
+the bins counted, of the square of the pair's r² minus the curve at the
+pair's distance is smallest. Every pair counts once and at its own
+distance, so `num_bins` does not move the fit; `min_dist` and `max_dist`
+do, because they choose which pairs there are.
+
+The pairs at one distance are added up before the fit and nothing is
+lost. The sum over them of the square of r² minus the curve is the spread
+of those pairs around their own mean, which no ρ changes, plus the number
+of them times the square of their mean minus the curve. So the fit needs,
+for each distance that holds a pair, how many pairs it holds, n_d, and
+the sum of their r², S_d, and with m_d for the mean of those r², S_d
+divided by n_d, it makes smallest
+
+    Σ over the distances of [ n_d · (m_d − f(d))² ]
+
+where f(d) is the curve at that distance. What that leaves out, the
+spread of the pairs of each distance around m_d, is the same at every ρ.
+
+Multiplying the square out gives Σ [ n_d · f(d)² − 2 · S_d · f(d) ],
+which is the same number less Σ n_d · m_d². No ρ changes what the two
+forms differ by, so they have the same smallest, and the one written
+above is the one popnei computes. That difference is 475.36 on the first
+population of "How it is verified" below, where the sum above is 23.21 at
+the ρ per base pair fitted to its pairs: the terms that depend on ρ are
+the same in both forms, and the multiplied-out one adds them inside a
+total of −452.15, 19.5 times the 23.21. An `f64` holds about sixteen
+digits whatever the size of the number, so the smallest step it can take
+from −452.15 is 5.68·10⁻¹⁴ where the smallest step it can take from 23.21
+is 3.55·10⁻¹⁵, and the fit tells two ρ apart through a step sixteen times
+as coarse. What that costs was measured on 24 September 2026 by fitting
+both forms to the same pairs. R 4.6.1, the language "How it is verified"
+below checks these curves against, fits the three populations of that
+part; the multiplied-out form lands 3.5·10⁻⁸, 5.3·10⁻⁸ and 5.5·10⁻⁹ of
+the ρ per base pair away from what R gives for them, where the form above
+lands 1.0·10⁻⁹, 9.3·10⁻⁹ and 2.2·10⁻⁹ away. On the table of r² read off
+the curve itself that the same part gives the second cargo test of the
+fit, whose pairs reach the default `max_dist` of 1000000, the
+multiplied-out form lands 1.5·10⁻⁶ from the ρ per base pair the table was
+made with, past the 10⁻⁶ these values are compared within, where the form
+above lands 3.5·10⁻¹⁰ from it.
+
+Fitting the mean of each bin instead, placed at the middle of the bin,
+moves the answer. For the first population of "How it is verified", the
+pairs give a half distance of 6810.57 bp, its ten bins give 7886.60, 15.8
+per 100 above, and fifty bins give 6541.43, 3.9 per 100 below. The first
+bin is both where the curve bends most and where the half distance falls,
+so that is where replacing its pairs by one mean costs most.
+
+There is one number to fit, so the smallest is found without derivatives.
+The sum is evaluated at 141 values of the ρ per base pair, from 10⁻¹² to
+10², spaced by a tenth of a decade; the two neighbours of the smallest of
+them bracket a golden section search, the usual one, which holds two
+points inside the bracket and drops the end beyond whichever of them has
+the larger sum, so the bracket is 0.618 of itself after each step, until
+it is narrower than 10⁻⁹ of a decade, 40 steps from a bracket two grid
+cells wide. So the fit costs 183 evaluations of the sum above, 141 for
+the grid and 2 to open the search and 40 for its steps, each one pass
+over the distances that hold a pair. The range covers every fall-off that
+can be seen between one base pair and the largest
+`max_dist` a user would give: below 10⁻¹² the curve is flat across 10⁶
+bp, and above 10² it has fallen before the second base pair. Narrowing
+the range, at the bottom to 10⁻⁹, at the top to 10⁰, or both, moves the
+fitted value of the first population of "How it is verified" by at most
+9.3·10⁻⁹ of itself, which is what the rounding of the sum leaves and not
+something the range did.
+
+How close the fit comes was measured on 24 September 2026, on tables it
+should get exactly right: r² read off the curve itself at n of 100, at
+each of eleven ρ per base pair that are not values of the grid, from
+10⁻⁸·³⁷ to 10⁻²·⁷¹, one pair at each of the distances 1000, 2000 and so
+on to 250000. It gives the ρ per base pair back to within 2.3·10⁻¹⁰ of
+it, the worst of the eleven, and the same eleven tables carried to
+1000000 give the same eleven numbers. What holds it there is the bracket:
+10⁻⁹ of a decade is 2.3·10⁻⁹ of the ρ per base pair, and the fit lands a
+tenth of that from the answer because what it keeps is the best of the
+points it evaluated and not an end of the bracket.
+
+On the pairs of a real population the rounding of the sum stops the
+search before the bracket does, and that is what the 9.3·10⁻⁹ above is.
+The sum of the first population of "How it is verified" is 23.21 at its
+smallest, an `f64` steps from 23.21 by 3.55·10⁻¹⁵, and moving the ρ per
+base pair away from the smallest does not raise the sum steadily at that
+scale: 10⁻⁹ of itself away the sum is 8 of those steps above its
+smallest, 9.3·10⁻⁹ away 21, 10⁻⁸ away 15, which is fewer although it is
+further, and 3·10⁻⁸ away 41. So the bottom of the sum is a stretch of ρ
+some 10⁻⁸ of itself wide in which a step decides, and what the fit
+returns is the first point it evaluated at the lowest step, which is
+where the grid put its points. Narrowing the range moves the grid;
+tightening the bracket moves nothing, and the fit over the whole range
+and the fit over each of the three narrowed ranges each give the same
+`f64` at brackets of 10⁻¹⁰, 10⁻¹¹, 10⁻¹² and 10⁻¹³ of a decade as at the
+10⁻⁹ the search uses. Measured on 24 September 2026 on those 46441 pairs
+at 249 distances.
+
+The grid before the search is what looks at the whole range instead of
+sliding downhill from a start value into whichever valley holds it. What
+is kept is the smallest of every ρ per base pair the fit evaluated, the
+141 of the grid included, so a sum with more than one valley inside the
+cell the search works on gives at worst the best of the grid, a tenth of
+a decade from the smallest.
+
+The half distance is where the fitted curve has fallen to half of its
+value at distance 0. The curve falls without turning, so exactly one ρ
+gives half of what it gives at ρ of 0, and which ρ that is depends on n
+alone: 2.1608135872529166 at n of 100 and 2.2641731329247312 at n of 50.
+The half distance is that ρ divided by the fitted ρ per base pair. popnei
+solves for it by bisection between ρ of 0 and 10⁶, stopping when the
+bracket is narrower than 10⁻¹² of its own middle, about 60 halvings, and
+not from a table, so a dataset of another n needs no new number.
+
+What the curve falls towards as ρ grows is 1/n and not 0, so it reaches
+half of its value at ρ of 0 only where that half is above 1/n, which it
+is from n of 3 upwards. At n of 1 the curve runs from 1.1983471074380165
+down to 1 and half of its value at 0 is 0.5991735537190083, and at n of 2
+it runs from 0.8264462809917356 down to 0.5 and half is
+0.4132231404958678: neither is ever reached, and there the half distance
+alone is NaN, the fitted ρ per base pair and the r² at distance 0 being
+what the pairs gave. `calc_ld_and_dist` reaches neither n. A population
+of one individual has one dosage at every variant, so no variant of it
+has variance and it counts no pair; and a population of two gives every
+pair it counts an r² of 1, the correlation of two points being 1 or −1
+whenever both variants vary, which is above the curve's own ceiling at
+every ρ, so its smallest falls at the bottom end of the searched range
+and "The cases" gives it the three NaN. Worked out on 24 September 2026,
+when `fit_ld_decay` was written.
+
+It is half of the value at distance 0 and not half of the shortest bin.
+The value at 0 is the curve's own ceiling, 0.46198347107438015 at n of
+100, which the individuals sampled fix on their own, so what is being
+halved does not change when `min_dist`, `max_dist` or `num_bins` changes.
+`min_dist` and `max_dist` still move the half distance, through the
+fitted ρ per base pair; `num_bins` moves neither.
+
+The half distance is read off the fitted curve and not off the pairs, so
+it can fall beyond every distance the fit was given, and a user who reads
+it as a distance the data reaches to is reading more than there is. The
+three individuals `i000`, `i001` and `i002` of
+`tests/reference/ld/ld.vcf.gz`, taken as one population at the defaults,
+give a half distance of 1868334.8 bp, where `max_dist` is 1000000 and the
+furthest pair they counted falls in the bin from 240001 to 260000: the
+curve fitted to those pairs is still above half of its value at 0 where
+the pairs end, and where it crosses half is worked out from the shape of
+the curve alone. Measured on 24 September 2026, on the 24548 pairs those
+three individuals counted over the 367 variants they kept.
+
 ### Its Python function
 
 ```python
@@ -472,7 +696,12 @@ one row per bin, indexed by the smallest distance of the bin, and the
 columns `largest_dist`, `num_pairs`, `mean_r2` and `sd_r2`, with NaN in
 the last two for a bin with no pair; `num_vars_per_pop`, a dict of the
 name of each population to how many variants passed its major allele
-frequency; and `pass_stats`.
+frequency; `decay_per_pop`, a dict of the name of each population to an
+`LdDecay`, a frozen dataclass with `rho_per_bp`, `r2_at_zero` and
+`half_dist`, the fitted 4Nr per base pair, the fitted curve at distance 0
+and the distance in base pairs at which it falls to half of that, the
+three of them NaN for a population whose pairs no curve was fitted to;
+and `pass_stats`.
 
 It mirrors `calc_ld_and_dist_per_pop` of `pynei/ld.py`. The differences:
 
@@ -485,9 +714,30 @@ It mirrors `calc_ld_and_dist_per_pop` of `pynei/ld.py`. The differences:
   linkage disequilibrium against distance is drawn from. Whether the
   result also carries a sample of pairs for a scatter is **Open 1**,
   below.
+- **It fits a decay curve and gives the half distance**, which pyNei does
+  not: pyNei hands over its sample of pairs and leaves the fitting to the
+  user. The curve is fitted to every pair, so two runs over one dataset
+  give the same number where two samples drawn without a seed would not.
+  The owner chose it on 24 September 2026 over reading the half distance
+  off the bins, either at the bin where the mean r² first crosses half of
+  the first bin's or by a straight line between the two bins around that
+  crossing: those two need no model and no search, and they give an
+  answer that moves with `min_dist` and `num_bins` and that a population
+  whose curve never crosses does not have at all.
 - **It gives r² and not r** (under the item above).
 - **A missing genotype takes its individual out of that pair** (under the
   item above).
+- **`min_dist` comes before `max_dist`.** pyNei's signature is
+  `calc_ld_and_dist_per_pop(variants, pops, max_dist, min_dist,
+  max_allowed_maf, method, max_num_measures_to_keep)`, the largest
+  distance first, and here the smallest comes first, which is the order
+  the bins run in. So a call written for pyNei that gives the distances by
+  position asks for something else here.
+  `calc_ld_and_dist_per_pop(variants, pops, 500000)` is a `max_dist` of
+  500000 in pyNei and a `min_dist` of 500000 here, which on a dataset
+  whose variants are all closer than that counts no pair and gives every
+  bin empty with nothing said; with both distances by position `min_dist`
+  lands above `max_dist` and it is a `ValueError`. Decided here.
 - **`min_dist` counts the pair at that distance.** pyNei keeps the pairs
   whose distance is strictly above it, so with its default of 1 a pair of
   variants 1 bp apart is thrown away and nothing says so. Here
@@ -517,8 +767,10 @@ maxDist, numBins, maxAllowedMaf})`, where `pops` is an object of
 population name to an array of individual names. The result has `perPop`,
 an object of population name to `{smallestDist, largestDist, numPairs,
 meanR2, sdR2}`, five typed arrays of `numBins` values, the distances and
-the counts as `Float64Array` like the positions of a block, `numVarsPerPop`
-and `passStats`.
+the counts as `Float64Array` like the positions of a block,
+`numVarsPerPop`, `decayPerPop`, an object of population name to
+`{rhoPerBp, r2AtZero, halfDist}`, three numbers and not arrays, and
+`passStats`.
 
 ### The cases
 
@@ -537,6 +789,24 @@ population that called it. A population in which every variant is left
 out, by its frequency or for having nothing called, gives every bin empty
 and a `num_vars_per_pop` of 0, and the other populations are not
 affected.
+
+A population whose pairs fall at fewer than two distances has no curve,
+and its `rho_per_bp`, `r2_at_zero` and `half_dist` are NaN: one distance
+says nothing about a fall-off, whatever a search would return for it. A
+population with no pair at all is that case, and so is one left with two
+variants, whose one pair is at one distance.
+
+A population whose smallest sum falls at either end of the searched range
+of the ρ per base pair has no curve either, and gives the same three NaN.
+A curve that is flat across `max_dist`, or that has fallen before the
+second base pair, is not a fall-off these pairs pin down, and the number
+at the end of the range says where the search stopped and not what the
+data says. The bins of such a population are what they would be anyway.
+
+A population of fewer than three individuals has a curve that never falls
+to half, for the reason "The curve that is fitted" gives, and its
+`half_dist` alone is NaN. No pass reaches it, and a caller of
+`fit_ld_decay` with a table of its own does.
 
 A pair of variants on two chromosomes has no distance and is in no bin,
 as in pyNei.
@@ -573,32 +843,86 @@ One pass. The calculation asks its reader for the genotypes and for the
 chromosome and the position.
 
 It holds the blocks whose variants are within `max_dist` of the newest
-variant read and on its chromosome, and drops a block as soon as every
-variant of it is further back than that or on another chromosome. For
-each population it holds the three matrices of "How it runs" of the item
+variant read and on its chromosome. A block every variant of which is
+further back than that or on another chromosome is dropped one block
+later, when the block after the one that put it out of reach is taken:
+the pairs of a block are counted against the window as it stood when that
+block arrived, and a variant within `max_dist` of the first variant of a
+block can be further than that from the last variant of the same block,
+which is what the window reaches back from. Dropping it as soon as it is
+out of reach leaves those pairs uncounted, and how many of them there are
+depends on the size of the blocks. What the deferral costs is the memory
+of the blocks that fell out, held for one step of the pass. For each
+population it holds the three matrices of "How it runs" of the item
 above, built over the individuals of that population and over the
 variants of the held blocks that passed the major allele frequency of
 that population.
 
-The pairs of the window are computed in tiles, as the matrix of the item
-above is, six products a tile pair and four on the diagonal, and each
-tile pair gives the count, the sum of r² and the sum of the squares of r²
-of each bin it touched. The tiles are cut at fixed multiples of the tile
-size counted from the first variant of the pass, so they do not move with
-the blocks, and the sums of the bins are added up in the order of the
-tiles. So the result is the same, to the bit, whatever the size of the
-blocks and the number of threads, and the calculation needs no `reblock`
+Every pair is counted at the step of the newer of its two variants. The
+pairs of that step are computed in tiles, as the matrix of the item above
+is, six products a tile pair and four on the diagonal, and the tiles are
+cut at fixed multiples of the tile size counted from the first variant
+that population kept in the pass, so they do not move with the blocks.
+The r² of one tile of the newest variants against every variant that can
+pair with them is taken first, tile pair by tile pair, and the count, the
+sum of r² and the sum of the squares of r² of each bin are then added up
+one newest variant at a time, the variants that pair with it in the order
+of the pass.
+
+The bins are added up in the order of the variants and not in the order
+of the tile pairs because a block can end inside a tile: a tile whose
+newest variants two blocks gave would add its pairs to a bin in two goes
+where one block would add them in one, and a sum of floats moves in its
+last bits when the order of its terms does. The order of the variants is
+the order of the source, which no block and no tile cuts. So the result
+is the same, to the bit, whatever the size of the blocks, the size of the
+tiles and the number of threads, and the calculation needs no `reblock`
 before it, the reader of `docs/specs/block.md` that cuts and joins blocks
 to one size.
 
 What is kept from one block to the next is, for each population and each
-bin, the count as a `u64` and the two sums as `f64`, and the blocks of
-the window. The memory of the window is the genotypes of the variants it
-holds and the three matrices of each population over them: for 250
-variants within 250000 bp of 1000 individuals and two populations of 500,
-250 KB of genotypes and 2 x 24 bytes x 250 x 500, 6 MB. A window that
-would hold more variants than the memory can take is the error of
-`docs/specs/block.md` for a block the machine has not the memory for.
+bin, the count as a `u64` and the two sums as `f64`. Of the blocks of the
+window the window keeps the chromosome and the position of every variant
+and nothing else, since that is all it reads to say which blocks are
+still in reach. The genotypes are kept by each population, over the
+variants that population kept and over its own individuals alone, and
+they are what its three matrices are built from each time a block
+arrives. A population of 50 individuals of a source of 1000 keeps a
+twentieth of the row of a variant, where a copy of the whole row would
+cost each population as much as the source has individuals, whatever the
+population has. So the memory of the window is those genotypes and the
+three matrices of each population over them: for 250 variants within
+250000 bp of 1000 individuals and two populations of 500, 250 KB of
+genotypes, which is the row of a variant divided between the two
+populations, and 2 x 24 bytes x 250 x 500, 6 MB.
+
+A window whose genotypes or whose matrices this machine has not the
+memory of is this module's own error, the one every other allocation of
+this module is refused with, which names what could not be held, how many
+values it holds and how many bytes one of them is. It is not the error of
+`docs/specs/block.md` for a block the machine has not the memory for: a
+window is not a block, and that error says how many variants a block was
+asked to hold and how many individuals and what ploidy the source has,
+which describe no window.
+
+For the fit the pass also keeps, for each population and each distance
+from `min_dist` to `max_dist`, how many pairs it has counted there as a
+`u64` and the sum of their r² as an `f64`, 16 bytes for each distance:
+16 MB for each population at the default `min_dist` of 1 and `max_dist`
+of 1000000, asked of the machine with `try_reserve_exact` before the pass
+and refused rather than taken, as the matrix of the item above is. It is
+16 MB for each population and no more is shared between them, so twenty
+populations at those defaults ask for 320 MB before the first block is
+read. A pair
+is added to its distance in the same step that adds it to its bin, so the
+order of the variants fixes both sums and the fit is the same to the bit
+whatever the size of the blocks and the number of threads.
+
+The fit itself runs when the pass has ended and reads nothing but those
+two arrays, over the distances that hold a pair and not over the whole
+range. It is 183 evaluations of the sum, and then about 60
+halvings for the half distance, which read no data at all. It is not
+split across threads.
 
 ### How it is verified
 
@@ -686,8 +1010,78 @@ variance, has no r² and is in no bin. So the first bin holds v1-v2
 (0.21875), a mean of 0.5727678571428572, and the second holds v2-v5 (0)
 and v1-v5 (0.0625), a mean of 0.03125.
 
+The curve is verified against R 4.6.1, which `docs/objectives.md` names
+among the reference programs, on those same three populations and those
+same pairs. `docs/reports/ld-method/decay.py` writes, for each of them,
+the pairs of plink2's matrix grouped by their exact distance, which for
+the first population is 46441 pairs at 249 distances, and
+`docs/reports/ld-method/decay.R` fits the curve to them twice: with R's
+`optimize`, Brent's method on the sum popnei makes smallest, and with
+R's `nls` under its `port` algorithm, which is Gauss and Newton's method
+on the residuals and uses the derivatives popnei does not take.
+The two agree to 2.1·10⁻⁹ of each other at the furthest of the three
+populations, so the literals below are what `optimize` gives, and they
+are compared within 10⁻⁶ relative, 480 times the disagreement of two
+optimisers and far below anything read off a plot. The check is a cargo
+test at `calc_ld_and_dist`, on `ld.vcf.gz` read with the VCF reader, with
+the same block sizes and thread counts as the bins above.
+
+| the population | n | ρ per base pair | r² at distance 0 | the half distance, bp |
+|---|---|---|---|---|
+| every individual, at 0.95 | 100 | 0.00031727347196446889 | 0.46198347107438015 | 6810.5712522189806 |
+| pop_a, at 0.8 | 50 | 0.00030068285442483295 | 0.46942148760330576 | 7530.1038938711654 |
+| pop_b, at 0.8 | 50 | 0.00031187790821896646 | 0.46942148760330576 | 7259.8060755719744 |
+
+The curve describes this dataset roughly, and the test says that popnei
+finds the same smallest as R on the same pairs and not that the model is
+right for it. At the middle of the first of the ten bins above the curve
+of the first population is 0.1656 where the bin's mean r² is 0.2077, and
+at the middle of the last it is 0.0227 where the mean is 0.0133. The
+dataset is four founder haplotypes recombined along a chromosome, which
+is not the drift and recombination the model is of.
+
+The first cargo test needs neither plink2 nor R, and it is made at
+`fit_ld_decay`, which takes the pairs of each distance and not
+genotypes: r² is taken from the curve itself at a ρ per base pair of
+0.0001 and n of 100, one pair at each of the distances 1000, 2000 and so
+on to 250000, and the fit has to give 0.0001 back and a half distance of
+21608.135872529165, both within 10⁻⁶ relative. R's `optimize` gives
+9.9999999605176671e-05 on that table, 4.0·10⁻⁹ away from the number the
+table was made with, so the tolerance is not hiding a wrong answer. The
+same test asserts the three NaN of a population left with pairs at one
+distance, and of one whose smallest falls at an end of the searched
+range.
+
+A second cargo test at `fit_ld_decay` takes a table of the same kind at a
+ρ per base pair of 4.17·10⁻⁸ and n of 100, one pair at each of the
+distances 1000, 2000 and so on to 1000000, the default `max_dist`, and
+asks for 4.17·10⁻⁸ back and for the half distance 2.1608135872529166
+divided by it, 5.1818·10⁷ bp, both within the same 10⁻⁶. That curve
+falls to half fifty-two times further out than the furthest pair of the
+table, so across the whole of it the r² drops from 0.46198 at a distance
+of 0 to 0.45294 at 1000000 bp, 2 per 100 of itself, and what tells the
+fit where the smallest lies is what is left of its sum after that
+shallow a fall-off. It is the case the multiplied-out form of "The curve
+that is fitted" gets 1.5·10⁻⁶ wrong, where the form fitted is 3.5·10⁻¹⁰
+from the number the table was made with.
+
+A pytest test at `calc_ld_and_dist_per_pop` asserts the three numbers of
+the first row of the table above and that a population left with pairs at
+one distance has NaN in all three of them, so that the dict and the
+dataclass of the Python layer are exercised where the cargo test
+exercises the arithmetic.
+
+Sved's curve, which "The curve that is fitted" gives the reasons for not
+using, comes out of these pairs too: it leaves 95.73 where Hill and
+Weir's leaves 23.21, both of them the pairs of each distance times the
+square of their mean r² minus the curve there, which is the sum the fit
+makes smallest. It puts the half distance at 1872.81 bp against 6810.57,
+the reference dataset agreeing with the simulation on a dataset the model
+is not of.
+
 The TypeScript test, under node, asserts the ten counts of pairs and the
-ten means of the one population of the first table.
+ten means of the one population of the first table, and the three numbers
+of the first row of the table above.
 
 ## The Rust interface
 
@@ -811,8 +1205,16 @@ pub struct LdAndDistOptions {
 /// A `min_dist` above `max_dist`, a `num_bins` of 0, a
 /// `max_allowed_maf` that is NaN or not from 0 to 1, a population with
 /// no individual, an index that is not an individual, no variant in the
-/// reader, a block with variants and no position, and those of the
-/// reader.
+/// reader, a block with variants and no position, the memory of the
+/// pairs counted at every distance of every population, which is asked
+/// with `try_reserve_exact` before the pass and not taken, the memory of
+/// the window, which "How it runs" says is refused the same way, and
+/// those of the reader. One more is a defect of popnei and not a wrong
+/// input, a `RuntimeError` in Python where the rest are a `ValueError`:
+/// a population the pass built no dosages for, which nothing reaches,
+/// since a pass that gave no variant is refused before any curve is
+/// fitted and a pass that gave one has taken a block into every
+/// population.
 pub fn calc_ld_and_dist<R: BlockReader + ?Sized>(
     reader: &mut R,
     pops: &[&[usize]],
@@ -846,6 +1248,51 @@ impl LdBins {
     pub fn mean_r2(&self, bin: usize) -> Option<f64>;
     /// With the pairs of the bin as the divisor.
     pub fn sd_r2(&self, bin: usize) -> Option<f64>;
+    /// The curve fitted to the pairs of this population, over every pair
+    /// and not over the bins above.
+    pub fn decay(&self) -> &LdDecay;
+}
+```
+
+The curve fitted to the pairs counted at each distance, which
+`calc_ld_and_dist` calls for each population when its pass has ended and
+which the checks of "How it is verified" that need no plink2 are made at.
+`dists` are in base pairs and need not be in order, `num_pairs` and
+`sum_r2` hold one value for each of them, and `num_individuals` is the n
+of "The curve that is fitted". Fewer than two distances,
+and a smallest that falls at either end of the searched range, are the
+`LdDecay` of three NaN that "The cases" describes and not an error.
+
+```rust
+/// # Errors
+///
+/// Slices of different lengths, a `num_individuals` of 0, a distance that
+/// holds no pair, and a sum of r² that is not finite or is below 0.
+pub fn fit_ld_decay(
+    dists: &[u64],
+    num_pairs: &[u64],
+    sum_r2: &[f64],
+    num_individuals: u64,
+) -> Result<LdDecay>;
+
+pub struct LdDecay { /* private */ }
+
+impl LdDecay {
+    /// The fitted 4Nr, by how much the scaled recombination ρ grows per
+    /// base pair. NaN when no curve was fitted, which "The cases" says
+    /// when, and then the other two are NaN as well.
+    pub fn rho_per_bp(&self) -> f64;
+    /// The fitted curve at a distance of 0, which the individuals of
+    /// the population fix on their own.
+    pub fn r2_at_zero(&self) -> f64;
+    /// The distance in base pairs at which the fitted curve has fallen
+    /// to half of `r2_at_zero`. It is read off the curve and not off the
+    /// pairs, so it can be beyond every distance the fit was given, as
+    /// "The curve that is fitted" shows on three individuals of
+    /// `tests/reference/ld/ld.vcf.gz`. NaN when the other two are, and
+    /// NaN on its own when the curve never falls to half, which "The
+    /// curve that is fitted" says is n of 1 and n of 2 and no other n.
+    pub fn half_dist(&self) -> f64;
 }
 ```
 
@@ -867,7 +1314,12 @@ crates divide them as `docs/specs/pca.md` divides its own.
 
 Most are the wrong input of a function, and a `ValueError` in Python:
 more variants than the matrix was allowed; an argument of the bins that
-is out of range; a population with no individual, an individual that the
+is out of range; a table given to `fit_ld_decay` whose three slices are
+not of one length, whose individuals are 0, one of whose distances holds
+no pair, or one of whose sums of r² is not finite or is below 0, which a
+caller with a table of its own reaches and a pass does not, since a pass
+gives the three slices compacted together and puts a pair in each; a
+population with no individual, an individual that the
 dataset has not, or an individual asked for more than once; a variant of
 more alleles than a count of them holds, or an allele below the missing
 one; a dataset whose individuals times its ploidy are more than
@@ -884,14 +1336,15 @@ vars file, whose `popnei` key states a ploidy that the reader takes with
 no upper bound, where the VCF reader takes 255 alleles in a genotype at
 most.
 
-Four are a `RuntimeError` instead, for the reason `docs/specs/pca.md`
+Five are a `RuntimeError` instead, for the reason `docs/specs/pca.md`
 gives for its own two: no argument of any function of this module gives
 them, so what a user reads is a defect of popnei and not something they
 wrote. They are the variants of a tile or of a window that are not
 variants of the dosages they were asked of; two sets of dosages built
 over different individuals; a buffer for the r² that does not hold one
-value for each pair; and a product the linear algebra could not work
-out.
+value for each pair; a product the linear algebra could not work
+out; and a population the pass built no dosages for, which the `# Errors`
+of `calc_ld_and_dist` above says nothing reaches.
 
 ## Speed
 
@@ -1061,9 +1514,10 @@ points. The options are the bins alone; the bins and a sample of pairs
 drawn so that it does not change with the blocks or the threads, for
 which the rule would be to keep the pairs whose hash of the seed and
 their two positions is smallest; and the sample alone, as pyNei has it.
-What the sample adds is a scatter, from which a user fits a decay curve
-of their own and sees the spread of r² inside a bin, which the standard
-deviation gives as one number. What it costs is an argument for the seed,
+What the sample adds is points to draw a scatter with, and a sight of the
+spread of r² inside a bin, which the standard deviation gives as one
+number. Fitting a curve of their own it no longer adds, since "The curve
+that is fitted" gives one. What it costs is an argument for the seed,
 one for how many pairs to keep, a rule that has to be written down for
 the numbers to be testable, and a result with two shapes in it.
 Recommendation: the bins alone, and the sample added if a user asks for
@@ -1133,6 +1587,16 @@ the target compares" of "Speed" does. Meanwhile 0.50 s stands and is met.
   `docs/specs/filters.md`.
 - The genomic relationship matrix, which reads the same dosages:
   `docs/specs/kinship.md`, which is not written.
+- The effective size of the population and the recombination per base
+  pair on their own. The curve holds them only as their product, the ρ
+  per base pair, and one pass over one dataset does not separate them.
+  A user who has a genetic map divides by the recombination it gives and
+  reads four times the effective size.
+- A spread around the half distance. It would come from leaving out one
+  resampling group of variants at a time and fitting again, the block
+  jackknife of `docs/specs/dists.md`, which needs the pairs counted at
+  every distance for each group and one fit for each group left out. What
+  the result would carry and what that costs is not worked out here.
 - The read ahead thread of section 3 of `docs/architecture.md`: it is a
   reader over a reader and both calculations here take any reader, so
   nothing here changes with it.

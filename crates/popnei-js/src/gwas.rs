@@ -11,7 +11,9 @@
 //! turns the number of the chromosome of each variant into the name the
 //! reader gave it and its position into the float64 a number of JavaScript
 //! is, and keeps that chain while the calculation runs so that the counts of
-//! its filters can be read when it returns.
+//! its filters can be read when it returns. A study that asks for the
+//! GRAMMAR-Gamma approximation is given a second chain over the same
+//! variants, whose first block the core estimates the factor from.
 //!
 //! Which individuals are tested, and their phenotype and their design, are
 //! the package's: "Which individuals are tested, and the design" of
@@ -30,7 +32,6 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::block::BlockReader;
 use popnei::gwas::{Gwas, GwasInput, TestType, TraitType, calc_gwas};
 
 use crate::errors::JsPopneiError;
@@ -64,8 +65,9 @@ pub(crate) struct ArgumentsOfTheStudy {
     /// each of them and row after row, already cut to them and in their
     /// order by the package, or `None` for a model with no random effect.
     pub(crate) kinship: Option<Vec<f64>>,
-    /// Whether the GRAMMAR-Gamma approximation is made, which popnei
-    /// refuses until it is written and which the core is what refuses.
+    /// Whether the denominator of a mixed model's test is the GRAMMAR-Gamma
+    /// approximation instead of the exact one, which a study with no
+    /// kinship has not and which the core is what refuses there.
     pub(crate) use_grammar_gamma_approx: bool,
     /// Whether a variant of more than two alleles among its called genotypes
     /// is read with every allele that is not the major one counting the
@@ -211,6 +213,18 @@ impl GwasOfVariants {
     }
 }
 
+/// Whether a mixed model stands in for the denominator of its test with the
+/// GRAMMAR-Gamma approximation when the caller says nothing.
+///
+/// It is the exact denominator, since the approximation gives up accuracy
+/// that grows with how strongly a panel is structured, and a user asks for
+/// it.
+#[wasm_bindgen]
+#[must_use]
+pub fn default_use_grammar_gamma_approx() -> bool {
+    popnei::gwas::DEFAULT_USE_GRAMMAR_GAMMA_APPROX
+}
+
 /// The study of the variants of `source` that the steps of `steps` keep,
 /// over the individuals, the trait and the design of `study`.
 ///
@@ -225,15 +239,27 @@ impl GwasOfVariants {
 /// the counts of its filters can be read when the calculation returns. The
 /// source is asked for no size of block: the core puts a `reblock` over the
 /// reader and chooses the size there, since the test of a block is matrix
-/// work and a filter leaves blocks of uneven size.
+/// work and a filter leaves blocks of uneven size. A study that asks for the
+/// GRAMMAR-Gamma approximation opens a second chain over the same variants
+/// and through the same steps, of which the core reads the first block to
+/// estimate the factor; the counts are the first chain's, the two passing
+/// through the same filters.
 ///
 /// # Errors
 ///
 /// When the name of the trait is of neither of the two and when the name of
-/// the test is of neither; when the study needs one of the two logistic
-/// models, which are not written; when the GRAMMAR-Gamma approximation is
-/// asked for, which is not written either; when the score test is asked of
-/// a linear model, whose only test is the t test of the effect it fitted;
+/// the test is of neither; when the GRAMMAR-Gamma approximation is asked
+/// for by a study with no kinship, which has no denominator to approximate,
+/// or when the first block its factor comes from holds no variant that
+/// varies among the tested individuals or only variants the design explains,
+/// which leaves no factor above 0; when the score test is asked of a linear
+/// model, whose only test is the t test of the effect it fitted, and when
+/// the Wald test is asked of a logistic mixed model, which has only the
+/// score test;
+/// when a binomial phenotype holds a value that is neither 0 nor 1, or its
+/// null model walks towards an infinite coefficient instead of settling;
+/// when the covariance of the working trait of a logistic mixed model
+/// cannot be factored, which is a kinship that is not a covariance;
 /// when the individuals to test are not in the order the source has them,
 /// one of them is there twice, one of them is not in the source, or they are
 /// fewer than the columns of the design plus two; when a value of the
@@ -270,18 +296,32 @@ pub(crate) fn gwas_of_the_variants(
         num_coefs: study.num_coefs,
         kinship: study.kinship.as_deref(),
         test,
-        // The approximation is refused by the core, which says two
-        // different things about it, that a study with no kinship has no
-        // denominator to approximate and that popnei has not written the
-        // approximation of the one a mixed model has. Both packages give it
-        // as the user wrote it, so both messages are the same in each.
+        // A study with no kinship that asks for the approximation is
+        // refused by the core, which has no denominator to approximate
+        // there. Both packages give the flag as the user wrote it, so the
+        // message a user reads is the same in each.
         use_grammar_gamma_approx: study.use_grammar_gamma_approx,
         individuals: &individuals,
         transform_to_biallelic: study.transform_to_biallelic,
     };
-    the_run_of(source, &Consumer::Gwas, |run| {
+    // The factor of the GRAMMAR-Gamma approximation comes from the first
+    // block of a second pass over the same variants, and whether there is
+    // one is asked of the consumer, which is what `numPassesOf` answers
+    // with and what every call that tells the page how far a pass has got
+    // carries: the number the page is told and the readers that are opened
+    // cannot disagree.
+    let consumer = Consumer::Gwas {
+        use_grammar_gamma_approx: study.use_grammar_gamma_approx,
+    };
+    let reads_the_source_twice = consumer.num_passes() > 1;
+    the_run_of(source, &consumer, |run| {
         let mut chain = chain_of(source.reader(run, None)?, steps.steps())?;
-        let result = calc_gwas(&mut chain, None::<&mut Box<dyn BlockReader>>, &input)?;
+        let mut gamma_pass = if reads_the_source_twice {
+            Some(chain_of(source.reader(run, None)?, steps.steps())?)
+        } else {
+            None
+        };
+        let result = calc_gwas(&mut chain, gamma_pass.as_mut(), &input)?;
         let counted = u64::try_from(result.num_vars).map_err(|_| {
             JsPopneiError::Broken(format!(
                 "the study read {num_vars} variants, more than the count of a pass holds",

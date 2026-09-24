@@ -58,8 +58,12 @@
       "match": "a study with no kinship has no such denominator"
     },
     {
-      "case": "the grammar gamma approximation with a kinship",
-      "match": "GRAMMAR-Gamma approximation is being written"
+      "case": "a first block in which no variant varies",
+      "match": "no variant of that block varies among the 6 tested individuals"
+    },
+    {
+      "case": "a factor of the approximation that is not above 0",
+      "match": "the 2 variants of the first block that vary gave and which is not a number above 0"
     },
     {
       "case": "a tested individual the kinship has not",
@@ -78,8 +82,24 @@
       "match": "`continuous`.*`binomial`.*`quantitative`"
     },
     {
-      "case": "a binomial trait",
-      "match": "logistic regression, which is being written"
+      "case": "the wald test of a binomial trait with a kinship",
+      "match": "one mixed model for every variant"
+    },
+    {
+      "case": "a kinship the logistic mixed model cannot factor",
+      "match": "so the kinship is not a covariance"
+    },
+    {
+      "case": "a binomial trait that is neither 0 nor 1",
+      "match": "the phenotype of the tested individual at the position 0 is 2, and a binomial trait is 0 or 1"
+    },
+    {
+      "case": "a binomial null model that walks towards an infinite coefficient",
+      "match": "did not settle in the \\d+ rounds it was fitted in"
+    },
+    {
+      "case": "a binomial null model with a kinship that runs away",
+      "match": "a binomial trait with a kinship is a logistic mixed model, and its null model did not settle"
     },
     {
       "case": "a covariate named intercept",

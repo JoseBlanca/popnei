@@ -671,14 +671,19 @@ pub fn log_determinant_with_cholesky(l: &[f64], n: usize) -> Result<f64> {
 /// it. Either buffer may hold more values than `n` times `n`, and then its
 /// first `n` times `n` are the matrix.
 ///
-/// The two backends ask for memory differently here, and this is the one
-/// operation where faer asks for any: it inverts into a scratch of its own
-/// of `n` x `n`, 800 MB at the 10000 individuals of `docs/objectives.md`,
-/// which the crate asks for instead of taking, while `dpotri` inverts in
-/// place and needs no workspace at all. So a machine without that memory
-/// gets [`Error::Memory`] on faer and no error on BLAS, as it gets that
-/// error for the workspaces of the eigendecomposition on BLAS, and no test
-/// of popnei reaches either case.
+/// This is the operation that asks for the most memory of its own, and
+/// both backends ask: faer inverts into a scratch of `n` x `n`, and BLAS
+/// builds the inverse from a triangular solve against the identity and a
+/// product, which is two buffers of `n` x `n`, since neither routine may
+/// write where it reads and the upper half of `inverse` is the caller's.
+/// That is 800 MB and 1.6 GB at the 10000 individuals of
+/// `docs/objectives.md`, and the crate asks for the memory instead of
+/// taking it, so a machine without it gets [`Error::Memory`] and not the
+/// end of the process. Why the BLAS backend does not use LAPACK's
+/// `dpotri`, which inverts in place and needs no buffer, is in "Calling
+/// the crate from two threads" of `docs/specs/linalg.md`: on Accelerate
+/// that routine gives a numerically wrong inverse, about once in every
+/// seven while another call of Accelerate is running on another thread.
 ///
 /// # Errors
 ///
@@ -690,7 +695,8 @@ pub fn log_determinant_with_cholesky(l: &[f64], n: usize) -> Result<f64> {
 /// is not above 0, with the first such row, which is the same `Singular` a
 /// [`cholesky_lower`] that gave this `l` would have given first.
 /// [`Error::Memory`] when this machine has not the memory for faer's
-/// scratch. [`Error::NoConvergence`] when the routine refused an argument
+/// scratch or for either of the two buffers of the BLAS backend.
+/// [`Error::NoConvergence`] when the routine refused an argument
 /// it was given, which is a defect of popnei.
 ///
 /// What these do not catch: that `l` is the factorization of the matrix

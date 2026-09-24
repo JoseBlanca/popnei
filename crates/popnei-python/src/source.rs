@@ -508,17 +508,25 @@ pub(crate) fn count_of_at_least(
 /// `2.5`, `"two"` or a truth value, is a `TypeError` that names the
 /// argument and what was given, as the threshold of a filter is.
 ///
-/// A distance of 0 is given on, as a count of 0 is: what is wrong with it
-/// is the core's to say, so that a user is given one limit for the argument
-/// and not two.
+/// `smallest` is the smallest distance the argument takes, which the
+/// messages say and do not refuse: 1 for the window of `filter_by_ld`,
+/// which is no stretch of a chromosome at 0, and 0 for the `min_dist` and
+/// the `max_dist` of the fall-off of r² with distance, where a `min_dist`
+/// of 0 counts the pairs of two variants at one position. It is the same
+/// number `distanceInBasePairs` of `js/popnei/src/arguments.ts` takes.
+///
+/// A distance of `smallest` or more is given on, as a count of 0 is: what
+/// is wrong with it is the core's to say, so that a user is given one limit
+/// for the argument and not two.
 pub(crate) fn distance_of(
     name: &'static str,
+    smallest: u64,
     value: &Bound<'_, PyAny>,
 ) -> Result<u64, PyPopneiError> {
     // A truth value is a whole number in Python, so `True` would be a
     // window of 1 base pair with nothing said.
     if value.is_instance_of::<PyBool>() {
-        return Err(no_count(name, 1, value));
+        return Err(no_distance(name, smallest, value));
     }
     match value.extract::<u64>() {
         Ok(distance) => Ok(distance),
@@ -527,14 +535,26 @@ pub(crate) fn distance_of(
         // either, and what a user has to be told is which argument it was
         // and what they wrote there.
         Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
-            Err(PyPopneiError::Count {
+            Err(PyPopneiError::Distance {
                 name,
-                smallest: 1,
+                smallest,
                 value: value.to_string(),
             })
         }
-        Err(_) => Err(no_count(name, 1, value)),
+        Err(_) => Err(no_distance(name, smallest, value)),
     }
+}
+
+/// What a user is told when they gave something that is no distance along a
+/// chromosome for `name`, which names the argument and what was given, as
+/// the refusal of a count that is no number does.
+fn no_distance(name: &'static str, smallest: u64, value: &Bound<'_, PyAny>) -> PyPopneiError {
+    PyTypeError::new_err(format!(
+        "`{name}` says a distance along a chromosome in base pairs, and {given} was \
+         given: a whole number of {smallest} or more",
+        given = written_as(value)
+    ))
+    .into()
 }
 
 /// What a user is told when they gave something that is no number of things

@@ -27,7 +27,7 @@ use crate::dists::{KosmanDistances, kosman_dists_of};
 use crate::errors::JsPopneiError;
 use crate::gwas::{ArgumentsOfTheStudy, GwasOfVariants, gwas_of_the_variants};
 use crate::kinship::{KinshipOfVariants, kinship_of_the_variants};
-use crate::ld::{R2Matrix, r2_matrix_of};
+use crate::ld::{ArgumentsOfTheBins, LdAndDistOfAPass, R2Matrix, ld_and_dist_of, r2_matrix_of};
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
 use crate::pop_dists::{ArgumentsOfTheDists, PopDistsOfAPass, pop_dists_of};
 use crate::source::{
@@ -268,12 +268,15 @@ impl VarsSource {
     ///
     /// # Errors
     ///
-    /// When `trait_name` is of neither trait; when the study needs one of
-    /// the two logistic models, which are not written, or the GRAMMAR-Gamma
-    /// approximation, which is not written either; when the individuals are
-    /// not in the order the source has them, one is there twice or is not in
-    /// the source, or they are fewer than the columns of the design plus
-    /// two; when a value of the phenotype or of the design is not finite;
+    /// When `trait_name` is of neither trait; when the GRAMMAR-Gamma
+    /// approximation is asked for by a study with no kinship, or the first
+    /// block its factor would come from leaves no factor above 0; when a
+    /// binomial phenotype holds a value that is neither 0 nor 1, or its
+    /// null model walks towards an infinite coefficient instead of settling;
+    /// when the
+    /// individuals are not in the order the source has them, one is there
+    /// twice or is not in the source, or they are fewer than the columns of
+    /// the design plus two; when a value of the phenotype or of the design is not finite;
     /// when the kinship is not one row and one column for each tested
     /// individual or holds a value that is not finite; when the columns of
     /// the design are not independent; when the vars file cannot be read;
@@ -351,6 +354,62 @@ impl VarsSource {
         steps: Steps,
     ) -> Result<R2Matrix, JsPopneiError> {
         r2_matrix_of(self, max_num_vars, steps)
+    }
+
+    /// How the r² of a pair of variants falls off with the distance between
+    /// them, in bins of distance and for each population that was named,
+    /// over one pass over the file through the steps of `steps`.
+    ///
+    /// The arguments are those of `calcLdAndDistPerPop` of
+    /// `docs/specs/ld.md`, as the package checked them and flat: the
+    /// populations are their names, the names of the individuals of every
+    /// one of them one after another, and how many individuals each of them
+    /// holds, and no name at all is one population of every individual;
+    /// `min_dist` and `max_dist` are the distances in base pairs a pair is
+    /// counted at, both included; `num_bins` is how many bins of equal
+    /// width they are cut into; and `max_allowed_maf` is the largest major
+    /// allele frequency a variant has in a population and is still counted
+    /// there.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`ld_and_dist_of`]: a `min_dist` above `max_dist`, a
+    /// `num_bins` of 0, a `max_allowed_maf` that is not a number from 0 to
+    /// 1, a population that names an individual the pass does not give,
+    /// names one twice or names none, a pass that gives no variant, bins or
+    /// a window the memory of the tab does not take, a bin of more pairs
+    /// than a number of JavaScript counts one by one, and a file that
+    /// cannot be read.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments of `calcLdAndDistPerPop` of `docs/specs/ld.md`, each \
+                  one as the package checked it, and the populations flat: an array of \
+                  arrays is not one of the types wasm-bindgen carries"
+    )]
+    pub fn calc_ld_and_dist_per_pop(
+        &self,
+        steps: Steps,
+        pop_names: Option<Vec<String>>,
+        pop_individuals: Vec<String>,
+        num_individuals_per_pop: Vec<u32>,
+        min_dist: f64,
+        max_dist: f64,
+        num_bins: usize,
+        max_allowed_maf: f64,
+    ) -> Result<LdAndDistOfAPass, JsPopneiError> {
+        ld_and_dist_of(
+            self,
+            &steps,
+            &ArgumentsOfTheBins {
+                pop_names,
+                pop_individuals,
+                num_individuals_per_pop,
+                min_dist,
+                max_dist,
+                num_bins,
+                max_allowed_maf,
+            },
+        )
     }
 
     /// Every measure of `measures` for every pair of the populations that
