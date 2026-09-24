@@ -116,10 +116,21 @@ of this plan moves.
 
 **Open 4, how negative an eigenvalue is still rounding.** Meanwhile: refuse
 when the smallest eigenvalue of the kinship is below a tenth of the largest.
-This is already built by `plan/gwas-linear` and the logistic mixed model
-inherits it rather than deciding it again, so an answer that changes the
-fraction changes one constant and the tests of that refusal, which are not
-tests of this plan.
+**This report said that was already built and it is not.** The review of
+work package 2 looked for it: `crates/popnei/src/gwas/linear_mixed.rs`
+clamps with `eigenvalue.max(0.0)` and nothing anywhere compares the smallest
+against a fraction of the largest. Forcing `panel_called`'s kinship to a
+smallest eigenvalue of -29 per cent of its largest, the linear mixed model
+runs and gives `genetic_variance` 1.221615 and `heritability` 0.781096,
+which are the numbers Open 4 itself quotes as what is "clamped in silence",
+while the logistic mixed model refuses the same input because its Cholesky
+will not factor it. So the two mixed models disagree on one input, and a
+user can read a heritability off a matrix that is not a kinship.
+
+The claim came into this report from the plan's own reading of what
+`gwas-linear` had built, and was never run. It is the same failure this
+review has found in others' numbers, in my own report, one hop from the
+thing it describes.
 
 ## What changed in the plan
 
