@@ -265,7 +265,7 @@ is not possible: nothing of work package 1 needs anything of this one.
 
 ### Its tasks
 
-- [ ] 2.1 The pairs counted at each distance: for each population, a
+- [x] 2.1 The pairs counted at each distance: for each population, a
   count and a sum of r² for every distance from `min_dist` to
   `max_dist`, filled in the same tile step that fills the bins, asked of
   the machine with `try_reserve_exact` before the pass, and compacted

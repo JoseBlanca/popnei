@@ -414,3 +414,35 @@ already broken before this work package and is not among the checks the
 `the_first_row_in_reach` is an optimisation that no test covers: removing
 it breaks nothing. And `js/popnei/README.md` lists five calculations and
 leaves out four of them.
+
+## Work package 2: the fitted curve and the half distance
+
+**2.1, the pairs counted at each distance.** Commit `05fefd1`, in
+`crates/popnei/src/ld/dist.rs`. Beside each bin the pass now keeps, for
+each population, a count of pairs and a sum of r² for every distance from
+`min_dist` to `max_dist`, 16 bytes a distance, asked of the machine with
+`try_reserve_exact` before the first block is read and refused rather
+than taken. A pair is added to its distance in the same call that adds it
+to its bin, so the two sums have the same order. When the pass ends the
+range is compacted to the distances that hold a pair, which is what the
+fit reads.
+
+That is deliverable 5 of the work package. Its test asserts that a range
+of 2^64 distances is refused before a block is read, naming what could
+not be held, how many values and how many bytes one of them is; replacing
+the checked allocation with an ordinary vector makes it fail.
+
+The counts per distance were checked against the bins over the same pass:
+the counts of the distances inside a bin's bounds add up to that bin's
+`num_pairs` exactly, and their sum of r² gives that bin's mean within
+1e-12 relative, the two sums differing only in their order. The task also
+added the distances to the table that work package 1's block, tile and
+thread tests compare, so they are now held to the same bit equality as
+the bins.
+
+`cargo test -p popnei --lib ld::dist -- --list` prints `55 tests`, where
+it printed 50. `cargo test --workspace` gives 842 passed with 2 ignored,
+the same 842 on faer, 149 linear algebra, 506 pytest, and fmt, clippy,
+wasm-check and ruff clean. `run_plink2.sh` into an empty directory exits
+0 naming no differing file, so the three tables of work package 1 are
+untouched. Every one was run by the orchestrator.
