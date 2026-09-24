@@ -607,7 +607,7 @@ not from a table, so a dataset of another n needs no new number.
 
 What the curve falls towards as ρ grows is 1/n and not 0, so it reaches
 half of its value at ρ of 0 only where that half is above 1/n, which it
-is from n of 3 upwards. At n of 1 the curve runs from 1.1983471074380166
+is from n of 3 upwards. At n of 1 the curve runs from 1.1983471074380165
 down to 1 and half of its value at 0 is 0.5991735537190083, and at n of 2
 it runs from 0.8264462809917356 down to 0.5 and half is
 0.4132231404958678: neither is ever reached, and there the half distance
