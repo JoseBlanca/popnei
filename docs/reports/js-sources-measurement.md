@@ -23,11 +23,11 @@ The two numbers this measurement sets, which the spec now carries:
 
 Reading by ranges does not cost much more than reading the file whole, which
 is what the plan named as the finding that would stop the work: 75 ms of a
-pass of about a second, over a file of 300 MB. The whole file row of the
-table below does not include what it costs to get those bytes out of the
-`File` first, 19 ms, which an application pays before it can call `openVcf`
-and which a pass by ranges pays inside its clock; with it the difference is
-56 ms, 6.0 %.
+pass of about a second, over a file of 300 MB. The whole file row of the table
+below does not include what it costs to get those bytes out of the `File`
+first, 19 ms, which an application pays before it can call `openVcf`, the call
+that opens a VCF and reads its header, and which a pass by ranges pays inside
+its clock; with it the difference is 56 ms, 6.0 %.
 
 ## The machine, the file and the script
 
@@ -143,14 +143,15 @@ or was freed. At a range of 4 MiB it goes 1310720 bytes when the module is
 loaded, 5636096 when `openVcf` has read the header and 14155776 when the
 pass has ended. At 16 MiB the same three are 1310720, 18219008 and 51904512.
 
-The last figure of each of those two, 14155776 and 51904512, is three
-ranges and 1572864 bytes, and so is every other size that has been read: 4718592 at 1 MiB in the table above,
-7864320 at 2 MiB, 20447232 at 6 MiB and 26738688 at 8 MiB, each of them
-3 * the size of a range + 1572864 to the byte. The 2, 6 and 8 MiB are of the
-code review of this work package, on 24 September 2026, and the 6 MiB was
-read again by the browser test with `NUM_BYTES_PER_RANGE` set to 6291456,
-which gave the same 20447232. The 256 KiB of the table is the one size that
-does not follow that count: 3407872 bytes, 1048576 more than it gives.
+The last figure of each of those two, 14155776 and 51904512, is three ranges
+and 1572864 bytes, and so is every other size that has been read: 4718592 at 1
+MiB in the table above, 7864320 at 2 MiB, 20447232 at 6 MiB and 26738688 at 8
+MiB, each of them 3 * the size of a range + 1572864 to the byte. The 2, 6 and
+8 MiB are of the code review of this work package, on 24 September 2026, and
+the 6 MiB was read again by the browser test with `NUM_BYTES_PER_RANGE` set to
+6291456, which gave the same 20447232. The 256 KiB of the table is the one
+size that does not follow that count: 3407872 bytes, 1048576 more than three
+ranges and 1572864 come to.
 
 Of the 1572864 that does not grow with the range, 1310720 is the module
 before any pass, read after `init()` alone, which leaves 262144 for
@@ -158,21 +159,23 @@ everything the VCF reader holds.
 
 Two of the three range-sized blocks are the pass's. The function of
 `crates/popnei-js/src/source.rs` that reads a range,
-`RangesOfAFile::reads_the_range`, copies the bytes the browser gave it into
-a new block of the memory of wasm and puts that block in the place of the
-range the pass held, which is freed after that, so the two are live for that
-moment. The third is the range that the reading of the header allocated at
-`openVcf`, whose reader is dropped when `openVcf` returns: the block is
-freed there, and the first range of the pass is not given it. A worker of
-24 September 2026 read `memory.buffer.byteLength` after each step of one run
-over a `File` of 14008097 bytes, with the range at 4 MiB: 1310720 when the
-module was loaded, 5636096 after the first `openVcf` over that file,
-9895936 after a second `openVcf` over the same file, 9895936 after a third,
-14155776 after one pass, and 14155776 after each of three more passes, the
-last of them over a fourth source opened once the other three were freed.
-So a freed range is handed to the second request that follows it and not to
-the next one, and past three blocks the heap serves every pass without
-growing.
+`RangesOfAFile::reads_the_range`, copies the bytes the browser gave it into a
+new block of the memory of wasm and puts that new block in the place of the
+range the pass held; the range it held is freed once the new one is in its
+place, so the two are live for that moment. The third is the range that the
+reading of the header allocated at `openVcf`, whose reader is dropped when
+`openVcf` returns: the block is freed there, and the first range of the pass
+is not given it. A worker of 24 September 2026 read `memory.buffer.byteLength`
+after each step of one run over a `File` of 14008097 bytes, with the range at
+4 MiB: 1310720 when the module was loaded, 5636096 after the first `openVcf`
+over that file, 9895936 after a second `openVcf` over the same file, 9895936
+after a third, 14155776 after one pass, and 14155776 after each of three more
+passes, the last of them over a fourth source opened once the other three were
+freed. So the block of a freed range is not given to the next request of its
+size: the second `openVcf` grew the memory although the block of the first had
+been freed, and the third `openVcf`, which grew it by nothing, is the first
+that was given a freed block. Once three of those blocks are in the heap,
+every pass after that is served without growing it.
 
 Copying each range into a buffer the pass keeps, instead of building a new
 one every time, would take one of the three blocks away; it is a change of
@@ -206,12 +209,13 @@ the memory of wasm against 14155776, 3.7 times more; by that same trade
 3.0 times less.
 
 What the memory buys is what the applications came for. A tab that reads a
-file of 2 GB, which is above what a wasm module can hold whole, pays
-14155776 bytes for it at 4 MiB and 51904512 at 16 MiB. A source with several
-passes open at once holds the ranges of each of them: the twelve passes of
-`js/popnei/test/vars_memory.test.ts` hold at least one range apiece, 48 MiB
-of ranges at 4 MiB and 192 MiB at 16 MiB, and what twelve passes leave in
-the memory of the module together has not been measured.
+file of 2 GB, which is above what a wasm module can hold whole, pays 14155776
+bytes for it at 4 MiB and 51904512 at 16 MiB. A source with several passes
+open at once holds the ranges of each of them: the twelve passes of
+`js/popnei/test/vars_memory.test.ts`, a test under node that keeps twelve
+iterations over one vars file open together, hold at least one range apiece,
+48 MiB of ranges at 4 MiB and 192 MiB at 16 MiB, and what twelve passes leave
+in the memory of the module together has not been measured.
 
 Whether an application chooses the size of a range instead is the third open
 point of `docs/specs/js_sources.md` and is still the owner's to decide.
@@ -299,7 +303,8 @@ The measurement and the two numbers it set:
 What the code review of work package 4 sent back, and this report with it:
 
 - a53bb9e: "Speed" and "How it runs" of the spec, with the three
-  range-sized blocks in the place of "3.4 times its range", the bound at
+  range-sized blocks in the place of the sentence that said a pass holds
+  about 3.4 times its range, the bound at
   16777216 and the reason the size of a range is 4 MiB.
 - 7db0a87: the bound of the browser test, the doc comments of the case, of
   `NUM_BYTES_PER_RANGE` and of `RangesOfAFile`, the rebuild of the
