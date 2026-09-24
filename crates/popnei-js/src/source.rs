@@ -299,16 +299,32 @@ const NO_ENTRY: u32 = u32::MAX;
 /// of an entry of [`RUNS`] and not a handle. `BlockReader`, which everything
 /// that gives blocks implements, asks for `Send`, as section 1 of
 /// `docs/architecture.md` says.
+///
+/// What `Send` means here is that the pass moves and is then told nothing:
+/// [`RUNS`] and [`IN_JAVASCRIPT`] are of the thread that made the source, so
+/// a pass that is read from another thread finds neither its run nor the
+/// function of the page, takes no number, tells nobody and gives the same
+/// bytes as ever. A tab has one thread of wasm, and moving a reader is what
+/// the read ahead thread of section 3 of `docs/architecture.md` would do
+/// natively.
 pub(crate) struct PassOverTheBytes {
     bytes: TheBytes,
     /// Which run of [`RUNS`] this pass belongs to, which is what says which
     /// source it reads, which pass of the run it is and how many there are.
     run: u32,
-    /// Which pass of the run this is, 1 for the first, and 0 until the first
-    /// read takes the next number from the run: the principal components of
-    /// the variants build both of their readers before either of them gives a
-    /// block.
+    /// Which pass of the run this is, 1 for the first, and 0 while
+    /// `took_its_number` is false and for a pass whose run is not in the
+    /// table of this thread.
     pass: u32,
+    /// Whether the first read has asked the run for the number of this pass,
+    /// which happens once and not at every read of a pass that got 0: the
+    /// number comes from a table of the thread that made the source, and a
+    /// pass that was moved to another thread finds none there.
+    ///
+    /// The number is taken at the first read and not when the pass is built,
+    /// because the principal components of the variants build both of their
+    /// readers before either of them gives a block.
+    took_its_number: bool,
     /// How many bytes this pass has read, which is never more than
     /// `num_bytes`: a pass over a vars file reads its footer and its batches
     /// and not the whole of it.
@@ -318,13 +334,26 @@ pub(crate) struct PassOverTheBytes {
     /// again.
     told_at: u64,
     num_bytes: u64,
-    /// Whether the function of the page threw in this pass, which is when
-    /// the pass ends: every read after that one fails with the same error
-    /// and the function is called no more, as `docs/specs/js_sources.md`
-    /// says. No reader of the core reads again after an error of this kind,
-    /// so what this keeps is the promise made to the application and not
-    /// the behaviour of any of them.
-    was_stopped: bool,
+    /// Why this pass gives an error instead of bytes, and nothing while it
+    /// reads.
+    ended: Option<WhyThePassEnded>,
+}
+
+/// Why a pass gives an error instead of bytes before the source is over.
+///
+/// Every read after the one it happened in fails with the same error, and
+/// the page is told no more of that pass, the call that would say it ended
+/// among them, as `docs/specs/js_sources.md` says. No reader of the core
+/// reads again after an error of either kind, so what this keeps is the
+/// promise made to the application and not the behaviour of any of them.
+enum WhyThePassEnded {
+    /// The function of the page threw, which is how an application stops a
+    /// run.
+    TheApplicationStopped,
+    /// A read gave more bytes than a count of 64 bits holds, which is a
+    /// defect of this crate: no target popnei builds for has a `usize` wider
+    /// than a `u64`.
+    TheCountDidNotFit,
 }
 
 /// Where the bytes of a pass come from.
@@ -340,19 +369,35 @@ enum TheBytes {
 impl PassOverTheBytes {
     /// One pass of `run` over `bytes`, from their first byte, which shares
     /// them with every other pass over the same source.
-    pub(crate) fn of_a_run(bytes: &Arc<Vec<u8>>, run: &RunOfAConsumer) -> PassOverTheBytes {
-        PassOverTheBytes {
+    ///
+    /// # Errors
+    ///
+    /// When the bytes are more than a `u64` counts, which no target popnei
+    /// builds for reaches: a `usize` is 32 bits in wasm and 64 natively. The
+    /// size of the file is what every call that tells the page carries, so a
+    /// conversion that could not be made is an error of this crate and not a
+    /// `numBytes` of 18446744073709551615.
+    pub(crate) fn of_a_run(
+        bytes: &Arc<Vec<u8>>,
+        run: &RunOfAConsumer,
+    ) -> Result<PassOverTheBytes, popnei::Error> {
+        let num_bytes = u64::try_from(bytes.len()).map_err(|_| {
+            popnei::Error::Io(std::io::Error::other(format!(
+                "the source holds {num_bytes} bytes, more than the count of a \
+                 pass over it holds",
+                num_bytes = bytes.len()
+            )))
+        })?;
+        Ok(PassOverTheBytes {
             bytes: TheBytes::InMemory(cursor_of(bytes)),
             run: run.0,
             pass: 0,
+            took_its_number: false,
             bytes_read: 0,
             told_at: 0,
-            // A `usize` is 32 bits in wasm and 64 natively, and both fit in a
-            // `u64`, so the file of a source that is in the memory of a tab
-            // never reaches this.
-            num_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-            was_stopped: false,
-        }
+            num_bytes,
+            ended: None,
+        })
     }
 
     /// What a read of the pass does before it takes bytes: the first read
@@ -365,10 +410,17 @@ impl PassOverTheBytes {
     /// When the function of the page throws, and every read after the one it
     /// threw in.
     fn before_a_read(&mut self) -> std::io::Result<()> {
-        if self.was_stopped {
-            return Err(the_pass_was_stopped());
+        match self.ended {
+            Some(WhyThePassEnded::TheApplicationStopped) => {
+                return Err(the_pass_was_stopped());
+            }
+            Some(WhyThePassEnded::TheCountDidNotFit) => {
+                return Err(the_count_did_not_fit());
+            }
+            None => {}
         }
-        if self.pass == 0 {
+        if !self.took_its_number {
+            self.took_its_number = true;
             self.pass = the_pass_that_starts(self.run);
             return self.tell();
         }
@@ -380,25 +432,19 @@ impl PassOverTheBytes {
 
     /// The `num_read` bytes a read of the pass gave, counted against the size
     /// of the file.
-    fn has_read(&mut self, num_read: usize) {
-        let num_read = u64::try_from(num_read).unwrap_or(u64::MAX);
-        self.bytes_read = self.bytes_read.saturating_add(num_read).min(self.num_bytes);
-    }
-
-    /// A read found no more bytes in the source, which is the last call of a
-    /// pass over a VCF read to its end.
-    ///
-    /// A pass that has read nothing since the last call is not told again:
-    /// the source of a gzipped VCF is looked at once more after its last
-    /// member, by the decoder that asks whether another one follows.
     ///
     /// # Errors
     ///
-    /// When the function of the page throws.
-    fn the_source_ended(&mut self) -> std::io::Result<()> {
-        if self.bytes_read > self.told_at {
-            return self.tell();
-        }
+    /// When `num_read` is more than a `u64` counts, which no target popnei
+    /// builds for reaches. The pass ends there: a count that was not made is
+    /// a bar that stands still, and every read after it fails with the same
+    /// error.
+    fn has_read(&mut self, num_read: usize) -> std::io::Result<()> {
+        let Ok(num_read) = u64::try_from(num_read) else {
+            self.ended = Some(WhyThePassEnded::TheCountDidNotFit);
+            return Err(the_count_did_not_fit());
+        };
+        self.bytes_read = self.bytes_read.saturating_add(num_read).min(self.num_bytes);
         Ok(())
     }
 
@@ -435,22 +481,50 @@ impl PassOverTheBytes {
             // consumer finds it there whatever the readers of the core make
             // of the failed read on the way out.
             the_run_was_stopped(self.run, thrown);
-            self.was_stopped = true;
+            self.ended = Some(WhyThePassEnded::TheApplicationStopped);
             return Err(the_pass_was_stopped());
         }
         Ok(())
     }
 }
 
+impl Drop for PassOverTheBytes {
+    /// The pass is over, which its run keeps so that its end can tell the
+    /// page how far this pass got.
+    ///
+    /// No read says that a pass is over: a pass over a vars file stops after
+    /// its last batch, with up to a range of bytes read since the last call,
+    /// and a run that fails stops wherever it failed. So the reader of the
+    /// pass being dropped is what says it, and the run makes the call when
+    /// it is dropped in its turn, after every reader of it.
+    ///
+    /// A pass that never read is not among them, which is a reader that was
+    /// built and never asked for a block; and neither is a pass the
+    /// application stopped, which is not told how far it had got.
+    fn drop(&mut self) {
+        if !self.took_its_number || self.ended.is_some() {
+            return;
+        }
+        a_pass_of_the_run_ended(
+            self.run,
+            PassThatEnded {
+                pass: self.pass,
+                bytes_read: self.bytes_read,
+                num_bytes: self.num_bytes,
+            },
+        );
+    }
+}
+
 /// What a read that the function of the page threw in fails with.
 ///
 /// The kind is the one of `std::io::Error::other`: `ErrorKind::Interrupted`
-/// is read again by three loops of the core, `read_line_of` of `io::vcf`,
-/// `take_from` of `io::bgzf` and the `read_exact` of `bytes_at` of
-/// `io::vars`, so a stop written with it would never end the pass, and
-/// `ErrorKind::UnexpectedEof` is what `bytes_at` turns into the error of a
-/// vars file that was cut short, so a stop written with it would reach the
-/// user as a damaged file.
+/// is read again by four loops of the core, `read_line_of` of `io::vcf`,
+/// `take_from` and `take_from_into` of `io::bgzf` and the `read_exact` of
+/// `bytes_at` of `io::vars`, so a stop written with it would never end the
+/// pass, and `ErrorKind::UnexpectedEof` is what `bytes_at` turns into the
+/// error of a vars file that was cut short, so a stop written with it would
+/// reach the user as a damaged file.
 ///
 /// No user of the package reads this message: the consumer of the run throws
 /// the value the function threw in place of whatever error the core made of
@@ -464,18 +538,26 @@ fn the_pass_was_stopped() -> std::io::Error {
     )
 }
 
+/// What a read whose bytes are more than a `u64` counts fails with, and
+/// every read of that pass after it.
+///
+/// No target popnei builds for reaches it: a `usize` is 32 bits in wasm and
+/// 64 natively, and both fit in a `u64`. What a count that silently became
+/// `u64::MAX` would give a page is a bar that is full at its first read.
+fn the_count_did_not_fit() -> std::io::Error {
+    std::io::Error::other(
+        "a read gave more bytes than the count of a pass holds, which is a defect \
+         of popnei; please report it",
+    )
+}
+
 impl Read for PassOverTheBytes {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.before_a_read()?;
         let num_read = match &mut self.bytes {
             TheBytes::InMemory(cursor) => cursor.read(buf)?,
         };
-        self.has_read(num_read);
-        // A read of no byte into a buffer that holds room is the end of the
-        // source; one into an empty buffer is nothing at all.
-        if num_read == 0 && !buf.is_empty() {
-            self.the_source_ended()?;
-        }
+        self.has_read(num_read)?;
         Ok(num_read)
     }
 }
@@ -489,22 +571,18 @@ impl BufRead for PassOverTheBytes {
     /// takes none of them.
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
         self.before_a_read()?;
-        let the_source_ended = match &mut self.bytes {
-            TheBytes::InMemory(cursor) => cursor.fill_buf()?.is_empty(),
-        };
-        if the_source_ended {
-            self.the_source_ended()?;
-        }
         match &mut self.bytes {
             TheBytes::InMemory(cursor) => cursor.fill_buf(),
         }
     }
 
+    /// `consume` gives nothing back, so the bytes it could not count end the
+    /// pass at its next read instead: `has_read` keeps that in the pass.
     fn consume(&mut self, num_bytes: usize) {
         match &mut self.bytes {
             TheBytes::InMemory(cursor) => cursor.consume(num_bytes),
         }
-        self.has_read(num_bytes);
+        drop(self.has_read(num_bytes));
     }
 }
 
@@ -546,6 +624,13 @@ struct Run {
     source: u32,
     num_passes: u32,
     passes_begun: u32,
+    /// The passes of this run that are over, which the end of the run tells
+    /// the page of, one call for each of them in the order of their numbers.
+    ///
+    /// They are put here as the reader of each pass is dropped, which is in
+    /// no order of their numbers: the principal components of the variants
+    /// hold both of their readers to the end and drop them together.
+    passes_that_ended: Vec<PassThatEnded>,
     /// What the function that is told the progress threw, which ended a pass
     /// of this run and is what the consumer throws in place of the error the
     /// core gave.
@@ -554,6 +639,19 @@ struct Run {
     /// was stopped with: a run that ends gives its entry back and the next
     /// one made in it is a new [`Run`].
     stopped_with: Option<JsValue>,
+}
+
+/// One pass of a run that is over: which pass of the run it was, how many
+/// bytes it read and how many the file holds.
+///
+/// It is what the call at the end of the run carries, and it is kept in the
+/// run because the pass itself is gone by then: the reader that held it was
+/// dropped, which is what says that a pass is over.
+#[derive(Clone, Copy)]
+struct PassThatEnded {
+    pass: u32,
+    bytes_read: u64,
+    num_bytes: u64,
 }
 
 thread_local! {
@@ -680,6 +778,7 @@ pub(crate) fn starts_a_run_of(source: u32, consumer: &Consumer) -> RunOfAConsume
                 source,
                 num_passes: consumer.num_passes(),
                 passes_begun: 0,
+                passes_that_ended: Vec::new(),
                 stopped_with: None,
             },
         )
@@ -700,6 +799,54 @@ fn the_pass_that_starts(run: u32) -> u32 {
         run.passes_begun = run.passes_begun.saturating_add(1);
         run.passes_begun
     })
+}
+
+/// A pass of the run numbered `run` is over, which the end of that run tells
+/// the page of.
+///
+/// A pass whose run is not in the table of this thread is not kept: its run
+/// is over already, or the pass was moved to another thread, and either way
+/// nobody is told of it.
+fn a_pass_of_the_run_ended(run: u32, ended: PassThatEnded) {
+    RUNS.with_borrow_mut(|runs| {
+        if let Some(run) = entry_to_change(runs, run) {
+            run.passes_that_ended.push(ended);
+        }
+    });
+}
+
+/// Tells the page how far each pass of `run` got, now that the run is over:
+/// one call for each pass that ended, in the order of their numbers.
+///
+/// It is what says that a pass is over, because no read does: a pass over a
+/// vars file stops after its last batch, with up to a range of bytes read
+/// since the last call, and a run that fails stops wherever it failed.
+/// Without it a pass over a vars file of 12231602 bytes was last told at
+/// 8476400, two thirds of the way, and the bar of a page stood there.
+///
+/// A value thrown in one of these calls is dropped and stops nothing: the
+/// run is over and there is no read left for it to end. The run is out of
+/// [`RUNS`] before the first of them, so an application that starts a
+/// consumer from inside one finds the table as any other call does.
+fn the_run_ended(run: &Run) {
+    let told = IN_JAVASCRIPT.with_borrow(|sources| entry_of(sources, run.source)?.told.clone());
+    let Some(told) = told else {
+        return;
+    };
+    let mut passes = run.passes_that_ended.clone();
+    passes.sort_by_key(|ended| ended.pass);
+    for ended in passes {
+        // The four numbers of the `Progress` of `docs/specs/js_sources.md`,
+        // as a read that tells the page sends them, with the bytes that pass
+        // read where a reading pass puts the bytes it has read so far.
+        let progress = Array::of4(
+            &JsValue::from_f64(ended.bytes_read as f64),
+            &JsValue::from_f64(ended.num_bytes as f64),
+            &JsValue::from_f64(f64::from(ended.pass)),
+            &JsValue::from_f64(f64::from(run.num_passes)),
+        );
+        drop(told.apply(&JsValue::NULL, &progress));
+    }
 }
 
 /// The function of the page threw `thrown` in a pass of the run numbered
@@ -778,16 +925,24 @@ impl RunOfAConsumer {
 }
 
 impl Drop for RunOfAConsumer {
-    /// Takes the run out of [`RUNS`], and with it the entry of a source that
-    /// was freed while this was the last run reading it.
+    /// Takes the run out of [`RUNS`], tells the page how far each of its
+    /// passes got, and takes out the entry of a source that was freed while
+    /// this was the last run reading it.
+    ///
+    /// Every reader of the run is dropped before this, which is what put the
+    /// passes in it: a consumer drops its readers when it has its result,
+    /// and the `Blocks` of an iteration holds its reader before its run and
+    /// so drops it first.
     fn drop(&mut self) {
-        let source = RUNS.with_borrow_mut(|runs| {
+        let ended = RUNS.with_borrow_mut(|runs| {
             let at = usize::try_from(self.0).ok()?;
-            runs.get_mut(at)?.take().map(|run| run.source)
+            runs.get_mut(at)?.take()
         });
-        let Some(source) = source else {
+        let Some(ended) = ended else {
             return;
         };
+        the_run_ended(&ended);
+        let source = ended.source;
         if a_run_reads(source) {
             return;
         }
@@ -1310,11 +1465,16 @@ impl Blocks {
         // variant is a row of a file, so a pass of the 18446744073709551615
         // variants this count holds is more rows than any file system
         // takes: the sum cannot reach its end. The conversion cannot fail
-        // either: a `usize` is 32 bits in wasm and 64 natively, and both fit
-        // in a `u64`.
-        self.num_vars = self
-            .num_vars
-            .saturating_add(u64::try_from(num_vars).unwrap_or(u64::MAX));
+        // either, since a `usize` is 32 bits in wasm and 64 natively, and
+        // one that did would make the count of the pass that number instead
+        // of saying so.
+        let num_vars_of_the_block = u64::try_from(num_vars).map_err(|_| {
+            JsPopneiError::Broken(format!(
+                "a block of {num_vars} variants holds more of them than the count \
+                 of a pass does"
+            ))
+        })?;
+        self.num_vars = self.num_vars.saturating_add(num_vars_of_the_block);
         Ok(Some(columns))
     }
 }

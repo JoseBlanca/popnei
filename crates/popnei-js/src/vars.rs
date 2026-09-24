@@ -433,7 +433,7 @@ impl OpenSource for VarsSource {
         Ok(Box::new(VarsReader::new(PassOverTheBytes::of_a_run(
             &self.bytes,
             run,
-        ))?))
+        )?)?))
     }
 }
 

@@ -423,7 +423,7 @@ impl OpenSource for VcfSource {
         // The header is read here, which is the first read of the pass and
         // the call that tells the page that it has read nothing yet.
         Ok(Box::new(VcfReader::new(
-            PassOverTheBytes::of_a_run(&self.bytes, run),
+            PassOverTheBytes::of_a_run(&self.bytes, run)?,
             options,
         )?))
     }

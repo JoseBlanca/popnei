@@ -14,16 +14,20 @@
  * `docs/glossary.md` has the three words.
  *
  * Which error the core gives for the failed read depends on the reader that
- * was reading: a VCF in the middle of a line and a gzipped VCF at the end of
- * its last member fail in different words, and the file that was stopped at
- * its end would otherwise be the error of a file that was cut short. So the
- * tests here stop a pass at three places, and every one of them gives the
- * value the function threw.
+ * was reading: a plain VCF in the middle of a line, a gzipped one inside its
+ * decompressor and a vars file inside the read of a batch, which the reader
+ * of that file turns into the error of a file that was cut short. So the
+ * tests here stop a pass over each of the three, and every one of them gives
+ * the value the function threw.
+ *
+ * The calls that end a run are the ones that cannot stop anything: they are
+ * made when the run is over, and a value thrown in one of them is dropped,
+ * as "What the source tells the page" of `docs/specs/js_sources.md` says.
  *
  * The files are `many.vcf` of `docs/specs/io_vcf.md`, 500 variants of 50
  * individuals in 117346 bytes, its bgzipped `many.vcf.gz` of 21904, and a
- * VCF of 150000 variants of 3 individuals that the test writes, 5.2 MB,
- * which is more than the 4 MiB a pass reads between two calls and is
+ * VCF of 150000 variants of 3 individuals that the test writes, 6188977
+ * bytes, which is more than the 4 MiB a pass reads between two calls and is
  * therefore told of three times.
  */
 
@@ -36,7 +40,9 @@ import {
   calcPerVarDistribs,
   doPcaFromVariants,
   init,
+  openVars,
   openVcf,
+  writeVars,
 } from "popnei";
 
 import { manyVariantsVcf, referenceVcf } from "./reference.ts";
@@ -58,6 +64,12 @@ const MANY_VCF_GZ = await referenceVcf("many.vcf.gz");
  * is the whole file, read again after the run that was stopped.
  */
 const VARIANTS_OF_MANY_VCF = 500;
+
+/** How many bytes `many.vcf` holds, which `docs/specs/io_vcf.md` gives. */
+const BYTES_OF_MANY_VCF = 117346;
+
+/** How many bytes `many.vcf.gz` holds. */
+const BYTES_OF_MANY_VCF_GZ = 21904;
 
 /** `many.vcf` read with every variant of it, the 25 that failed a filter
  * among them. */
@@ -136,10 +148,10 @@ test("a function that throws at the first read stops the run with its value", ()
 });
 
 test("a function that throws in the middle of a VCF stops the run with its value", () => {
-  // 150000 variants of 3 individuals, 5.2 MB, which a pass is told of at its
-  // first read, at the read that finds a range of 4 MiB read since then, and
-  // at the read that finds no more bytes. The second of the three is inside
-  // the file, where the reader is in the middle of its lines.
+  // 150000 variants of 3 individuals, 6188977 bytes, which a pass is told of
+  // at its first read, at the read that finds a range of 4 MiB read since
+  // then, and at the end of the run. The second of the three is inside the
+  // file, where the reader is in the middle of its lines.
   const variants = openVcf(manyVariantsVcf(150000));
   const calls = stoppedAt(variants, 1);
   try {
@@ -148,30 +160,107 @@ test("a function that throws in the middle of a VCF stops the run with its value
     });
     assert.equal(thrown, THE_CANCEL);
     assert.equal(calls.length, 2);
+    const stoppedAtBytes = calls.at(1);
     assert.ok(
-      (calls.at(1)?.bytesRead ?? 0) >= 4 * 1024 * 1024,
-      `the call that threw says ${calls.at(1)?.bytesRead} bytes read`,
+      (stoppedAtBytes?.bytesRead ?? 0) >= 4 * 1024 * 1024,
+      `the call that threw says ${stoppedAtBytes?.bytesRead} bytes read`,
+    );
+    // The call it stopped at is inside the file and not the one at its end:
+    // a pass stopped where no read follows would end the same way whether
+    // the stop worked or not. It says 4194313 bytes read of 6188977, with
+    // 1994664 left.
+    assert.ok(
+      (stoppedAtBytes?.bytesRead ?? 0) < (stoppedAtBytes?.numBytes ?? 0),
+      `the call that threw says the whole file, ${JSON.stringify(stoppedAtBytes)}`,
     );
   } finally {
     variants.free();
   }
 });
 
-test("a function that throws at the end of a gzipped VCF is not a file cut short", () => {
+test("a function that throws over a gzipped VCF gives its value and not a broken stream", () => {
   const variants = openVcf(MANY_VCF_GZ);
-  // The last call of a pass over a VCF is the read that finds no more bytes,
-  // which for a bgzipped file is the decoder looking for another member
-  // after the last one. What that read fails with in the core is the error
-  // of a file that ends where a member should start, and what the
-  // application is given is its own value all the same.
-  const calls = stoppedAt(variants, 1);
+  // The read that fails is inside the decompressor, which is reading the
+  // first member of the file for the header of the VCF: what it makes of a
+  // read that failed is the error of a gzip stream that ends in the middle,
+  // and what the application is given is its own value all the same.
+  const calls = stoppedAt(variants, 0);
   try {
     const thrown = whatWasThrownBy(() => {
       calcPerVarDistribs(variants);
     });
     assert.equal(thrown, THE_CANCEL);
-    assert.equal(calls.length, 2);
-    assert.equal(calls.at(1)?.bytesRead, calls.at(1)?.numBytes);
+    assert.equal(calls.length, 1);
+    assert.equal(calls.at(0)?.numBytes, BYTES_OF_MANY_VCF_GZ);
+  } finally {
+    variants.free();
+  }
+});
+
+test("a function that throws over a vars file gives its value and not a file cut short", () => {
+  const vcf = openVcf(MANY_VCF, EVERY_VARIANT);
+  const file = writeVars(vcf).bytes;
+  vcf.free();
+  const variants = openVars(file);
+  // The first read of a pass over a vars file is the ten last bytes of the
+  // file, which say how long its footer is, and it is made with the
+  // `read_exact` of `bytes_at`: what that turns a read of fewer bytes into
+  // is the error of a vars file that was cut short, and what the application
+  // is given is its own value.
+  const calls = stoppedAt(variants, 0);
+  try {
+    const thrown = whatWasThrownBy(() => {
+      calcPerIndividualStats(variants);
+    });
+    assert.equal(thrown, THE_CANCEL);
+    assert.ok(
+      !(thrown instanceof Error),
+      "the value of the application arrived as an error of popnei",
+    );
+    assert.equal(calls.length, 1);
+  } finally {
+    variants.free();
+  }
+});
+
+test("a function that throws only in the calls that end a run does not stop it", () => {
+  const variants = openVcf(MANY_VCF, EVERY_VARIANT);
+  // The calls of this run are the first read of the pass, at 0 bytes, and
+  // the one the end of the run makes, at the 117346 of the file. The second
+  // is made when the run is over and there is no read left for it to end,
+  // so what it throws is dropped and the consumer gives its result.
+  const calls = stoppedAt(variants, 1);
+  try {
+    const distribs = calcPerVarDistribs(variants);
+    assert.equal(distribs.passStats.numVars, VARIANTS_OF_MANY_VCF);
+    assert.deepEqual(
+      calls.map((call) => call.bytesRead),
+      [0, BYTES_OF_MANY_VCF],
+    );
+  } finally {
+    variants.free();
+  }
+});
+
+test("a function that throws at every call is called once in the pass it stopped", () => {
+  // The VCF of 150000 variants, whose pass is told at its first read, in the
+  // middle of the file and at the end of the run. The function throws a
+  // value of its own at every call, so a pass that read on after the first
+  // one, or a call that ended a pass that was stopped, would be a second
+  // call and a second value.
+  const variants = openVcf(manyVariantsVcf(150000));
+  const thrownByTheFunction: unknown[] = [];
+  variants.onProgress(() => {
+    const cancel = { whichCall: thrownByTheFunction.length };
+    thrownByTheFunction.push(cancel);
+    throw cancel;
+  });
+  try {
+    const thrown = whatWasThrownBy(() => {
+      calcPerIndividualStats(variants);
+    });
+    assert.equal(thrownByTheFunction.length, 1);
+    assert.equal(thrown, thrownByTheFunction.at(0));
   } finally {
     variants.free();
   }
@@ -182,8 +271,8 @@ test("a function that throws at the first read of the second pass stops the pca"
   // The principal components of the variants build both of their readers
   // before they ask either for a block, and a reader reads when it is built,
   // so the calls of a run are pass 1 at 0 bytes, pass 2 at 0, and then the
-  // two reads that find the end of the file. The second call is the first
-  // read of the second pass.
+  // two the end of the run makes. The second call is the first read of the
+  // second pass.
   const calls = stoppedAt(variants, 1);
   try {
     const thrown = whatWasThrownBy(() => {
@@ -193,11 +282,17 @@ test("a function that throws at the first read of the second pass stops the pca"
       });
     });
     assert.equal(thrown, THE_CANCEL);
+    // The third call is the one the end of the run makes for its first pass,
+    // which the application did not stop: that pass read the 617 bytes of
+    // the header of `many.vcf` when its reader was built and no more, since
+    // the run ended before either reader was asked for a block. The pass
+    // that was stopped, the second, is the one no call ends.
     assert.deepEqual(
       calls.map((call) => ({ pass: call.pass, bytesRead: call.bytesRead })),
       [
         { pass: 1, bytesRead: 0 },
         { pass: 2, bytesRead: 0 },
+        { pass: 1, bytesRead: 617 },
       ],
     );
   } finally {
@@ -207,10 +302,9 @@ test("a function that throws at the first read of the second pass stops the pca"
 
 test("an iteration of blocks that is stopped throws the value of the application", () => {
   const variants = openVcf(MANY_VCF, EVERY_VARIANT);
-  // The first read of the pass is the header, and the read that finds the
-  // end of the file is the second call: this one is thrown at the end of the
-  // iteration, when every block has been given.
-  const calls = stoppedAt(variants, 1);
+  // The first read of the pass is the header of the VCF, read when the
+  // iteration is opened, so the pass is stopped before it gave a block.
+  const calls = stoppedAt(variants, 0);
   try {
     let numVars = 0;
     const thrown = whatWasThrownBy(() => {
@@ -219,17 +313,19 @@ test("an iteration of blocks that is stopped throws the value of the application
       }
     });
     assert.equal(thrown, THE_CANCEL);
-    assert.equal(calls.length, 2);
-    assert.equal(numVars, VARIANTS_OF_MANY_VCF);
+    assert.equal(calls.length, 1);
+    assert.equal(numVars, 0);
   } finally {
     variants.free();
   }
 });
 
 test("a function that frees the variants while an iteration reads them does not trap", () => {
-  // The VCF of 150000 variants, whose pass is told at its first read, in the
-  // middle of the file and at its end: the source is freed at the call in
-  // the middle, so the iteration has 1 MB of the file left to read after it.
+  // The VCF of 150000 variants, 6188977 bytes, whose pass is told at its
+  // first read, in the middle of the file and at the end of the run: the
+  // source is freed at the call in the middle, which says 4194313 bytes
+  // read, so the iteration has 1994664 bytes of the file left to read after
+  // it.
   const variants = openVcf(manyVariantsVcf(150000));
   let calls = 0;
   let freedAt = 0;

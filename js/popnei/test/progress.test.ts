@@ -9,13 +9,16 @@
  * as `docs/glossary.md` has the three words. "What the source tells the
  * page" of `docs/specs/js_sources.md` is what these tests are written from.
  *
- * The calls of a pass are made by its reads: the first read of the pass makes
- * one with no bytes read, a read that finds that a range of bytes has been
- * read since the last call makes another, and so does a read that finds no
- * more bytes in the source. The files here are `many.vcf` of
+ * Three things make a call: the first read of a pass, which says it has read
+ * nothing; a read that brings the bytes read since the last call to the
+ * 4 MiB of a range; and the end of the run, which makes one call for each of
+ * its passes, in the order of their numbers, with the bytes that pass read.
+ * The last of the three is what says a pass is over, because no read does: a
+ * pass over a vars file stops after its last batch, and a run that fails
+ * stops wherever it failed. The files here are `many.vcf` of
  * `docs/specs/io_vcf.md`, 500 variants of 50 individuals in 117346 bytes,
- * and its bgzipped `many.vcf.gz` of 21904, both smaller than the 4 MiB of a
- * range, so a pass over either is told twice.
+ * and its bgzipped `many.vcf.gz` of 21904, both smaller than one range, so a
+ * pass over either is told twice.
  *
  * Nothing here asserts a variant or a statistic: what the counting must not
  * change is the numbers the other tests of the package assert.
@@ -41,7 +44,11 @@ import {
   writeVars,
 } from "popnei";
 
-import { manyVariantsVcf, referenceVcf } from "./reference.ts";
+import {
+  manyVariantsVcf,
+  referenceVcf,
+  vcfOfDrawnGenotypes,
+} from "./reference.ts";
 
 await init();
 
@@ -56,6 +63,31 @@ const BYTES_OF_MANY_VCF = 117346;
 
 /** How many bytes `many.vcf.gz` holds. */
 const BYTES_OF_MANY_VCF_GZ = 21904;
+
+/**
+ * How many bytes a pass over the vars file written from `many.vcf` reads,
+ * which is its footer and its batches and not the whole file.
+ *
+ * A pass over a vars file reads the last ten bytes, which say how long the
+ * footer is, then the footer, which says where the batches are, and then
+ * each batch whole. The schema message at the head of the file it never
+ * reads, because the footer carries the schema too, so the count ends below
+ * the size of the file. It was measured on the file this test writes, with
+ * the blocks of the size popnei chooses for 50 individuals.
+ */
+const BYTES_READ_OF_THE_VARS_FILE = 42552;
+
+/**
+ * How many bytes a pass over the vars file of more than one range reads,
+ * measured on the file `vcfOfDrawnGenotypes(14000, 600)` writes, 12231602
+ * bytes, of which the pass reads all but its schema message.
+ *
+ * The call that says it is the one the end of the run makes. The reads of
+ * that pass after its last range never reach another one, so without that
+ * call the page was last told at 8476400 bytes, two thirds of the way, and
+ * a bar drawn from the calls stopped there.
+ */
+const BYTES_READ_OF_THE_LARGE_VARS_FILE = 12225584;
 
 /** The names of the 50 individuals of `many.vcf`, `ind00` to `ind49`. */
 const THE_INDIVIDUALS = Array.from(
@@ -123,6 +155,9 @@ test("a pass over a VCF is told from no bytes read to the whole file", () => {
     variants.free();
   }
   assertTheyRise(calls, "the pass over many.vcf");
+  // The first read of the pass and the end of the run: the file is smaller
+  // than one range, so no read of it brings the bytes read since the last
+  // call to 4 MiB.
   assert.deepEqual(calls, [
     { bytesRead: 0, numBytes: BYTES_OF_MANY_VCF, pass: 1, numPasses: 1 },
     {
@@ -157,8 +192,8 @@ test("a pass over a gzipped VCF counts the bytes the file holds on disk", () => 
 });
 
 test("a pass over a file of several ranges is told once per range", () => {
-  // 150000 variants of 3 individuals, 5.2 MB, which is more than one range
-  // of 4 MiB and less than two.
+  // 150000 variants of 3 individuals, 6188977 bytes, 6.19 MB, which is more
+  // than one range of 4 MiB and less than two.
   const vcf = manyVariantsVcf(150000);
   const variants = openVcf(vcf);
   const calls = theCallsOf(variants);
@@ -172,8 +207,8 @@ test("a pass over a file of several ranges is told once per range", () => {
     vcf.length > 4 * 1024 * 1024 && vcf.length < 8 * 1024 * 1024,
     `the VCF holds ${vcf.length} bytes`,
   );
-  // The first read, the read that found a range read since it, and the read
-  // that found no more bytes.
+  // The first read, the read that found a range read since it, and the end
+  // of the run.
   assert.equal(calls.length, 3, `the calls are ${JSON.stringify(calls)}`);
   assert.equal(calls.at(0)?.bytesRead, 0);
   assert.ok(
@@ -183,7 +218,7 @@ test("a pass over a file of several ranges is told once per range", () => {
   assert.equal(calls.at(-1)?.bytesRead, vcf.length);
 });
 
-test("a pass over a vars file is told once, before it reads its footer", () => {
+test("a pass over a vars file smaller than a range is told twice", () => {
   const vcf = openVcf(MANY_VCF);
   const file = writeVars(vcf).bytes;
   vcf.free();
@@ -197,12 +232,48 @@ test("a pass over a vars file is told once, before it reads its footer", () => {
   assertTheyRise(calls, "the pass over a vars file");
   // A pass over a vars file reads the ten last bytes, the footer and each
   // batch whole, every one of them by a read of the length it asks for, so
-  // it never reads past its last batch and no read of it finds the end of
-  // the file. This file holds fewer bytes than one range, so the only call
-  // is the one of its first read.
+  // no read of it finds the end of the file. The file holds fewer bytes than
+  // one range, so its two calls are the one of its first read and the one
+  // the end of the run makes, which says the bytes of its footer and its
+  // batches and not the size of the file.
+  assert.ok(
+    BYTES_READ_OF_THE_VARS_FILE < file.length,
+    `the pass read ${BYTES_READ_OF_THE_VARS_FILE} bytes of a file of ${file.length}`,
+  );
   assert.deepEqual(calls, [
     { bytesRead: 0, numBytes: file.length, pass: 1, numPasses: 1 },
+    {
+      bytesRead: BYTES_READ_OF_THE_VARS_FILE,
+      numBytes: file.length,
+      pass: 1,
+      numPasses: 1,
+    },
   ]);
+});
+
+test("a pass over a vars file of several ranges is told at the end of the run", () => {
+  // The vars file of `vars_memory.test.ts`, 14000 variants of 600
+  // individuals written in batches of 100, 12231602 bytes, which is more
+  // than one range of 4 MiB. A pass over it reads its batches and stops
+  // after the last one, with up to a range read since the call before it.
+  const vcf = openVcf(vcfOfDrawnGenotypes(14000, 600), { onlyPassed: false });
+  const file = writeVars(vcf, { numVarsPerBlock: 100 }).bytes;
+  vcf.free();
+  const variants = openVars(file);
+  const calls = theCallsOf(variants);
+  try {
+    calcPerIndividualStats(variants);
+  } finally {
+    variants.free();
+  }
+  assertTheyRise(calls, "the pass over a vars file of several ranges");
+  assert.equal(file.length, 12231602, "the vars file changed size");
+  assert.equal(calls.at(0)?.bytesRead, 0);
+  assert.equal(calls.at(-1)?.bytesRead, BYTES_READ_OF_THE_LARGE_VARS_FILE);
+  assert.ok(
+    calls.every((call) => call.numBytes === file.length),
+    `a call says another size of the file: ${JSON.stringify(calls)}`,
+  );
 });
 
 test("the two passes of the pca take their numbers in the order they start", () => {
