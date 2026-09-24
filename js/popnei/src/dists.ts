@@ -205,7 +205,10 @@ export function calcPairwiseKosmanDists(
   options: CalcPairwiseKosmanDistsOptions = {},
 ): Distances {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   const minNumSnps =
     options.minNumSnps === undefined
       ? 0
@@ -213,9 +216,8 @@ export function calcPairwiseKosmanDists(
   // The steps of the pass are a copy of the list, made after the argument
   // was checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
-  const calculated = source.calc_pairwise_kosman_dists(
-    minNumSnps,
-    steps.of_a_pass(),
+  const calculated = whileTheRunReads(() =>
+    source.calc_pairwise_kosman_dists(minNumSnps, steps.of_a_pass()),
   );
   try {
     // The vector and the names are moved out of the result as they are

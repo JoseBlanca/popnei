@@ -132,7 +132,10 @@ export function calcRogersHuffR2Matrix(
   options: CalcRogersHuffR2MatrixOptions = {},
 ): R2Matrix {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   // The default is the core's, as the ploidy of `openVcf` is, so that
   // Python and TypeScript cannot drift apart on how many variants the
   // matrix is taken of when the caller says nothing.
@@ -143,9 +146,8 @@ export function calcRogersHuffR2Matrix(
   // The steps of the pass are a copy of the list, made after the arguments
   // were checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
-  const calculated = source.calc_rogers_huff_r2_matrix(
-    maxNumVars,
-    steps.of_a_pass(),
+  const calculated = whileTheRunReads(() =>
+    source.calc_rogers_huff_r2_matrix(maxNumVars, steps.of_a_pass()),
   );
   try {
     // Each array is moved out of the result as it is read, and not cloned.

@@ -111,7 +111,10 @@ export function writeVars(
   options: WriteVarsOptions = {},
 ): VarsWritten {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   const numVarsPerBlock =
     options.numVarsPerBlock === undefined
       ? undefined
@@ -125,7 +128,9 @@ export function writeVars(
   // user's. A file that crossed in one piece would be held twice while it
   // crossed, and the memory of wasm would keep its half of that for as long
   // as the page lives.
-  const file = source.write_vars(numVarsPerBlock, steps.of_a_pass());
+  const file = whileTheRunReads(() =>
+    source.write_vars(numVarsPerBlock, steps.of_a_pass()),
+  );
   try {
     const bytes = new Uint8Array(file.num_bytes());
     let written = 0;

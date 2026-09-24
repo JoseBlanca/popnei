@@ -338,7 +338,10 @@ export function calcGwas(
   options: CalcGwasOptions,
 ): GwasResult {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   theOptions(options);
   const trait = aString("trait", options.trait);
   const test =
@@ -371,17 +374,19 @@ export function calcGwas(
   // The steps of the pass are a copy of the list, made after the arguments
   // were checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
-  const calculated = source.calc_gwas(
-    positions,
-    phenotype,
-    design,
-    numCoefs,
-    trait,
-    test,
-    kinship === undefined ? undefined : theKinshipOfTheTested(kinship, names),
-    useGrammarGammaApprox,
-    transformToBiallelic,
-    steps.of_a_pass(),
+  const calculated = whileTheRunReads(() =>
+    source.calc_gwas(
+      positions,
+      phenotype,
+      design,
+      numCoefs,
+      trait,
+      test,
+      kinship === undefined ? undefined : theKinshipOfTheTested(kinship, names),
+      useGrammarGammaApprox,
+      transformToBiallelic,
+      steps.of_a_pass(),
+    ),
   );
   try {
     // Every array is moved out of the result as it is read, and not cloned:

@@ -280,3 +280,68 @@ test("a function that runs a consumer over the same variants does not trap", () 
     variants.free();
   }
 });
+
+test("free from inside the function of a run that is reading is refused", () => {
+  const variants = openVcf(MANY_VCF, EVERY_VARIANT);
+  // While a consumer runs, wasm-bindgen holds the source for the length of
+  // that call, and the free of a value it holds throws inside wasm. What
+  // the generated `free` does before that call is to zero the pointer of
+  // the handle and take it out of the `FinalizationRegistry`, so a free that
+  // was let through left the source in the memory of wasm with nothing left
+  // to free it and the next call of these variants reading a null pointer.
+  const refused: unknown[] = [];
+  variants.onProgress(() => {
+    refused.push(
+      whatWasThrownBy(() => {
+        variants.free();
+      }),
+    );
+  });
+  try {
+    const stats = calcPerIndividualStats(variants);
+    assert.equal(stats.passStats.numVars, VARIANTS_OF_MANY_VCF);
+    assert.ok(refused.length > 0, "the run told the page nothing");
+    for (const thrown of refused) {
+      assert.ok(thrown instanceof Error, `the free threw ${String(thrown)}`);
+      assert.match(thrown.message, /a run is reading these variants/);
+    }
+    // The handle is the one it was: the source was not freed, and the
+    // variants read the file again from its start. The function is taken
+    // off first, because between two blocks of an iteration no call holds
+    // the source and a free from inside it would be taken.
+    variants.onProgress();
+    let numVars = 0;
+    for (const block of variants.iterBlocks({ numVarsPerBlock: 100 })) {
+      numVars += block.numVars;
+    }
+    assert.equal(numVars, VARIANTS_OF_MANY_VCF);
+  } finally {
+    variants.free();
+  }
+  // The free after the run goes through, and what it freed is gone: the
+  // message is popnei's for variants that were freed, and not the
+  // `null pointer passed to rust` of a handle that was half freed.
+  assert.throws(() => variants.iterBlocks(), {
+    name: "Error",
+    message: /these variants were freed/,
+  });
+});
+
+test("the error of a free that was refused stops the run that was reading", () => {
+  const variants = openVcf(MANY_VCF, EVERY_VARIANT);
+  // The function does not catch what `free` threw, so it leaves the
+  // function as any other value an application throws does: the pass ends
+  // there and the consumer gives that error back.
+  variants.onProgress(() => {
+    variants.free();
+  });
+  try {
+    const thrown = whatWasThrownBy(() => {
+      calcPerVarDistribs(variants);
+    });
+    assert.ok(thrown instanceof Error, `the run threw ${String(thrown)}`);
+    assert.match(thrown.message, /a run is reading these variants/);
+  } finally {
+    variants.free();
+  }
+});

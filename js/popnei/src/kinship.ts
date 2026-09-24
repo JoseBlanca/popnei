@@ -419,7 +419,10 @@ export function calcKinship(
   options: CalcKinshipOptions = {},
 ): Kinship {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   const individuals =
     options.individuals === undefined
       ? undefined
@@ -434,10 +437,12 @@ export function calcKinship(
   // The steps of the pass are a copy of the list, made after the arguments
   // were checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
-  const calculated = source.calc_kinship(
-    individuals,
-    transformToBiallelic,
-    steps.of_a_pass(),
+  const calculated = whileTheRunReads(() =>
+    source.calc_kinship(
+      individuals,
+      transformToBiallelic,
+      steps.of_a_pass(),
+    ),
   );
   try {
     // The matrix and the names are moved out of the result as they are

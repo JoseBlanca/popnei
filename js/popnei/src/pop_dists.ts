@@ -357,7 +357,10 @@ export function calcPopDists(
   options: CalcPopDistsOptions,
 ): PopDists {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   // The resampling groups are checked first, because the argument has no
   // default and a call that left it out has nothing else worth telling its
   // writer about.
@@ -371,15 +374,17 @@ export function calcPopDists(
   // The steps of the pass are a copy of the list, made after every argument
   // was checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
-  const calculated = source.calc_pop_dists(
-    steps.of_a_pass(),
-    thePops.names,
-    thePops.individuals,
-    thePops.numIndividualsPerPop,
-    measures,
-    group.perVariant,
-    group.basePairs,
-    minNumIndividuals,
+  const calculated = whileTheRunReads(() =>
+    source.calc_pop_dists(
+      steps.of_a_pass(),
+      thePops.names,
+      thePops.individuals,
+      thePops.numIndividualsPerPop,
+      measures,
+      group.perVariant,
+      group.basePairs,
+      minNumIndividuals,
+    ),
   );
   // Every array is copied out of the memory of wasm as it is read, and the
   // result holds that memory until it is freed, which is here: what the user

@@ -290,7 +290,10 @@ export function doPcaFromVariants(
   options: DoPcaFromVariantsOptions = {},
 ): VariantsPcaResult {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   const transformToBiallelic =
     options.transformToBiallelic === undefined
       ? defaultTransformToBiallelic()
@@ -302,10 +305,12 @@ export function doPcaFromVariants(
   // The steps of the two passes are a copy of the list, made after the
   // arguments were checked so that nothing refused here leaves one behind:
   // the call takes it over and frees it.
-  const result = source.pca_of_variants(
-    transformToBiallelic,
-    numPrinComps,
-    steps.of_a_pass(),
+  const result = whileTheRunReads(() =>
+    source.pca_of_variants(
+      transformToBiallelic,
+      numPrinComps,
+      steps.of_a_pass(),
+    ),
   );
   try {
     return {

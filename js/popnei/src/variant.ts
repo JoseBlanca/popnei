@@ -45,6 +45,19 @@ export type SourceOfVariants = VcfSource | VarsSource;
 export interface SourceAndSteps {
   source: SourceOfVariants;
   steps: StepsOfTheCore;
+  /**
+   * What `readsTheSource` gives, with the run it makes counted as reading
+   * these variants while it runs.
+   *
+   * Every call that hands the source to the core goes through here, because
+   * that is what `free()` refuses to free under: wasm-bindgen holds the
+   * source for the length of such a call, and the free of a value it holds
+   * throws inside wasm after the generated code has already zeroed the
+   * pointer of the handle and taken it out of the `FinalizationRegistry`.
+   * The source would then be left in the memory of wasm with nothing to
+   * free it.
+   */
+  whileTheRunReads: <T>(readsTheSource: () => T) => T;
 }
 
 /**
@@ -319,6 +332,15 @@ export class Variants {
   #steps: StepsOfTheCore | null;
   #individuals: readonly string[];
   #ploidy: number;
+  /**
+   * How many calls of a consumer over these variants are on the stack,
+   * which is what `free()` refuses to free under.
+   *
+   * It is more than 1 when the function that is told the progress starts a
+   * consumer of its own, which `docs/specs/js_sources.md` says runs as any
+   * other call does.
+   */
+  #runsReading = 0;
 
   /**
    * The handle over `source`, which `openVcf` and `openVars` build, with no
@@ -631,8 +653,16 @@ export class Variants {
     // crosses by value, so the Rust that refuses the field owns it and drops
     // it. Measured on this build: 20000 calls refused for their field left
     // the memory of wasm at the 1310720 bytes it held before them.
+    // The pass is opened with the run counted, which is where the header of
+    // a VCF or the footer of a vars file is read and the page is told that
+    // the pass has read nothing: a `free()` from inside that call is
+    // refused. The blocks after it are read with no call holding the
+    // source, so a `free()` from inside one of those is taken and the pass
+    // reads on to its end.
     return new BlocksOfOnePass(
-      source.blocks(fields, numVarsPerBlock, steps.of_a_pass()),
+      this.#whileTheRunReads(() =>
+        source.blocks(fields, numVarsPerBlock, steps.of_a_pass()),
+      ),
     );
   }
 
@@ -699,12 +729,39 @@ export class Variants {
    * of these variants and every read of `steps`. The names of the
    * individuals and the ploidy still answer: they are in JavaScript. A
    * second call is not an error: it has nothing left to give back.
+   *
+   * It is refused while a consumer of these variants is running, which is
+   * what a `free()` from inside the function of `onProgress` is: that call
+   * holds the source, and freeing it there would leave the source in the
+   * memory of wasm with no handle left to free it. An iteration of
+   * `iterBlocks` holds no such call between two blocks, so a free from
+   * inside the function of a pass that is iterating goes through and that
+   * pass reads on to its end.
+   *
+   * @throws {Error} When a consumer of these variants has not returned.
    */
   free(): void {
-    this.#source?.free();
+    if (this.#runsReading > 0) {
+      throw new Error(
+        "popnei: a run is reading these variants, so they cannot be freed " +
+          "yet: the free of a source a consumer is reading would leave it in " +
+          "the memory of wasm with no handle left to free it. What frees " +
+          "them is a call made after the consumer returns.",
+      );
+    }
+    // The handles are taken out of the `Variants` before they are freed, and
+    // the second is freed whatever the first does: a free that threw in the
+    // middle would otherwise leave a `Variants` that holds a source nobody
+    // can read and steps nobody can free.
+    const source = this.#source;
+    const steps = this.#steps;
     this.#source = null;
-    this.#steps?.free();
     this.#steps = null;
+    try {
+      source?.free();
+    } finally {
+      steps?.free();
+    }
   }
 
   /**
@@ -727,7 +784,27 @@ export class Variants {
     return {
       source: this.#sourceThatWasNotFreed(),
       steps: this.#stepsThatWereNotFreed(),
+      whileTheRunReads: (readsTheSource) =>
+        this.#whileTheRunReads(readsTheSource),
     };
+  }
+
+  /**
+   * What `readsTheSource` gives, with this run counted while it runs, so
+   * that a `free()` from inside the function that is told the progress is
+   * refused instead of breaking the handle.
+   *
+   * The count goes back down whatever the run did, an error of the core and
+   * the value an application threw to stop it among them: a run that failed
+   * is a run that no longer reads.
+   */
+  #whileTheRunReads<T>(readsTheSource: () => T): T {
+    this.#runsReading += 1;
+    try {
+      return readsTheSource();
+    } finally {
+      this.#runsReading -= 1;
+    }
   }
 
   /** The source, or the `Error` of a source that was freed. */
