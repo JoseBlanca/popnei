@@ -1,4 +1,5 @@
-"""The association study of a continuous trait, from Python.
+"""The association study from Python, of a trait that is a measurement
+and of one that is 0 and 1.
 
 `docs/specs/gwas.md` has what is computed, the `GWASResult` it comes in and
 the numbers this file asserts. Every literal here is the spec's, or is read
@@ -6,7 +7,10 @@ from `tests/reference/gwas/`, which
 `tests/reference/gwas/make_reference.py` writes: the trait, the two
 covariates and the subpopulation of each of the 200 individuals in
 `phenotypes.csv`, what plink2 v2.0.0-a.7.7 answered for the panel with every
-genotype called in `plink2.panel_called.glm.linear.tsv`, and what GMMAT
+genotype called in `plink2.panel_called.glm.linear.tsv` and for the
+logistic model in `plink2.panel_called.glm.logistic.hybrid.tsv`, what R
+4.6.1's `anova(glm, test = "Rao")` answered for the logistic score test in
+`r.panel_called.glm.score.tsv`, and what GMMAT
 1.5.0 and rrBLUP 4.6.3 answered for the mixed model in
 `gmmat.null_models.tsv`, `gmmat.panel_called.lmm.score.tsv`,
 `gmmat.panel.lmm.score.tsv` and `rrblup.panel_called.lmm.tsv`, 1200 rows
@@ -105,6 +109,49 @@ PLINK2_DIGITS = 6
 # genotypes missing, and `OF_PYNEI_P_VALUE` is 2.5 times that.
 OF_PYNEI = 1.5e-14
 OF_PYNEI_P_VALUE = 1e-11
+
+# How far a `beta` of the logistic model may be from pyNei's, as a share of
+# the `se` of that variant, and how far an `se` and a p-value may be, each as
+# a share of itself.
+#
+# The bound against pyNei is per model, 1e-9 relative being the ceiling of
+# "How it is verified" of "What every model shares" and not its value, and
+# this model measures far inside it. Over the 1200 variants of each panel
+# with each of the two tests, on 26 September 2026, the worst of the eight
+# runs is the `beta` of the score test, 1.105e-14 of the `se` of its variant
+# on faer and 1.095e-14 on Accelerate, so this is 90 times where it breaks.
+# The `se` is nearer, 3.368e-15 of itself at worst, and the p-value 4.524e-14
+# of itself, both on Accelerate; the effects of the null model agree to
+# 3.7e-16. The spec's 1e-9 would have been 90000 times the worst.
+OF_PYNEI_LOGISTIC = 1e-12
+
+# How far a `beta` and an `se` of the logistic Wald test may be from
+# plink2's, as a share of the `se` plink2 printed for that variant, and how
+# far a p-value may be, as a share of itself. They are the 1e-4, 5e-4 and
+# 5e-3 of "How it is verified" of "The logistic model".
+#
+# What they measure is the distance between two logistic fits and not the
+# accuracy of popnei's arithmetic: plink2 stops its fit earlier than popnei
+# does, which is why they are wider than the 5e-6 its six printed digits
+# round a value by and why a run that came within 1e-5 of plink2 would have
+# stopped early too. The 5e-4 on the `se` is the one that cannot be
+# tightened: popnei's worst is 1.334e-4 of the `se` of `var0179` and pyNei's
+# worst is 1.334e-4 at `var0179` as well, so a tighter bound would be a
+# bound on the oracle as much as on popnei.
+OF_PLINK2_LOGISTIC_BETA = 1e-4
+OF_PLINK2_LOGISTIC_SE = 5e-4
+OF_PLINK2_LOGISTIC_P_VALUE = 5e-3
+
+# How far the statistic `(beta / se)**2` of the logistic score test may be
+# from R's, absolute, and how far its p-value may be, as the distance between
+# the two in log10: the 1e-2 and 1e-3 of "How it is verified" of "The
+# logistic model".
+#
+# R's `glm` converges to 1e-8 in the deviance, which is what these measure,
+# and it prints both at full precision, so neither is the width of a printed
+# digit.
+OF_R_SCORE_STATISTIC = 1e-2
+OF_R_SCORE_P_VALUE = 1e-3
 
 # How many variants a batch of the vars file the panel is written to holds,
 # which is what the reader of that file gives the pass at a time.
@@ -377,6 +424,247 @@ def test_the_vars_reader_gives_the_study_the_vcf_reader_gives(
             f"{column} is not the same bits read from a vars file of "
             f"{VARS_PER_BLOCK} variants a batch as read from the VCF: the "
             f"worst is {numpy.abs(ours - theirs).max()}"
+        )
+
+
+def _of_plink2_logistic() -> pandas.DataFrame:
+    """What plink2 `--glm hide-covar` answered for the panel with the
+    binomial trait, one row per variant in the order of the file.
+
+    `OR` is the odds ratio and `LOG(OR)_SE` the standard error of its
+    logarithm, which is what popnei gives as `beta` and `se`, and `FIRTH?` is
+    `Y` for the one variant plink2 fell back to a penalized regression for.
+    """
+    return pandas.read_csv(
+        REFERENCE_GWAS_DIR / "plink2.panel_called.glm.logistic.hybrid.tsv", sep="\t"
+    )
+
+
+def _of_r_score() -> pandas.DataFrame:
+    """What R 4.6.1's `anova(glm, test = "Rao")` answered for the panel, one
+    logistic regression per variant, at full precision: the score statistic
+    and its p-value."""
+    return pandas.read_csv(
+        REFERENCE_GWAS_DIR / "r.panel_called.glm.score.tsv", sep="\t"
+    )
+
+
+def _the_logistic_study(panel: pathlib.Path = PANEL, test=None):
+    """The study of the binomial trait `binom` of a panel with `cov1` and
+    `cov2`, which is what plink2, R and pyNei were given."""
+    phenotypes = _phenotypes()
+    return calc_gwas(
+        open_vcf(panel),
+        phenotypes["binom"],
+        TraitType.BINOMIAL,
+        covariates=phenotypes[["cov1", "cov2"]],
+        test=test,
+    )
+
+
+def _the_logistic_study_of_pynei(panel: pathlib.Path, test: str):
+    """The same study from pyNei, which is the oracle of every column."""
+    phenotypes = _phenotypes()
+    return pynei_gwas(
+        vars_from_vcf(panel),
+        phenotypes["binom"],
+        "binomial",
+        covariates=phenotypes[["cov1", "cov2"]],
+        test=test,
+    )
+
+
+def test_the_score_test_of_every_variant_of_the_panel_is_rs() -> None:
+    """The statistic and the p-value of all 1200 variants against the ones R
+    fitted one logistic regression per variant for.
+
+    R reports the score statistic, which popnei gives as `(beta / se)**2`,
+    and its p-value at full precision, so what these two tolerances measure
+    is how far apart the two null fits landed and not the width of a printed
+    digit. The ids are compared first, so that every row is matched to the
+    variant R wrote it for.
+
+    Measured over the 1200 on 26 September 2026, the same on Accelerate and
+    on faer to the four digits given: the worst statistic is 1.589e-3 away
+    from R's, at `var0784`, 16 per cent of what is allowed, and the worst
+    p-value is 3.749e-4 in `log10`, at `var0784` as well, 37 per cent of its
+    bound. The statistic is absolute where the reference is exact: R's own
+    run from 8.9e-6 to 27.9 over these 1200 variants, so on a panel whose
+    statistics are much larger this bound would fail a right answer rather
+    than pass a wrong one, which is the safe way round for a check to be
+    fragile.
+    """
+    result = _the_logistic_study(test="score")
+    of_r = _of_r_score()
+
+    assert result.null_model.model == GWASModel.GLM
+    assert result.test == popnei.TestType.SCORE
+    assert result.null_model.residual_variance is None
+    assert result.null_model.genetic_variance is None
+    assert result.null_model.heritability is None
+    assert len(result.stats.index) == PANEL_NUM_VARS
+    assert list(result.stats["id"]) == list(of_r["id"])
+    statistic = (result.stats["beta"].to_numpy() / result.stats["se"].to_numpy()) ** 2
+    numpy.testing.assert_allclose(
+        statistic, of_r["score"].to_numpy(), rtol=0, atol=OF_R_SCORE_STATISTIC
+    )
+    numpy.testing.assert_allclose(
+        numpy.log10(result.stats["p_value"].to_numpy()),
+        numpy.log10(of_r["p"].to_numpy()),
+        rtol=0,
+        atol=OF_R_SCORE_P_VALUE,
+    )
+
+
+def test_the_wald_test_of_every_variant_of_the_panel_is_plink2s() -> None:
+    """The four columns of the 1199 variants plink2 fitted a logistic
+    regression for, against what it wrote.
+
+    plink2 reports the odds ratio, so `beta` is compared with its logarithm,
+    and the standard error it prints is already of that logarithm. The one
+    variant it fell back to a penalized regression for is left out here and
+    is what the test below is about.
+
+    Measured over the 1199 on 26 September 2026, the same on Accelerate and
+    on faer to the four digits given: the worst effect is 2.103e-5 of the
+    `se` of its variant, at `var0395`, 21 per cent of what is allowed; the
+    worst standard error is 1.334e-4 of that `se`, at `var0179`, 27 per cent
+    of its bound and the number the 5e-4 was set from; and the worst p-value
+    is 1.924e-3 of itself, at `var0115`, 38 per cent of its bound. Every
+    `allele_freq` is plink2's `A1_FREQ` exactly.
+    """
+    result = _the_logistic_study()
+    of_plink2 = _of_plink2_logistic()
+
+    assert result.null_model.model == GWASModel.GLM
+    assert result.test == popnei.TestType.WALD
+    assert result.null_model.num_individuals == PANEL_NUM_INDIVIDUALS
+    assert len(result.stats.index) == PANEL_NUM_VARS
+    assert list(result.stats["id"]) == list(of_plink2["ID"])
+    fitted = of_plink2["FIRTH?"].to_numpy() == "N"
+    assert fitted.sum() == PANEL_NUM_VARS - 1
+    ids = numpy.asarray(of_plink2["ID"])[fitted]
+    se = of_plink2["LOG(OR)_SE"].to_numpy()[fitted]
+    numpy.testing.assert_allclose(
+        result.stats["allele_freq"].to_numpy(),
+        of_plink2["A1_FREQ"].to_numpy(),
+        rtol=0,
+        atol=OF_PLINK2_FREQUENCY,
+    )
+    for what, ours, theirs, bound in (
+        (
+            "the effect",
+            result.stats["beta"].to_numpy()[fitted],
+            numpy.log(of_plink2["OR"].to_numpy()[fitted]),
+            OF_PLINK2_LOGISTIC_BETA,
+        ),
+        (
+            "the standard error",
+            result.stats["se"].to_numpy()[fitted],
+            se,
+            OF_PLINK2_LOGISTIC_SE,
+        ),
+    ):
+        difference = numpy.abs(ours - theirs) / se
+        at = int(numpy.argmax(difference))
+        assert difference[at] <= bound, (
+            f"{what} of {ids[at]} is {difference[at]} of the `se` of its "
+            f"variant away from plink2 against the {bound} allowed"
+        )
+    numpy.testing.assert_allclose(
+        result.stats["p_value"].to_numpy()[fitted],
+        of_plink2["P"].to_numpy()[fitted],
+        rtol=OF_PLINK2_LOGISTIC_P_VALUE,
+        atol=0,
+    )
+
+
+def test_the_variants_with_no_answer_are_the_ones_plink2_marked() -> None:
+    """The variants whose Wald test gives NaN are exactly the rows plink2
+    wrote `Y` in `FIRTH?` for, which is `var0006` and no other.
+
+    A variant that separates the individuals that have the condition from
+    those that have not has no finite effect: plink2 falls back to a
+    penalized regression there and popnei gives NaN, as pyNei does. This is
+    the test that guards the three marks of a fit that runs away, since a
+    variant wrongly marked loses its p-value in silence and a variant wrongly
+    left unmarked reports the number an unsettled fit happened to stop at.
+    """
+    result = _the_logistic_study()
+    of_plink2 = _of_plink2_logistic()
+
+    assert list(result.stats["id"]) == list(of_plink2["ID"])
+    without_an_answer = numpy.isnan(result.stats["p_value"].to_numpy())
+    assert list(numpy.asarray(of_plink2["ID"])[without_an_answer]) == ["var0006"]
+    numpy.testing.assert_array_equal(
+        without_an_answer, of_plink2["FIRTH?"].to_numpy() == "Y"
+    )
+    assert numpy.isnan(result.stats["beta"].to_numpy()[without_an_answer]).all()
+    assert numpy.isnan(result.stats["se"].to_numpy()[without_an_answer]).all()
+    # The frequency of such a variant is still there, as it is for a variant
+    # with no variance: what it has not is a test.
+    assert not numpy.isnan(
+        result.stats["allele_freq"].to_numpy()[without_an_answer]
+    ).any()
+
+
+@pytest.mark.parametrize("panel", PANELS)
+@pytest.mark.parametrize("test", ["wald", "score"])
+def test_every_variant_of_a_logistic_panel_is_pyneis(
+    panel: pathlib.Path, test: str
+) -> None:
+    """Both libraries on the same VCF with the same binomial trait, over all
+    1200 variants of each panel and with each of the two tests.
+
+    pyNei gives no counts of the pass, so what is compared is the four
+    columns, the individuals that were tested, the coefficients of the null
+    model and which variants have no answer. Both panels are here because the
+    rule that gives a genotype with any allele missing the mean dosage of its
+    variant runs at scale on one of them and not on the other, and both tests
+    because they share the null fit and nothing else.
+
+    `residual_variance` is `None` for a binomial trait in both libraries,
+    whose variance is decided by its mean.
+
+    Measured on 26 September 2026 over the four pairs of panel and test on
+    both backends, the worst being the `beta` of the score test of the panel
+    with genotypes missing, 1.105e-14 of the `se` of its variant on faer.
+    The comment on `OF_PYNEI_LOGISTIC` has the rest.
+    """
+    ours = _the_logistic_study(panel, test=test)
+    theirs = _the_logistic_study_of_pynei(panel, test)
+
+    assert ours.individuals == tuple(theirs.samples)
+    assert ours.null_model.model == theirs.null_model.model
+    assert ours.trait == theirs.trait
+    assert ours.test == theirs.test
+    assert ours.null_model.residual_variance is None
+    assert theirs.null_model.residual_variance is None
+    numpy.testing.assert_allclose(
+        ours.null_model.covariate_effects.to_numpy(),
+        theirs.null_model.covariate_effects.to_numpy(),
+        rtol=OF_PYNEI_LOGISTIC,
+        atol=0,
+    )
+    numpy.testing.assert_allclose(
+        ours.stats["allele_freq"].to_numpy(),
+        theirs.stats["allele_freq"].to_numpy(),
+        rtol=0,
+        atol=OF_PLINK2_FREQUENCY,
+    )
+    se = theirs.stats["se"].to_numpy()
+    for column, scale in (("beta", se), ("se", se), ("p_value", None)):
+        ours_column = ours.stats[column].to_numpy()
+        theirs_column = theirs.stats[column].to_numpy()
+        assert (numpy.isnan(ours_column) == numpy.isnan(theirs_column)).all(), (
+            f"the variants without a {column} are not the same ones"
+        )
+        against = numpy.abs(theirs_column) if scale is None else scale
+        difference = numpy.abs(ours_column - theirs_column) / against
+        assert numpy.nanmax(difference) <= OF_PYNEI_LOGISTIC, (
+            f"the worst {column} is {numpy.nanmax(difference)} of "
+            f"{'itself' if scale is None else 'the `se` of its variant'} "
+            f"against the {OF_PYNEI_LOGISTIC} allowed"
         )
 
 
@@ -1757,6 +2045,20 @@ def _the_calls_that_are_refused(
             phenotype=binomial,
             trait="binomial",
             kinship=_the_kinship_of_the_worked_example(),
+        ),
+        # The trait of the worked example is 2, 3, 5, 4, 4, 7, so the first
+        # tested individual is the one the message names.
+        "a binomial trait that is neither 0 nor 1": lambda: _the_worked_example(
+            worked_example, trait="binomial"
+        ),
+        # The covariate of the worked example is 0, 1, 0, 1, 0, 1, which is
+        # this phenotype, so it separates the individuals that have the
+        # condition from the ones that have not and the null fit walks
+        # towards an infinite effect for it instead of settling.
+        "a binomial null model that walks towards an infinite coefficient": (
+            lambda: _the_worked_example(
+                worked_example, phenotype=binomial, trait="binomial"
+            )
         ),
         "a covariate named intercept": lambda: _the_worked_example(
             worked_example, covariates=covariates.rename(columns={"cov": "intercept"})

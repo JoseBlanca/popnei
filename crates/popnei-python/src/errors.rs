@@ -624,7 +624,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // looked at before the pass, so the same number is refused whatever
         // the source holds.
         | popnei::Error::LdMaxNumVarsTooLarge { .. }
-        // The fourteen of the association study that are of what a user
+        // The fifteen of the association study that are of what a user
         // wrote and are wrong whatever file is read: a phenotype or a
         // covariate that is not a finite number, which the package lets
         // through as a value that came out of the user's own arithmetic as
@@ -639,15 +639,20 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // of a logistic mixed one, which are the two pairs no model has;
         // the GRAMMAR-Gamma approximation, asked for by a study with no
         // kinship and asked for by one with a kinship, which say different
-        // things; and a study whose trait and kinship ask for one of the
-        // two models that are not written. "The Rust interface" of
-        // `docs/specs/gwas.md` has them, each as the `ValueError` it is
+        // things; a null model that walked towards an infinite coefficient
+        // instead of settling, which is a covariate that separates the
+        // individuals that have the condition from the ones that have not
+        // and which the user takes out; and a study whose trait and kinship
+        // ask for the one model that is not written. "The Rust interface"
+        // of `docs/specs/gwas.md` has them, each as the `ValueError` it is
         // here. What the arm at the end of this function would give them
         // instead is the same exception with the path of the file in front
         // of the message, and an argument that is refused names no file:
         // `GwasGrammarGammaNotBuilt` was there until 25 September 2026 and
         // arrived with the VCF glued on, where the refusal raised two lines
-        // from it in the core named none.
+        // from it in the core named none, and `GwasFitDidNotSettle` until
+        // 26 September, where the fit reads the phenotype and the design
+        // and no variant of any file at all.
         | popnei::Error::GwasPhenotypeNotFinite { .. }
         | popnei::Error::GwasPhenotypeNotBinomial { .. }
         | popnei::Error::GwasPhenotypeOfOneValue { .. }
@@ -661,6 +666,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasWaldTestOfALogisticMixedModel
         | popnei::Error::GwasGrammarGammaWithoutAKinship
         | popnei::Error::GwasGrammarGammaNotBuilt
+        | popnei::Error::GwasFitDidNotSettle { .. }
         | popnei::Error::GwasModelNotBuilt { .. }
         // The name of a trait and the name of a test that are of neither
         // of the two, which a user writes in `trait` and in `test`.

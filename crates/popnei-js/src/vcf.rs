@@ -234,12 +234,14 @@ impl VcfSource {
     ///
     /// # Errors
     ///
-    /// When `trait_name` is of neither trait; when the study needs one of
-    /// the two logistic models, which are not written, or the GRAMMAR-Gamma
-    /// approximation, which is not written either; when the individuals are
-    /// not in the order the source has them, one is there twice or is not in
-    /// the source, or they are fewer than the columns of the design plus
-    /// two; when a value of the phenotype or of the design is not finite;
+    /// When `trait_name` is of neither trait; when the study needs the
+    /// logistic mixed model, which is not written, or the GRAMMAR-Gamma
+    /// approximation, which is not written either; when a binomial
+    /// phenotype holds a value that is neither 0 nor 1, or its null model
+    /// walks towards an infinite coefficient instead of settling; when the
+    /// individuals are not in the order the source has them, one is there
+    /// twice or is not in the source, or they are fewer than the columns of
+    /// the design plus two; when a value of the phenotype or of the design is not finite;
     /// when the kinship is not one row and one column for each tested
     /// individual or holds a value that is not finite; when the columns of
     /// the design are not independent; when the VCF cannot be read; when a

@@ -1,8 +1,9 @@
 /**
  * The association study from TypeScript: `calcGwas` and the result it gives.
  *
- * "The linear model", "The linear mixed model" and "The worked example" of
- * `docs/specs/gwas.md` have the numbers. The worked example is 3 variants of
+ * "The linear model", "The linear mixed model", "The logistic model" and
+ * "The worked example" of `docs/specs/gwas.md` have the numbers. The worked
+ * example is 3 variants of
  * 6 diploid individuals with one covariate, written as a VCF here, and pyNei
  * at commit ef0ca6e gave its null model and its three rows; it reads no
  * reference file and nothing of it is rounded away. The panel is
@@ -10,8 +11,10 @@
  * biallelic variants with every genotype called, with the trait `cont` and
  * the covariates `cov1` and `cov2` of `tests/reference/gwas/phenotypes.csv`.
  * The six variants asserted for the linear model are what plink2
- * v2.0.0-a.7.7 wrote for it, and the six of the mixed model are what GMMAT
- * 1.5.0 wrote, over the kinship that `plink2 --make-rel` wrote and that
+ * v2.0.0-a.7.7 wrote for it, the six of the logistic model are what plink2
+ * wrote for the binomial trait `binom` of the same file, and the six of the
+ * mixed model are what GMMAT 1.5.0 wrote, over the kinship that
+ * `plink2 --make-rel` wrote and that
  * neither popnei nor pyNei calculated.
  *
  * The calculation is tested in the core crate, over all 1200 variants of the
@@ -238,6 +241,85 @@ const OF_PLINK2_SIX: {
 ];
 
 /**
+ * What plink2 v2.0.0-a.7.7 wrote for six variants of the panel with the
+ * binomial trait `binom` and the covariates `cov1` and `cov2`, in
+ * `tests/reference/gwas/plink2.panel_called.glm.logistic.hybrid.tsv`: the
+ * effect as a log odds ratio, which is the logarithm of the `OR` plink2
+ * prints, the `LOG(OR)_SE` beside it and the p-value.
+ *
+ * The `beta` carries more digits than plink2 prints because it is the
+ * logarithm of the six digits of the odds ratio. Five of the six are the
+ * causal variants of `causal_vars.csv` and `var0000` is not causal; none of
+ * the six is the variant plink2 fell back to a penalized regression for,
+ * which is `var0006` and which the test below is about.
+ */
+const OF_PLINK2_LOGISTIC_SIX: {
+  id: string;
+  beta: number;
+  se: number;
+  pValue: number;
+}[] = [
+  {
+    id: "var0000",
+    beta: -0.572_578_694_541_525_8,
+    se: 0.261_917,
+    pValue: 0.028_808_1,
+  },
+  {
+    id: "var0052",
+    beta: -0.852_823_096_430_041_7,
+    se: 0.248_979,
+    pValue: 0.000_614_166,
+  },
+  {
+    id: "var0629",
+    beta: -0.949_570_924_908_968,
+    se: 0.323_553,
+    pValue: 0.003_337_39,
+  },
+  {
+    id: "var0751",
+    beta: -0.265_916_666_783_602_6,
+    se: 0.219_207,
+    pValue: 0.225_098,
+  },
+  {
+    id: "var1137",
+    beta: -0.427_448_481_503_581_95,
+    se: 0.252_402,
+    pValue: 0.090_356_1,
+  },
+  {
+    id: "var1188",
+    beta: -0.830_184_139_078_324,
+    se: 0.264_071,
+    pValue: 0.001_667_71,
+  },
+];
+
+/**
+ * How far a `beta` and an `se` of the six above may be from plink2's, as a
+ * share of the `se` of that variant, and how far a p-value may be, as a
+ * share of itself: 1e-5, 1e-4 and 5e-3, which is what "How it is verified"
+ * of "The logistic model" holds the same six literals to and what pyNei
+ * holds them to.
+ *
+ * They are wider than the 5e-6 plink2's six printed digits round a value by
+ * because plink2 stops its logistic fit earlier than popnei does: what they
+ * measure is the distance between two fits. Measured under node on 26
+ * September 2026, the worst effect is 2.688e-6 of the `se` of its variant,
+ * `var0052`, 27 per cent of what is allowed; the worst standard error is
+ * 5.301e-5 of itself, `var1137`, 53 per cent of its bound; and the worst
+ * p-value is 1.878e-4 of itself, `var1137` again, 4 per cent of its bound.
+ * The cargo test of the same six measures 2.69e-6, 5.30e-5 and 1.88e-4 on
+ * faer natively and on Accelerate, so none of the distance from plink2 is
+ * WebAssembly's own rounding.
+ */
+const OF_PLINK2_LOGISTIC_BETA = 1e-5;
+const OF_PLINK2_LOGISTIC_SE = 1e-4;
+const OF_PLINK2_LOGISTIC_P_VALUE = 5e-3;
+
+/**
  * How far `1 / se**2` of the score test may be from GMMAT's `VAR`, as a
  * share of it, and how far a p-value may be from GMMAT's in `log10`: 1e-5
  * and 1e-4, which is what "How it is verified" of "The linear mixed model"
@@ -450,6 +532,21 @@ function theStudyOfThePanel(): GwasResult {
 }
 
 /**
+ * The study of the binomial trait of the panel with `cov1` and `cov2`, which
+ * is what plink2 was given for its logistic regression.
+ */
+function theLogisticStudyOfThePanel(): GwasResult {
+  return gwasOf(PANEL_VCF, {
+    phenotype: PHENOTYPES.binom as Record<string, number>,
+    trait: "binomial",
+    covariates: {
+      cov1: PHENOTYPES.cov1 as Record<string, number>,
+      cov2: PHENOTYPES.cov2 as Record<string, number>,
+    },
+  });
+}
+
+/**
  * The study of the panel with the kinship and the score test, which is what
  * GMMAT was given: both covariates and the matrix plink2 wrote.
  */
@@ -648,6 +745,103 @@ test("the six variants of the panel are plink2's effect, error and p-value", () 
       `the p-value of ${id}`,
     );
   }
+});
+
+test("the six variants of the panel are plink2's logistic effect, error and p-value", () => {
+  const result = theLogisticStudyOfThePanel();
+
+  assert.equal(result.nullModel.model, "glm");
+  assert.equal(result.test, "wald");
+  assert.equal(result.trait, "binomial");
+  assert.equal(result.nullModel.numIndividuals, PANEL_NUM_INDIVIDUALS);
+  assert.equal(result.stats.beta.length, PANEL_NUM_VARS);
+  // A binomial trait has no residual variance, its variance being decided
+  // by its mean, and a study with no kinship has no genetic variance.
+  assert.equal(result.nullModel.residualVariance, undefined);
+  assert.equal(result.nullModel.geneticVariance, undefined);
+  assert.equal(result.nullModel.heritability, undefined);
+  for (const { id, beta, se, pValue } of OF_PLINK2_LOGISTIC_SIX) {
+    const at = rowOf(result, id);
+    assertWithinTheScale(
+      result.stats.beta[at] as number,
+      beta,
+      se,
+      OF_PLINK2_LOGISTIC_BETA,
+      `the effect of ${id}`,
+    );
+    assertWithinTheScale(
+      result.stats.se[at] as number,
+      se,
+      se,
+      OF_PLINK2_LOGISTIC_SE,
+      `the standard error of ${id}`,
+    );
+    assertWithin(
+      result.stats.pValue[at] as number,
+      pValue,
+      OF_PLINK2_LOGISTIC_P_VALUE,
+      `the p-value of ${id}`,
+    );
+  }
+});
+
+test("the one variant whose logistic fit runs away has no answer here either", () => {
+  // `var0006` separates the individuals that have the condition from those
+  // that have not, so its effect has no finite value to reach: plink2 falls
+  // back to a penalized regression there and popnei gives NaN. The mark that
+  // catches it is tested for a value that is not finite and not for an
+  // infinity, which is what makes the two linear algebra backends agree, and
+  // this build is the one that would show it: WebAssembly runs faer, where a
+  // system that overflows gives a NaN and LAPACK gives an infinity.
+  const result = theLogisticStudyOfThePanel();
+
+  const withoutAnAnswer = (result.stats.id as readonly string[]).filter(
+    (_id, at) => Number.isNaN(result.stats.pValue[at]),
+  );
+  assert.deepEqual(withoutAnAnswer, ["var0006"]);
+  const at = rowOf(result, "var0006");
+  assert.ok(Number.isNaN(result.stats.beta[at] as number));
+  assert.ok(Number.isNaN(result.stats.se[at] as number));
+  // The frequency of such a variant is still there, as it is for a variant
+  // with no variance: what it has not is a test.
+  assert.ok(!Number.isNaN(result.stats.alleleFreq[at] as number));
+});
+
+test("the logistic score test of the panel is fitted and the wald test is the default", () => {
+  // `test` takes a value that is not the default here, which is the one
+  // thing this suite has no other call for on this model, and the two tests
+  // share the null fit and nothing else: the coefficients are the same and
+  // the rows are not.
+  const byDefault = theLogisticStudyOfThePanel();
+  const score = gwasOf(PANEL_VCF, {
+    phenotype: PHENOTYPES.binom as Record<string, number>,
+    trait: "binomial",
+    covariates: {
+      cov1: PHENOTYPES.cov1 as Record<string, number>,
+      cov2: PHENOTYPES.cov2 as Record<string, number>,
+    },
+    test: "score",
+  });
+
+  assert.equal(score.nullModel.model, "glm");
+  assert.equal(score.test, "score");
+  assert.equal(byDefault.test, "wald");
+  assert.deepEqual(Object.keys(score.nullModel.covariateEffects), [
+    "intercept",
+    "cov1",
+    "cov2",
+  ]);
+  for (const name of ["intercept", "cov1", "cov2"]) {
+    assert.equal(
+      score.nullModel.covariateEffects[name],
+      byDefault.nullModel.covariateEffects[name],
+      `the ${name} of the two tests is the same null fit`,
+    );
+  }
+  // The score test fits nothing per variant, so `var0006` has an answer
+  // there where the Wald test has none.
+  const separating = score.stats.pValue[rowOf(score, "var0006")] as number;
+  assert.ok(!Number.isNaN(separating));
 });
 
 test("an individual with no phenotype is not tested and the frequencies are of the rest", () => {
@@ -1025,6 +1219,20 @@ function theCallsThatAreRefused(): Record<string, () => GwasResult> {
       trait: "binomial",
       kinship: theKinshipOfTheWorkedExample(),
     }),
+    // The trait of the worked example is 2, 3, 5, 4, 4, 7, so the first
+    // tested individual is the one the message names.
+    "a binomial trait that is neither 0 nor 1": theStudyWith({
+      trait: "binomial",
+    }),
+    // The covariate of the worked example is 0, 1, 0, 1, 0, 1, which is this
+    // phenotype, so it separates the individuals that have the condition
+    // from the ones that have not and the null fit walks towards an infinite
+    // effect for it instead of settling.
+    "a binomial null model that walks towards an infinite coefficient":
+      theStudyWith({
+        phenotype: { i0: 0, i1: 1, i2: 0, i3: 1, i4: 0, i5: 1 },
+        trait: "binomial",
+      }),
     "a covariate named intercept": theStudyWith({
       covariates: { intercept: cov },
     }),

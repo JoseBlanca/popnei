@@ -13,14 +13,14 @@ of interest but has to be taken out, the field a plant grew in for instance,
 and the top principal components of the panel go in as covariates so that a
 variant which only marks ancestry does not look associated.
 
-What is built is the continuous half of the study, the two models of a trait
-that is a measurement. Without a kinship it is the linear model, which is
-what plink2's ``--glm`` computes, and its test is the t test of the effect:
-the effect divided by its standard error, which under the hypothesis that
-the variant has none follows a Student t distribution with as many degrees
-of freedom as there are individuals left once the covariates and the variant
-have been fitted, and the p-value is the chance that such a t falls further
-from 0 than this one did, either way.
+Three of the four models are built. A trait that is a measurement without a
+kinship is the linear model, which is what plink2's ``--glm`` computes, and
+its test is the t test of the effect: the effect divided by its standard
+error, which under the hypothesis that the variant has none follows a
+Student t distribution with as many degrees of freedom as there are
+individuals left once the covariates and the variant have been fitted, and
+the p-value is the chance that such a t falls further from 0 than this one
+did, either way.
 
 With a kinship it is the linear mixed model, which a panel with families in
 it needs: the trait carries a random effect whose covariance is the kinship
@@ -29,9 +29,20 @@ each other before any variant is looked at. Its two tests are rrBLUP's Wald
 test, which estimates the scale of the two variances again with the variant
 in, and GMMAT's score test, which holds both at the null.
 
-The two logistic models of a binomial trait are being written, and so is the
-GRAMMAR-Gamma approximation that a mixed model can take instead of the exact
-denominator of its test; asking for one is a ``ValueError`` that says so.
+A trait that is 0 and 1 without a kinship is the logistic regression, which
+is what plink2's ``--glm`` computes for such a trait: the chance that an
+individual is a 1 is a logistic curve in the covariates and the variant, and
+the effect is a log odds ratio. Its default is the Wald test, one fit per
+variant with the variant in it, and it also takes the score test, which fits
+nothing per variant and which R's ``anova(glm, test = "Rao")`` computes. A
+variant that separates the individuals that have the condition from those
+that have not has no finite effect, and its Wald test gives NaN for all
+three numbers.
+
+The logistic mixed model, a trait that is 0 and 1 with a kinship, is being
+written, and so is the GRAMMAR-Gamma approximation that a mixed model can
+take instead of the exact denominator of its test; asking for either is a
+``ValueError`` that says so.
 
 `docs/specs/gwas.md` has the four models, the numbers the tests assert and
 what popnei does differently from pyNei.
@@ -168,11 +179,15 @@ class GWASResult:
     casts the column first, ``stats['pos'].astype('int64')``.
     ``allele_freq`` is the frequency of the alleles that are not the major
     one over the tested individuals, ``beta`` the effect of one more copy of
-    such an allele, in the units of the trait, ``se`` the standard error of
-    that effect and ``p_value`` the probability of an effect that far from 0
-    when the variant has none. A variant whose dosages are all the same among
+    such an allele, in the units of the trait for a continuous one and as a
+    log odds ratio for a binomial one, ``se`` the standard error of that
+    effect and ``p_value`` the probability of an effect that far from 0 when
+    the variant has none. A variant whose dosages are all the same among
     the tested individuals has no variance and cannot be tested: its row is
-    here with its ``allele_freq``, and the other three are NaN."""
+    here with its ``allele_freq``, and the other three are NaN. So is a
+    variant whose logistic fit walks towards an infinite effect instead of
+    settling, which is one that separates the individuals that have the
+    condition from those that have not."""
 
     null_model: NullModel
     """The model fitted with no variant in it."""
@@ -254,8 +269,17 @@ def calc_gwas(
 
     `trait` is ``"continuous"``, a measurement, or ``"binomial"``, 0 for an
     individual that has not a condition and 1 for one that has, the two
-    values of :class:`TraitType`. A binomial trait is a logistic model, which
-    is being written, and asking for one is a ``ValueError`` that says so.
+    values of :class:`TraitType`. A binomial trait whose value at a tested
+    individual is neither 0 nor 1 is a ``ValueError`` naming the place of
+    that individual, and so is one where every tested individual has the
+    same value, which leaves one of the two groups empty. Without a kinship
+    a binomial trait is a logistic regression and ``beta`` is a log odds
+    ratio; with one it is the logistic mixed model, which is being written,
+    and asking for it is a ``ValueError`` that says so. A null model whose
+    fit walks towards an infinite coefficient instead of settling is a
+    ``ValueError`` too: what takes it there is a covariate that separates
+    the individuals that have the condition from those that have not, and
+    the user takes that covariate out.
 
     `covariates` is a frame indexed by individual with one column for each
     covariate, and the design of the study is a column of ones for the
@@ -289,10 +313,12 @@ def calc_gwas(
 
     `test` is ``"wald"`` or ``"score"``, the two values of
     :class:`TestType`, and ``None`` takes the default of the model, which is
-    the Wald test for both models of a continuous trait. The linear model's
+    the Wald test for the three models that are built. The linear model's
     only test is the t test of the effect it fitted, which is the Wald test,
     so ``"score"`` is a ``ValueError`` that says so; the linear mixed model
-    takes either, the Wald test being rrBLUP's and the score test GMMAT's.
+    takes either, the Wald test being rrBLUP's and the score test GMMAT's,
+    and so does the logistic regression, whose Wald test fits one logistic
+    regression per variant and whose score test fits none.
 
     `use_grammar_gamma_approx` stands in for the denominator of a mixed
     model's test, which costs a product with the covariance of the random
