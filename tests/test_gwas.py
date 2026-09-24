@@ -1120,7 +1120,7 @@ OF_RRBLUP = 1e-4
 # worst p-value is 4.62e-5 and 4.76e-5 in `log10`, both at `var0185`, 48 per
 # cent of what is allowed.
 #
-# How much of each of those is popnei's, measured on 25 September 2026. At
+# How much of each of those is popnei's, measured on 24 September 2026. At
 # `var0955` GMMAT prints 11.6504, so half of its last digit is 4.2917e-6 of
 # the value against the 4.4268e-6 measured: at most 1.35e-7 of that
 # difference is popnei's arithmetic. The comparison is not for that reason
@@ -1148,7 +1148,7 @@ OF_GMMAT_P_VALUE = 1e-4
 # variance of this build 3.155e-9 apart on the same kinship, 2.583e-9 of it,
 # so a bound at 1e-9 would sit below the noise of the search and would pass
 # or fail by rounding. The 9.7e-9 the spec gives, and this comment gave
-# until 25 September 2026, is the cargo build's figure, which is not this
+# until 24 September 2026, is the cargo build's figure, which is not this
 # one: the two were measured on different builds and the wrong one was
 # copied here.
 #
@@ -1580,7 +1580,7 @@ def test_a_kinship_that_does_not_tell_the_variances_apart_gives_none_of_them(
     genetic variance and the residual one: the restricted maximum likelihood
     has nothing to choose between them and its criterion is flat over the
     whole grid, so which point wins is rounding. What the study gave before
-    this, on 25 September 2026, was a ``heritability`` of 6.83e-05, which
+    this, on 24 September 2026, was a ``heritability`` of 6.83e-05, which
     reads as a small number and is an arbitrary one; perturbing such a
     kinship by 1e-15 gave 6.5e-5, 7.1e-5 and 0.967 over three seeds.
 

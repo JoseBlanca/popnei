@@ -645,7 +645,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // here. What the arm at the end of this function would give them
         // instead is the same exception with the path of the file in front
         // of the message, and an argument that is refused names no file:
-        // `GwasGrammarGammaNotBuilt` was there until 25 September 2026 and
+        // `GwasGrammarGammaNotBuilt` was there until 24 September 2026 and
         // arrived with the VCF glued on, where the refusal raised two lines
         // from it in the core named none.
         | popnei::Error::GwasPhenotypeNotFinite { .. }
