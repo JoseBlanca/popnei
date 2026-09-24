@@ -1003,3 +1003,27 @@ image of the trait gives equality in exact arithmetic. That is what let a
 later reviewer construct the case that produced the NaN, which is what
 changed the spec. Asking for a measurement early, from whoever has the
 pieces in hand, and separating it from the decision that will use it.
+
+Fourteen doc comments and docstrings of this branch were dated 25 September
+2026 for work done on the 24th, and were corrected at `2db3a2b` after the
+plan was otherwise finished. The session running `gwas-logistic` found the
+first of them in the file it had inherited. Nine of the fourteen date a
+measurement, which is where a date in the future costs something: the line
+saying popnei sits 7.72e-8 from pyNei on Accelerate is what justifies a
+tolerance, and a reader checking whether that bound still holds doubts the
+7.72e-8 rather than the date.
+
+All fourteen came from one subagent working through a nineteen-item fix
+list, which worked the date out once and was wrong fourteen times. That
+session found fourteen of its own, in two test suites and the Python
+package, and five more in the first task written after it had corrected
+them. Twenty-eight between the two branches, every one ahead of the true
+date and none behind, which is not a clock being misread but a count forward
+from something. Neither `writing`, which requires a measurement to carry its
+date, nor `following-plans`, which lists what a task prompt gives a
+subagent, said where the date comes from. Both now do: `writing` on
+`plan/kinship`'s successor and `following-plans` at `3c35b8d` of
+`plan/gwas-logistic`, so the owner meets that change with that branch and
+can revert it in one commit if they would rather have decided it. None of
+the eleven task prompts of this plan carried the date, and one line in each
+would have caught all fourteen.
