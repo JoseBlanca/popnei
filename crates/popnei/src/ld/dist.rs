@@ -1018,18 +1018,27 @@ fn the_ld_and_dist_in_tiles_of<R: BlockReader + ?Sized>(
             filters,
         });
     }
-    for (of_the_pop, bins) in of_the_pops.the_pops().iter().zip(&mut of_each_pop) {
+    for (pop, (of_the_pop, bins)) in of_the_pops
+        .the_pops()
+        .iter()
+        .zip(&mut of_each_pop)
+        .enumerate()
+    {
         bins.num_vars = of_the_pop.num_vars();
         bins.the_distances_that_hold_a_pair_are_kept()?;
         // The n of the curve is the individuals of the population, which
         // "The curve that is fitted" of `docs/specs/ld.md` gives the
         // reasons for, and the dosages of a population are built over its
         // own individuals alone. The pass counted a variant above, so it
-        // took a block and every population has its dosages; a population
-        // that somehow had none would be one of no individual, which
-        // `fit_ld_decay` refuses rather than fitting a curve to an n of 0.
-        let num_individuals = of_the_pop.dosages().map_or(0, LdDosages::num_individuals);
-        bins.the_curve_is_fitted(the_count_of(num_individuals))?;
+        // took a block and every population has its dosages. A population
+        // that had none is a defect of popnei and not a population of no
+        // individual, which is refused before the pass: reading it as an n
+        // of 0 would reach the user as `fit_ld_decay` telling them they
+        // asked for a population of nobody.
+        let Some(dosages) = of_the_pop.dosages() else {
+            return Err(Error::LdPopWithNoDosages { pop, num_vars });
+        };
+        bins.the_curve_is_fitted(the_count_of(dosages.num_individuals()))?;
     }
     Ok(LdAndDist {
         num_vars,
@@ -3375,6 +3384,28 @@ pub(super) mod tests {
         for what in said {
             assert!(message.contains(what), "`{what}` is not in `{message}`");
         }
+    }
+
+    /// A population that has no dosages when the pass ends says which
+    /// population it is and how many variants the pass gave, and says that
+    /// it is a defect of popnei.
+    ///
+    /// No pass reaches it: a reader that gave no variant is refused before
+    /// any curve is fitted, and a pass that gave one took its block into
+    /// every population. What the error is for is that the n of the curve
+    /// not being there is reported as popnei's own and not as the
+    /// population of no individual a user can ask for, which is what
+    /// reading it as an n of 0 made `fit_ld_decay` say.
+    #[test]
+    fn a_population_with_no_dosages_says_it_is_a_defect_of_popnei() {
+        let error = Error::LdPopWithNoDosages {
+            pop: 1,
+            num_vars: 500,
+        };
+        assert_the_message_says(
+            &error,
+            &["population 1", "500 variants", "defect of popnei"],
+        );
     }
 
     #[test]

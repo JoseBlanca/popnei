@@ -1340,6 +1340,26 @@ pub enum Error {
     )]
     LdNoBins,
 
+    /// A population of a pass of the fall-off has no dosages when the pass
+    /// ends. The n of the curve fitted to a population is the individuals
+    /// its dosages were built over, and a population that has none has
+    /// taken no block. It is a defect of popnei and not anything a user
+    /// wrote: a pass that gave no variant is refused before any curve is
+    /// fitted, and a pass that gave one took its block into every
+    /// population. In Python it is a `RuntimeError`, as the other defects
+    /// of popnei are.
+    #[error(
+        "the population {pop} of the fall-off has no dosages when the pass has ended, and the individuals they were built over are the n of the curve fitted to it; the pass counted {num_vars} variants, so every population took a block, which is a defect of popnei; please report it"
+    )]
+    LdPopWithNoDosages {
+        /// Which population of the call it is, from 0, in the order they
+        /// were given.
+        pop: usize,
+        /// How many variants the pass gave, before the major allele
+        /// frequency of any population.
+        num_vars: u64,
+    },
+
     /// The three arrays the curve of the fall-off is fitted to are not of
     /// one length. They are the `dists` that hold a pair, the `num_pairs`
     /// each of them holds and the `sum_r2` of those pairs, the three

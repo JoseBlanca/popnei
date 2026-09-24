@@ -462,6 +462,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VarsBlockDoesNotFit { .. }
         | popnei::Error::VarsBlockColumns { .. }
         | popnei::Error::VarsChromNameMissing { .. }
+        // A population of the fall-off of r² with distance that has no
+        // dosages when the pass has ended, which is one more of that kind:
+        // the pass refuses a reader that gave no variant before it fits any
+        // curve, and a pass that gave one took its block into every
+        // population, so a population with none is a defect of the pass and
+        // not the population of no individual that a user can write.
+        | popnei::Error::LdPopWithNoDosages { .. }
         // The two of the principal component analysis that no argument of
         // `do_pca` gives, which is what "Errors and the cases pyNei asserts"
         // of `docs/specs/pca.md` says of them: a buffer that does not hold
