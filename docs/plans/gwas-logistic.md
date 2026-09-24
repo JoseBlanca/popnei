@@ -199,7 +199,7 @@ Work package 1, whole, since the work packages run in order.
 
 ### Its tasks
 
-- [ ] 2.1 The linearization for one value of the variance component: the
+- [x] 2.1 The linearization for one value of the variance component: the
       working trait, the weights, the covariance factored with a Cholesky
       and applied by solving, and its stopping rule. Built from "What it
       gives" and "How popnei fits it, and why not pyNei's way" of "The

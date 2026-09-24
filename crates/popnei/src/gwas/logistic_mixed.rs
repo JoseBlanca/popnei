@@ -28,7 +28,7 @@ use super::study::{Design, GwasInputShape, GwasModel};
 /// The panel of `docs/specs/gwas.md`, 200 individuals and two covariates,
 /// settles in 5 rounds at the variance of the kinship effect that GMMAT
 /// fitted for it and in 26 at a variance of 1e10, which no fit reaches,
-/// measured on both backends on 25 September 2026.
+/// measured on both backends on 24 September 2026.
 pub(super) const ROUNDS_OF_A_LINEARIZATION: usize = 200;
 
 /// How small the largest change in the linear predictor has to be, over
@@ -602,7 +602,7 @@ mod glmm {
     /// It is absolute and not a share of each effect, since the effects of
     /// a fit are near 0 when the covariate does nothing and the bound
     /// would then be reading the rounding of a number that is not there.
-    /// Measured on 25 September 2026: the worst is 1.78e-15 on Accelerate
+    /// Measured on 24 September 2026: the worst is 1.78e-15 on Accelerate
     /// and 2.22e-16 on faer, both at the intercept on both panels, so this
     /// is 2.8 times where it breaks.
     const OF_THE_LOGISTIC_NULL: f64 = 5e-15;
@@ -616,7 +616,7 @@ mod glmm {
     /// numbers' absolute values and not any value of the result, which is
     /// what "How it is verified" of `docs/specs/gwas.md` asks a tolerance
     /// to be measured against. Measured at GMMAT's variance over both
-    /// panels on 25 September 2026: the worst is 3.18e-16 on Accelerate
+    /// panels on 24 September 2026: the worst is 3.18e-16 on Accelerate
     /// and 4.25e-16 on faer, both on the panel with genotypes missing, so
     /// this is 3.5 times where it breaks.
     const OF_THE_PROJECTED_WORKING_TRAIT: f64 = 1.5e-15;
@@ -626,7 +626,7 @@ mod glmm {
     /// it, as a share of the largest absolute value of the working trait:
     /// 5e-15.
     ///
-    /// Measured at GMMAT's variance over both panels on 25 September 2026:
+    /// Measured at GMMAT's variance over both panels on 24 September 2026:
     /// the worst is 1.80e-15 on Accelerate, on the panel with genotypes
     /// missing, and 1.67e-15 on faer, on the panel with every genotype
     /// called, so this is 2.8 times where it breaks.
@@ -635,7 +635,7 @@ mod glmm {
     /// A variance of the kinship effect large enough that the fitted
     /// chance of an individual reaches 0 or 1 and its weight falls to 0,
     /// which no fit of either panel reaches: 1e12, measured on
-    /// `panel_called` on 25 September 2026, where 1e10 still settles.
+    /// `panel_called` on 24 September 2026, where 1e10 still settles.
     const A_VARIANCE_THAT_COLLAPSES_THE_WEIGHTS: f64 = 1.0e12;
 
     /// A variance large enough that the kinship's own smallest eigenvalue,
