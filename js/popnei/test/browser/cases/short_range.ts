@@ -11,11 +11,12 @@
  * length of one pass, by one that hands back one byte less than the range
  * it was asked for.
  *
- * The file is `tests/reference/vcf/many.vcf`, 117346 bytes, which is
- * smaller than the 4 MiB of a range, so the pass asks for the whole of it
- * in one call and gets 117345 bytes. Those three numbers are what the
- * message has to name: the range popnei asked for, where it asked for it
- * and how much came back.
+ * The file is `tests/reference/vcf/many.vcf`, 117346 bytes. What the case
+ * asserts is not a size: the patched `slice` writes down the range it was
+ * asked for, and the message has to name that range, where it was asked
+ * for and one byte less than it as what came back. So the case holds
+ * whatever size of range popnei reads by, which the measurement of "Speed"
+ * of `docs/specs/js_sources.md` sets.
  *
  * The source is opened before the patch is put on, so the reading that
  * fails is a pass over the variants and not the reading of the header at
@@ -27,30 +28,25 @@ import { openVcf } from "../../../dist/web.js";
 import { bytesOf } from "../assert.ts";
 import { pickedFile } from "../picked_file.ts";
 
-/**
- * The bytes of `many.vcf`, which is the range the pass asks for and where,
- * and the bytes the patched `slice` gives back.
- */
-const NUM_BYTES = 117346;
-const AT = 0;
-const NUM_BYTES_GIVEN = NUM_BYTES - 1;
-
-/**
- * What the message of the error has to say, each piece written as popnei
- * writes it: the range that was asked for and what came back.
- */
-const THE_RANGE = `${NUM_BYTES} bytes from ${AT}`;
-const WHAT_CAME_BACK = `gave ${NUM_BYTES_GIVEN}`;
+/** The range the patched `slice` was asked for, in the order of the asks. */
+interface Asked {
+  at: number;
+  numBytes: number;
+}
 
 /**
  * Runs `body` with every `Blob` of this worker giving one byte less than
- * the range it is asked for, and gives back what `body` threw, or
- * `undefined` when it threw nothing.
+ * the range it is asked for, and gives back the ranges it was asked for and
+ * what `body` threw, or `undefined` when it threw nothing.
  *
  * The patch is taken off again whatever happens, so a case that fails here
  * leaves the next case of this worker a browser that reads whole ranges.
  */
-function whileEveryRangeComesBackShort(body: () => void): unknown {
+function whileEveryRangeComesBackShort(body: () => void): {
+  asked: Asked[];
+  thrown: unknown;
+} {
+  const asked: Asked[] = [];
   const wholeRange = Blob.prototype.slice;
   Blob.prototype.slice = function oneByteLess(
     this: Blob,
@@ -60,13 +56,14 @@ function whileEveryRangeComesBackShort(body: () => void): unknown {
   ): Blob {
     const from = start ?? 0;
     const to = end ?? this.size;
+    asked.push({ at: from, numBytes: to - from });
     return wholeRange.call(this, from, Math.max(from, to - 1), contentType);
   };
   try {
     body();
-    return undefined;
+    return { asked, thrown: undefined };
   } catch (error: unknown) {
-    return error;
+    return { asked, thrown: error };
   } finally {
     Blob.prototype.slice = wholeRange;
   }
@@ -82,7 +79,7 @@ export async function run(): Promise<void> {
   const variants = openVcf(file, { onlyPassed: false });
   let numVars = 0;
   try {
-    const thrown = whileEveryRangeComesBackShort(() => {
+    const { asked, thrown } = whileEveryRangeComesBackShort(() => {
       for (const block of variants.iterBlocks()) {
         numVars += block.numVars;
       }
@@ -98,7 +95,17 @@ export async function run(): Promise<void> {
         `the pass threw ${JSON.stringify(thrown)}, which is no \`Error\``,
       );
     }
-    for (const said of [THE_RANGE, WHAT_CAME_BACK]) {
+    // The first range of the pass is the one that came back short, so it is
+    // the one the message names. The pass reads no other.
+    const first = asked[0];
+    if (first === undefined) {
+      throw new Error(
+        "the pass asked the file for no range, so nothing came back short",
+      );
+    }
+    const theRange = `${first.numBytes} bytes from ${first.at}`;
+    const whatCameBack = `gave ${first.numBytes - 1}`;
+    for (const said of [theRange, whatCameBack]) {
       if (!thrown.message.includes(said)) {
         throw new Error(
           `the message of the short range does not say \`${said}\`: ` +
