@@ -331,7 +331,7 @@ impl LinearModel {
         let rows = TheRowsToTest {
             residualized: &self.residualized,
             num: &self.num,
-            dosages: dosages.dosages(),
+            sum_of_squares: dosages.sum_of_squares(),
             residuals: &self.residuals,
             num_individuals: self.num_individuals,
             degrees_of_freedom: self.degrees_of_freedom as f64,
@@ -372,9 +372,10 @@ struct TheRowsToTest<'a> {
     /// Each of those rows against the trait's residuals, one value for
     /// each of them.
     num: &'a [f64],
-    /// The dosages of those variants as the block holds them, before the
-    /// design was taken out, one row of `num_individuals` values for each.
-    dosages: &'a [f64],
+    /// The squared length of the dosages of each of those variants, before
+    /// the design was taken out, which the block summed where it wrote the
+    /// row: one value for each of them.
+    sum_of_squares: &'a [f64],
     /// The trait less what the null model explains, one value for each
     /// tested individual, which every variant is tested against.
     residuals: &'a [f64],
@@ -396,16 +397,13 @@ impl TheRowsToTest<'_> {
     /// `docs/specs/gwas.md` gives a variant that has none.
     ///
     /// `row` is what the design leaves of the variant, `num` is that row
-    /// against the trait's residuals, and `of_the_variant` is the dosages
-    /// the variant came with. Nothing outside the three of them and the
-    /// study's own values is read, and nothing is written, which is what
-    /// lets the rows be walked on the threads of rayon.
-    fn the_answer_of_the_row(&self, row: &[f64], num: f64, of_the_variant: &[f64]) -> Answer {
+    /// against the trait's residuals, and `of_the_dosages` is the squared
+    /// length the variant had before the design was taken out of it.
+    /// Nothing outside the three of them and the study's own values is
+    /// read, and nothing is written, which is what lets the rows be walked
+    /// on the threads of rayon.
+    fn the_answer_of_the_row(&self, row: &[f64], num: f64, of_the_dosages: f64) -> Answer {
         let xx = row.iter().map(|value| value * value).sum::<f64>();
-        let of_the_dosages = of_the_variant
-            .iter()
-            .map(|value| value * value)
-            .sum::<f64>();
         // A variant that is a combination of the columns of the design has
         // nothing left once they are taken out, and what `xx` holds is the
         // rounding of that cancellation: `beta` would be a number divided
@@ -463,8 +461,8 @@ fn the_answers_of_the_rows(rows: &TheRowsToTest<'_>) -> Vec<Answer> {
     rows.residualized
         .par_chunks_exact(rows.num_individuals)
         .zip(rows.num.par_iter().copied())
-        .zip(rows.dosages.par_chunks_exact(rows.num_individuals))
-        .map(|((row, num), of_the_variant)| rows.the_answer_of_the_row(row, num, of_the_variant))
+        .zip(rows.sum_of_squares.par_iter().copied())
+        .map(|((row, num), of_the_dosages)| rows.the_answer_of_the_row(row, num, of_the_dosages))
         .collect()
 }
 
@@ -482,8 +480,8 @@ fn the_answers_of_the_rows_one_by_one(rows: &TheRowsToTest<'_>) -> Vec<Answer> {
     rows.residualized
         .chunks_exact(rows.num_individuals)
         .zip(rows.num.iter().copied())
-        .zip(rows.dosages.chunks_exact(rows.num_individuals))
-        .map(|((row, num), of_the_variant)| rows.the_answer_of_the_row(row, num, of_the_variant))
+        .zip(rows.sum_of_squares.iter().copied())
+        .map(|((row, num), of_the_dosages)| rows.the_answer_of_the_row(row, num, of_the_dosages))
         .collect()
 }
 
@@ -1506,10 +1504,24 @@ pub(crate) mod lm {
                     .sum::<f64>()
             })
             .collect();
+        // The squared length of each row of dosages, which the block sums
+        // where it writes the row and which the test is given as the block
+        // would give it.
+        let sum_of_squares: Vec<f64> = dosages
+            .as_chunks::<INDIVIDUALS>()
+            .0
+            .iter()
+            .map(|of_the_variant| {
+                of_the_variant
+                    .iter()
+                    .map(|dosage| dosage * dosage)
+                    .sum::<f64>()
+            })
+            .collect();
         let rows = TheRowsToTest {
             residualized: &residualized,
             num: &num,
-            dosages: &dosages,
+            sum_of_squares: &sum_of_squares,
             residuals: &residuals,
             num_individuals: INDIVIDUALS,
             degrees_of_freedom: INDIVIDUALS.saturating_sub(3) as f64,
