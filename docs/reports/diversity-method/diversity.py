@@ -60,9 +60,9 @@ def projected_folded(counts, c, n):
     major = int(np.argmax(counts))  # a tie goes to the lowest numbered allele
     minor = c - int(counts[major])
     bins = np.zeros(n // 2 + 1)
-    for j in range(0, min(minor, n) + 1):
-        if n - j > c - minor:
-            continue
+    # The draw holds neither more rarer copies than the variant has nor fewer
+    # than the major allele can leave room for.
+    for j in range(max(0, n - (c - minor)), min(minor, n) + 1):
         bins[min(j, n - j)] += comb(minor, j) * comb(c - minor, n - j) / comb(c, n)
     return bins
 
@@ -102,7 +102,11 @@ def calc(gts, pops, ploidy, min_num_individuals, num_called_alleles):
         # The private alleles need every population to have data: an allele
         # missing from a population for want of genotypes would look private.
         all_have_data = all(has_data.values())
-        all_have_draw = g is not None and all(c >= g for _, c in per_pop.values())
+        # A variant is in the draw for a population when it counts for it and
+        # its called alleles reach `g`, both and not the second alone.
+        all_have_draw = all_have_data and g is not None and all(
+            c >= g for _, c in per_pop.values()
+        )
         for name, (counts, c) in per_pop.items():
             if not has_data[name]:
                 continue

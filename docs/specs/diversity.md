@@ -84,16 +84,19 @@ keys of `pops`.
 
 `stats` names the statistics to compute, as `calc_per_var_distribs` does,
 and one not asked for is `None` in the result. The members of
-`PopDiversityStat` are `NUM_ALLELES`, `PRIVATE_ALLELES`, `POLY_RATIO`,
-`FOLDED_SFS` and `FIS`, and each is the name of the field that holds its
-result.
+`PopDiversityStat` are `NUM_ALLELES`, `PRIVATE_ALLELES`,
+`VARIABLE_VARS_RATIO`, `FOLDED_SFS` and `FIS`, and each is the name of the
+field that holds its result.
 
 `min_num_individuals` is how many called genotypes a population needs at a
 variant for the variant to count for it, 20 by default, and it is measured
 as the called alleles of the population over the ploidy, which is the rule
 of `docs/specs/stats.md` and lets a half called genotype count as half.
 Strictly fewer than that and the variant does not count for that
-population; a population with exactly `min_num_individuals` keeps it.
+population; a population with exactly `min_num_individuals` keeps it. A
+population that called nothing at a variant does not count it whatever
+`min_num_individuals` is, so a `min_num_individuals` of 0 does not put
+variants with no data into the totals.
 
 `num_called_alleles` is `g`, the called alleles every population is
 brought down to. `None`, the default, means the counts are taken over the
@@ -102,10 +105,17 @@ standardized values are NaN and `FOLDED_SFS` cannot be asked for, since
 the bins of a spectrum need one number of alleles for every population and
 every variant; asking for it without `num_called_alleles` is a
 `ValueError`. A `num_called_alleles` below 2 is a `ValueError`: a draw of
-one allele shows one allele whatever the population holds. A variant whose
-population called fewer than `g` alleles does not count for the
-standardized values of that population, and that is why the result carries
-a second count of variants.
+one allele shows one allele whatever the population holds.
+
+A variant is **in the draw** for a population when it counts for that
+population by the rule above **and** the population called at least `g`
+alleles there, both conditions and not the second alone. The standardized
+number of alleles and the standardized ratio of variable variants, and the
+spectrum, are over the variants in the draw for that population. The
+standardized private alleles are over the variants in the draw for every
+population, as the totals are over the variants that count for every
+population. That is why the result carries a second count of variants
+beside the first, and a second count for all the populations together.
 
 `PopDiversity` is a frozen dataclass:
 
@@ -115,7 +125,7 @@ class PopDiversity:
     pops: tuple[str, ...]
     num_alleles: pandas.DataFrame | None        # total, mean, in_draw
     private_alleles: pandas.DataFrame | None    # total, mean, in_draw
-    poly_vars: pandas.DataFrame | None          # total, ratio, in_draw
+    variable_vars_ratio: pandas.DataFrame | None  # total, ratio, in_draw
     folded_sfs: pandas.DataFrame | None
     fis: pandas.Series | None
     num_vars: pandas.DataFrame                  # with_data, in_draw
@@ -125,8 +135,9 @@ class PopDiversity:
 ```
 
 The first three frames are indexed by population name, in the order of
-`pops`, with the three columns named in the comment: `total` and `mean`
-are over the called alleles the population has, and `in_draw` is the
+`pops`, with the three columns named in the comment: `total` and, for the
+two counts of alleles, `mean`, and for the variable variants `ratio`, are
+over the called alleles the population has, and `in_draw` is the
 standardized value. `folded_sfs` has one row per count of the rarer
 allele, 0 to `num_called_alleles // 2`, indexed by that count, and one
 column per population. `fis` is one value per population. `num_vars` says,
@@ -140,11 +151,14 @@ them.
 In TypeScript it is `calcPopDiversity(variants, {pops, stats,
 numCalledAlleles, minNumIndividuals})`, with `pops` an object of
 population name to an array of individual names. Where Python gives a
-frame of three columns TypeScript gives an object of three
-`Float64Array`s, `{total, mean, inDraw}`, in the order of `pops`; the
-spectrum is one `Float64Array` per population, keyed by name; `fis` is a
-`Float64Array`; and the counts are `Float64Array`s beside the two whole
-numbers. The names of the populations are in `pops`, a frozen array of
+frame of three columns TypeScript gives an object of three typed arrays in
+the order of `pops`: `{total, mean, inDraw}` for the two counts of alleles
+and `{total, ratio, inDraw}` for the variable variants, with `total` a
+`Uint32Array`, as `docs/specs/stats.md` gives its counts, and the other
+two `Float64Array`s. The spectrum is one `Float64Array` per population,
+keyed by name; `fis` is a `Float64Array`; `numVars` is two `Uint32Array`s,
+`{withData, inDraw}`, beside the two whole numbers for all the populations
+together. The names of the populations are in `pops`, a frozen array of
 strings.
 
 ### The cases
@@ -161,7 +175,8 @@ none.
 A `num_called_alleles` above every population's called alleles leaves
 every `in_draw` value NaN and every spectrum zero, with
 `num_vars.in_draw` at 0. It is not an error, and the counts say why the
-values are missing.
+values are missing. The totals, the means and `fis` are as they would be
+without the argument, since none of them reads it.
 
 With one population every allele it called is private, since there is no
 other population to hold it. The number is then the number of alleles, and
@@ -175,12 +190,18 @@ One pass over the blocks of the reader. For each block, rayon over its
 rows; for each row, the allele counts of every population from the helper
 of `docs/specs/variant.md`, and from them the contribution of that variant
 to every statistic asked for. What is kept from one block to the next does
-not grow with the variants: per population, six sums and four counts, plus
-`num_called_alleles // 2 + 1` sums for the spectrum. The counts of the
+not grow with the variants. Per population it is the variants that counted
+and those that reached the draw; the alleles called, the private ones and
+the varying ones as three counts and, for the draw, as three sums; the sum
+of the observed heterozygosities, the sum of the unbiased expected ones
+and how many variants had both; and `num_called_alleles // 2 + 1` sums for
+the spectrum. Beside them, two counts for the whole call: the variants
+where every population had data and those where every population reached
+the draw. The counts of the
 populations at one variant are held while that variant is worked on,
-because the private alleles need every population's counts at once, and
-they are a `num_pops` by `num_alleles` array of the row and not of the
-block.
+because the private alleles need every population's counts at once. They
+live in one array of the populations by the alleles of that variant,
+which is reused from row to row and never grows with the block.
 
 Nothing here needs `reblock`, and nothing holds more than one block.
 
@@ -253,11 +274,11 @@ interface", is the six variants of five diploid individuals of
 `docs/specs/stats.md`, `min_num_individuals` 1 and `num_called_alleles` 4.
 Four variants count for each population: variant 4 has nothing called and
 variant 6 has one called allele in `pop1`, half a genotype, below the
-threshold of 1. `pop1` calls 2, 2, 4 and 1 alleles at variants 1, 2, 3 and
-5, a total of 9 and a mean of 2.25; `pop2` calls 1, 1, 4 and 2, a total of
-8 and a mean of 2. In a draw of 4, `pop1` keeps all four of its variants
-and gets 2.25, and `pop2` keeps three of them, variant 2 having 3 called
-alleles, and gets 2.3111111111.
+threshold of 1. `pop1` counts 2, 2, 4 and 1 different alleles at variants
+1, 2, 3 and 5, a total of 9 and a mean of 2.25; `pop2` counts 1, 1, 4 and
+2, a total of 8 and a mean of 2. In a draw of 4, `pop1` keeps all four of
+its variants and gets 2.25, and `pop2` keeps three of them, since at
+variant 2 it called only 3 copies in all, and gets 2.3111111111.
 
 ## The private alleles
 
@@ -287,7 +308,9 @@ allele `a` appears in a draw of `g` of the called alleles of population
 `r`, `p` is the population whose private alleles are counted, and `a` runs
 over the alleles `p` called. Each term is the chance that the allele shows
 in `p`'s draw and in no other population's draw. It is the estimator of
-Kalinowski (2004), which the program ADZE computes. The mean is over the
+Kalinowski (2004), computed by ADZE, the program of Szpiech, Jakobsson and
+Rosenberg (2008) that reports the allelic variety of populations at a
+common number of called alleles. The mean is over the
 variants where every population called at least `g` alleles, which is
 `num_vars_every_pop_in_draw`, and that count can be below the one for the
 number of alleles, since one short population takes the variant from every
@@ -301,7 +324,9 @@ with a 1 where the allele is private to the population of the row; its row
 sums are the totals. On the panel, run on 24 September 2026 with
 `min_num_individuals` 20, `poppr` gives 0, 0 and 1 for `p0`, `p1` and
 `p2`, which popnei has to match exactly; the means over the 1200 variants
-every population kept are 0, 0 and 0.0008333333.
+every population kept are 0, 0 and 0.0008333333. The check is a pytest
+test at `calc_pop_diversity`, where the totals and their divisor are read
+off the result.
 
 The standardized values have no program on this machine that computes
 them. ADZE is the one that does and it is not installed (**Open 2**). They
@@ -313,7 +338,9 @@ population, since a private allele is an allele; and a population compared
 against a copy of itself has 0 private alleles at every draw size, since
 every allele it draws the copy can draw too. On the panel at a draw of 20
 the values are 0.0112196177, 0.0099715392 and 0.0089014974, computed by
-the reference script of this module and stored beside it.
+the reference script of this module and stored beside it; they are cargo
+test literals at `calc_pop_diversity` of "The Rust interface", where the
+two properties are asserted too.
 
 The worked example, the same six variants and two populations as above at
 `num_called_alleles` 4. Three variants have both populations at 4 called
@@ -334,18 +361,22 @@ data at, `pop1` has the total 2, allele 1 at variants 1 and 2, and the
 mean 0.5, and `pop2` has the total 1, allele 1 at variant 5, and the mean
 0.25.
 
-## The polymorphism ratio
+## The variable variants
 
 ### What it gives
 
 How many of the variants vary in a population. A variant varies in a
 population when that population called more than one allele there, which
-is the `num_variable` of `docs/specs/stats.md` and not its `num_poly`,
-whose threshold on the major allele frequency has no meaning for a draw of
-alleles. A user gets the **total**, the varying variants, and the
-**ratio**, those over the variants that counted for the population, which
-is the same number `calc_per_var_distribs` gives as
-`poly_ratio_over_variables` would give at a threshold of 1.
+`docs/glossary.md` calls a variable variant and not a polymorphic one: a
+polymorphic variant is one whose major allele frequency is below the
+polymorphism threshold, and a threshold on a frequency has no meaning for
+a draw of alleles. The rarefaction literature, ADZE among it, calls what
+this item computes the proportion of polymorphic loci; popnei keeps the
+glossary's word, so the statistic is `variable_vars_ratio` and not a
+polymorphism ratio. A user gets the **total**, the varying variants, and
+the **ratio**, those over the variants that counted for the population.
+The total is the `num_variable` that `calc_per_var_distribs` gives in its
+`poly_vars_ratio`, over the same variants.
 
 The standardized value is the mean over the variants of
 
@@ -353,11 +384,10 @@ The standardized value is the mean over the variants of
 
 the chance that a draw of `g` of the `c` called alleles is not all of one
 allele, since `C(n_a, g) / C(c, g)` is the chance that every copy drawn is
-allele `a`. It is what ADZE reports as the proportion of polymorphic loci,
-and it is the quantity that makes the polymorphism of two populations of
-different size comparable: a population of 200 individuals finds a rare
-allele that a population of 20 misses, and without the draw it looks more
-polymorphic for that reason alone.
+allele `a`. It is the quantity that makes two populations of different
+size comparable: a population of 200 individuals finds a rare allele that
+a population of 20 misses, and without the draw it looks the more variable
+for that reason alone.
 
 ### How it is verified
 
@@ -365,10 +395,13 @@ On a variant of two alleles the expected number of alleles in a draw of
 `g` is one plus the chance that the draw varies, because the draw shows
 either one allele or two. So on a dataset where every variant has two
 alleles `vegan::rarefy` verifies this item as well: the standardized ratio
-has to be the standardized number of alleles minus 1, to the bit. The
-identity was checked on 24 September 2026 on the counts (10, 6), (3, 1),
-(17, 3), (1, 19) and (55, 45) at draws of 2, 4 and 10, where the two sides
-agree to 1e-12, and on the panel, whose standardized ratios are
+has to be the standardized number of alleles minus 1, within 1e-12
+relative, the two being the same sum of the same terms taken in different
+orders. The identity was checked on 24 September 2026 on the counts
+(10, 6), (17, 3), (1, 19) and (55, 45) at draws of 2, 4 and 10 and on
+(3, 1) at draws of 2 and 4, its 4 called alleles having no draw of 10:
+over those 14 pairs the two sides agree to 1.1e-16 or exactly. It was
+checked on the panel too, whose standardized ratios are
 0.9283948650, 0.9219209943 and 0.9197370844 against the standardized
 allele counts of 1.9283948650, 1.9219209943 and 1.9197370844. A dataset
 with variants of more than two alleles has no such identity and no
@@ -378,9 +411,11 @@ The totals and ratios on the panel, run with `min_num_individuals` 20 on
 24 September 2026: 1173, 1177 and 1184 varying variants of 1200, ratios of
 0.9775, 0.9808333333 and 0.9866666667. The totals are compared exactly.
 They are also the variants `docs/specs/stats.md` counts as variable, so
-the two modules have to agree on them, and a pytest test asserts that
-against `calc_per_var_distribs` with `poly_threshold` 1 on the same
-dataset and the same `pops`.
+the two modules have to agree on them: a pytest test at
+`calc_pop_diversity` and `calc_per_var_distribs` on the same dataset and
+the same `pops` asserts that this total equals the `num_variable` of
+`poly_vars_ratio`, at any `poly_threshold`, since that count does not read
+the threshold.
 
 The worked example, at `num_called_alleles` 4. `pop1` varies at variants
 1, 2 and 3 and not at 5, a total of 3 of 4 and a ratio of 0.75; `pop2`
@@ -424,8 +459,13 @@ the chance
 
     C(m, j) * C(c - m, g - j) / C(c, g)
 
-for every `j` from 0 to `m`, which is the hypergeometric chance that a
-draw of `g` of the `c` copies holds `j` of the rarer ones. A variant whose
+which is the hypergeometric chance that a draw of `g` of the `c` copies
+holds `j` of the rarer ones. `j` runs from `max(0, g - (c - m))` to
+`min(m, g)`, the draw holding neither more rarer copies than the variant
+has nor fewer than the major allele can leave room for: `m` can be far
+above `g`, 48 against 20 on the panel, and a `j` outside that range asks
+for a binomial coefficient of a negative argument and a bin below 0. A
+variant whose
 population called fewer than `g` alleles contributes nothing. So the
 entries are not whole numbers, and they sum to the variants that counted,
 `num_vars.in_draw` of that population.
@@ -454,7 +494,8 @@ digits:
 | 10 | 60.9568756012 | 61.9071468804 | 58.6246935652 |
 
 Each column sums to 1200, the variants that counted. They are compared
-within 1e-12 relative. `dadi` masks bin 0 and the bins above `g / 2` in a
+within 1e-12 relative, by a pytest test at `calc_pop_diversity` reading
+`folded_sfs` against these literals. `dadi` masks bin 0 and the bins above `g / 2` in a
 folded spectrum and popnei reports bin 0, so the comparison reads
 `fs.data` and not the masked array; the difference is one of presentation
 and the value is the same.
@@ -462,7 +503,14 @@ and the value is the same.
 `dadi` does not build on the project's Python, 3.14 with the free
 threading build, its `nlopt` dependency failing to compile on 24 September
 2026; it installs and runs on 3.12, so the reference script of this module
-makes an environment of its own (**Open 3**).
+makes an environment of its own with `uv venv --python 3.12`, which takes
+about 5 seconds, and says in a comment why. It is the first reference of
+popnei that is not a program run by a shell script or a library of the one
+environment, and it is worth that because the projection is the arithmetic
+here most easily got wrong, being a distribution over bins and not a
+single value. Decided on 24 September 2026; the option not taken was to
+drop `dadi` and check the projection against the worked example alone, as
+the standardized private alleles are checked (**Open 2**).
 
 The worked example, at `num_called_alleles` 4. `pop2` keeps variants 1, 3
 and 5. Variant 1 has 5 copies of allele 0 and nothing else, so every draw
@@ -491,14 +539,25 @@ groups all produce, and negative when it holds more. It is
 
 with `H_o` the observed heterozygosity of the population at a variant and
 `H_u` its unbiased expected heterozygosity, both as `docs/specs/stats.md`
-defines them, over the variants that counted for the population. It is
-Nei's F_IS.
+defines them, over the variants that counted for the population and at
+which both exist: `H_o` needs one called genotype at least, since it
+divides by the called genotypes, and `H_u` needs more than one called
+allele, since it divides by `c` times `c - 1`. Both means are over that
+one set of variants, so the two divisors are the same number. A population
+whose mean `H_u` is 0, every variant it counted having one allele, has no
+F_IS and gets NaN. It is
+Nei's F_IS, the one built from the two mean heterozygosities of a
+population read on its own, and not Weir and Cockerham's, which comes out
+of a decomposition of the variance across populations and needs more than
+one of them.
 
 Two choices are in that line and both were measured on 24 September 2026,
 by drawing genotypes at a known F, an individual being heterozygous with
 chance `2 p q (1 - F)` and homozygous with `p² + F p q` and `q² + F p q`,
 over 2000 variants whose allele frequencies come from the neutral
-spectrum, where the variants at frequency x go as 1/x, 50 datasets a row.
+spectrum, where the variants at frequency x go as 1/x. Twelve settings
+were tried, 30 and 100 individuals against the rarest allele at 0.01 and
+0.05 against a true F of 0, 0.2 and 0.5, with 50 datasets drawn for each.
 
 The first is the ratio of the two means against the mean of the per
 variant ratios, `1 - H_o / H_u` averaged over the variants. The mean of
@@ -510,7 +569,10 @@ the two are 0.1680 and 0.1979 against a truth of 0.2. Over all twelve
 rows of the measurement, 30 and 100 individuals, the rarest allele at 0.01
 and 0.05, a true F of 0, 0.2 and 0.5, the ratio of means is never more
 than 0.0056 from the truth and the mean of ratios is up to 0.0602 from it.
-The standard deviations of the two are within 0.0012 of each other. The
+The standard deviations of the two are within 0.0020 of each other, the
+widest gap being 0.0056 against 0.0036 at 100 individuals, the rarest
+allele at 0.01 and a true F of 0.5, so the accuracy costs no precision
+worth the name. The
 ratio of means is what popnei computes.
 
 The second is the unbiased expected heterozygosity against the plain one.
@@ -518,9 +580,12 @@ The plain one is too small by about `1 / (c - 1)`, so it makes F_IS too
 small by about the same: at a true F of 0, the plain one gives -0.0177
 with 30 individuals and -0.0053 with 100, where the unbiased one gives
 -0.0007 and -0.0002. popnei uses the unbiased one. `scikit-allel` uses the
-plain one, so a user comparing the two libraries sees a difference, about
-0.006 on the panel, and this spec records it rather than following
-`scikit-allel`.
+plain one, so a user comparing the two libraries sees a difference of
+0.0110, 0.0078 and 0.0063 on the three populations of the panel, and this
+spec records it rather than following `scikit-allel`.
+
+Both measurements are `docs/reports/diversity-method/fis_sim.py`, run with
+the project's Python, which prints the twelve rows.
 
 F_IS is the one statistic here that the draw of `g` called alleles does
 not touch: the observed heterozygosity is a property of whole genotypes
@@ -537,10 +602,15 @@ Against `scikit-allel` 1.3.13, which gives `heterozygosity_observed` and
 `heterozygosity_expected` per variant and builds the plain form of this
 statistic from them in `inbreeding_coefficient`. The reference script runs
 it on each population of the panel and takes the ratio of the two means,
-which is popnei's formula with the plain expected heterozygosity, and the
-check is made at that form: on 24 September 2026 it gives -0.0237536998,
--0.0258924700 and -0.0247472838 for `p0`, `p1` and `p2`, compared within
-1e-12 relative. The unbiased form, which is what the function returns, is
+which is popnei's formula with the plain expected heterozygosity. No
+function of popnei gives that form, so the check is made in pytest, which
+builds it from the two means `calc_per_var_distribs` gives for
+`obs_het` and `exp_het` over the same `pops` and the same
+`min_num_individuals`: on 24 September 2026 `scikit-allel` gives
+-0.0237536998, -0.0258924700 and -0.0247472838 for `p0`, `p1` and `p2`,
+compared within 1e-12 relative. The unbiased form, which
+`calc_pop_diversity` returns and which a second pytest assertion compares
+against the literals below, is
 -0.0127584868, -0.0181107131 and -0.0184585832 on the same data; it
 differs from the plain one by the `c / (c - 1)` factor of each variant's
 expected heterozygosity, whose own verification against pyNei and plink2
@@ -549,9 +619,13 @@ is in `docs/specs/stats.md`, so no program is run twice for it.
 `adegenet` 2.1.11 is the other program with the ingredients, and it is not
 the reference: its `Hs` is the plain expected heterozygosity with no
 correction for the sample, 0.3481518, 0.3477311 and 0.3427402 on the three
-populations of the panel on 24 September 2026, checked by hand on a
-dataset of five individuals and two populations where it gives 0.5 and
-0.4375 for allele counts of 3 and 3 of 6 and of 3 and 1 of 4. It would
+populations of the panel on 24 September 2026. That it carries no
+correction was checked by hand on a dataset of two variants and two
+populations, where it gives each population the mean of its two variants:
+0.5 for a population whose counts are 3 and 3 of 6 at both variants, and
+0.4375 for one whose counts are 3 and 1 of 4 at the first, 0.375, and 2
+and 2 of 4 at the second, 0.5. The unbiased values of the same four would
+be 0.6, 0.6, 0.5 and 0.6666666667. It would
 check the same half of the statistic `scikit-allel` checks, through an
 extra dependency.
 
@@ -565,7 +639,8 @@ to agree on them.
 
 ## The Rust interface
 
-The statistics to compute, a bit set as `Needs` is:
+The statistics to compute, a bit set as `Needs`, the set of columns a
+reader is asked to fill in `docs/specs/block.md`, is:
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -574,7 +649,7 @@ pub struct DiversityStats(u8);
 impl DiversityStats {
     pub const NUM_ALLELES: DiversityStats;
     pub const PRIVATE_ALLELES: DiversityStats;
-    pub const POLY_RATIO: DiversityStats;
+    pub const VARIABLE_VARS_RATIO: DiversityStats;
     pub const FOLDED_SFS: DiversityStats;
     pub const FIS: DiversityStats;
     pub const ALL: DiversityStats;
@@ -619,15 +694,16 @@ pub struct PopDiversity { /* private */ }
 
 impl PopDiversity {
     pub fn num_pops(&self) -> usize;
-    /// The variants that had `min_num_individuals` called genotypes in the
-    /// population. `None` when `pop` is not a population of the call.
+    /// The variants the population called something at and had
+    /// `min_num_individuals` called genotypes in. `None` when `pop` is not
+    /// a population of the call.
     pub fn num_vars(&self, pop: usize) -> Option<u64>;
     /// Of those, the ones whose called alleles reached
-    /// `num_called_alleles`.
+    /// `num_called_alleles`: the variants in the draw for the population.
     pub fn num_vars_in_draw(&self, pop: usize) -> Option<u64>;
-    /// The variants where every population had enough called genotypes,
-    /// and of those the ones where every population reached
-    /// `num_called_alleles`. They are the divisors of the private alleles.
+    /// The variants that counted for every population, and of those the
+    /// ones in the draw for every population. They are the two divisors of
+    /// the private alleles.
     pub fn num_vars_every_pop(&self) -> u64;
     pub fn num_vars_every_pop_in_draw(&self) -> u64;
     /// The alleles the population called, summed over its variants. `None`
@@ -640,8 +716,8 @@ impl PopDiversity {
     pub fn private_alleles(&self, pop: usize) -> Option<u64>;
     pub fn private_alleles_in_draw(&self, pop: usize) -> Option<f64>;
     /// The variants where the population called more than one allele.
-    pub fn num_poly_vars(&self, pop: usize) -> Option<u64>;
-    pub fn poly_ratio_in_draw(&self, pop: usize) -> Option<f64>;
+    pub fn num_variable_vars(&self, pop: usize) -> Option<u64>;
+    pub fn variable_vars_ratio_in_draw(&self, pop: usize) -> Option<f64>;
     /// One value per count of the rarer allele, 0 to
     /// `num_called_alleles / 2`.
     pub fn folded_sfs(&self, pop: usize) -> Option<&[f64]>;
@@ -707,11 +783,10 @@ user asks for the curve. Meanwhile one number is built.
 value of this spec is checked against a program outside the project, which
 the objectives ask for. The standardized private alleles are checked by
 the worked example and by two properties of the panel, all three of them
-arithmetic of popnei's own. The options are to build ADZE, the program of
-Szpiech, Jakobsson and Rosenberg (2008) that computes Kalinowski's
-estimator, from its source, which is C and not in any package manager on
-this machine, and add it to the reference script; or to leave the value
-checked by hand. What building ADZE costs is a source build in the
+arithmetic of popnei's own. The options are to build ADZE, named under
+"The private alleles" above, from its source, which is C and in no package
+manager on this machine, and add it to the reference script; or to leave
+the value checked by hand. What building ADZE costs is a source build in the
 repository's reference tooling, which no other reference needs, and a
 program that has had no release since 2014. What leaving it costs is one
 value of five whose formula nothing outside popnei confirms.
@@ -719,25 +794,11 @@ Recommendation: leave it checked by hand for the first version, and build
 ADZE if a user reports a number they doubt. Meanwhile the worked example
 and the two properties stand.
 
-**Open 3: `dadi` needs a second Python.** The projected spectrum is
-checked against `dadi` 2.4.4, which does not build on the project's Python
-3.14 free threading build and does build on 3.12. Every other reference of
-popnei is a program run by a shell script or a library in the one
-environment. The options are a second environment made by the reference
-script, pinned to 3.12, which `uv` creates in about 5 seconds; or to drop
-`dadi` and check the projection against a worked example alone, as the
-private alleles are checked. What the second environment costs is a second
-Python in the reference tooling and a note in the script saying why. What
-dropping it costs is the only outside check of the projection, which is
-the piece of arithmetic in this spec most likely to be got wrong, since it
-is a distribution and not a single value. Recommendation: the second
-environment. Meanwhile the reference script makes it.
-
 ## Not in this spec
 
 - F_ST, f_2, Jost's D and the other measures between two populations:
-  `docs/specs/pop_dists.md`, which computes them from the same allele
-  counts per population in its own pass.
+  `docs/specs/dists.md`, which computes them from the same allele counts
+  per population in its own pass.
 - The unfolded spectrum, which needs an ancestral allele that popnei does
   not read, and the joint spectrum of two populations, which is a matrix
   of one axis per population and which the demographic fits use. Neither
@@ -746,10 +807,10 @@ environment. Meanwhile the reference script makes it.
   takes the genotypes with `iter_blocks`, as `docs/specs/stats.md` says
   for its own.
 - The expected heterozygosity, the observed heterozygosity, the major
-  allele frequency and the polymorphism ratio with a threshold:
-  `docs/specs/stats.md`. F_IS above is built from the first two and the
-  item here for the polymorphism ratio counts the same variants its
-  `num_variable` counts.
+  allele frequency and the polymorphic variants, those below the
+  polymorphism threshold: `docs/specs/stats.md`. F_IS above is built from
+  the first two, and the item here for the variable variants counts the
+  same variants its `num_variable` counts.
 - Rarefaction of the heterozygosities. They are frequencies and not
   counts, so they do not grow with the individuals sampled the way the
   number of alleles does, and no program here rarefies them.
