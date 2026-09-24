@@ -1,7 +1,7 @@
 # Plan: the curve of r² against distance, per population
 
-24 September 2026. State: approved by the owner on 24 September 2026, under
-way since 24 September 2026, and the work is recorded in
+24 September 2026. State: approved by the owner on 24 September 2026, done
+on 24 September 2026, and the work is recorded in
 `docs/reports/ld-vs-dist.md`. It builds the item
 "LD against distance, per population" of `docs/specs/ld.md`, which gives,
 for each population of a dataset, how the r² of a pair of variants falls

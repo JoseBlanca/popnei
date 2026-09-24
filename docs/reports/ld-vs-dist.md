@@ -8,8 +8,114 @@ dataset, how the r² of a pair of variants falls off as the two move apart
 along a chromosome, in bins of distance, as a curve fitted to the pairs,
 and as the one distance at which r² has fallen to half.
 
-**The plan is under way.** Nothing is merged into `main` and nothing is
-pushed.
+**The plan is done and the branch is not merged.** Every task is ticked,
+every deliverable of the two work packages was checked by the orchestrator
+running its command, both work packages were reviewed, and the plan's own
+final check passes. Nothing is merged into `main` and nothing is pushed.
+
+## What exists now that did not
+
+A user calls `calc_ld_and_dist_per_pop` in Python or `calcLdAndDistPerPop`
+in TypeScript over a dataset and a set of populations, and gets back, for
+each population on its own: one row per bin of distance with how many
+pairs of variants it holds, their mean r² and its standard deviation; how
+many variants that population kept at its own major allele frequency; and
+the curve fitted to every one of its pairs, as the scaled recombination
+per base pair, the curve's value at distance 0, and **the distance at
+which r² has fallen to half of that**, which is the one number a plot of a
+population is labelled with and the number the web application was waiting
+for.
+
+The bins come out the same to the bit whatever the size of the blocks the
+reader gives, the size of the tiles the pairs are computed in, and the
+number of threads. The bins agree with plink2 v2.0.0-a.7.7 on three
+populations of the reference dataset, exactly on the counts of pairs and
+within 1e-12 relative on the means and the standard deviations. The fitted
+curve agrees with R 4.6.1 to 1.03e-9 relative on the first of those
+populations, where the spec asks for 1e-6.
+
+At the commit this branch starts from: 787 tests in the core crate, 149 in
+the linear algebra crate, 499 pytest, 325 node, and none of them of the
+fall-off against distance. Now: 865 in the core crate with 2 ignored, the
+same 865 on the faer backend, 149 in the linear algebra crate, 509 pytest,
+334 node. `cargo fmt`, `cargo clippy` with every target and warnings
+denied, `cargo wasm-check` and ruff are clean, and
+`tests/reference/ld/run_plink2.sh` writes its ten files into an empty
+directory and finds every one the same as the copy stored beside it.
+
+## What is asked of the owner
+
+**The merge.** Nothing has been merged into `main` and nothing pushed.
+
+**Four decisions**, none of which blocks the merge, because the branch
+builds a defined behaviour for each and says here what it is. Three of
+them are one question in three parts, and the fourth reaches beyond this
+module.
+
+**Decision 1: what popnei refuses at the edges of the bin arguments.**
+Three things go wrong at once out there, and one answer settles all three.
+A `max_dist` above 9223372036854775807 raises a `RuntimeError` reading
+"one count of the pass is 9223372036854775808, more than a result holds",
+where popnei's own convention reserves a `RuntimeError` for a defect of
+popnei and the value is a distance and not a count. A `num_bins` above the
+number of distances in the range gives bins whose stated range runs
+backwards, at `min_dist` 1, `max_dist` 3 and `num_bins` 5 the rows read
+"3 to 2" and "4 to 3", and a pandas frame whose index repeats a label;
+it is reachable at the default `num_bins` of 50 with any `max_dist` below
+50. And nothing bounds the work either argument asks for: a `num_bins` of
+10⁶ on a five-variant dataset returns a million rows in 0.3 s and 10⁸
+returns a hundred million in 25.6 s, the cost growing with the argument
+and not with the data. The options are to refuse both, each a `ValueError`
+naming the argument and its value, which costs two sentences of the spec
+and two public refusals; to refuse the `max_dist` and write into the spec
+what a bin holding no whole distance reports; or to define both in the
+spec and refuse neither, which needs the distance columns to stay unsigned
+and brings back the wrap that gave 18446744073709550687 for 7815 − 8744.
+Recommendation: refuse both. Neither case is one a real dataset reaches,
+so refusing costs a user nothing they wanted.
+
+**Decision 2: the memory guard does not guard.** `docs/specs/ld.md` says
+the memory of the counts per distance is "asked of the machine with
+`try_reserve_exact` before the pass and refused rather than taken", the
+`coding` skill states the principle as "a matrix this machine cannot hold
+is an error and not a process that ends", and deliverable 5 of work
+package 2 has a test asserting it. On this machine, which has 69 GB, a
+`max_dist` of 10⁹ asks for 16 GB and is granted it, which is right; a
+`max_dist` of 10¹² asks for 16 TB and **the process is killed**, signal 9,
+rather than an error being raised. macOS hands out the virtual allocation
+and kills the process when the pages are touched, so `try_reserve_exact`
+never returns the failure the guard is built on. This is not this module's
+alone: `calc_r2_matrix` guards its matrix the same way and
+`docs/specs/linalg.md` asks for it for the eigendecomposition workspace.
+Nothing on this branch touches it, because the answer belongs to popnei as
+a whole. What is asked is whether the guard should be backed by a check
+against the memory the machine reports, or the specs' promise weakened to
+what `try_reserve_exact` can deliver.
+
+**Decision 3: a calculation cannot be abandoned.** A `max_dist` of 10¹⁰ on
+a 21-variant file runs for 190 s, and Ctrl-C does not stop it. This is not
+a fault of this plan: no calculation of popnei raises a Ctrl-C before it
+returns, `calc_kosman_sums` and the r² matrix included, because the core
+crate has no in-calculation check and adding one changes the signature of
+every calculation that takes it. It is recorded here because this
+calculation is the first whose running time a user can raise without
+raising the size of their data.
+
+**Decision 4: half the curve at one and at two individuals.** At those two
+sample sizes the curve never falls to half of its value at distance 0,
+because the correction for a finite sample holds it up at 1 over the
+individuals rather than letting it fall to 0. The branch gives `half_dist`
+alone as NaN there and keeps the other two, which really were fitted. The
+alternative is three NaN, a two-line change. `calc_ld_and_dist` reaches
+neither sample size, so only a caller of `fit_ld_decay` with a table of
+its own meets it. Recommendation: keep one NaN, which the `api` and
+`spec` reviewers both independently preferred for the same reason.
+
+**One thing is not asked**, so that nobody waits on a decision that is not
+wanted: the speed of the pass and of the fit. The owner decided on 24
+September 2026 that it goes to a performance review of its own after this
+plan, and nothing here was traded for it. The numbers that review will
+want are gathered under "For the performance review" at the end.
 
 ## What was in place before the first task
 
@@ -625,3 +731,181 @@ and the whole node suite is 334 where it was 332.
 faer backend, and `cargo fmt --all --check`, `cargo clippy --workspace
 --all-targets -- -D warnings`, `cargo wasm-check`, `uv run ruff format
 --check` and `uv run ruff check` are clean.
+
+### What the review of work package 2 found
+
+Five reviewers read the work package at `d2aaeaa`, one for each category
+that applied. Twenty-one findings came back. One of them was a wrong
+number that no deliverable of the plan would have caught.
+
+**The fit lost about 1.5 digits to cancellation, and the spec is what
+told it to.** "The curve that is fitted" wrote the quantity to make
+smallest as Σ over the distances of [n·f² − 2·S·f]. That is algebraically
+right and numerically poor: it is the quantity that matters,
+Σ n·(mean − f)², minus a constant. On the first reference population the
+constant is 475.36, so the number being minimised sits at −452.15 while
+the part that depends on the fitted value is 23.21 — nineteen times the
+magnitude of the signal the search has to resolve, and one step of an
+`f64` there is 5.68e-14 against 3.55e-15 of the signal. The spec's own
+derivation already gives the better form in words, two paragraphs above
+the formula it then wrote out.
+
+It was reachable and not theoretical. Over 2052 values of the scaled
+recombination per base pair that a slowly falling population would give
+at the default `max_dist` of 1000000, **18 of them came out past the
+1e-6 the spec itself promises**, the worst at 2.2e-6. The test written
+before the fix sits at one of them: 1.537e-6 before, 3.474e-10 after.
+Against R the gap fell from 3.51e-8 to 1.03e-9 for the population of
+every individual, from 5.27e-8 to 9.28e-9 for `pop_a` and from 5.46e-9 to
+2.21e-9 for `pop_b`. The spec's formula was corrected first, in a commit
+of its own, and one fit still takes 44.10 µs against 44.24 µs before, so
+the accuracy came free.
+
+**Five tests could not have failed**, each shown by breaking the code and
+watching the suite stay green:
+
+- The test the plan names as the guard of the whole fit was blind to
+  three of the four things it guards. Its scaled recombination of 0.0001
+  is grid point 80 exactly, so the grid alone answers it and the search
+  never has to improve on the answer, and its table holds one pair at
+  every distance, so the weight cancels out of the sum. Replacing the
+  golden ratio with 0.5, replacing it with its complement, loosening the
+  stopping rule from 1e-9 to 1e-2, and dropping the pair count from the
+  sum each left it passing. The plan's sentence "a fit that is wrong in
+  the grid, in the bracket or in the stopping rule fails it" was true only
+  of the grid.
+- The node suite would not have caught a binding that handed every
+  population the first one's curve: with that break made, all 334 node
+  tests passed, where the same break in Python fails pytest at once.
+- Changing "fewer than two distances" to "fewer than three" left all 119
+  tests of the module passing while turning a real curve into three NaN.
+- Shrinking the bisection's upper bracket from 10⁶ to 10 left all 119
+  passing while making the half distance NaN at three and four
+  individuals.
+- One assertion about the grid compared a constant with itself, so the
+  grid's lower end and its spacing were pinned by nothing: moving the
+  bottom from 10⁻¹² to 10⁻¹¹, and separately the spacing from a tenth of
+  a decade to a fifth, each left all 119 passing.
+
+Each of those now fails under the break that exposed it. Closing the
+first needed a table the reviewer's own suggestion would not have closed:
+a table built from one curve has a sum of 0 at the true answer under any
+weighting, so the fixture mixes two curves, and R 4.6.1 was asked what
+the weighted fit of it should be.
+
+**The rest were smaller.** A defect of popnei would have been reported as
+a wrong argument, because a population with no dosages and a population of
+no individuals were folded into one number; it is unreachable today and is
+now a defect-class error of its own. Three getters were missing
+`#[must_use]`. The type-level documentation of the fitted curve did not
+say that the half distance can be NaN on its own. The four new error
+messages were asserted nowhere, only their variants matched. A comment in
+the binning was false for a distance below `min_dist`, because the
+subtraction used is symmetric. Two counts used a saturating sum where the
+same file argues, ten lines away, that a count must not stop in silence.
+The glossary had no word for the curve's value at distance 0. And the
+TypeScript package wrote the same defect check twice.
+
+**Two findings were not fixed, and both are above this plan.** A pass
+cannot be interrupted, which is true of every calculation in popnei and
+changes a signature to mend. And the four new error arms of the Python
+binding cannot be unit tested, because that crate is built as a shared
+library with `test = false` and this machine has no linkable libpython.
+Both are under "What is asked of the owner".
+
+**One finding did not hold**: an `#[expect]` whose written bound a
+reviewer said was wrong had already been corrected by the cancellation
+fix, which the fixer checked rather than assumed.
+
+**Two numbers of the spec did not reproduce and were corrected.** The
+curve at one individual is 1.1983471074380165 and not
+1.1983471074380166, one step of an `f64` below. And narrowing the
+searched range moves the first population's fit by 9.3e-9 of itself and
+not by the 8.9e-9 the spec claimed, measured in the Rust and again in an
+independent copy of the fit in Python; the paragraph below it already
+said 9.3e-9, so the section disagreed with itself.
+
+## For the performance review that follows this plan
+
+Every number here was measured on this machine on 24 September 2026 and
+none of it was acted on, because the owner decided that day that the
+speed of this pass is a review of its own.
+
+- One fit over 249 or 250 distances takes 44.10 µs in the test profile.
+  The spec's count of what it costs is right: an instrumented run
+  evaluated the sum 183 times, 141 for the grid, 2 to open the search and
+  40 for its steps.
+- Each block builds two sets of dosages for each population, one over the
+  block to work out the frequencies and one over the whole window, so a
+  pass at blocks of 7 variants with a window of 250 reads the genotypes of
+  a variant about 36 times over.
+- `LdDosages::rows` copies the three matrices once per tile pair per step.
+- A block that has fallen out of the window is held for one step longer
+  than it is needed, which is what makes the counts right at every block
+  size.
+- The compaction at the end of the pass walks one entry for every distance
+  from `min_dist` to `max_dist`, so the time grows with `max_dist` and not
+  with the data: 0.06 s at 10⁶, 17.13 s at 10⁹, 190.85 s at 10¹⁰.
+- `cargo test -p popnei --lib ld::decay` runs in 0.04 s, so nothing this
+  plan added costs the suite anything.
+- `LdDosages::of_block` walks the rows of a block serially, where section
+  3 of `docs/architecture.md` puts rayon on per-variant work.
+
+## How the work went
+
+**This section is for whoever next revises a skill or writes a plan. The
+owner can stop here.**
+
+**A deliverable that pins a property is worth more than one that pins a
+number at a point.** Work package 1 promised that the bins come out the
+same at every block size, and that deliverable found two rules of the spec
+that broke the promise, one of them a wrong count of pairs, 272 where 328
+was right. Work package 2 promised agreement with R to 1e-6, and the fit
+met it on the reference dataset while missing it on 18 of 2052 nearby
+datasets. The first deliverable caught its defect because the property was
+checked across a range of conditions; the second nearly missed its defect
+because the number was checked at one point. A plan that asks for a number
+should say across what range it must hold.
+
+**Three of the four things the plan believed about its own risks were
+wrong.** It said the fixed-multiple tiling was what bought bit-identity:
+removing the alignment changes no number, and what buys it is the
+accumulation order, which the plan did not mention. It said the
+curve-derived test would fail a fit wrong in the grid, the bracket or the
+stopping rule: it fails only the grid. It warned that a smallest sum at an
+end of the searched range was the case easiest to miss: that one was
+right, and the task built it without prompting. A plan's "What could go
+wrong" is a hypothesis, and a review that only checks the code against the
+plan inherits the plan's mistakes. Both reviews were told to review the
+spec's own changed sentences, and several of the best findings came from
+there.
+
+**The reviewer that broke code found the defects; the reviewers that read
+code found documentation — with one exception that matters.** Across both
+work packages the `tests` reviewer, which mutates and reports what
+survives, found what a user would have suffered. So did `numbers`, by
+reading alone: the cancellation in the fit was found by looking at an
+expression and recognising it, not by running anything. So the lesson is
+not to drop the readers but to tell every reviewer to break something
+before it reports.
+
+**What a task of this size really costs, in the tokens its subagent
+used.** The six tasks of work package 1 cost 1.20 million between them;
+its review cost 1.15 million and its three rounds of fixes 0.59 million,
+so the checking cost 1.45 times the building. The five tasks of work
+package 2 cost 0.90 million; its review cost 0.87 million and its three
+rounds of fixes 0.63 million, 1.68 times the building. A plan that budgets
+for the tasks alone budgets for two fifths of the work.
+
+**Two subagents died and cost almost nothing, because they committed as
+they went.** The first subagent of task 1.5 died on an API refusal before
+doing any work and left the tree clean; the retry succeeded. A later fix
+round died on a session limit after committing all five of its fixes but
+before taking its final measurement, which the orchestrator took itself. A
+round that commits per finding survives its own subagent.
+
+**The shared tree cost one mistake, and it was the orchestrator's.** It
+ran a mutation test in the worktree while five reviewers were reading it,
+and three of them reported the modified file as something to look into.
+Nothing was lost, because the file had been copied first, but an
+orchestrator that wants to break code should do it somewhere else.
