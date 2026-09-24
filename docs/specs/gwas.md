@@ -1206,6 +1206,41 @@ It is `use_grammar_gamma_approx=True`, false by default, and asking for it
 without a kinship is a `ValueError`, since there is no projection matrix to
 approximate.
 
+The block those variants come from is the first block of the second pass,
+which "How it runs" of "What every model shares" gives, and `calc_gwas` of
+the core takes that pass as its second argument. Three more things are
+refused, each a `ValueError` in Python.
+
+- **The approximation asked for with no second pass given.** It is an
+  argument of the core's `calc_gwas` and names no file. Both packages open
+  the pass themselves, so a user of them does not meet it.
+- **A first block in which no variant varies** among the tested
+  individuals, which leaves no ratio to average. It is pyNei's own refusal
+  in `estimate_gamma` of `pynei/gwas.py`, and it names the file the pass
+  read.
+- **A `gamma` that is not a finite number above 0**, which a first block
+  whose variants the design explains would give, since the exact `x' p x`
+  of such a variant is the rounding of a cancellation and falls on either
+  side of 0. Every variant of the study would otherwise have no answer, and
+  a user who asked for the approximation would read a column of NaN with
+  nothing to say why. It names the file too, and carries the `gamma` the
+  block gave.
+
+**Open 2's threshold under the approximation.** A variant of which the
+projection leaves at most the tested individuals times 2.2e-16 of what
+there was has no answer, and the third row of Open 2's table is the `x' p x`
+of both mixed models' score tests. The approximation does not change that
+rule: the comparison is made against whichever of the two denominators the
+study formed, with the same scale, the variant's squared length times the
+largest value of the diagonal of the projection matrix. What changes is
+that it stops firing. The approximate denominator is a positive `gamma`
+times a sum of squares, so it holds no cancellation and it is above 0 for
+every variant that varies, whatever the projection would have left of that
+variant. A variant the design explains is then answered, with an effect
+near 0 and a p-value near 1 instead of the three NaNs, which is one more
+place where the approximation gives up accuracy for the product it does not
+make.
+
 What it costs in accuracy grows with how strongly the panel is structured,
 because one `gamma` stands in for a quantity that really differs from
 variant to variant. On the panel, `test_grammar_gamma_approx` of pyNei
@@ -1222,6 +1257,15 @@ which is pyNei's test above: the median and the largest of
 `log10(p_approx / p_exact)`, and that `beta` agrees with the exact one
 within 0.5 relative. Also that `used_grammar_gamma_approx` is in the result
 and that asking for it without a kinship raises.
+
+That bound is loose: a p-value out by a factor of 30 passes it, and so
+would an approximation that is wrong in a way which does not grow with the
+structure of the panel. What is checked beside it is `gamma` itself against
+the `gamma` pyNei's `estimate_gamma` gives on the same panel and the same
+model, and the spread of the 100 ratios it is the mean of, whose smallest,
+largest and standard deviation are in the cargo test that asserts it. A
+`gamma` far from the ratios it was averaged from is the sign the loose
+bound cannot catch.
 
 ## The two distributions
 
