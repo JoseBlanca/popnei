@@ -949,7 +949,8 @@ impl LogisticMixedModel {
         // covariance's inverse that the design explains is formed in.
         let of_the_design = step.take_the_buffer_of_the_trace();
         drop(step);
-        let projection = the_projection_of(&fitted, of_the_design)?;
+        let mut inverses = 0_usize;
+        let projection = the_projection_of(&fitted, of_the_design, &mut inverses)?;
         let projected_trait = fitted
             .phenotype
             .iter()
@@ -969,7 +970,7 @@ impl LogisticMixedModel {
             num_individuals,
             linearizations: fitted.factorizations,
             steps_on_the_variance,
-            inverses: 1,
+            inverses,
             projected: Vec::new(),
             num: Vec::new(),
             beta: Vec::new(),
@@ -1455,6 +1456,34 @@ impl TheStepOnTheVariance {
     }
 }
 
+/// The inverse of a matrix a Cholesky has factored, counted where it is
+/// formed.
+///
+/// It is the one route this module has to an inverse, so `inverses` is
+/// what the fit formed and not a number written down beside it, which is
+/// what the doc comment of [`LogisticMixedModel::inverses`] asks of the
+/// three counters: a count taken anywhere else could say the fit inverts
+/// as "How popnei fits it, and why not pyNei's way" of
+/// `docs/specs/gwas.md` describes while the code did otherwise.
+///
+/// # Errors
+///
+/// [`Error::GwasLinalg`] when the inverse could not be formed.
+fn the_inverse_that_is_counted(
+    covariance: &[f64],
+    num_individuals: usize,
+    into: &mut [f64],
+    inverses: &mut usize,
+) -> Result<()> {
+    *inverses = inverses.saturating_add(1);
+    popnei_linalg::invert_with_cholesky(covariance, num_individuals, into).map_err(|source| {
+        Error::GwasLinalg {
+            operation: "inverse of the covariance of the working trait",
+            source,
+        }
+    })
+}
+
 /// The projection matrix of a linearization that has settled,
 /// `num_individuals` x `num_individuals`, row after row.
 ///
@@ -1463,7 +1492,8 @@ impl TheStepOnTheVariance {
 /// individuals matrix is formed, because the score test of a variant wants
 /// the matrix and not a solve against it. `of_the_design` is the buffer
 /// the part the design explains is formed in, which the step on the
-/// variance is done with.
+/// variance is done with, and `inverses` is the fit's count of the
+/// inverses it has formed, which this adds its own to at the call itself.
 ///
 /// The inverse comes back with only its lower half written, the inverse of
 /// a symmetric matrix being symmetric, so that half is mirrored into the
@@ -1473,15 +1503,20 @@ impl TheStepOnTheVariance {
 ///
 /// [`Error::GwasLinalg`] when the inverse, the solve or the product could
 /// not be done.
-fn the_projection_of(fitted: &TheLinearization<'_>, of_the_design: Vec<f64>) -> Result<Vec<f64>> {
+fn the_projection_of(
+    fitted: &TheLinearization<'_>,
+    of_the_design: Vec<f64>,
+    inverses: &mut usize,
+) -> Result<Vec<f64>> {
     let num_individuals = fitted.num_individuals;
     let num_coefs = fitted.num_coefs;
     let mut projection = vec![0.0_f64; fitted.covariance.len()];
-    popnei_linalg::invert_with_cholesky(&fitted.covariance, num_individuals, &mut projection)
-        .map_err(|source| Error::GwasLinalg {
-            operation: "inverse of the covariance of the working trait",
-            source,
-        })?;
+    the_inverse_that_is_counted(
+        &fitted.covariance,
+        num_individuals,
+        &mut projection,
+        inverses,
+    )?;
     let mut rest: &mut [f64] = &mut projection;
     for at in 0..num_individuals {
         let taken = std::mem::take(&mut rest);
@@ -1701,6 +1736,49 @@ mod glmm {
     /// not positive semidefinite" of `docs/specs/gwas.md` gives, and this
     /// is where it lands on the panel whose eigenvalue is the smallest.
     const A_VARIANCE_THAT_IS_NOT_A_COVARIANCE: f64 = 1.0e16;
+
+    /// A variance of the kinship effect at which the pivots of
+    /// `d' sigma⁻¹ d` collapse over a kinship of all ones, which no fit
+    /// reaches: 1e13.
+    ///
+    /// A kinship of all ones asks for a random effect that is one number
+    /// for every individual, which is what the intercept is, so the
+    /// covariance takes that direction out of the design more and more
+    /// sharply as the variance grows and the smallest pivot of the design
+    /// weighted by it falls to nothing against the largest. Measured on
+    /// `panel_called` on 24 September 2026 on both backends: 1e10 still
+    /// settles, 1e11 runs out of rounds, 1e12 to 1e15 collapse the pivots
+    /// at the first round, and at 1e16 on faer and 1e17 on Accelerate the
+    /// covariance can no longer be factored at all.
+    const A_VARIANCE_THAT_COLLAPSES_THE_PIVOTS: f64 = 1.0e13;
+
+    /// A variance of the kinship effect at which a linearization of the
+    /// eight individuals of the two families over a kinship of all ones
+    /// never settles: 1e13.
+    ///
+    /// It is the same collapse as [`A_VARIANCE_THAT_COLLAPSES_THE_PIVOTS`]
+    /// one step earlier: the linear predictor still moves by more than
+    /// 1e-6 of its own largest absolute value plus 1 at every round, while
+    /// the pivots have not yet fallen far enough for the rule of **Open 5**
+    /// of `docs/specs/gwas.md` to stop it. Measured on 24 September 2026 on
+    /// both backends: 1e11 settles in 2 rounds on Accelerate and 4 on faer,
+    /// 1e12 to 1e14 run the 200 rounds out, and 1e15 collapses the pivots
+    /// at the first round.
+    const A_VARIANCE_A_LINEARIZATION_NEVER_SETTLES_AT: f64 = 1.0e13;
+
+    /// What is added to the diagonal of a kinship of all ones to make one
+    /// the search over the variance never settles on: 1e-14.
+    ///
+    /// A kinship of all ones on its own is a covariance the two backends
+    /// disagree about at the variances the search walks to, faer refusing
+    /// its Cholesky where Accelerate accepts it. This much on the diagonal
+    /// is enough for both to factor it and far too little for the trait to
+    /// tell the random effect from the intercept, so the derivative asks
+    /// for a larger variance for ever. Measured on `panel_called` on 24
+    /// September 2026: 1e-13, 1e-14 and 1e-15 run the 200 steps out on both
+    /// backends, 1e-12 runs the rounds of a linearization out instead, and
+    /// at 1e-16 and below faer refuses the covariance.
+    const THE_IDENTITY_IN_A_KINSHIP_OF_ALL_ONES: f64 = 1.0e-14;
 
     /// The trait `binom` and the covariates `cov1` and `cov2` of
     /// `tests/reference/gwas/phenotypes.csv` for the individuals of the
@@ -1971,6 +2049,162 @@ mod glmm {
         }
     }
 
+    /// A linearization whose weighted design has collapsed is refused with
+    /// the round it reached, by the pivot rule of **Open 5** of
+    /// `docs/specs/gwas.md`, and not answered with effects solved for out
+    /// of a system that is no longer one.
+    ///
+    /// The fixture is the panel with every genotype called over a kinship
+    /// of all ones, held at
+    /// [`A_VARIANCE_THAT_COLLAPSES_THE_PIVOTS`]. What the assertion on the
+    /// weights says is that this is the pivot rule and not the other cause
+    /// of the same refusal: a weight that has fallen to 0 leaves a
+    /// reciprocal that is not finite, and every one of the 200 is finite
+    /// here.
+    ///
+    /// The refusal is at the first round, so the fit is refused before any
+    /// number of it reaches the user.
+    #[test]
+    fn a_linearization_whose_pivots_have_collapsed_is_refused() {
+        let (phenotype, values, _) = the_panel("panel_called");
+        let tested: Vec<usize> = (0..phenotype.len()).collect();
+        let kinship = vec![1.0_f64; phenotype.len() * phenotype.len()];
+        let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
+        let mut fitted =
+            match TheLinearization::of_the_logistic_null(&phenotype, &design, &kinship, &null) {
+                Ok(fitted) => fitted,
+                Err(error) => panic!("the linearization over a kinship of all ones: {error}"),
+            };
+        match fitted.at(A_VARIANCE_THAT_COLLAPSES_THE_PIVOTS) {
+            Err(Error::GwasFitDidNotSettle { model, rounds }) => {
+                assert_eq!(model, GwasModel::Glmm, "the model the refusal names");
+                assert_eq!(rounds, 1, "the round the refusal names");
+            }
+            other => panic!(
+                "the linearization at a variance of {A_VARIANCE_THAT_COLLAPSES_THE_PIVOTS} \
+                 gave {other:?}"
+            ),
+        }
+        for (at, weight) in fitted.weights.iter().enumerate() {
+            let of_the_covariance = 1.0 / weight;
+            assert!(
+                of_the_covariance.is_finite(),
+                "the weight of the individual {at} is {weight}, whose reciprocal is \
+                 {of_the_covariance}, so what the fit was refused for is that weight and \
+                 not the pivots"
+            );
+        }
+    }
+
+    /// A linearization whose linear predictor is still moving after the 200
+    /// rounds it is given is refused with that count.
+    ///
+    /// The fixture is the eight individuals of the two families over a
+    /// kinship of all ones, held at
+    /// [`A_VARIANCE_A_LINEARIZATION_NEVER_SETTLES_AT`], which is one step
+    /// below where the pivots collapse there.
+    #[test]
+    fn a_linearization_that_is_still_moving_after_its_rounds_is_refused() {
+        let kinship = [1.0_f64; 64];
+        let (design, null) = the_design_and_the_null_of_eight(&kinship);
+        let mut fitted = match TheLinearization::of_the_logistic_null(
+            &THE_TRAIT_OF_EIGHT,
+            &design,
+            &kinship,
+            &null,
+        ) {
+            Ok(fitted) => fitted,
+            Err(error) => panic!("the linearization of the eight individuals: {error}"),
+        };
+        match fitted.at(A_VARIANCE_A_LINEARIZATION_NEVER_SETTLES_AT) {
+            Err(Error::GwasFitDidNotSettle { model, rounds }) => {
+                assert_eq!(model, GwasModel::Glmm, "the model the refusal names");
+                // The 200 is the spec's own number and not
+                // [`ROUNDS_OF_A_LINEARIZATION`], which a change of that
+                // constant would carry this assertion along with.
+                assert_eq!(rounds, 200, "the rounds the refusal names");
+            }
+            other => panic!(
+                "the linearization at a variance of \
+                 {A_VARIANCE_A_LINEARIZATION_NEVER_SETTLES_AT} gave {other:?}"
+            ),
+        }
+    }
+
+    /// A search whose variance of the kinship effect is still moving after
+    /// the 200 steps it is given is refused with that count.
+    ///
+    /// The fixture is the panel with every genotype called over a kinship
+    /// of all ones with [`THE_IDENTITY_IN_A_KINSHIP_OF_ALL_ONES`] on its
+    /// diagonal, which is symmetric and positive definite and which the
+    /// trait cannot tell from the intercept: the derivative asks for a
+    /// larger variance at every step and the fit has no place to stop.
+    /// Nothing else here reaches this loop, because a variance that walks
+    /// away takes the linearization at it past its own rounds first.
+    /// Measured on both backends on 24 September 2026: the 200 steps are
+    /// the search's and every linearization in them settles.
+    #[test]
+    fn a_search_that_is_still_moving_after_its_steps_is_refused() {
+        let (phenotype, values, _) = the_panel("panel_called");
+        let tested: Vec<usize> = (0..phenotype.len()).collect();
+        let num_individuals = phenotype.len();
+        let mut kinship = vec![1.0_f64; num_individuals * num_individuals];
+        for (at, row) in kinship.chunks_exact_mut(num_individuals).enumerate() {
+            if let Some(value) = row.get_mut(at) {
+                *value += THE_IDENTITY_IN_A_KINSHIP_OF_ALL_ONES;
+            }
+        }
+        let (design, _) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
+        match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
+            Err(Error::GwasFitDidNotSettle { model, rounds }) => {
+                assert_eq!(model, GwasModel::Glmm, "the model the refusal names");
+                // The 200 is the spec's own number and not
+                // [`STEPS_ON_THE_VARIANCE`], for the reason above.
+                assert_eq!(rounds, 200, "the steps the refusal names");
+            }
+            Err(error) => panic!("the fit over a kinship of all ones gave {error}"),
+            Ok(model) => panic!(
+                "the fit over a kinship of all ones gave a variance of {}",
+                model.genetic_variance
+            ),
+        }
+    }
+
+    /// A Newton step that would take the variance out of the bracket is
+    /// replaced by the geometric mean of the bracket's two ends, which is
+    /// what keeps the search from cycling.
+    ///
+    /// `docs/reports/glmm-method/README.md` records that the first fit
+    /// written for it, without this, did not converge at all. No fixture
+    /// runs that arm: over the whole core suite the step was kept 51 times
+    /// and replaced none, measured on 24 September 2026. The ends here are
+    /// 1 and 4, so their geometric mean is 2, and a step of 10 from a
+    /// variance of 2 would give 12.
+    #[test]
+    fn a_step_that_would_leave_the_bracket_is_the_geometric_mean_of_its_ends() {
+        let mut bracket = TheBracket::of_a_search_that_has_not_started();
+        // a derivative above 0 asks for a larger variance, one below it for
+        // a smaller one
+        bracket.the_end_that(1.0, 0.5);
+        bracket.the_end_that(4.0, -0.5);
+        for step in [10.0_f64, -10.0] {
+            let found = bracket.the_variance_after(2.0, step);
+            assert_eq!(
+                found.total_cmp(&2.0),
+                Ordering::Equal,
+                "a step of {step} from a variance of 2, out of the bracket of 1 and 4, gave \
+                 {found}"
+            );
+        }
+        let found = bracket.the_variance_after(2.0, 0.5);
+        assert_eq!(
+            found.total_cmp(&2.5),
+            Ordering::Equal,
+            "a step of 0.5 from a variance of 2, which stays inside the bracket of 1 and 4, \
+             gave {found}"
+        );
+    }
+
     /// The whole fit of the panel with every genotype called is GMMAT's:
     /// the variance of the kinship effect and the three covariate effects
     /// within the 1e-5 absolute of "How it is verified" of "The logistic
@@ -2045,13 +2279,13 @@ mod glmm {
     /// The three counts are taken at the calls themselves. The 22 and the
     /// 8 are what "The logistic mixed model" of `docs/specs/gwas.md` says
     /// the panel takes, and the panel with genotypes missing takes the
-    /// same two. They also pin the rule that ends a linearization: the
-    /// divisor of its stopping rule is the largest absolute value of the
-    /// linear predictor plus 1, and dropping that plus 1 leaves the
-    /// variance of the kinship effect where it was to all 18 digits and
-    /// moves the three effects by 3.1e-13, which no comparison with GMMAT
-    /// can see, while the rounds go from 22 to 23, which this sees.
-    /// Measured on both backends on 24 September 2026.
+    /// same two. They do not pin the rule that ends a linearization:
+    /// dropping the plus 1 from the divisor of that rule leaves this
+    /// panel's fit bit-identical on both backends, measured on 24
+    /// September 2026, because the largest absolute value of its linear
+    /// predictor is 4.19 and the plus 1 moves the divisor by a quarter.
+    /// [`the_rounds_of_a_linearization_are_measured_against_the_predictor_plus_one`]
+    /// is what pins it, on eight individuals whose predictor is near 0.
     #[test]
     fn the_fit_forms_one_inverse_and_factors_the_covariance_once_a_round() {
         let (phenotype, values, kinship) = the_panel("panel_called");
@@ -2120,7 +2354,7 @@ mod glmm {
                     }
                 };
                 let buffer = step.take_the_buffer_of_the_trace();
-                let projection = match the_projection_of(&fitted, buffer) {
+                let projection = match the_projection_of(&fitted, buffer, &mut 0) {
                     Ok(projection) => projection,
                     Err(error) => {
                         panic!("the projection of {name} at a variance of {variance}: {error}")
@@ -2710,8 +2944,138 @@ mod glmm {
     /// covariate separates the two groups, so the fit settles.
     const THE_TRAIT_OF_EIGHT: [f64; 8] = [0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0];
 
+    /// The same eight individuals with four of them having the condition
+    /// and the other four not, which leaves the intercept of the plain
+    /// logistic null at 0.36 and the largest absolute value of the linear
+    /// predictor of a linearization at 0.62, against the 4.19 of the panel.
+    ///
+    /// It is the fixture of
+    /// [`the_rounds_of_a_linearization_are_measured_against_the_predictor_plus_one`],
+    /// and what it is for is that the plus 1 of the stopping rule is a
+    /// quarter of the divisor on the panel and more than half of it here.
+    const THE_BALANCED_TRAIT_OF_EIGHT: [f64; 8] = [0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0];
+
     /// All eight of them are tested.
     const THE_INDIVIDUALS_OF_EIGHT: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+    /// The design of the eight individuals of the two families, checked,
+    /// and the plain logistic null of `phenotype` over it, for a fixture
+    /// that holds `kinship`.
+    fn the_design_and_the_null_of_eight(kinship: &[f64]) -> (Design<'_>, LogisticModel) {
+        let study = GwasInput {
+            phenotype: &THE_TRAIT_OF_EIGHT,
+            trait_type: TraitType::Binomial,
+            design: &THE_DESIGN_OF_THE_FIRST_VARIANT,
+            num_coefs: 2,
+            kinship: Some(kinship),
+            test: Some(TestType::Score),
+            use_grammar_gamma_approx: false,
+            individuals: &THE_INDIVIDUALS_OF_EIGHT,
+            transform_to_biallelic: false,
+        };
+        let design = match Design::of_the_study(&study, THE_INDIVIDUALS_OF_EIGHT.len()) {
+            Ok(design) => design,
+            Err(error) => panic!("the design of the eight individuals: {error}"),
+        };
+        let null = match LogisticModel::of_the_study(&THE_TRAIT_OF_EIGHT, &design, TestType::Score)
+        {
+            Ok(fitted) => fitted,
+            Err(error) => panic!("the logistic null of the eight individuals: {error}"),
+        };
+        (design, null)
+    }
+
+    /// The rounds of a linearization are counted against the largest
+    /// absolute value of the linear predictor **plus 1**, so a fit whose
+    /// predictor is near 0 is asked for a change below 1e-6 in absolute
+    /// terms and not for one that is small against nothing.
+    ///
+    /// The divisor is the predictor the round started at, which is
+    /// `_fit_pql_for_tau` of `pynei/gwas.py`, and the plus 1 is pyNei's
+    /// too. Nothing pinned it: the panel's predictor reaches 4.19, where
+    /// the plus 1 moves the divisor by a quarter and the whole fit is
+    /// bit-identical without it on both backends.
+    ///
+    /// The fixture is the eight individuals of the two families with four
+    /// of them having the condition and four not, whose largest predictor
+    /// is 0.62 at a variance of 0.5, so the plus 1 moves the divisor by a
+    /// factor of 2.6. Measured on 24 September 2026 on both backends: with
+    /// the plus 1 the linearization at that variance settles in 3 rounds
+    /// and the whole fit takes 35 linearizations over 15 steps; without it,
+    /// 4 rounds, 38 linearizations and 16 steps.
+    ///
+    /// The counts are what this reads and not the numbers the fit lands
+    /// on: the variance of the kinship effect is 1.2245216262670948
+    /// under the rule and 1.2245196763662805 without the plus 1, 1.9e-6
+    /// apart and 1.6e-6 of its own value. No reference program was run on
+    /// this fixture.
+    #[test]
+    fn the_rounds_of_a_linearization_are_measured_against_the_predictor_plus_one() {
+        let study = GwasInput {
+            phenotype: &THE_BALANCED_TRAIT_OF_EIGHT,
+            trait_type: TraitType::Binomial,
+            design: &THE_DESIGN_OF_THE_FIRST_VARIANT,
+            num_coefs: 2,
+            kinship: Some(&THE_KINSHIP_OF_TWO_FAMILIES),
+            test: Some(TestType::Score),
+            use_grammar_gamma_approx: false,
+            individuals: &THE_INDIVIDUALS_OF_EIGHT,
+            transform_to_biallelic: false,
+        };
+        let design = match Design::of_the_study(&study, THE_INDIVIDUALS_OF_EIGHT.len()) {
+            Ok(design) => design,
+            Err(error) => panic!("the design of the balanced eight: {error}"),
+        };
+        let null = match LogisticModel::of_the_study(
+            &THE_BALANCED_TRAIT_OF_EIGHT,
+            &design,
+            TestType::Score,
+        ) {
+            Ok(fitted) => fitted,
+            Err(error) => panic!("the logistic null of the balanced eight: {error}"),
+        };
+        let mut fitted = match TheLinearization::of_the_logistic_null(
+            &THE_BALANCED_TRAIT_OF_EIGHT,
+            &design,
+            &THE_KINSHIP_OF_TWO_FAMILIES,
+            &null,
+        ) {
+            Ok(fitted) => fitted,
+            Err(error) => panic!("the linearization of the balanced eight: {error}"),
+        };
+        if let Err(error) = fitted.at(0.5) {
+            panic!("the linearization of the balanced eight at a variance of 0.5: {error}");
+        }
+        let largest = fitted
+            .linear_predictor
+            .iter()
+            .fold(0.0_f64, |largest, value| largest.max(value.abs()));
+        assert!(
+            (0.5..1.0).contains(&largest),
+            "the largest absolute value of the linear predictor is {largest}, where the plus \
+             1 is what this reads"
+        );
+        assert_eq!(
+            fitted.rounds, 3,
+            "the rounds the linearization at a variance of 0.5 took"
+        );
+        let model = match LogisticMixedModel::of_the_study(
+            &THE_BALANCED_TRAIT_OF_EIGHT,
+            &design,
+            &THE_KINSHIP_OF_TWO_FAMILIES,
+        ) {
+            Ok(model) => model,
+            Err(error) => panic!("the fit of the balanced eight: {error}"),
+        };
+        assert_eq!(
+            model.linearizations, 35,
+            "the times the fit of the balanced eight factored the covariance"
+        );
+        assert_eq!(
+            model.steps_on_the_variance, 15,
+            "the steps the fit of the balanced eight took on the variance"
+        );
+    }
 
     /// A variant that the projection leaves nothing of has no answer under
     /// this model's score test either, which is the meanwhile of **Open 2**
