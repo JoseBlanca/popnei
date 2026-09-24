@@ -955,6 +955,52 @@ denominator told a user with no kinship to supply one, on a path reachable
 only when a kinship *was* supplied and the model came out non-mixed, which
 is popnei's own fault.
 
+## The last decision: the variant the approximation cannot answer
+
+The linear mixed model's Wald test refuses a variant when what it leaves of
+the trait falls to nothing. That rule holds because, with the exact
+denominator, the part of the trait a variant explains cannot exceed what
+there was, so anything at the floor can only be a cancellation. The
+approximation gives that up: for a variant whose own ratio sits above the
+factor, the approximate denominator is smaller than the exact one, the part
+explained can pass what there was honestly, and the rule fires on a variant
+that has an answer.
+
+Three ways out were put to the owner. Leave it, and a strong variant comes
+back with nothing. Refuse the Wald test together with the approximation,
+which takes away a pairing that works for every variant outside this
+regime. Or skip the rule when approximating — which is what was built
+first, and which turned out to give a **finite effect with no standard
+error and no p-value**, because what is left is then negative and the
+standard error is its square root. pyNei gives exactly those three values on
+the same input, agreeing to fifteen digits. But that row is the fourth kind
+of NaN that Open 2's own recommendation argues against: a user filtering on
+a missing effect keeps it and reads the effect as measured.
+
+**The owner's rule settled it: pyNei is a reference and not a ceiling.** The
+failure is diagnosable, since what is left cannot go negative with the exact
+denominator, and the projection matrix is held for the whole pass. So that
+one variant falls back to the exact denominator — one product — and the rule
+is then applied to the exact quantity, as it is when nothing is
+approximated. Every variant gets a full row: the approximation where it
+works, the exact answer where it does not, and three NaNs only where there
+is genuinely nothing left to test.
+
+Measured on the fixture of twelve individuals: at the two noise levels where
+the approximation fails, the answer is now the exact route's to every bit on
+Accelerate and to 1e-9 on faer, `beta` 4.99500 and 4.99000 with p-values of
+1.0518e-14 and 5.3636e-12. Removing the fallback turns those effects into
+NaN; restoring the earlier skip gives the effect back with a NaN standard
+error. Over the whole core suite the fallback fires four times, all of them
+that fixture, and on neither reference panel. So it costs nothing measurable
+and popnei answers a variant where pyNei does not.
+
+**What it does not have.** How often the fallback fired is not in the result
+a user gets; it is on the model and read by a test. Putting it there is a
+public field in the core, both binding crates and both packages, and is the
+owner's to ask for. A user who asked for the approximation and quietly got
+the exact route for many variants would want to see it.
+
 ## The plan's own final check
 
 Three things beyond the sum of the work packages.

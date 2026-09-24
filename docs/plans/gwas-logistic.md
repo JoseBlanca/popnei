@@ -1,8 +1,10 @@
 # Plan: the association study of a binomial trait
 
-23 September 2026. State: under way. The owner approved it on 23
-September 2026 and it is being carried out on the branch
-`plan/gwas-logistic`. It builds
+23 September 2026. State: done on 24 September 2026. The owner approved it
+on 23 September 2026, it was carried out on the branch
+`plan/gwas-logistic`, and every task is ticked, every deliverable checked
+and all three work packages reviewed. The report of the work is
+`docs/reports/gwas-logistic.md`. It builds
 the rest of `docs/specs/gwas.md`: the logistic model, the logistic mixed
 model, the GRAMMAR-Gamma approximation that both mixed models can use, and
 the measurements. It is the last of three plans; `kinship` and `gwas-linear`
