@@ -256,13 +256,17 @@ pub(crate) fn pca_of_the_variants(
     // The source is asked for no size of block: the core puts a `reblock`
     // over each reader and chooses the size there, since the product of a
     // block is matrix work and a filter leaves blocks of uneven size.
-    the_run_of(source, &Consumer::PcaOfVariants { num_prin_comps }, |run| {
+    let consumer = Consumer::PcaOfVariants { num_prin_comps };
+    // The weights of a variant need the eigenvectors, which are known when
+    // the first pass ends, so they come from a second pass over the same
+    // variants. Whether there is one is asked of the consumer, which is what
+    // `numPassesOf` answers with and what every call that tells the page how
+    // far a pass has got carries: the number the page is told and the
+    // readers that are opened cannot disagree.
+    let reads_the_source_twice = consumer.num_passes() > 1;
+    the_run_of(source, &consumer, |run| {
         let mut first_pass = chain_of(source.reader(run, None)?, steps.steps())?;
-        // The weights of a variant need the eigenvectors, which are known when
-        // the first pass ends, so they come from a second pass over the same
-        // variants. With none asked for there is no second reader and the
-        // source is read once.
-        let mut second_pass = if num_prin_comps > 0 {
+        let mut second_pass = if reads_the_source_twice {
             Some(chain_of(source.reader(run, None)?, steps.steps())?)
         } else {
             None
