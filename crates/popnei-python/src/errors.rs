@@ -331,10 +331,10 @@ fn left_behind(raised: PyErr, path: &Path, problem: &str) -> PyErr {
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "popnei::Error is non_exhaustive, so a match on it outside the core crate \
-              has to have a wildcard arm; a case that a later module adds is a ValueError \
-              with the file it was read from before its message, which is what a wrong \
-              input found in a file is, and the cases of a module that are a defect of \
-              popnei or that name no file are the ones listed by name above"
+              has to have a wildcard arm; a case that a later module adds is a ValueError, \
+              which is what a wrong input of a function is, and whether it names the file \
+              it happened in is popnei::Error::names_the_file, an exhaustive match in the \
+              core crate that does not compile until a new case is classified there"
 )]
 fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
     let message = error.to_string();
@@ -510,8 +510,14 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // the `RuntimeError` it is here.
         | popnei::Error::GwasInputOfAnotherSize { .. }
         | popnei::Error::GwasAnswersOfAnotherSize { .. }
-        | popnei::Error::GwasLinalg { .. } => {
-            PyRuntimeError::new_err(of_the_file(message, path))
+        | popnei::Error::GwasLinalg { .. }
+        // The mixed model that was to be fitted and whose kinship was not
+        // there, which is a fourth of that kind: the pass chooses a mixed
+        // model only for a study that brought a kinship, so no study
+        // reaches it, and it names no file, being raised before the pass
+        // has read one.
+        | popnei::Error::GwasModelNotBuilt { .. } => {
+            PyRuntimeError::new_err(what_a_user_reads(&error, message, path))
         }
         // The two errors of a trait that the layer holding the frame names:
         // this crate has the positions of those traits and not their names,
@@ -545,6 +551,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             num_vars_of_one,
             num_vars_of_other,
         )),
+        // The wrong inputs of a function, which are a `ValueError`. Which
+        // of them carries the file it happened in before its message is
+        // `popnei::Error::names_the_file` of the core crate and not this
+        // list: the decision is one exhaustive match beside the enum, so a
+        // case added there does not compile until it has been classified,
+        // where two lists by hand let the same mistake through twice.
+        //
         // The arguments a user writes: how many variants a block holds,
         // and how many alleles a genotype of the file has, which the reader
         // is given when the file is opened because it needs it to read the
@@ -571,9 +584,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // names its `ploidy` argument before it comes here. The threshold
         // below which a variant counts as polymorphic in a population is one
         // more: `poly_threshold` is a number from 0 to 1, which is where a
-        // major allele frequency lies. What is wrong with them is wrong
-        // whatever file is read, so they name no file although some of them
-        // are refused while one is being opened.
+        // major allele frequency lies.
         popnei::Error::BlockOfNoVariants
         | popnei::Error::BlockTooLarge { .. }
         | popnei::Error::VcfPloidyOutOfRange { .. }
@@ -598,13 +609,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // standardized and not centered, one of fewer than 2 rows or of no
         // traits, and one in which no trait has variance once it is
         // centered, which has no direction to give. The table comes from
-        // the user and not from a file, so they name none.
+        // the user and not from a file.
         | popnei::Error::PcaValueNotFinite { .. }
         | popnei::Error::PcaStandardizeWithoutCentering
         | popnei::Error::PcaTableTooSmall { .. }
         | popnei::Error::PcaNoTraitWithVariance
-        // The five of the r² of a set of variants that are wrong whatever
-        // file is read: an index that is not an individual of the dataset
+        // The five of the r² of a set of variants that are of what a user
+        // wrote: an index that is not an individual of the dataset
         // and one given twice, which are the individuals of a population
         // as a user writes them; and the three sizes the calculation
         // cannot be done at, dosages of more values than the linear
@@ -620,13 +631,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::LdNoMemory { .. }
         // The `max_num_vars` of the matrix of every pair that is more
         // variants than this machine counts the pairs of, which is the one
-        // number a user writes at that call and nothing of any file: it is
-        // looked at before the pass, so the same number is refused whatever
-        // the source holds.
+        // number a user writes at that call: it is looked at before the
+        // pass, so the same number is refused whatever the source holds.
         | popnei::Error::LdMaxNumVarsTooLarge { .. }
-        // The sixteen of the association study that are of what a user
-        // wrote and are wrong whatever file is read: a phenotype or a
-        // covariate that is not a finite number, which the package lets
+        // The fifteen of the association study that are of what a user
+        // wrote: a phenotype or a covariate that is not a finite number, which the package lets
         // through as a value that came out of the user's own arithmetic as
         // an infinity; a kinship whose entries are not finite and one that
         // is not symmetric, which is a frame written into after the
@@ -645,19 +654,9 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // and which the user takes out; a kinship that the covariance of
         // the working trait of a logistic mixed model cannot be factored
         // from, which is the matrix the user's missing genotypes made and
-        // which they rebuild from variants with fewer of them; and a study
-        // whose trait and kinship ask for a model that is not written,
-        // which all four now are and which the pass keeps for the two arms
-        // no study reaches. "The Rust interface"
-        // of `docs/specs/gwas.md` has them, each as the `ValueError` it is
-        // here. What the arm at the end of this function would give them
-        // instead is the same exception with the path of the file in front
-        // of the message, and an argument that is refused names no file:
-        // `GwasGrammarGammaNotBuilt` was there until 24 September 2026 and
-        // arrived with the VCF glued on, where the refusal raised two lines
-        // from it in the core named none, and `GwasFitDidNotSettle` until
-        // 26 September, where the fit reads the phenotype and the design
-        // and no variant of any file at all.
+        // which they rebuild from variants with fewer of them. "The Rust
+        // interface" of `docs/specs/gwas.md` has them, each as the
+        // `ValueError` it is here.
         | popnei::Error::GwasPhenotypeNotFinite { .. }
         | popnei::Error::GwasPhenotypeNotBinomial { .. }
         | popnei::Error::GwasPhenotypeOfOneValue { .. }
@@ -673,11 +672,10 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasGrammarGammaNotBuilt
         | popnei::Error::GwasFitDidNotSettle { .. }
         | popnei::Error::GwasKinshipNotACovariance { .. }
-        | popnei::Error::GwasModelNotBuilt { .. }
         // The name of a trait and the name of a test that are of neither
         // of the two, which a user writes in `trait` and in `test`.
         | popnei::Error::GwasTraitOfAnUnknownName { .. }
-        | popnei::Error::GwasTestOfAnUnknownName { .. } => PyValueError::new_err(message),
+        | popnei::Error::GwasTestOfAnUnknownName { .. }
         // The six that the dataset a user gave is wrong for: four of the
         // principal components of the variants and two of the pass over a
         // row that those components and the kinship share. Of the
@@ -692,7 +690,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // `transform_to_biallelic` false, and a ploidy the dosages could
         // not be written one to a byte at. Each names the file the variants
         // were read from, as every error of a file does.
-        popnei::Error::PcaNoVariants
+        | popnei::Error::PcaNoVariants
         | popnei::Error::PcaNoVariantWithVariance
         | popnei::Error::VariantWithMoreThanTwoAlleles { .. }
         | popnei::Error::VariantPloidyTooLarge { .. }
@@ -761,7 +759,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasIndividualTestedTwice { .. }
         | popnei::Error::GwasIndividualsOutOfOrder { .. }
         | popnei::Error::GwasVariantsTooLarge => {
-            PyValueError::new_err(of_the_file(message, path))
+            PyValueError::new_err(what_a_user_reads(&error, message, path))
         }
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
@@ -783,7 +781,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // user needs in order to see whether it is the file that holds
         // none or the steps that kept none of what it holds, and the
         // message says which of the two it was.
-        _ => PyValueError::new_err(of_the_file(message, path)),
+        _ => PyValueError::new_err(what_a_user_reads(&error, message, path)),
     }
 }
 
@@ -815,6 +813,21 @@ fn without_the_number(said: String, number: Option<i32>) -> String {
     match said.strip_suffix(&format!(" (os error {number})")) {
         Some(without_it) => without_it.to_owned(),
         None => said,
+    }
+}
+
+/// What a user reads: the message with the file it happened in before it
+/// when that file belongs with the error, and the message alone when what is
+/// wrong is wrong whatever file is read.
+///
+/// Which of the two an error is, is `popnei::Error::names_the_file`, an
+/// exhaustive match beside the enum in the core crate, so a case a later
+/// module adds is classified there before this crate compiles.
+fn what_a_user_reads(error: &popnei::Error, message: String, path: Option<PathBuf>) -> String {
+    if error.names_the_file() {
+        of_the_file(message, path)
+    } else {
+        message
     }
 }
 
