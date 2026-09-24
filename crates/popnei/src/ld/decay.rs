@@ -761,6 +761,39 @@ mod tests {
         assert_no_curve(&decay, "pairs at one distance");
     }
 
+    /// Two distances are the fewest that have a curve, which is the other
+    /// side of the case above: "The cases" of `docs/specs/ld.md` gives the
+    /// three NaN to a population whose pairs fall at fewer than two
+    /// distances and to no other count of distances.
+    ///
+    /// One pair of an r² of 0.40 at 1000 base pairs and one of 0.30 at
+    /// 2000, in a population of 100 individuals, which R 4.6.1's
+    /// `optimize` fits on 24 September 2026 at a ρ per base pair of
+    /// 0.00048364847034989075, a half distance of 4467.735803422881 and
+    /// the curve's own ceiling at 100 individuals. Without this the
+    /// boundary is guarded by nothing: asking for three distances in place
+    /// of two left the 119 tests of the module passing and turned this
+    /// curve into three NaN.
+    #[test]
+    fn pairs_at_two_distances_have_a_curve() {
+        let decay = fit_ld_decay(&[1000, 2000], &[1, 1], &[0.40, 0.30], 100).expect("the fit");
+        assert_close(
+            decay.rho_per_bp(),
+            0.000_483_648_470_349_890_75,
+            "the fitted rho per base pair of two distances",
+        );
+        assert_close(
+            decay.half_dist(),
+            4_467.735_803_422_881,
+            "the half distance of two distances",
+        );
+        assert_close(
+            decay.r2_at_zero(),
+            0.46198347107438015,
+            "the r² at a distance of 0 of two distances",
+        );
+    }
+
     #[test]
     fn no_pair_at_all_has_no_curve() {
         let decay = fit_ld_decay(&[], &[], &[], 100).expect("the fit");
