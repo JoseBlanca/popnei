@@ -146,8 +146,9 @@ Each range crosses once into the memory of wasm, copied out of the
 is built and put in the place of the one before it, which is freed after
 that. What the module holds when a pass over a VCF has ended is three
 range-sized blocks and 1572864 bytes that do not grow with the range, of
-which 1310720 is the module before any pass and 262144 everything the reader
-holds, the lines of a block for a VCF and the batch for a vars file. The
+which 1310720 is the module before any pass and 262144 everything the VCF
+reader holds, the lines of a block among them; a pass over a vars file holds
+its batch as well, which nothing has measured. The
 third range-sized block is the range that the reading of the header
 allocated at `openVcf`: it is freed when `openVcf` returns, the memory of a
 wasm module never shrinks, and the first range of the pass is given a block
