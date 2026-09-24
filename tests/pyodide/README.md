@@ -86,10 +86,18 @@ exits with an error naming each one that differs:
   statistics and a draw of 4 called alleles, which `pop1` reaches at its
   four variants and `pop2` at three of them, and gives the three
   standardized values and the folded spectrum, 1, 3 and 0 for `pop1` and
-  1.0666666667, 1.5333333333 and 0.4 for `pop2`. Every number is in the
-  test as a literal from that spec, and the floats are compared within
-  1e-6, as the means of the worked example above are. The same example is
-  a cargo test of `crates/popnei/src/diversity.rs`.
+  1.0666666667, 1.5333333333 and 0.4 for `pop2`, indexed by the counts of
+  the rarer allele 0, 1 and 2. Both calls give 6 variants of the pass, and
+  both are checked for which statistics the result holds a value for: the
+  four for the plain call and the five for the second, each one that is
+  missing and each one that is there and should not be named on its own
+  line. That is what says that the wheel's default `stats` is the four that
+  need no draw; a wheel whose default was narrower used to die inside
+  Python where the first missing statistic was read, after node had printed
+  1.2 MB of minified pyodide. Every number is in the test as a literal from
+  that spec, and the floats are compared within 1e-6, as the means of the
+  worked example above are. The same example is a cargo test of
+  `crates/popnei/src/diversity.rs`.
 
 Neither `dist/` nor `node_modules/` is in git.
 
