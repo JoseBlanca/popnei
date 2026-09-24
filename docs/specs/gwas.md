@@ -492,8 +492,9 @@ own estimate of the residual variance, which is what makes this a t test and
 not a normal one.
 
 **`rss` is formed from the residuals and not by subtracting**, which is a
-difference from pyNei's arithmetic and the one place this spec departs from
-the oracle's formula rather than its behaviour. pyNei writes it as the
+difference from pyNei's arithmetic and one of the two places this spec
+departs from the oracle's formula rather than its behaviour; the other is
+the logistic model's score test, for the same reason. pyNei writes it as the
 null's residual sum of squares minus `beta * num`, at `gwas.py:395-396`, and
 so did this spec. Those two quantities agree to their last bits once a
 variant explains most of what the null left, and the difference is then
@@ -842,6 +843,23 @@ the design:
 and then `beta = num / den`, `se = 1 / sqrt(den)` and a chi square with one
 degree of freedom of `num² / den`. The covariates take the place of the
 projection matrix of the mixed models, and nothing is inverted per variant.
+
+**`den` is formed and not subtracted**, which is the second place this spec
+departs from pyNei's arithmetic and it is the same departure as the linear
+model's. Written as `x' w x` minus what the covariates explain, it is a
+subtraction of two nearly equal numbers exactly where Open 2's threshold has
+to act, so the guard would be reading a quantity whose error is larger than
+the thing it is testing. Measured on 24 September 2026 over six decades, on
+200 individuals with a covariate that is a variant's dosages plus noise: at
+1.3 times the threshold the subtracted form is out by 4.6e-3 of itself and
+at the threshold by 29 per cent, while the formed one falls as the square of
+the collinearity throughout, which is what says it is the accurate one. It
+costs one more product per block, the design against the solved
+coefficients, into the buffer of variants by individuals that the linear
+model already keeps: the cheap repair, not the product with the projection
+matrix per variant that the linear mixed model's Wald test would need. On
+`panel_called` the smallest denominator is 0.297 of its scale, so no number
+popnei reports today moves and no test covers the regime.
 
 The **Wald test**, the default, fits one logistic regression per variant
 with the variant in the model, starting from the null's coefficients and an
