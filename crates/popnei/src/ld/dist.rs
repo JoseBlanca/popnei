@@ -3624,6 +3624,26 @@ pub(super) mod tests {
         (of_every_individual, of_the_two_pops)
     }
 
+    /// The first of the three tables, the one population of every
+    /// individual at a `max_allowed_maf` of 0.95, counted into `num_bins`
+    /// bins in place of the ten of the spec.
+    ///
+    /// "The curve that is fitted" of `docs/specs/ld.md` says that
+    /// `num_bins` does not move the fit, the pairs of each distance being
+    /// counted whatever the bins they are also added to, which is what the
+    /// fit of `decay.rs` reads.
+    pub(in crate::ld) fn the_pass_of_every_individual_in(num_bins: usize) -> LdAndDist {
+        let mut reader = the_ld_dataset(64);
+        let options = LdAndDistOptions {
+            num_bins,
+            ..the_options_of_the_tables(0.95)
+        };
+        match calc_ld_and_dist(&mut reader, &[], &options) {
+            Ok(of_the_pass) => of_the_pass,
+            Err(error) => panic!("the pass into {num_bins} bins was refused: {error}"),
+        }
+    }
+
     /// The same with the pairs of each step taken in tiles of
     /// `vars_per_tile` variants, where [`the_three_tables_of`] goes
     /// through [`calc_ld_and_dist`] and so takes them in the

@@ -463,7 +463,7 @@ mod tests {
     use super::*;
 
     use crate::ld::LdAndDist;
-    use crate::ld::dist::tests::{bins_of, the_three_tables_of};
+    use crate::ld::dist::tests::{bins_of, the_pass_of_every_individual_in, the_three_tables_of};
 
     /// How close two numbers of the fit are asked to be, which is the
     /// tolerance "How it is verified" of `docs/specs/ld.md` compares the
@@ -1028,6 +1028,40 @@ mod tests {
                 the_bits_of_the_three_curves(&of_the_run),
                 the_bits_of_the_three_curves(&of_seven),
                 "{at}, against blocks of 7"
+            );
+        }
+    }
+
+    /// The curve of a population is the same, to the bit, however many
+    /// bins its pairs are also counted into.
+    ///
+    /// "The curve that is fitted" of `docs/specs/ld.md` says it twice,
+    /// that `num_bins` does not move the fit and that `num_bins` moves
+    /// neither the fitted ρ per base pair nor the half distance, and the
+    /// reason is that every pair is counted once at its own distance and
+    /// the fit reads those distances and no bin. The pass of every
+    /// individual of `ld.vcf.gz` is run into 10 bins, which is what the
+    /// table of the spec is counted in, and into 50, 3 and 1, and the
+    /// three values have to come out with the same bits: a fit that read
+    /// the bins, or a count of pairs per distance that the binning touched,
+    /// would move them.
+    #[test]
+    fn the_bins_a_pass_is_counted_into_do_not_move_its_curve() {
+        let of_ten = *bins_of(&the_pass_of_every_individual_in(10), 0).decay();
+        for num_bins in [50, 3, 1] {
+            let of_these_bins = *bins_of(&the_pass_of_every_individual_in(num_bins), 0).decay();
+            assert_eq!(
+                (
+                    of_these_bins.rho_per_bp().to_bits(),
+                    of_these_bins.r2_at_zero().to_bits(),
+                    of_these_bins.half_dist().to_bits()
+                ),
+                (
+                    of_ten.rho_per_bp().to_bits(),
+                    of_ten.r2_at_zero().to_bits(),
+                    of_ten.half_dist().to_bits()
+                ),
+                "the curve at {num_bins} bins, against the curve at 10"
             );
         }
     }
