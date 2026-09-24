@@ -6,7 +6,7 @@
 //! the pass is the same for all of them: one call for each block, one
 //! answer for each variant of it that has variance.
 
-use crate::block::{Block, BlockReader, Reblock};
+use crate::block::{Block, BlockReader, Reblock, with_one_block_ahead};
 use crate::error::{Error, Result};
 use crate::variant::{ChromTable, Needs};
 
@@ -365,20 +365,31 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
     // unparsed.
     reader.set_needs(Needs::GTS | Needs::CHROM_POS | Needs::ID);
     let mut blocks = Reblock::new(reader, None)?;
-    let mut first_var = 0_usize;
-    while let Some(mut block) = timed(Phase::NextBlock, || blocks.next_block())? {
-        timed(Phase::Dosages, || {
-            dosages.read_the_block(&mut block, &design, BlockOfThePass { ploidy, first_var })
-        })?;
-        let answers = timed(Phase::Test, || {
-            fitted.test_the_block(&dosages, test, &design)
-        })?;
-        result.add_the_block(&dosages, answers)?;
-        the_columns_of_the_block(&mut result, &block, first_var)?;
-        first_var = first_var
-            .checked_add(block.num_vars)
-            .ok_or(Error::GwasVariantsTooLarge)?;
-    }
+    // The blocks are read on a thread of its own, one block ahead, so that
+    // the read of the next block and the test of the one in hand overlap:
+    // `docs/reports/perf-gwas-2026-09-24.md` measured the reader at 0.112 s
+    // of the 0.204 s of a linear model over 100000 variants of 1000
+    // individuals on 18 cores, and in wasm, where there is no thread, the
+    // blocks come one after another as they did. The chain of readers is
+    // lent and not given away, which is what lets its names and its counts
+    // be read below, when the thread is over.
+    with_one_block_ahead(&mut blocks, |blocks| {
+        let mut first_var = 0_usize;
+        while let Some(mut block) = timed(Phase::NextBlock, || blocks.next_block())? {
+            timed(Phase::Dosages, || {
+                dosages.read_the_block(&mut block, &design, BlockOfThePass { ploidy, first_var })
+            })?;
+            let answers = timed(Phase::Test, || {
+                fitted.test_the_block(&dosages, test, &design)
+            })?;
+            result.add_the_block(&dosages, answers)?;
+            the_columns_of_the_block(&mut result, &block, first_var)?;
+            first_var = first_var
+                .checked_add(block.num_vars)
+                .ok_or(Error::GwasVariantsTooLarge)?;
+        }
+        Ok(())
+    })?;
     // The names of the chromosomes are taken when the pass is over and not
     // before it: a reader over a file interns the name of a variant as it
     // reads the variant, so the table of a reader that has read nothing is
