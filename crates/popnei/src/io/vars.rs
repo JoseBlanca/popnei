@@ -1748,8 +1748,9 @@ impl VarsReader<BufReader<File>> {
 /// which for the genotypes is the rows times the individuals times the
 /// ploidy, and, where the schema does not give that number, one that lz4
 /// can give from the bytes it holds; and no field node says more values
-/// than its column can hold, which for the genotypes is the rows times the
-/// individuals times the ploidy.
+/// than its column can hold, which for the genotypes is one for each
+/// allele, the rows times the individuals times the ploidy, and, for a
+/// column popnei does not walk, what the body of the batch can hold.
 ///
 /// # Errors
 ///
@@ -1800,16 +1801,40 @@ fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPl
                 .map(|whole| whole.saturating_sub(message_len))
         })
         .unwrap_or(0);
-    let rows = u64::try_from(found).unwrap_or(u64::MAX);
+    // A conversion that fails leaves no rows and so no bound, which
+    // refuses the batch: a check that cannot work out its bound must not
+    // let the bytes through.
+    let rows = u64::try_from(found).unwrap_or(0);
+    let compressed_with_lz4 = batch
+        .compression()
+        .is_some_and(|how| how.codec() == CompressionType::LZ4_FRAME);
     let holds = what_the_buffers_hold(schema.fields(), rows);
-    buffers_fit(&batch, bytes, metadata_len, body, &holds, &damaged)?;
+    buffers_fit(
+        &batch,
+        bytes,
+        metadata_len,
+        body,
+        compressed_with_lz4,
+        &holds,
+        &damaged,
+    )?;
     // A field node says how many values a column holds, which arrow-rs
-    // turns into the length of an array. The bytes of the batch do not
-    // bound it: they are compressed and the values are counted once they
-    // are decompressed, so a file whose genotypes repeat holds more values
-    // than the batch holds bits. What bounds it is the column itself.
+    // turns into the length of an array. Two things bound it, and the
+    // smaller one is what the node is held to.
+    //
+    // The column itself is the tighter of the two wherever popnei walks the
+    // type, and it is what the compressed bytes of the batch cannot give: a
+    // batch is decompressed before its values are counted, so a file whose
+    // genotypes repeat holds more values than the batch holds bits.
+    //
+    // The body is the other, and it is the one that holds when the schema
+    // gives none, at a column whose type popnei does not walk and at every
+    // column after it. Without it those columns have no bound at all, since
+    // the rows of a batch are what its entry of the footer says and no byte
+    // of the file bounds them.
+    let in_the_body = values_the_body_holds(body, compressed_with_lz4);
     let values = what_the_nodes_hold(schema.fields(), rows);
-    for (place, node) in batch.nodes().into_iter().flatten().enumerate() {
+    for (at, node) in batch.nodes().into_iter().flatten().enumerate() {
         let length = node.length();
         let null_count = node.null_count();
         if length < 0 || null_count < 0 || null_count > length {
@@ -1817,7 +1842,10 @@ fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPl
                 "a column of its message says it holds {length} values, {null_count} of them not there"
             )));
         }
-        let at_most = values.get(place).copied().unwrap_or(u64::MAX);
+        let at_most = match values.get(at).copied() {
+            Some(NodeHolds::Values(most)) => most.min(in_the_body),
+            Some(NodeHolds::NotBounded) | None => in_the_body,
+        };
         if u64::try_from(length).unwrap_or(u64::MAX) > at_most {
             return Err(damaged(format!(
                 "a column of its message says it holds {length} values and that column holds {at_most}"
@@ -1825,6 +1853,28 @@ fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPl
         }
     }
     Ok(())
+}
+
+/// How many values the body of a batch can hold, whatever the schema says
+/// of its columns: a value takes a bit at the very least once the batch is
+/// decompressed, and an lz4 frame gives at most [`LZ4_BYTES_FOR_A_BYTE`]
+/// for each byte it holds.
+///
+/// It is loose by a factor of eight or more for every column of a file
+/// popnei writes, whose exact bound the schema gives. What it is for is the
+/// columns the schema does not reach: a column of a type popnei does not
+/// walk, and every column after it, which otherwise nothing bounds, because
+/// the rows of a batch are what its entry of the footer says and no byte of
+/// the file bounds them.
+fn values_the_body_holds(body: u64, compressed_with_lz4: bool) -> u64 {
+    let decompressed = if compressed_with_lz4 {
+        body.saturating_mul(LZ4_BYTES_FOR_A_BYTE)
+            .saturating_add(LZ4_FRAME_SLACK)
+    } else {
+        body
+    };
+    // A bit for each value.
+    decompressed.saturating_mul(8)
 }
 
 /// What one buffer of a batch holds at most once it is decompressed.
@@ -1914,7 +1964,7 @@ fn buffers_of_the_field(field: &Field, rows: Option<u64>, holds: &mut Vec<Buffer
         }
         DataType::FixedSizeBinary(width) => {
             holds.push(nulls);
-            holds.push(bytes(u64::try_from(*width).unwrap_or(u64::MAX), 0));
+            holds.push(bytes(u64::try_from(*width).unwrap_or(0), 0));
             true
         }
         DataType::List(inside) | DataType::Map(inside, _) => {
@@ -1929,8 +1979,7 @@ fn buffers_of_the_field(field: &Field, rows: Option<u64>, holds: &mut Vec<Buffer
         }
         DataType::FixedSizeList(inside, width) => {
             holds.push(nulls);
-            let values =
-                rows.map(|rows| rows.saturating_mul(u64::try_from(*width).unwrap_or(u64::MAX)));
+            let values = rows.map(|rows| rows.saturating_mul(u64::try_from(*width).unwrap_or(0)));
             buffers_of_the_field(inside, values, holds)
         }
         DataType::Struct(inside) => {
@@ -1949,7 +1998,7 @@ fn buffers_of_the_field(field: &Field, rows: Option<u64>, holds: &mut Vec<Buffer
         other => match other.primitive_width() {
             Some(width) => {
                 holds.push(nulls);
-                holds.push(bytes(u64::try_from(width).unwrap_or(u64::MAX), 0));
+                holds.push(bytes(u64::try_from(width).unwrap_or(0), 0));
                 true
             }
             // A dictionary, a union, a view or a type arrow adds later:
@@ -1965,19 +2014,32 @@ fn bits_in_bytes(bits: u64) -> u64 {
     bits.saturating_add(7).saturating_div(8)
 }
 
+/// How many values one column of a batch holds at most, which arrow-rs
+/// turns into the length of the array it builds for that column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeHolds {
+    /// That many values, which the schema of the file and the rows of the
+    /// batch give.
+    Values(u64),
+    /// What the schema does not say: the values of a large list, whose
+    /// count its 64 bit offsets give and nothing in the schema bounds.
+    /// What bounds those is [`values_the_body_holds`].
+    NotBounded,
+}
+
 /// How many values each column of a batch of `fields` of `rows` rows holds
 /// at most, in the order the IPC format lays its field nodes out: one node
 /// for each column, and the nodes of the columns inside a column after its
 /// own, in a depth first walk.
 ///
-/// A node with no entry in the list is not bounded, which is every node
-/// after a column whose type popnei does not know: popnei cannot say how
-/// many nodes such a column takes, so it cannot say which column the nodes
-/// after it belong to.
-fn what_the_nodes_hold(fields: &Fields, rows: u64) -> Vec<u64> {
+/// A node with no entry in the list is the one of a column popnei does not
+/// walk, or of a column after one: popnei cannot say how many nodes such a
+/// column takes, so it cannot say which column the nodes after it belong
+/// to. Those are bounded by [`values_the_body_holds`] as well.
+fn what_the_nodes_hold(fields: &Fields, rows: u64) -> Vec<NodeHolds> {
     let mut holds = Vec::new();
     for field in fields {
-        if !nodes_of_the_field(field, rows, &mut holds) {
+        if !nodes_of_the_field(field, NodeHolds::Values(rows), &mut holds) {
             break;
         }
     }
@@ -1990,9 +2052,11 @@ fn what_the_nodes_hold(fields: &Fields, rows: u64) -> Vec<u64> {
 /// leaves the columns after it out of `holds`.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "arrow has forty types and a version of arrow-rs adds more; what popnei walks is               the handful named here and the ones of a fixed width, and every other one stops               the walk"
+    reason = "arrow has forty types and a version of arrow-rs adds more; what popnei walks is \
+              the handful named here and the ones of a fixed width, and every other one stops \
+              the walk"
 )]
-fn nodes_of_the_field(field: &Field, values: u64, holds: &mut Vec<u64>) -> bool {
+fn nodes_of_the_field(field: &Field, values: NodeHolds, holds: &mut Vec<NodeHolds>) -> bool {
     holds.push(values);
     match field.data_type() {
         DataType::Null
@@ -2006,13 +2070,22 @@ fn nodes_of_the_field(field: &Field, values: u64, holds: &mut Vec<u64>) -> bool 
         // reader has not decompressed: what bounds them is the largest
         // number those offsets hold.
         DataType::List(inside) | DataType::Map(inside, _) => {
-            nodes_of_the_field(inside, MAX_VALUES_OF_A_LIST, holds)
+            nodes_of_the_field(inside, NodeHolds::Values(MAX_VALUES_OF_A_LIST), holds)
         }
-        DataType::LargeList(inside) => nodes_of_the_field(inside, u64::MAX, holds),
+        // The offsets of a large list are 64 bits, so nothing in the schema
+        // says how many values it holds.
+        DataType::LargeList(inside) => nodes_of_the_field(inside, NodeHolds::NotBounded, holds),
         // The genotypes are one of these: every row holds the same number
-        // of values, the individuals times the ploidy.
+        // of values, the individuals times the ploidy. A width that is not
+        // a number of values, which a damaged schema gives, leaves no room
+        // for a value and refuses the column.
         DataType::FixedSizeList(inside, width) => {
-            let inside_values = values.saturating_mul(u64::try_from(*width).unwrap_or(u64::MAX));
+            let inside_values = match values {
+                NodeHolds::Values(values) => {
+                    NodeHolds::Values(values.saturating_mul(u64::try_from(*width).unwrap_or(0)))
+                }
+                NodeHolds::NotBounded => NodeHolds::NotBounded,
+            };
             nodes_of_the_field(inside, inside_values, holds)
         }
         // Every column of a struct holds the rows of the struct itself.
@@ -2045,12 +2118,10 @@ fn buffers_fit(
     bytes: &[u8],
     metadata_len: i32,
     body: u64,
+    compressed_with_lz4: bool,
     holds: &[BufferHolds],
     damaged: &impl Fn(String) -> Error,
 ) -> Result<()> {
-    let compressed_with_lz4 = batch
-        .compression()
-        .is_some_and(|how| how.codec() == CompressionType::LZ4_FRAME);
     for (place, buffer) in batch.buffers().into_iter().flatten().enumerate() {
         let (offset, length) = (buffer.offset(), buffer.length());
         let ends_at = u64::try_from(offset)
@@ -2904,25 +2975,26 @@ mod tests {
 
     use arrow_array::builder::{Int8Builder, ListBuilder, StringBuilder};
     use arrow_array::cast::AsArray;
-    use arrow_array::types::{Float32Type, Int8Type, UInt64Type};
+    use arrow_array::types::{Float32Type, Int8Type, Int32Type, UInt64Type};
     use arrow_array::{
-        Array, ArrayRef, FixedSizeListArray, Float32Array, Float64Array, Int8Array, Int32Array,
-        ListArray, RecordBatch, StringArray, UInt64Array,
+        Array, ArrayRef, DictionaryArray, FixedSizeListArray, Float32Array, Float64Array,
+        Int8Array, Int32Array, ListArray, RecordBatch, StringArray, UInt64Array,
     };
     use arrow_buffer::{NullBuffer, ScalarBuffer};
     use arrow_ipc::reader::FileReader;
     use arrow_ipc::root_as_message;
     use arrow_ipc::writer::FileWriter;
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_schema::{DataType, Field, Fields, Schema};
 
     use super::{
-        ALLELES_COLUMN, BatchInfo, BatchPlace, CHROM_COLUMN, FORMAT_VERSION, FORMAT_VERSION_READ,
-        GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES, MESSAGE_START_BYTES, NOT_COMPRESSED,
-        POPNEI_BATCHES_KEY, POPNEI_KEY, POS_COLUMN, QUAL_COLUMN, Region, UNCOMPRESSED_LENGTH_BYTES,
-        VarsColumn, VarsColumns, VarsMetadata, VarsReader, VarsWriter, alleles_column,
-        batches_as_json, batches_from_json, block_of_the_batch, block_too_large, chrom_column,
-        counted_from_one, id_column, metadata_as_json, metadata_from_json, num_vars_of_the_file,
-        projection_of, schema_of, write_vars,
+        ALLELES_COLUMN, BatchAt, BatchInfo, BatchPlace, CHROM_COLUMN, CONTINUATION_MARK,
+        FORMAT_VERSION, FORMAT_VERSION_READ, GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES,
+        MAX_VALUES_OF_A_LIST, MESSAGE_START_BYTES, NOT_COMPRESSED, NodeHolds, POPNEI_BATCHES_KEY,
+        POPNEI_KEY, POS_COLUMN, QUAL_COLUMN, Region, UNCOMPRESSED_LENGTH_BYTES, VarsColumn,
+        VarsColumns, VarsMetadata, VarsReader, VarsWriter, alleles_column, batches_as_json,
+        batches_from_json, block_of_the_batch, block_too_large, chrom_column, counted_from_one,
+        gts_field, id_column, metadata_as_json, metadata_from_json, num_vars_of_the_file,
+        projection_of, schema_of, what_the_nodes_hold, write_vars,
     };
     use crate::block::{AllelesColumn, Block, BlockReader, BlockSize};
     use crate::error::{Error, Result};
@@ -6149,6 +6221,87 @@ mod tests {
         assert!(message.contains("damaged"), "{message}");
     }
 
+    /// How many bytes one field node of the message of a batch takes: two
+    /// 64 bit numbers, how many values its column holds and how many of
+    /// those are nulls.
+    const FIELD_NODE_BYTES: usize = 16;
+
+    /// How many bytes the first of that pair takes.
+    const FIELD_NODE_LENGTH_BYTES: usize = 8;
+
+    /// Where the field nodes of the message of a batch start in the bytes
+    /// of the file, and what each one says: a pair of the values its column
+    /// holds and the nulls among them.
+    ///
+    /// The nodes are found by the bytes of the whole vector, and not by
+    /// those of one node, because a buffer of the same message is a pair of
+    /// 64 bit numbers too and can hold the same pair.
+    fn nodes_of_the_message(bytes: &[u8], at: BatchAt) -> (usize, Vec<(i64, i64)>) {
+        let start = usize::try_from(at.offset).expect("the offset of the batch");
+        let end = start
+            .checked_add(usize::try_from(at.metadata_len).expect("the message of the batch"))
+            .expect("where the message of the batch ends");
+        let message = bytes.get(start..end).expect("the message of the batch");
+        let starts_at = match message.get(..CONTINUATION_MARK.len()) {
+            Some(mark) if mark == CONTINUATION_MARK => MESSAGE_START_BYTES,
+            Some(_) | None => CONTINUATION_MARK.len(),
+        };
+        let parsed = root_as_message(message.get(starts_at..).expect("the message"))
+            .expect("the message of the batch is one of arrow");
+        let batch = parsed
+            .header_as_record_batch()
+            .expect("the message is one of a batch");
+        let nodes: Vec<(i64, i64)> = batch
+            .nodes()
+            .expect("the field nodes of the batch")
+            .iter()
+            .map(|node| (node.length(), node.null_count()))
+            .collect();
+        let pattern: Vec<u8> = nodes
+            .iter()
+            .flat_map(|(length, nulls)| length.to_le_bytes().into_iter().chain(nulls.to_le_bytes()))
+            .collect();
+        let where_they_are: Vec<usize> = message
+            .windows(pattern.len())
+            .enumerate()
+            .filter(|(_, window)| *window == pattern.as_slice())
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(
+            where_they_are.len(),
+            1,
+            "the field nodes of the message are in {count} places of it",
+            count = where_they_are.len()
+        );
+        let nodes_at = start
+            .checked_add(*where_they_are.first().expect("the field nodes"))
+            .expect("where the field nodes are in the file");
+        (nodes_at, nodes)
+    }
+
+    /// Those bytes with the field node at `which` saying that its column
+    /// holds `says` values, which is how a test damages one column of one
+    /// batch and leaves the rest of the file as it was.
+    fn a_node_that_says(mut bytes: Vec<u8>, at: BatchAt, which: usize, says: i64) -> Vec<u8> {
+        let (nodes_at, nodes) = nodes_of_the_message(&bytes, at);
+        assert!(
+            which < nodes.len(),
+            "the message has {count} field nodes",
+            count = nodes.len()
+        );
+        let length_at = nodes_at
+            .checked_add(which.checked_mul(FIELD_NODE_BYTES).expect("the field node"))
+            .expect("where the field node is in the file");
+        let ends_at = length_at
+            .checked_add(FIELD_NODE_LENGTH_BYTES)
+            .expect("where the length of the field node ends");
+        bytes
+            .get_mut(length_at..ends_at)
+            .expect("the length of the field node")
+            .copy_from_slice(&says.to_le_bytes());
+        bytes
+    }
+
     /// The bound on the values a column says it holds is what keeps a
     /// damaged length from reaching arrow-rs, which builds an array of that
     /// length: the alleles of the genotypes of a batch are its rows times
@@ -6156,47 +6309,30 @@ mod tests {
     /// is refused.
     #[test]
     fn a_column_that_says_more_values_than_it_can_hold_is_a_file_that_was_damaged() {
-        let mut bytes = cases_written_in_batches_of(4);
+        assert_eq!(MAX_VALUES_OF_A_LIST, u64::from(i32::MAX.unsigned_abs()));
+        let bytes = cases_written_in_batches_of(4);
         let at = opened(bytes.clone())
             .expect("the file is a vars file")
             .blocks[0];
-        let start = usize::try_from(at.offset).expect("the offset of the batch");
-        let end = start
-            .checked_add(usize::try_from(at.metadata_len).expect("the message of the batch"))
-            .expect("where the message of the batch ends");
-        // The field node of the alleles of the genotypes, two 64 bit
-        // numbers: 4 variants of 3 diploid individuals hold 24 alleles, and
-        // none of them is a null.
-        let node: Vec<u8> = 24_i64
-            .to_le_bytes()
-            .into_iter()
-            .chain(0_i64.to_le_bytes())
-            .collect();
-        let message = bytes.get(start..end).expect("the message of the batch");
-        let where_it_is: Vec<usize> = message
-            .windows(node.len())
-            .enumerate()
-            .filter(|(_, window)| *window == node.as_slice())
-            .map(|(at, _)| at)
-            .collect();
+        // The eight field nodes of the batch, of which the last is the
+        // alleles of the genotypes: 4 variants of 3 diploid individuals
+        // hold 24 alleles.
+        let (_, nodes) = nodes_of_the_message(&bytes, at);
         assert_eq!(
-            where_it_is.len(),
-            1,
-            "the node of the alleles of the genotypes is in {count} places of the message",
-            count = where_it_is.len()
+            nodes,
+            [
+                (4, 0),
+                (4, 0),
+                (4, 3),
+                (4, 0),
+                (8, 0),
+                (4, 1),
+                (4, 0),
+                (24, 0)
+            ]
         );
-        let length_at = start
-            .checked_add(*where_it_is.first().expect("the node"))
-            .expect("where the node is in the file");
-        let says_one_more = length_at
-            .checked_add(UNCOMPRESSED_LENGTH_BYTES)
-            .expect("where the length of the node ends");
-        bytes
-            .get_mut(length_at..says_one_more)
-            .expect("the length of the node")
-            .copy_from_slice(&25_i64.to_le_bytes());
 
-        let error = refused_at_the_block(bytes);
+        let error = refused_at_the_block(a_node_that_says(bytes, at, 7, 25));
 
         let Error::VarsBatchNotRead { batch, problem } = &error else {
             panic!("the file whose node says 25 alleles gave {error}");
@@ -6204,6 +6340,149 @@ mod tests {
         assert_eq!(*batch, 1);
         assert!(problem.contains("25 values"), "{problem}");
         assert!(problem.contains("holds 24"), "{problem}");
+    }
+
+    /// A column that comes after one whose type popnei does not walk keeps
+    /// a bound: popnei cannot say how many field nodes such a column takes,
+    /// so it cannot say which column the nodes after it belong to and the
+    /// schema gives them none. What is left is the body of the batch, which
+    /// holds at most 255 bytes for each of its own and a value for each bit
+    /// of those.
+    ///
+    /// Without that bound nothing holds those columns, since the rows of a
+    /// batch are what its entry of the footer says and no byte of the file
+    /// bounds them: arrow-rs reaches `integer overflow computing expected
+    /// number of expected values in FixedListSize`, an `expect` that panics
+    /// in a release build too, which `catch_unwind` holds natively and
+    /// which ends a browser tab.
+    #[test]
+    fn a_column_after_one_popnei_does_not_walk_is_bounded_by_the_bytes_of_the_batch() {
+        // A column of a type popnei does not walk, before the six it knows,
+        // which the reader ignores and which stops the walk of the schema.
+        // pyarrow writes one for any categorical of pandas.
+        let mut parts = FileParts::of_cases();
+        let names: DictionaryArray<Int32Type> =
+            vec!["one", "two", "one", "two"].into_iter().collect();
+        parts.columns.insert(
+            0,
+            (
+                Field::new("kind", names.data_type().clone(), false),
+                Arc::new(names),
+            ),
+        );
+        let bytes = parts.written();
+        let at = opened(bytes.clone())
+            .expect("the file with a dictionary column is read")
+            .blocks[0];
+        // The nine field nodes, of which the first is the dictionary that
+        // stops the walk and the last the alleles of the genotypes.
+        let (_, nodes) = nodes_of_the_message(&bytes, at);
+        assert_eq!(nodes.len(), 9);
+        assert_eq!(nodes.last(), Some(&(24, 0)));
+
+        let error = refused_at_the_block(a_node_that_says(bytes, at, 8, 3_074_457_345_618_258_603));
+
+        let Error::VarsBatchNotRead { batch, problem } = &error else {
+            panic!("the file whose node says 3074457345618258603 alleles gave {error}");
+        };
+        assert_eq!(*batch, 1);
+        assert!(problem.contains("3074457345618258603 values"), "{problem}");
+        // The batch was refused by its own bytes and never handed to
+        // arrow-rs, which is the whole of the defence in a browser tab.
+        assert!(
+            !problem.contains("arrow-rs"),
+            "the length reached arrow-rs: {problem}"
+        );
+    }
+
+    /// The walk of the columns gives one bound for each field node the IPC
+    /// format lays out, in its order, for the types a file another program
+    /// wrote can hold and popnei's own writer never makes: a struct, whose
+    /// columns hold the rows of the struct itself; a large list, whose
+    /// values its 64 bit offsets count and nothing in the schema bounds; a
+    /// map, which is a list of its entries; and a column of a type popnei
+    /// does not walk, which ends the list there because popnei cannot say
+    /// how many nodes it takes.
+    ///
+    /// popnei's own six columns reach four of the arms and no test reaches
+    /// the others, so a walk that counted the nodes of one of them wrong
+    /// would put every bound after it on another column.
+    #[test]
+    fn the_walk_gives_one_bound_for_each_field_node_of_the_types_popnei_does_not_write() {
+        let inside = Fields::from(vec![
+            Field::new("one", DataType::UInt64, false),
+            Field::new("two", DataType::Utf8, true),
+        ]);
+        let fields = Fields::from(vec![
+            Field::new("plain", DataType::Float32, true),
+            Field::new("both", DataType::Struct(inside), false),
+            Field::new(
+                "many",
+                DataType::LargeList(Arc::new(Field::new(ITEM_FIELD, DataType::Int8, false))),
+                false,
+            ),
+            Field::new(
+                "pairs",
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(Fields::from(vec![
+                            Field::new("key", DataType::Utf8, false),
+                            Field::new("value", DataType::Int8, true),
+                        ])),
+                        false,
+                    )),
+                    false,
+                ),
+                false,
+            ),
+            Field::new(
+                "six",
+                DataType::FixedSizeList(Arc::new(gts_field()), 6),
+                false,
+            ),
+        ]);
+
+        let holds = what_the_nodes_hold(&fields, 100);
+
+        // plain; both and its two columns, which hold the rows of the
+        // struct; many and its values, which nothing in the schema bounds;
+        // pairs, its entries and the key and the value of an entry, which
+        // its 32 bit offsets bound; six and its 600 alleles.
+        assert_eq!(
+            holds,
+            [
+                NodeHolds::Values(100),
+                NodeHolds::Values(100),
+                NodeHolds::Values(100),
+                NodeHolds::Values(100),
+                NodeHolds::Values(100),
+                NodeHolds::NotBounded,
+                NodeHolds::Values(100),
+                NodeHolds::Values(MAX_VALUES_OF_A_LIST),
+                NodeHolds::Values(MAX_VALUES_OF_A_LIST),
+                NodeHolds::Values(MAX_VALUES_OF_A_LIST),
+                NodeHolds::Values(100),
+                NodeHolds::Values(600),
+            ]
+        );
+
+        // A column of a type popnei does not walk ends the list where it
+        // is: it keeps its own bound, and nothing after it has one.
+        let with_a_dictionary = Fields::from(vec![
+            Field::new("plain", DataType::Float32, true),
+            Field::new(
+                "kind",
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+                false,
+            ),
+            Field::new("after", DataType::UInt64, false),
+        ]);
+
+        assert_eq!(
+            what_the_nodes_hold(&with_a_dictionary, 100),
+            [NodeHolds::Values(100), NodeHolds::Values(100)]
+        );
     }
 
     /// After an error a reader gives no block at every call, as
@@ -6403,12 +6682,18 @@ mod tests {
     }
 
     /// How many panics the net of the reader caught in the sweep over four
-    /// values of each byte of the file, on 21 September 2026 with arrow-rs
+    /// values of each byte of the file, on 24 September 2026 with arrow-rs
     /// 60: one about a buffer that is not long enough for the values its
     /// message says, and one about a buffer whose length is not a whole
     /// number of the values of its column. Both are asserts of arrow-rs
     /// that only the walk of the schema its decoder does would see.
-    const PANICS_CAUGHT: u64 = 14;
+    ///
+    /// It was 14 until the bound on the values a column says it holds
+    /// became the column itself, on 24 September 2026: a column of a batch
+    /// holds its rows, which is far below the bits of the batch that the
+    /// bound was before, so three more of these files are refused before
+    /// arrow-rs reads them.
+    const PANICS_CAUGHT: u64 = 11;
 
     /// The variants of the file in those bytes, with every field, or the
     /// error it gave: what a sweep over a damaged file reads.
@@ -6541,9 +6826,9 @@ mod tests {
     /// bytes that came with it before arrow-rs reads any of them, and holds
     /// what that does not see in `catch_unwind`.
     ///
-    /// On 21 September 2026 the four values of each byte gave 16296 files
+    /// On 24 September 2026 the four values of each byte gave 16296 files
     /// in 0.13 s: 6946 errors, 8988 read as the whole file, 362 read as
-    /// another file with no error, 14 panics caught and no abort. The check
+    /// another file with no error, 11 panics caught and no abort. The check
     /// of an allele below the missing one moved 24 files from the third
     /// count to the first.
     ///
@@ -6594,19 +6879,21 @@ mod tests {
     }
 
     /// The same sweep with every byte set to each of the 255 other values.
-    /// It is run by hand: 1299990 files and 8.4 s in the profile of the
-    /// tests on the owner's Apple M5 Pro on 21 September 2026, where it
+    /// It is run by hand: 1299990 files and 9.2 s in the profile of the
+    /// tests on the owner's Apple M5 Pro on 24 September 2026, where it
     /// gave 553104 errors, 726033 files read as the whole one, 20853 read
     /// as another file with no error, which is what a checksum of the
-    /// format would catch and nothing else does, 2783 panics of arrow-rs
-    /// that the net caught and no abort. The check of an allele below the
+    /// format would catch and nothing else does, 1939 panics of arrow-rs
+    /// that the net caught and no abort. The panics were 2783 until the
+    /// bound on the values a column says it holds became the column
+    /// itself. The check of an allele below the
     /// missing one moved 3049 files, 13 in 100 of the 23902 that were read
     /// as another file before it, from the third count to the first.
     ///
     ///     cargo test -p popnei --lib \
     ///         no_change_of_any_byte_of_a_vars_file -- --ignored
     #[test]
-    #[ignore = "851190 files; the sweep over four values of each byte is the one that runs with the suite"]
+    #[ignore = "1299990 files; the sweep over four values of each byte is the one that runs with the suite"]
     fn no_change_of_any_byte_of_a_vars_file_reaches_a_panic() {
         let whole = cases_written_in_batches_of(3);
         let expected = rows_or_error(whole.clone()).expect("the whole file is read");
