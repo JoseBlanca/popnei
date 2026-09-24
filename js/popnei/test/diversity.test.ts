@@ -20,11 +20,13 @@
  * `panel_pops_bcftools.txt` beside it holds. At `minNumIndividuals` 20 all
  * 1200 variants count for all three.
  *
- * The draw of a common number of called alleles is not asserted here: the
- * standardized values and the folded spectrum are work package 3 of
- * `docs/plans/diversity.md`, and what this file asserts of
- * `numCalledAlleles` is that it is taken and that the call is refused when
- * no draw can be made.
+ * The draw of a common number of called alleles is refused and not
+ * asserted: the three standardized columns and the folded spectrum are work
+ * package 3 of `docs/plans/diversity.md`, and until they are there a call
+ * that gives `numCalledAlleles`, or that asks for the spectrum, is an
+ * `Error`, since the NaN and the 0 such a call would read are what a result
+ * gives for a draw no population reached. One test holds those two refusals
+ * and fails the day the draw arrives, which is what it is for.
  */
 
 import assert from "node:assert/strict";
@@ -33,7 +35,7 @@ import { test } from "node:test";
 import type { PopDiversity, Variants } from "popnei";
 import { calcPopDiversity, init, openVcf } from "popnei";
 
-import { referenceStats } from "./reference.ts";
+import { referenceStats, vcfOf } from "./reference.ts";
 
 await init();
 
@@ -130,6 +132,25 @@ const WITH_NO_SPECTRUM = [
   "variable_vars_ratio",
   "fis",
 ] as const;
+
+/**
+ * Four variants of the three diploid individuals `ind1`, `ind2` and `ind3`,
+ * for the counts that the panel cannot show: there every population counted
+ * every variant, so the variants of a population and the variants of every
+ * population are the same 1200 and a divisor read from the wrong one of the
+ * two gives the same number.
+ *
+ * The genotypes are `0/0 1/1 1/1`, `0/0 0/0 0/0`, `0/1 0/0 0/0` and
+ * `0/0 ./. ./.`: the last one is called in `ind1` alone, so a population of
+ * `ind2` and `ind3` counts three variants where a population of `ind1`
+ * counts four.
+ */
+const SOME_VARS_MISSED = vcfOf([
+  "chr1\t1\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t1/1\t1/1",
+  "chr1\t2\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/0\t0/0",
+  "chr1\t3\t.\tA\tT\t.\tPASS\t.\tGT\t0/1\t0/0\t0/0",
+  "chr1\t4\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t./.\t./.",
+]);
 
 /**
  * The individuals of each population of a file of two columns, the name of
@@ -304,65 +325,182 @@ test("one population holds every allele it called as a private one", () => {
   assert.equal(diversity.numVarsEveryPop, PANEL_NUM_VARS);
 });
 
-test("the totals and the F_IS do not read the draw", () => {
-  // A draw changes the standardized values alone: the alleles called, the
-  // private ones, the variable variants and F_IS are the same numbers with
-  // `numCalledAlleles` 20 as with none.
-  const withNoDraw = ofThePanel({ stats: WITH_NO_SPECTRUM });
-
-  const ofADrawOf20 = ofThePanel({
-    stats: WITH_NO_SPECTRUM,
-    numCalledAlleles: 20,
-  });
-
-  assert.deepEqual(
-    counted(ofADrawOf20.numAlleles, "count of alleles").total,
-    counted(withNoDraw.numAlleles, "count of alleles").total,
+test("a draw of a common number of called alleles is refused until it is calculated", () => {
+  // THE DAY THE DRAW ARRIVES THIS TEST FAILS, AND THAT IS WHAT IT IS FOR.
+  // Nothing of the draw is calculated: the three `inDraw` columns are NaN,
+  // `numVars.inDraw` is 0 and `foldedSfs` is `null`, which are the values a
+  // result gives for a draw no population reached and for a statistic nobody
+  // asked for, so a call that asked for a draw would read them as an answer.
+  // Both calls are refused instead.
+  //
+  // Work package 3 of `docs/plans/diversity.md` calculates it, and whoever
+  // does it takes the two refusals out of `js/popnei/src/diversity.ts` and
+  // replaces this test with the values of "How it is verified" of the spec:
+  // at `numCalledAlleles` 20 the mean alleles of the panel in the draw are
+  // 1.9283948650041205, 1.9219209943237829 and 1.9197370843937562, its
+  // ratios of variable variants in the draw are those three less one, and
+  // `numVars.inDraw` is 1200 for each of the three populations.
+  assert.throws(
+    () => ofThePanel({ stats: WITH_NO_SPECTRUM, numCalledAlleles: 20 }),
+    { message: /`numCalledAlleles` is 20 and the draw/ },
   );
-  assert.deepEqual(
-    counted(ofADrawOf20.privateAlleles, "count of private alleles").total,
-    counted(withNoDraw.privateAlleles, "count of private alleles").total,
-  );
-  assert.deepEqual(
-    counted(ofADrawOf20.variableVarsRatio, "count of variable variants").total,
-    counted(withNoDraw.variableVarsRatio, "count of variable variants").total,
-  );
-  assert.deepEqual(ofADrawOf20.fis, withNoDraw.fis);
-});
-
-test("the spectrum asked for with no draw is refused", () => {
-  // The bins of a folded spectrum are the counts of the rarer allele in a
-  // draw, so the spectrum needs `numCalledAlleles`. It is among the
-  // statistics of a call that names none, so such a call is refused too.
   assert.throws(() => ofThePanel({ stats: ["folded_sfs"] }), {
-    message: /numCalledAlleles/,
+    message: /folded site frequency spectrum/,
   });
+  // A call that gives no `stats` asks for all five, the spectrum among them.
   assert.throws(() => ofThePanel(), {
     message: /folded site frequency spectrum/,
   });
 });
 
-test("a draw of fewer than two alleles is refused", () => {
-  // A draw of one allele finds one allele whatever the population holds, so
-  // every standardized value of it would say nothing.
-  assert.throws(
-    () => ofThePanel({ stats: WITH_NO_SPECTRUM, numCalledAlleles: 1 }),
-    { message: /numCalledAlleles/ },
-  );
+test("a numCalledAlleles that is no draw at all is refused as the wrong argument it is", () => {
+  // The draw is refused above whatever its value, and a value that is no
+  // draw is refused before that, with the rule it broke: a number of
+  // JavaScript reaches a whole number of the core as 32 bits with no error,
+  // so a draw of 20.5 alleles would be a draw of 20 and one of -1 a draw of
+  // 4294967295, and a draw of one allele finds one allele whatever the
+  // population holds.
+  for (const given of [20.5, -1, 0, 1]) {
+    assert.throws(
+      () => ofThePanel({ stats: WITH_NO_SPECTRUM, numCalledAlleles: given }),
+      { message: /a whole number of 2 or more/ },
+      `numCalledAlleles: ${given}`,
+    );
+  }
 });
 
-test("a numCalledAlleles that is no whole number is refused", () => {
-  // A number of JavaScript reaches a whole number of the core as 32 bits
-  // with no error, so a draw of 20.5 alleles would be a draw of 20 and a
-  // draw of -1 one of 4294967295.
-  assert.throws(
-    () => ofThePanel({ stats: WITH_NO_SPECTRUM, numCalledAlleles: 20.5 }),
-    { message: /numCalledAlleles/ },
+test("the mean private alleles are over the variants that counted for every population", () => {
+  // The four variants of `SOME_VARS_MISSED`, in two populations, `p1` of
+  // `ind1` and `p2` of `ind2` and `ind3`, at a threshold of one called
+  // genotype. `p2` called nothing at the fourth variant, so that variant
+  // counts for `p1` and not for `p2`: `p1` counts 4 variants, `p2` counts 3,
+  // and 3 counted for both.
+  //
+  // The private alleles are over the variants that counted for every
+  // population, the fourth left out, where the allele `p1` called would be
+  // private only because `p2` has no data there. `p1` holds a private allele
+  // at the first variant, the `0` that `p2` did not call, and at the third,
+  // the `1`, which makes 2 over 3 variants, 0.6666666666666666; with the
+  // variants of `p1` itself as the divisor it would be 2 over 4, 0.5. `p2`
+  // holds the `1` of the first variant, 1 over 3.
+  const variants = openVcf(SOME_VARS_MISSED);
+
+  const diversity = calcPopDiversity(variants, {
+    pops: { p1: ["ind1"], p2: ["ind2", "ind3"] },
+    stats: ["num_alleles", "private_alleles", "variable_vars_ratio"],
+    minNumIndividuals: 1,
+  });
+
+  assert.deepEqual(diversity.pops, ["p1", "p2"]);
+  assert.deepEqual(diversity.numVars.withData, Uint32Array.of(4, 3));
+  assert.equal(diversity.numVarsEveryPop, 3);
+  const theirPrivate = counted(
+    diversity.privateAlleles,
+    "count of private alleles",
   );
-  assert.throws(
-    () => ofThePanel({ stats: WITH_NO_SPECTRUM, numCalledAlleles: -1 }),
-    { message: /numCalledAlleles/ },
+  assert.deepEqual(theirPrivate.total, Uint32Array.of(2, 1));
+  assert.deepEqual(
+    theirPrivate.mean,
+    Float64Array.of(0.6666666666666666, 0.3333333333333333),
   );
+  // The alleles called and the variable variants are over the variants of
+  // each population, the fourth among those of `p1`: `p1` called one allele
+  // at the first, the second and the fourth and two at the third, and it is
+  // the third that makes it variable.
+  const alleles = counted(diversity.numAlleles, "count of alleles");
+  assert.deepEqual(alleles.total, Uint32Array.of(5, 3));
+  assert.deepEqual(alleles.mean, Float64Array.of(1.25, 1));
+  const variable = counted(
+    diversity.variableVarsRatio,
+    "count of variable variants",
+  );
+  assert.deepEqual(variable.total, Uint32Array.of(1, 0));
+  assert.deepEqual(variable.ratio, Float64Array.of(0.25, 0));
+  variants.free();
+});
+
+test("a population no variant counted for has no mean, no ratio and no F_IS", () => {
+  // At a threshold of 60 called genotypes the 48 individuals of `p0` can
+  // never reach it, so no variant counts for that population: its totals are
+  // 0, its mean, its ratio and its F_IS are NaN, and the other two
+  // populations are given as they are. The variants that counted for every
+  // population are 0 too, so no population has a mean private allele, `p1`
+  // and `p2` included, whose own counts are above 0: that is the divisor of
+  // the private alleles and not the variants of each population.
+  const diversity = ofThePanel({
+    stats: WITH_NO_SPECTRUM,
+    minNumIndividuals: 60,
+  });
+
+  const alleles = counted(diversity.numAlleles, "count of alleles");
+  const variable = counted(
+    diversity.variableVarsRatio,
+    "count of variable variants",
+  );
+  const theirPrivate = counted(
+    diversity.privateAlleles,
+    "count of private alleles",
+  );
+  const fis = diversity.fis as Float64Array;
+  const p0 = diversity.pops.indexOf("p0");
+  assert.equal(diversity.numVars.withData[p0], 0);
+  assert.equal(alleles.total[p0], 0);
+  assert.equal(variable.total[p0], 0);
+  assert.ok(Number.isNaN(alleles.mean[p0] as number), "the mean of p0");
+  assert.ok(Number.isNaN(variable.ratio[p0] as number), "the ratio of p0");
+  assert.ok(Number.isNaN(fis[p0] as number), "the F_IS of p0");
+  assert.equal(diversity.numVarsEveryPop, 0);
+  for (const pop of PANEL_POP_NAMES) {
+    const which = diversity.pops.indexOf(pop);
+    assert.ok(
+      Number.isNaN(theirPrivate.mean[which] as number),
+      `the mean private alleles of ${pop}`,
+    );
+  }
+  for (const pop of ["p1", "p2"]) {
+    const which = diversity.pops.indexOf(pop);
+    assert.ok((diversity.numVars.withData[which] as number) > 0, pop);
+    assert.ok((alleles.total[which] as number) > 0, pop);
+    assert.ok(!Number.isNaN(fis[which] as number), pop);
+  }
+});
+
+test("a pass that gives no variant is refused and says where the variants went", () => {
+  // The whole message is asserted, because it is the one the Python function
+  // gives for the same source: the two languages say the same thing, and
+  // Python writes the path of the file before it, which the bytes a
+  // TypeScript user gives have not.
+  const ofNoVariant = openVcf(vcfOf([]));
+  try {
+    assert.throws(
+      () => calcPopDiversity(ofNoVariant, { stats: WITH_NO_SPECTRUM }),
+      {
+        message:
+          "the pass gave no variant and its source holds none: a statistic " +
+          "of a pass is calculated over the variants it gives",
+      },
+    );
+  } finally {
+    ofNoVariant.free();
+  }
+  // A major allele frequency is at least one over the alleles of a variant,
+  // so a threshold of 0 keeps none of the four variants, and the message
+  // names the filter with what it was given and kept.
+  const filtered = openVcf(SOME_VARS_MISSED);
+  try {
+    filtered.filterByMaf(0);
+    assert.throws(
+      () => calcPopDiversity(filtered, { stats: WITH_NO_SPECTRUM }),
+      {
+        message:
+          "the pass gave no variant: its source gave 4 and the steps kept " +
+          "none of them, the `maf` filter was given 4 and kept 0; a " +
+          "statistic of a pass is calculated over the variants it gives",
+      },
+    );
+  } finally {
+    filtered.free();
+  }
 });
 
 test("a population that names an individual of no pass is refused", () => {
@@ -379,13 +517,15 @@ test("a population that names an individual of no pass is refused", () => {
 });
 
 test("stats names the statistics there are", () => {
-  // A name of no statistic is refused with the five there are, and a call
-  // that names none would make a pass over the whole source for nothing.
+  // Both messages are the core's, so a Python user reads the same sentence:
+  // a name of no statistic is refused with the five there are, and a `stats`
+  // that names none with what such a pass would do, read every variant of the
+  // source and compute nothing of them.
   assert.throws(() => ofThePanel({ stats: ["allelic_richness"] as never }), {
-    message: /num_alleles/,
+    message: /`allelic_richness` is not one of the statistics/,
   });
   assert.throws(() => ofThePanel({ stats: [] }), {
-    message: /names no statistic/,
+    message: /`stats` names no statistic and a pass that computes none/,
   });
 });
 

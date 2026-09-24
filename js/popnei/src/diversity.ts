@@ -29,8 +29,10 @@
 import { default_min_num_individuals as defaultMinNumIndividuals } from "../wasm/popnei.js";
 
 import {
+  LARGEST_WHOLE_NUMBER,
   namesOf,
   popsOfTheObject,
+  whatWasGiven,
   wholeNumberOfZeroOrMore,
 } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
@@ -59,12 +61,41 @@ const THE_STATISTICS = [
  */
 export type PopDiversityStat = (typeof THE_STATISTICS)[number];
 
+/**
+ * The name of the statistic that needs the draw, which is the one of the
+ * five that popnei does not calculate yet.
+ */
+const FOLDED_SFS = "folded_sfs";
+
+/**
+ * Where the draw of a common number of called alleles is being built, which
+ * every message that refuses it names so that a user can read what is coming
+ * and when.
+ */
+const WHERE_THE_DRAW_IS_BUILT =
+  "work package 3 of `docs/plans/diversity.md`";
+
+/**
+ * The four statistics that are calculated, written as a user writes them,
+ * for the message that refuses the fifth.
+ */
+const THE_FOUR_THERE_ARE = THE_STATISTICS.filter(
+  (statistic) => statistic !== FOLDED_SFS,
+)
+  .map((statistic) => `\`${statistic}\``)
+  .join(", ");
+
 /** What `calcPopDiversity` calculates, for which populations and how. */
 export interface CalcPopDiversityOptions {
   /**
    * Which of the five statistics to calculate, all of them when it is not
    * given. Asking for fewer is a saving of work and changes no value, and a
    * result holds `null` for one nobody asked for.
+   *
+   * `folded_sfs` is refused today, and so is a call that gives no `stats`,
+   * since that asks for all five: the spectrum is over a draw of
+   * `numCalledAlleles`, and neither is calculated yet. Ask for the other
+   * four.
    */
   stats?: readonly PopDiversityStat[];
 
@@ -86,14 +117,15 @@ export interface CalcPopDiversityOptions {
    * many of the alleles a population called at a variant, without
    * replacement, and take the expectation over every such draw.
    *
-   * With no `numCalledAlleles`, which is the default, every `inDraw` value
-   * is NaN and the spectrum cannot be asked for, since the bins of a
-   * spectrum need one number of alleles for every population and every
-   * variant: asking for it without one is an `Error`, and so is a
-   * `numCalledAlleles` below 2, a draw of one allele finding one allele
-   * whatever the population holds. A `numCalledAlleles` above every
-   * population's called alleles is no error: every `inDraw` value is NaN,
-   * every count of the spectrum is 0 and `numVars.inDraw` says why.
+   * It is refused today: the draw is not calculated yet, and a call that
+   * gives it is an `Error` that says where it is being built. A number that
+   * is no whole number of 2 or more is refused as the wrong argument it is,
+   * and a draw of one allele would say nothing whatever the population
+   * holds.
+   *
+   * With no `numCalledAlleles`, which is the default and the only call there
+   * is for now, every `inDraw` value is NaN, `numVars.inDraw` is 0 and
+   * `foldedSfs` is `null`.
    *
    * It is one number and not a sequence of them, so a user who wants the
    * curve of allelic richness against the number of alleles drawn, which
@@ -135,8 +167,8 @@ export interface PopAlleleCounts {
 
   /**
    * What a draw of `numCalledAlleles` is expected to show, averaged over the
-   * variants in the draw for the population, and NaN when there was no draw
-   * or no variant reached it.
+   * variants in the draw for the population. It is NaN in every population
+   * for now, since a call that asks for a draw is refused.
    */
   inDraw: Float64Array;
 }
@@ -161,8 +193,8 @@ export interface VariableVarsRatio {
 
   /**
    * The chance that a draw of `numCalledAlleles` is not all of one allele,
-   * averaged over the variants in the draw, and NaN when there was no draw
-   * or no variant reached it.
+   * averaged over the variants in the draw. It is NaN in every population
+   * for now, since a call that asks for a draw is refused.
    */
   inDraw: Float64Array;
 }
@@ -181,7 +213,8 @@ export interface DiversityNumVars {
 
   /**
    * Of those, the ones whose called alleles reached `numCalledAlleles`,
-   * which is the divisor of every `inDraw` value.
+   * which is the divisor of every `inDraw` value. It is 0 in every
+   * population for now, since a call that asks for a draw is refused.
    */
   inDraw: Uint32Array;
 }
@@ -239,6 +272,9 @@ export interface PopDiversity {
    *
    * It is folded because nothing in a VCF says which allele is the ancestral
    * one, so the counts `j` and `numCalledAlleles - j` are one bin.
+   *
+   * It is `null` in every result for now, since a call that asks for the
+   * spectrum, or for the draw its bins are counted in, is refused.
    */
   foldedSfs: Record<string, Float64Array> | null;
 
@@ -254,13 +290,17 @@ export interface PopDiversity {
    * population on its own, and not Weir and Cockerham's, which comes out of
    * a decomposition of the variance across populations.
    *
-   * It is NaN for a population that has no F_IS: one no variant counted for,
-   * one whose mean unbiased expected heterozygosity is 0, every variant it
-   * counted having held one allele, and every population of a haploid
-   * dataset, where no genotype can be heterozygous and the ratio would be 1
-   * wherever the population has any diversity. The draw does not touch it:
-   * the observed heterozygosity is a property of whole genotypes and not of
-   * a sample of alleles.
+   * It is NaN for a population that has no F_IS, in four cases. One that no
+   * variant counted for. One no counted variant of which carries both
+   * heterozygosities, which a population whose counted variants hold no
+   * whole called genotype reaches: individuals whose genotypes are all half
+   * called count their variants and have no observed heterozygosity at any
+   * of them. One whose mean unbiased expected heterozygosity is 0, every
+   * variant it counted having held one allele. And every population of a
+   * haploid dataset, where no genotype can be heterozygous and the ratio
+   * would be 1 wherever the population has any diversity. The draw does not
+   * touch it: the observed heterozygosity is a property of whole genotypes
+   * and not of a sample of alleles.
    */
   fis: Float64Array | null;
 
@@ -304,9 +344,13 @@ export interface PopDiversity {
  * individuals that pass gives, which are the ones a `filterIndividuals` kept
  * when the `Variants` carries one.
  *
- * A variant is in the draw for a population when it counts for that
- * population by the rule of `minNumIndividuals` and the population called at
- * least `numCalledAlleles` there, both and not the second alone.
+ * Four of the five are calculated. The draw of a common number of called
+ * alleles is not, so a call that gives `numCalledAlleles` is refused, and so
+ * is one that asks for the folded spectrum, whose bins are counts of the
+ * rarer allele in such a draw; a call that gives no `stats` asks for all
+ * five and is refused with it. What a result holds today is the alleles each
+ * population called, the private ones among them, the variants that vary in
+ * it and F_IS, each over the called alleles the population has.
  *
  * pyNei has none of the five, so no result here is compared with it.
  *
@@ -315,11 +359,13 @@ export interface PopDiversity {
  * when it names none at all; when `pops` is not an object of names to arrays
  * of names, when a population names an individual the pass does not give,
  * names one twice or names none, and when it holds no population; when
- * `numCalledAlleles` or `minNumIndividuals` is not a whole number of 0 or
- * more; when the folded spectrum is asked for with no `numCalledAlleles` and
- * when that draw is below 2; when the source cannot be read, a wrong line of
- * a VCF among the causes; when the pass gives no variant, whether the source
- * holds none or the steps kept none; and when `init` has not been awaited.
+ * `numCalledAlleles` is not a whole number of 2 or more and when
+ * `minNumIndividuals` is not a whole number of 0 or more; when
+ * `numCalledAlleles` is given at all and when `folded_sfs` is among the
+ * statistics, both being the draw that is not calculated yet; when the
+ * source cannot be read, a wrong line of a VCF among the causes; when the
+ * pass gives no variant, whether the source holds none or the steps kept
+ * none; and when `init` has not been awaited.
  */
 export function calcPopDiversity(
   variants: Variants,
@@ -330,6 +376,7 @@ export function calcPopDiversity(
   const stats = theStats(options.stats);
   const pops = thePops(options.pops);
   const numCalledAlleles = theNumCalledAlleles(options.numCalledAlleles);
+  refuseTheDraw(numCalledAlleles, stats);
   const minNumIndividuals =
     options.minNumIndividuals === undefined
       ? defaultMinNumIndividuals()
@@ -407,10 +454,11 @@ export function calcPopDiversity(
  * The names of the statistics a user asked for, each once and in the order
  * they named them, and the five of them when they named none.
  *
- * Which names there are is the binding crate's rule, as the names of the per
- * variant statistics are: what is refused here is what is no array of names
- * and an array of none, which would make a pass over the whole source for
- * nothing.
+ * What is refused here is what is no array of names at all. Which names there
+ * are is the core's rule, and so is a `stats` that names none, which the core
+ * refuses with the five names and with what such a pass would do, read every
+ * variant of the source and compute nothing of them: a copy of that sentence
+ * here would be the same rule written in a third language.
  */
 function theStats(stats: readonly PopDiversityStat[] | undefined): string[] {
   if (stats === undefined) {
@@ -420,12 +468,6 @@ function theStats(stats: readonly PopDiversityStat[] | undefined): string[] {
     oneOfThem: "statistic",
     anExample: "fis",
   });
-  if (asked.length === 0) {
-    throw new Error(
-      "popnei: `stats` names no statistic, and a result holds the ones that " +
-        "were asked for: leave `stats` out for the five of them",
-    );
-  }
   return [...new Set(asked)];
 }
 
@@ -460,18 +502,85 @@ function thePops(pops: Record<string, readonly string[]> | undefined): {
  * How many called alleles every population is brought down to, and
  * `undefined` for a pass that takes no draw.
  *
- * What is refused here is what would reach the core as another number: the
- * generated code throws the fraction of 20.5 away and turns -1 into a count
- * of about four thousand million. Whether the number is one a draw can be
- * made of, which is 2 or more, is the core's rule, which holds for every
- * pass and not for this call alone.
+ * The rule is written here and not taken from the checks that every other
+ * whole number goes through, because those say "0 or more" and 0 and 1 are
+ * no draw: a draw of one allele finds one allele whatever the population
+ * holds. A user who reads a bound and writes a number inside it has to be
+ * taken.
+ *
+ * @throws {Error} When `numCalledAlleles` is not a whole number of 2 or more
+ * that the core holds. What the generated code would do with the numbers
+ * this refuses is to throw the fraction of 20.5 away and turn -1 into a
+ * count of about four thousand million.
  */
 function theNumCalledAlleles(
   numCalledAlleles: number | undefined,
 ): number | undefined {
-  return numCalledAlleles === undefined
-    ? undefined
-    : wholeNumberOfZeroOrMore("numCalledAlleles", numCalledAlleles);
+  if (numCalledAlleles === undefined) {
+    return undefined;
+  }
+  if (
+    typeof numCalledAlleles !== "number" ||
+    !Number.isSafeInteger(numCalledAlleles) ||
+    numCalledAlleles < 2 ||
+    numCalledAlleles > LARGEST_WHOLE_NUMBER
+  ) {
+    throw new Error(
+      "popnei: `numCalledAlleles` is how many called alleles every " +
+        "population is brought down to, a whole number of 2 or more and at " +
+        `most ${LARGEST_WHOLE_NUMBER}, or left out for no draw at all, and ` +
+        `${whatWasGiven(numCalledAlleles)} was given`,
+    );
+  }
+  return numCalledAlleles;
+}
+
+/**
+ * It refuses the draw of a common number of called alleles, which popnei
+ * does not calculate yet, and the folded spectrum, whose bins are counts of
+ * the rarer allele in such a draw.
+ *
+ * The four counts of a result are over the called alleles each population
+ * has and are right without a draw. The three `inDraw` columns, the two
+ * counts of the variants in a draw and the spectrum are not calculated, and
+ * what the pass fills them with, NaN, 0 and nothing, is what a result gives
+ * for a draw no population reached and for a statistic nobody asked for, so
+ * a call that asked for a draw would read those as an answer. An error never
+ * passes silently, which the owner gave as a rule on 21 September 2026, so
+ * the call is refused until the draw is there.
+ *
+ * The spectrum is refused before the draw, as the Python package refuses
+ * them, so that a call which gives both reads the same thing in the two
+ * languages. `numCalledAlleles` has already been checked against its own
+ * rule, so a number that is no draw at all is refused as the wrong argument
+ * it is before this is reached.
+ *
+ * @throws {Error} When `stats` holds `folded_sfs`, which a call that gives no
+ * `stats` does, and when `numCalledAlleles` was given.
+ */
+function refuseTheDraw(
+  numCalledAlleles: number | undefined,
+  stats: readonly string[],
+): void {
+  if (stats.includes(FOLDED_SFS)) {
+    throw new Error(
+      "popnei: the folded site frequency spectrum is counted in a draw of " +
+        "`numCalledAlleles`, and neither the draw nor the spectrum is " +
+        `calculated yet: both are ${WHERE_THE_DRAW_IS_BUILT}. A call that ` +
+        "gives no `stats` asks for all five statistics, so name in `stats` " +
+        `the four there are, ${THE_FOUR_THERE_ARE}`,
+    );
+  }
+  if (numCalledAlleles !== undefined) {
+    throw new Error(
+      `popnei: \`numCalledAlleles\` is ${numCalledAlleles} and the draw of a ` +
+        "common number of called alleles is not calculated yet: it is " +
+        `${WHERE_THE_DRAW_IS_BUILT}. Leave it out for the alleles each ` +
+        "population called, the private ones among them, the variable " +
+        "variants and F_IS, which are over the called alleles the population " +
+        "has",
+    );
+  }
 }
 
 /**

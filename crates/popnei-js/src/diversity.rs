@@ -72,9 +72,18 @@ pub(crate) struct ArgumentsOfTheDiversity {
 ///
 /// The chain of readers of the pass stays here, lent to the core, so that
 /// the counts of its filters are read when the pass is over: the loop over
-/// the blocks is the core's. The reader is opened at the size of its own
-/// blocks, since every statistic is a total over the variants and the same
-/// numbers come out whatever the blocks are.
+/// the blocks is the core's.
+///
+/// The reader is opened at the size of its own blocks and no `Reblock` is
+/// put over the chain. The four counts are integer totals over the variants
+/// and are the same numbers whatever the blocks are. F_IS is not: it is the
+/// ratio of two sums of float64 that the core adds in the order of the
+/// variants within each chunk of a block, so where the blocks are cut moves
+/// its last bits. On the panel of `tests/reference/stats/` it moves by
+/// 6.7e-16, 5.2e-14 of the value, between the whole file in one block and
+/// blocks of 7 variants, measured on 24 September 2026, which is inside the
+/// 1e-12 of the value that `docs/specs/diversity.md` compares within and is
+/// not nothing.
 ///
 /// # Errors
 ///
