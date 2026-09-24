@@ -271,7 +271,7 @@ and `ExpHet::of_var` of `crates/popnei/src/stats.rs`, all public today.
   gives" of "The number of alleles" and of "The variable variants". Needs
   2.1. Serves deliverables 1, 2 and 8. A wrong count is silent: its own
   commit, guarded by deliverables 2, 5 and 8.
-- [ ] 2.3 The private alleles, which need the counts of every population
+- [x] 2.3 The private alleles, which need the counts of every population
   at one variant at once and the second divisor, from "What it gives" of
   "The private alleles". Needs 2.2. Serves deliverables 1, 2 and 6. A
   wrong count is silent: its own commit, guarded by deliverables 2 and 5.
