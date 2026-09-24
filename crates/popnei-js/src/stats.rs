@@ -39,7 +39,7 @@ use popnei::block::BlockReader;
 use popnei::stats::{ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops};
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts};
+use crate::source::{Consumer, OpenSource, PassCounts};
 use crate::steps::{Steps, chain_of};
 
 /// The name of the argument that says below which major allele frequency a
@@ -135,7 +135,8 @@ pub(crate) fn per_var_distribs_of(
     // edges are the result's and are kept here, where the bins themselves go
     // on to the core.
     let hist_bin_edges = bins.edges().to_vec();
-    let reader = source.reader(None)?;
+    let run = source.starts_a_run(&Consumer::PerVarDistribs);
+    let reader = source.reader(&run, None)?;
     let mut chain = chain_of(reader, steps.steps())?;
     let pops = match named {
         Some(named) => Pops::from_names(&named, chain.individuals())?,
@@ -602,7 +603,8 @@ pub(crate) fn per_individual_stats_of(
     source: &dyn OpenSource,
     steps: &Steps,
 ) -> Result<PerIndividualStats, JsPopneiError> {
-    let reader = source.reader(None)?;
+    let run = source.starts_a_run(&Consumer::PerIndividualStats);
+    let reader = source.reader(&run, None)?;
     let mut chain = chain_of(reader, steps.steps())?;
     // The rates come out in the order of the rows of the blocks, which is
     // the order of these names: a filter of individuals gives them in the

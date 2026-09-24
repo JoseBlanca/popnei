@@ -34,7 +34,7 @@ use popnei::block::BlockReader;
 use popnei::gwas::{Gwas, GwasInput, TestType, TraitType, calc_gwas};
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts, positions_of};
+use crate::source::{Consumer, OpenSource, PassCounts, positions_of};
 use crate::steps::{Steps, chain_of};
 
 /// What a study is asked for, as the package checked it: the individuals to
@@ -279,7 +279,8 @@ pub(crate) fn gwas_of_the_variants(
         individuals: &individuals,
         transform_to_biallelic: study.transform_to_biallelic,
     };
-    let mut chain = chain_of(source.reader(None)?, steps.steps())?;
+    let run = source.starts_a_run(&Consumer::Gwas);
+    let mut chain = chain_of(source.reader(&run, None)?, steps.steps())?;
     let result = calc_gwas(&mut chain, None::<&mut Box<dyn BlockReader>>, &input)?;
     let counted = u64::try_from(result.num_vars).map_err(|_| {
         JsPopneiError::Broken(format!(

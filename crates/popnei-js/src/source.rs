@@ -1,7 +1,7 @@
-//! What the two sources of variants share: one pass over a source, the
-//! columns of the blocks that pass gives JavaScript, the bytes of the vars
-//! file written from it, and how many passes each consumer of the package
-//! makes.
+//! What the two sources of variants share: one pass over a source, what that
+//! pass tells the page while it reads, the columns of the blocks it gives
+//! JavaScript, the bytes of the vars file written from it, and how many
+//! passes each consumer of the package makes.
 //!
 //! A source is the bytes of a file with what is needed to read it, a VCF
 //! with its options in `vcf.rs` and a vars file in `vars.rs`. Each is a
@@ -11,6 +11,16 @@
 //! each reads the bytes again at every pass, which is what lets a user give
 //! the same `Variants` to one calculation after another. What they have in
 //! common is [`OpenSource`], the reader of one pass.
+//!
+//! [`PassOverTheBytes`] is where the bytes of a pass come from, and it is the
+//! one part of a pass that comes back out to JavaScript: it counts what the
+//! pass has read and tells the page once per range of bytes, so that a page
+//! can draw a bar over a run. A run is one call of one consumer with the
+//! passes it makes, [`Run`] in [`RUNS`], and what a source keeps in
+//! JavaScript, the function it tells, is [`InJavaScript`] in
+//! [`IN_JAVASCRIPT`]: no handle of JavaScript is `Send`, and a reader of the
+//! core has to be, so what a pass holds of those two tables is the number of
+//! an entry.
 //!
 //! [`Blocks`] is that pass, whichever source it came from: it owns the chain
 //! of readers of the pass, the source with a filter over it for each step of
@@ -34,9 +44,12 @@
 //! Each column is moved out of the block as it is read, so that the copy
 //! that crosses is the only one.
 
-use std::io::{Cursor, ErrorKind, Write};
+use std::cell::RefCell;
+use std::io::{BufRead, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
+use js_sys::{Array, Function};
+use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
@@ -199,8 +212,19 @@ pub(crate) trait OpenSource {
     /// genotypes out of called alleles is built with.
     fn ploidy(&self) -> usize;
 
-    /// The reader of one pass over the source, which reads the bytes from
-    /// their start.
+    /// The run of `consumer` over this source, which every reader the
+    /// consumer opens belongs to and which is taken out of [`RUNS`] when it
+    /// is dropped.
+    ///
+    /// A consumer opens it before its first reader and holds it until it has
+    /// its result, and `iterBlocks` holds it in the [`Blocks`] of its
+    /// iteration: a pass takes its number from the run when it first reads,
+    /// and the run is what says how many passes the page is told the run
+    /// makes.
+    fn starts_a_run(&self, consumer: &Consumer) -> RunOfAConsumer;
+
+    /// The reader of one pass of `run` over the source, which reads the bytes
+    /// from their start.
     ///
     /// `num_vars_per_block` is the size the caller will ask the blocks for,
     /// which a source whose reader can give them at that size is built
@@ -214,6 +238,7 @@ pub(crate) trait OpenSource {
     /// schema of a vars file, cannot be read.
     fn reader(
         &self,
+        run: &RunOfAConsumer,
         num_vars_per_block: Option<usize>,
     ) -> Result<Box<dyn BlockReader>, popnei::Error>;
 }
@@ -234,10 +259,442 @@ impl AsRef<[u8]> for SharedBytes {
     }
 }
 
-/// One pass over `bytes`, from their first byte, which shares them with
-/// every other pass over the same source.
+/// The bytes of a source read from their first one, which every pass over
+/// that source shares.
+///
+/// It is what `openVcf` and `openVars` read the header of a VCF or the schema
+/// of a vars file with. Those reads belong to no run and are told to nobody;
+/// every reading that a consumer makes goes through [`PassOverTheBytes`].
 pub(crate) fn cursor_of(bytes: &Arc<Vec<u8>>) -> Cursor<SharedBytes> {
     Cursor::new(SharedBytes(Arc::clone(bytes)))
+}
+
+/// How many bytes a pass reads between two calls that tell the page how far
+/// it has got, 4 MiB.
+///
+/// Nothing has been measured at this number: "Speed" of
+/// `docs/specs/js_sources.md` leaves it at 4 MiB until work package 4 of
+/// `docs/plans/js-sources.md` times one pass over a VCF of a few hundred MB
+/// in Chromium at 256 KiB, 1 MiB, 4 MiB and 16 MiB, and sets both this and
+/// the size of the range a pass over a file of the page reads at a time from
+/// what it measures.
+const NUM_BYTES_PER_RANGE: u64 = 4 * 1024 * 1024;
+
+/// The number of no entry of [`RUNS`] or of [`IN_JAVASCRIPT`], which a run
+/// that could not be put in the first carries: its passes are told to nobody.
+///
+/// No tab reaches it. An entry of `RUNS` is there while its run is, and a run
+/// holds the readers of its passes in the memory of wasm, which is 4 GB.
+const NO_ENTRY: u32 = u32::MAX;
+
+/// One pass over the bytes of a source, which the readers of the core take as
+/// they take a cursor over an array of bytes.
+///
+/// It counts what the pass has read and tells the page once per range of
+/// bytes, and it is `Send`, because what it holds of JavaScript is the number
+/// of an entry of [`RUNS`] and not a handle. `BlockReader`, which everything
+/// that gives blocks implements, asks for `Send`, as section 1 of
+/// `docs/architecture.md` says.
+pub(crate) struct PassOverTheBytes {
+    bytes: TheBytes,
+    /// Which run of [`RUNS`] this pass belongs to, which is what says which
+    /// source it reads, which pass of the run it is and how many there are.
+    run: u32,
+    /// Which pass of the run this is, 1 for the first, and 0 until the first
+    /// read takes the next number from the run: the principal components of
+    /// the variants build both of their readers before either of them gives a
+    /// block.
+    pass: u32,
+    /// How many bytes this pass has read, which is never more than
+    /// `num_bytes`: a pass over a vars file reads its footer and its batches
+    /// and not the whole of it.
+    bytes_read: u64,
+    /// How many it had read when the page was last told, which is what the
+    /// size of a range is compared against to decide whether to tell it
+    /// again.
+    told_at: u64,
+    num_bytes: u64,
+}
+
+/// Where the bytes of a pass come from.
+///
+/// Work package 3 of `docs/plans/js-sources.md` adds the second place, a file
+/// of the page read one range at a time through `FileReaderSync`.
+enum TheBytes {
+    /// A copy of the whole file in the memory of wasm, which every pass over
+    /// that source shares.
+    InMemory(Cursor<SharedBytes>),
+}
+
+impl PassOverTheBytes {
+    /// One pass of `run` over `bytes`, from their first byte, which shares
+    /// them with every other pass over the same source.
+    pub(crate) fn of_a_run(bytes: &Arc<Vec<u8>>, run: &RunOfAConsumer) -> PassOverTheBytes {
+        PassOverTheBytes {
+            bytes: TheBytes::InMemory(cursor_of(bytes)),
+            run: run.0,
+            pass: 0,
+            bytes_read: 0,
+            told_at: 0,
+            // A `usize` is 32 bits in wasm and 64 natively, and both fit in a
+            // `u64`, so the file of a source that is in the memory of a tab
+            // never reaches this.
+            num_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        }
+    }
+
+    /// What a read of the pass does before it takes bytes: the first read
+    /// takes the number of the pass from its run and tells the page that it
+    /// has read nothing, and a later read tells it again when the pass has
+    /// read a range of bytes since the last call.
+    ///
+    /// # Errors
+    ///
+    /// When the function of the page throws.
+    fn before_a_read(&mut self) -> std::io::Result<()> {
+        if self.pass == 0 {
+            self.pass = the_pass_that_starts(self.run);
+            return self.tell();
+        }
+        if self.bytes_read.saturating_sub(self.told_at) >= NUM_BYTES_PER_RANGE {
+            return self.tell();
+        }
+        Ok(())
+    }
+
+    /// The `num_read` bytes a read of the pass gave, counted against the size
+    /// of the file.
+    fn has_read(&mut self, num_read: usize) {
+        let num_read = u64::try_from(num_read).unwrap_or(u64::MAX);
+        self.bytes_read = self.bytes_read.saturating_add(num_read).min(self.num_bytes);
+    }
+
+    /// A read found no more bytes in the source, which is the last call of a
+    /// pass over a VCF read to its end.
+    ///
+    /// A pass that has read nothing since the last call is not told again:
+    /// the source of a gzipped VCF is looked at once more after its last
+    /// member, by the decoder that asks whether another one follows.
+    ///
+    /// # Errors
+    ///
+    /// When the function of the page throws.
+    fn the_source_ended(&mut self) -> std::io::Result<()> {
+        if self.bytes_read > self.told_at {
+            return self.tell();
+        }
+        Ok(())
+    }
+
+    /// Tells the page how far this pass has got, and does nothing when the
+    /// source of the run was given no function.
+    ///
+    /// The function is called with no table of this crate borrowed, so an
+    /// application that calls popnei from inside it does not trap.
+    ///
+    /// # Errors
+    ///
+    /// When the function throws, which ends the pass where it was reading.
+    fn tell(&mut self) -> std::io::Result<()> {
+        self.told_at = self.bytes_read;
+        let Some((told, num_passes)) = what_tells_the_page(self.run) else {
+            return Ok(());
+        };
+        // The four numbers of the `Progress` of `docs/specs/js_sources.md`,
+        // which the package puts in the object its user reads: how many bytes
+        // of the file this pass has read, how many the file holds, which pass
+        // of the run is reading and how many passes the run makes. A count of
+        // bytes of a file that is in the memory of a tab is below 2^32 and is
+        // exact as a float64.
+        let progress = Array::of4(
+            &JsValue::from_f64(self.bytes_read as f64),
+            &JsValue::from_f64(self.num_bytes as f64),
+            &JsValue::from_f64(f64::from(self.pass)),
+            &JsValue::from_f64(f64::from(num_passes)),
+        );
+        told.apply(&JsValue::NULL, &progress).map_err(|_| {
+            // `ErrorKind::Interrupted` is read again by three loops of the
+            // core and `ErrorKind::UnexpectedEof` is what the reader of a
+            // vars file turns into the error of a file that was cut short, so
+            // neither of them would end the pass as this has to.
+            std::io::Error::other(
+                "the function that is told how far a pass has got threw, and the pass \
+                 ended where it was reading",
+            )
+        })?;
+        Ok(())
+    }
+}
+
+impl Read for PassOverTheBytes {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.before_a_read()?;
+        let num_read = match &mut self.bytes {
+            TheBytes::InMemory(cursor) => cursor.read(buf)?,
+        };
+        self.has_read(num_read);
+        // A read of no byte into a buffer that holds room is the end of the
+        // source; one into an empty buffer is nothing at all.
+        if num_read == 0 && !buf.is_empty() {
+            self.the_source_ended()?;
+        }
+        Ok(num_read)
+    }
+}
+
+impl BufRead for PassOverTheBytes {
+    /// The bytes the source has ready, which for bytes in the memory of wasm
+    /// are every one of them that the pass has not read.
+    ///
+    /// What the pass has read is counted in [`BufRead::consume`], which is
+    /// what the reader of a VCF takes its lines with: looking at the bytes
+    /// takes none of them.
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.before_a_read()?;
+        let the_source_ended = match &mut self.bytes {
+            TheBytes::InMemory(cursor) => cursor.fill_buf()?.is_empty(),
+        };
+        if the_source_ended {
+            self.the_source_ended()?;
+        }
+        match &mut self.bytes {
+            TheBytes::InMemory(cursor) => cursor.fill_buf(),
+        }
+    }
+
+    fn consume(&mut self, num_bytes: usize) {
+        match &mut self.bytes {
+            TheBytes::InMemory(cursor) => cursor.consume(num_bytes),
+        }
+        self.has_read(num_bytes);
+    }
+}
+
+impl Seek for PassOverTheBytes {
+    /// Where the pass reads from next, which the reader of a vars file moves
+    /// to the footer and to each batch.
+    ///
+    /// A seek reads no byte, so it counts nothing and tells nobody.
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        match &mut self.bytes {
+            TheBytes::InMemory(cursor) => cursor.seek(to),
+        }
+    }
+}
+
+/// What a source keeps in JavaScript, which nothing of Rust may hold and stay
+/// `Send`.
+///
+/// One entry per source, which `VcfSource` and `VarsSource` hold the number
+/// of, and which `free()` of the source takes out once no run over it is
+/// open. Work package 3 of `docs/plans/js-sources.md` adds the file of the
+/// page and the reader of its ranges here.
+struct InJavaScript {
+    /// What the application is told the progress with, the function of
+    /// `Variants.onProgress`, and nothing until it sets one.
+    told: Option<Function>,
+    /// Whether the source was freed while a run over it was open, which is
+    /// when its entry goes: a pass that is reading tells the page through
+    /// this entry until it is done.
+    freed: bool,
+}
+
+/// One run of one consumer: which source it reads, how many passes it makes
+/// and how many have begun.
+///
+/// It is taken out when the consumer returns, and for `iterBlocks` when the
+/// iteration ends or the pass is freed.
+struct Run {
+    source: u32,
+    num_passes: u32,
+    passes_begun: u32,
+}
+
+thread_local! {
+    /// What each open source keeps in JavaScript. A tab has one thread of
+    /// wasm, and a table that no thread leaves is what keeps the readers of
+    /// the core `Send` with a handle of JavaScript behind them.
+    static IN_JAVASCRIPT: RefCell<Vec<Option<InJavaScript>>> = const { RefCell::new(Vec::new()) };
+    /// The runs that are open, one per call of a consumer that has not
+    /// returned.
+    static RUNS: RefCell<Vec<Option<Run>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The number of the entry `what` was put in, the first free one of `table`
+/// or a new one at its end, and nothing when the table holds as many entries
+/// as a `u32` counts.
+fn put_in<T>(table: &mut Vec<Option<T>>, what: T) -> Option<u32> {
+    let at = match table.iter().position(Option::is_none) {
+        Some(free) => free,
+        None => {
+            table.push(None);
+            table.len().checked_sub(1)?
+        }
+    };
+    // The number is taken before the entry is filled, so that a table of more
+    // entries than a `u32` counts leaves the one it just made free instead of
+    // holding an entry that nobody can name.
+    let number = u32::try_from(at).ok()?;
+    *table.get_mut(at)? = Some(what);
+    Some(number)
+}
+
+/// The entry of `table` numbered `at`, and nothing when there is none.
+fn entry_of<T>(table: &[Option<T>], at: u32) -> Option<&T> {
+    table.get(usize::try_from(at).ok()?)?.as_ref()
+}
+
+/// The entry of `table` numbered `at`, to be changed, and nothing when there
+/// is none.
+fn entry_to_change<T>(table: &mut [Option<T>], at: u32) -> Option<&mut T> {
+    table.get_mut(usize::try_from(at).ok()?)?.as_mut()
+}
+
+/// The number of the entry a source that was just opened keeps in
+/// JavaScript, made with no function to tell the progress to yet.
+///
+/// # Errors
+///
+/// When the table holds as many sources as a `u32` counts, which no tab
+/// reaches: a source holds the bytes of its file in the memory of wasm.
+pub(crate) fn the_entry_of_a_new_source() -> Result<u32, JsPopneiError> {
+    IN_JAVASCRIPT
+        .with_borrow_mut(|sources| {
+            put_in(
+                sources,
+                InJavaScript {
+                    told: None,
+                    freed: false,
+                },
+            )
+        })
+        .ok_or_else(|| {
+            JsPopneiError::Broken(
+                "the page holds as many open sources of variants as a number of 32 \
+                 bits counts, and this one has no entry left to be opened in"
+                    .to_owned(),
+            )
+        })
+}
+
+/// Sets `told` as what every pass over the source numbered `source` tells the
+/// page with, and takes the one that was set off when it is nothing.
+pub(crate) fn tells_the_progress(source: u32, told: Option<Function>) {
+    IN_JAVASCRIPT.with_borrow_mut(|sources| {
+        if let Some(entry) = entry_to_change(sources, source) {
+            entry.told = told;
+        }
+    });
+}
+
+/// The source numbered `source` was freed: its entry goes, or it is marked as
+/// freed and the last run over it takes it out.
+///
+/// A pass that is still reading when `free()` is called reads on to its end,
+/// as `docs/specs/js_sources.md` says, and it tells the page through this
+/// entry while it does.
+pub(crate) fn the_source_was_freed(source: u32) {
+    if a_run_reads(source) {
+        IN_JAVASCRIPT.with_borrow_mut(|sources| {
+            if let Some(entry) = entry_to_change(sources, source) {
+                entry.freed = true;
+            }
+        });
+        return;
+    }
+    the_entry_of_the_source_goes(source);
+}
+
+/// Takes the entry of the source numbered `source` out of [`IN_JAVASCRIPT`],
+/// which gives back the function the page set and, from work package 3 of
+/// `docs/plans/js-sources.md`, the handle of the file.
+fn the_entry_of_the_source_goes(source: u32) {
+    IN_JAVASCRIPT.with_borrow_mut(|sources| {
+        if let Some(entry) = usize::try_from(source)
+            .ok()
+            .and_then(|at| sources.get_mut(at))
+        {
+            *entry = None;
+        }
+    });
+}
+
+/// Whether a run over the source numbered `source` is open.
+fn a_run_reads(source: u32) -> bool {
+    RUNS.with_borrow(|runs| runs.iter().flatten().any(|run| run.source == source))
+}
+
+/// The run of `consumer` over the source numbered `source`, which is taken
+/// out of [`RUNS`] when it is dropped.
+pub(crate) fn starts_a_run_of(source: u32, consumer: &Consumer) -> RunOfAConsumer {
+    let run = RUNS.with_borrow_mut(|runs| {
+        put_in(
+            runs,
+            Run {
+                source,
+                num_passes: consumer.num_passes(),
+                passes_begun: 0,
+            },
+        )
+    });
+    // A run the table had no entry left for tells the page nothing, which is
+    // the whole of what it would have done: no tab reaches that many open
+    // runs, and a consumer that could not be counted still gives its result.
+    RunOfAConsumer(run.unwrap_or(NO_ENTRY))
+}
+
+/// The number of the pass of the run numbered `run` that is starting, 1 for
+/// the first, and 0 when there is no such run.
+fn the_pass_that_starts(run: u32) -> u32 {
+    RUNS.with_borrow_mut(|runs| {
+        let Some(run) = entry_to_change(runs, run) else {
+            return 0;
+        };
+        run.passes_begun = run.passes_begun.saturating_add(1);
+        run.passes_begun
+    })
+}
+
+/// The function the page is told the progress of the run numbered `run` with,
+/// and how many passes that run makes, or nothing when the run is over or its
+/// source was given no function.
+///
+/// The function is cloned out of the table, which is a handle of JavaScript
+/// copied, so that no table is borrowed while it runs.
+fn what_tells_the_page(run: u32) -> Option<(Function, u32)> {
+    let (source, num_passes) = RUNS.with_borrow(|runs| {
+        let run = entry_of(runs, run)?;
+        Some((run.source, run.num_passes))
+    })?;
+    let told = IN_JAVASCRIPT.with_borrow(|sources| entry_of(sources, source)?.told.clone())?;
+    Some((told, num_passes))
+}
+
+/// The run a consumer holds: the number of its entry of [`RUNS`], which the
+/// readers of its passes carry, and which is taken out of that table when the
+/// consumer is done with it.
+pub(crate) struct RunOfAConsumer(u32);
+
+impl Drop for RunOfAConsumer {
+    /// Takes the run out of [`RUNS`], and with it the entry of a source that
+    /// was freed while this was the last run reading it.
+    fn drop(&mut self) {
+        let source = RUNS.with_borrow_mut(|runs| {
+            let at = usize::try_from(self.0).ok()?;
+            runs.get_mut(at)?.take().map(|run| run.source)
+        });
+        let Some(source) = source else {
+            return;
+        };
+        if a_run_reads(source) {
+            return;
+        }
+        let freed = IN_JAVASCRIPT
+            .with_borrow(|sources| entry_of(sources, source).is_some_and(|entry| entry.freed));
+        if freed {
+            the_entry_of_the_source_goes(source);
+        }
+    }
 }
 
 /// That the memory of wasm takes `num_bytes` more, asked for before a
@@ -320,7 +777,11 @@ pub(crate) fn blocks_of(
     // sources that give another size, the vars file whose batches were
     // written at one size and a filter among them, and it is what
     // `docs/specs/block.md` puts at the end of every `iterBlocks`.
-    let reader = source.reader(num_vars_per_block)?;
+    // The iteration is a run of one pass, which the blocks hold: a user who
+    // opens twelve iterations over one source at once has twelve runs, and
+    // each of them is the pass 1 of 1 of its own.
+    let run = source.starts_a_run(&Consumer::IterBlocks);
+    let reader = source.reader(&run, num_vars_per_block)?;
     // The fields are asked of the whole chain and not of the source alone: a
     // filter asks its source for what it was asked for and for the
     // genotypes, which it needs itself.
@@ -328,6 +789,7 @@ pub(crate) fn blocks_of(
     chain.set_needs(needs.union(Needs::GTS));
     Ok(Blocks {
         reader: Box::new(Reblock::new(chain, num_vars_per_block)?),
+        run,
         finished: false,
         num_vars: 0,
     })
@@ -494,7 +956,8 @@ pub(crate) fn bytes_of_a_vars_file(
     // of genotypes while it is written, and 0.3 MB when the caller asked for
     // batches of 100. A source that cannot give that size, the vars file
     // whose batches were written at another one, leaves it to the `reblock`.
-    let reader = source.reader(num_vars_per_block)?;
+    let run = source.starts_a_run(&Consumer::WriteVars);
+    let reader = source.reader(&run, num_vars_per_block)?;
     // The chain of the pass stays here, lent to the core, so that the counts
     // of its filters can be read when the call is over: the loop over the
     // blocks is the core's, and so is the count of the variants it wrote,
@@ -584,6 +1047,14 @@ impl PassCounts {
 #[wasm_bindgen]
 pub struct Blocks {
     reader: Box<dyn BlockReader>,
+    /// The run of the iteration, which is taken out of [`RUNS`] when the pass
+    /// is freed: an iteration that a user abandons holds it until the
+    /// `FinalizationRegistry` of the package frees the pass.
+    #[expect(
+        dead_code,
+        reason = "the run is held for as long as the pass reads, and what takes it out                   of `RUNS` is dropping it with the pass"
+    )]
+    run: RunOfAConsumer,
     /// Whether the pass is over: the reader has no more blocks, or a block
     /// was lost with an error. After either there is no block.
     finished: bool,

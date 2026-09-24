@@ -218,6 +218,12 @@ numpy = "0.29"
 # one is pinned to the command line installed on the machine that builds,
 # 0.2.128. Both move together: a new command line needs this line changed.
 wasm-bindgen = "=0.2.128"
+# The types of JavaScript itself that the binding crate names: the function
+# an application is told the progress of a pass with, which the crate holds
+# and calls, and the array of its arguments. It is written by the authors of
+# wasm-bindgen, it moves with it, and it carries the `unsafe` of a call into
+# JavaScript, which the lints of the workspace deny in the crates of popnei.
+js-sys = "0.3"
 
 # The table of .claude/skills/coding/lints.toml, with the reasons for each
 # lint in .claude/skills/coding/SKILL.md. Every crate takes it with

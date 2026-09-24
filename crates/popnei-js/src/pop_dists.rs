@@ -38,7 +38,7 @@ use popnei::pop_dists::{
 use popnei::stats::Pops;
 
 use crate::errors::JsPopneiError;
-use crate::source::{LARGEST_POSITION, OpenSource, PassCounts, positions_of};
+use crate::source::{Consumer, LARGEST_POSITION, OpenSource, PassCounts, positions_of};
 use crate::stats::pops_of_the_arrays;
 use crate::steps::{Steps, chain_of};
 
@@ -243,7 +243,8 @@ pub(crate) fn pop_dists_of(
         &asked.pop_individuals,
         &asked.num_individuals_per_pop,
     )?;
-    let reader = source.reader(None)?;
+    let run = source.starts_a_run(&Consumer::PopDists);
+    let reader = source.reader(&run, None)?;
     let mut chain = chain_of(reader, steps.steps())?;
     let pops = Pops::from_names(&named, chain.individuals())?;
     let pop_names = (0..pops.len())

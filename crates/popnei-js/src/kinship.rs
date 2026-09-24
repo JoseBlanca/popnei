@@ -24,7 +24,7 @@ use popnei::filters::resolve_individuals;
 use popnei::kinship::{calc_kinship, principal_components_of};
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts};
+use crate::source::{Consumer, OpenSource, PassCounts};
 use crate::steps::{Steps, chain_of};
 
 /// The kinship of every pair of individuals, the names of those individuals
@@ -122,7 +122,8 @@ pub(crate) fn kinship_of_the_variants(
     transform_to_biallelic: bool,
     steps: Steps,
 ) -> Result<KinshipOfVariants, JsPopneiError> {
-    let mut chain = chain_of(source.reader(None)?, steps.steps())?;
+    let run = source.starts_a_run(&Consumer::Kinship);
+    let mut chain = chain_of(source.reader(&run, None)?, steps.steps())?;
     // The names the pass gives, which are the source's own when no step is
     // a filter of individuals and the kept ones in the order they were
     // named when one is. They are read before the calculation borrows the

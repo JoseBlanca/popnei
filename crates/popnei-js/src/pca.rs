@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use popnei::pca::{Pca, PcaOptions, VariantPcaOptions};
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts};
+use crate::source::{Consumer, OpenSource, PassCounts};
 use crate::steps::{Steps, chain_of};
 
 /// The principal components of a table, on their way to TypeScript.
@@ -256,13 +256,14 @@ pub(crate) fn pca_of_the_variants(
     // The source is asked for no size of block: the core puts a `reblock`
     // over each reader and chooses the size there, since the product of a
     // block is matrix work and a filter leaves blocks of uneven size.
-    let mut first_pass = chain_of(source.reader(None)?, steps.steps())?;
+    let run = source.starts_a_run(&Consumer::PcaOfVariants { num_prin_comps });
+    let mut first_pass = chain_of(source.reader(&run, None)?, steps.steps())?;
     // The weights of a variant need the eigenvectors, which are known when
     // the first pass ends, so they come from a second pass over the same
     // variants. With none asked for there is no second reader and the source
     // is read once.
     let mut second_pass = if num_prin_comps > 0 {
-        Some(chain_of(source.reader(None)?, steps.steps())?)
+        Some(chain_of(source.reader(&run, None)?, steps.steps())?)
     } else {
         None
     };

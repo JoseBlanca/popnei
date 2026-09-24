@@ -30,7 +30,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use popnei::ld::{MAX_NUM_VARS_OF_THE_MATRIX, TheMatrixGivenAway, calc_r2_matrix};
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts, positions_of};
+use crate::source::{Consumer, OpenSource, PassCounts, positions_of};
 use crate::steps::{Steps, chain_of};
 
 /// The r² of every pair of the variants of a pass, with the chromosome and
@@ -154,7 +154,8 @@ pub(crate) fn r2_matrix_of(
     max_num_vars: usize,
     steps: Steps,
 ) -> Result<R2Matrix, JsPopneiError> {
-    let reader = source.reader(None)?;
+    let run = source.starts_a_run(&Consumer::R2Matrix);
+    let reader = source.reader(&run, None)?;
     let mut chain = chain_of(reader, steps.steps())?;
     let matrix = calc_r2_matrix(&mut chain, max_num_vars).map_err(of_this_pass)?;
     let num_vars = matrix.num_vars();

@@ -69,6 +69,28 @@ export interface PassStats {
 }
 
 /**
+ * How far a pass over the source has got, which a page draws a bar from.
+ *
+ * A pass is one reading of the source from its start, and a run is one call
+ * of one consumer, `calcKinship` or the iteration of `iterBlocks`, with the
+ * passes it makes. `Variants.onProgress` is where the function that is told
+ * these four numbers is set, and it says when the calls are made.
+ */
+export interface Progress {
+  /** How many bytes of the file this pass has read, `numBytes` at most. */
+  bytesRead: number;
+
+  /** How many bytes the file holds. */
+  numBytes: number;
+
+  /** Which pass of the run is reading, 1 for the first. */
+  pass: number;
+
+  /** How many passes the run makes, `numPassesOf` of its consumer. */
+  numPasses: number;
+}
+
+/**
  * The blocks of one pass, one after another, and the counts of it.
  *
  * It is what `iterBlocks` gives: the blocks in a `for ... of`, and a
@@ -611,6 +633,60 @@ export class Variants {
     // the memory of wasm at the 1310720 bytes it held before them.
     return new BlocksOfOnePass(
       source.blocks(fields, numVarsPerBlock, steps.of_a_pass()),
+    );
+  }
+
+  /**
+   * Sets `told` as the function that is told how far every pass over the
+   * source has got, and takes the one that was set off when it is called
+   * with nothing.
+   *
+   * While a consumer runs, the worker is inside wasm and reads no message,
+   * so this is how a page learns how a run is going: the source calls
+   * `told` at the first read of each pass, at the first read after every
+   * 4 MiB of the file that pass has read, and at the read that finds the end
+   * of the file, with the bytes read, the bytes the file holds, which pass
+   * of the run is reading and how many passes the run makes. A page that
+   * draws a bar from those four numbers sees it fill once per pass, so a
+   * principal component analysis that reads the file twice does not look
+   * broken when the bar goes back to empty.
+   *
+   * What `told` throws ends the pass where it was reading and the consumer
+   * fails there, so an application cancels a run without ending its worker.
+   * The `Variants` is then the one it was, and the next run over it reads
+   * the file from its start.
+   *
+   * The function holds until it is set again, and setting it changes nothing
+   * about the variants a pass gives. The reads of `openVcf` and `openVars`,
+   * the header of a VCF and the schema of a vars file, are told to nobody:
+   * they are made before there is a `Variants` to set a function on.
+   *
+   * It has no counterpart in the Python API, which `docs/objectives.md` asks
+   * every difference between the two to be written down: what it is for is a
+   * page that draws a bar and a user who presses a button, and Python reads
+   * a file by its path in a program that has neither.
+   *
+   * @throws {Error} When `told` is given and is not a function, when the
+   * variants were freed, and when `init` has not been awaited.
+   */
+  onProgress(told?: (progress: Progress) => void): void {
+    theWasmHasToBeLoaded();
+    const source = this.#sourceThatWasNotFreed();
+    if (told === undefined) {
+      source.on_progress(undefined);
+      return;
+    }
+    if (typeof told !== "function") {
+      throw new Error(
+        "popnei: `told` is the function that is told how far a pass has got, " +
+          `and ${whatWasGiven(told)} was given`,
+      );
+    }
+    // The four numbers cross one by one and the object a user reads is built
+    // here, as every other result of the package is built in TypeScript.
+    source.on_progress(
+      (bytesRead: number, numBytes: number, pass: number, numPasses: number) =>
+        told({ bytesRead, numBytes, pass, numPasses }),
     );
   }
 

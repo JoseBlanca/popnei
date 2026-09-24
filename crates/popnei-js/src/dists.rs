@@ -24,7 +24,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use popnei::dists::calc_kosman_sums;
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts};
+use crate::source::{Consumer, OpenSource, PassCounts};
 use crate::steps::{Steps, chain_of};
 
 /// The Kosman distance of every pair of individuals, the names of those
@@ -98,7 +98,8 @@ pub(crate) fn kosman_dists_of(
     min_num_vars: u32,
     steps: Steps,
 ) -> Result<KosmanDistances, JsPopneiError> {
-    let reader = source.reader(None)?;
+    let run = source.starts_a_run(&Consumer::KosmanDists);
+    let reader = source.reader(&run, None)?;
     let mut chain = chain_of(reader, steps.steps())?;
     // The names are the reader's own, taken before the calculation borrows
     // it: the vector and the names then cannot be of two different sources.

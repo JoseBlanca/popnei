@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use js_sys::Function;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
@@ -22,7 +23,11 @@ use crate::kinship::{KinshipOfVariants, kinship_of_the_variants};
 use crate::ld::{R2Matrix, r2_matrix_of};
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
 use crate::pop_dists::{ArgumentsOfTheDists, PopDistsOfAPass, pop_dists_of};
-use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
+use crate::source::{
+    Blocks, Consumer, OpenSource, PassOverTheBytes, RunOfAConsumer, VarsFile, blocks_of,
+    bytes_of_a_vars_file, cursor_of, starts_a_run_of, tells_the_progress,
+    the_entry_of_a_new_source, the_source_was_freed,
+};
 use crate::stats::{
     ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, per_individual_stats_of,
     per_var_distribs_of,
@@ -37,6 +42,15 @@ pub struct VcfSource {
     bytes: Arc<Vec<u8>>,
     options: VcfOptions,
     individuals: Vec<String>,
+    /// The number of what this source keeps in JavaScript, the function the
+    /// page is told the progress with, which `free()` gives back.
+    in_javascript: u32,
+}
+
+impl Drop for VcfSource {
+    fn drop(&mut self) {
+        the_source_was_freed(self.in_javascript);
+    }
 }
 
 #[wasm_bindgen]
@@ -52,6 +66,16 @@ impl VcfSource {
     #[must_use]
     pub fn ploidy(&self) -> usize {
         self.options.ploidy
+    }
+
+    /// The function the page is told how far every pass over this source has
+    /// got with, `told`, and nothing to take the one that was set off.
+    ///
+    /// It holds until it is set again, and setting it changes nothing about
+    /// the variants a pass gives. The reads of `openVcf`, which are made
+    /// before there is a `Variants` to set a function on, are told to nobody.
+    pub fn on_progress(&self, told: Option<Function>) {
+        tells_the_progress(self.in_javascript, told);
     }
 
     /// One pass over the bytes, read again from their start, through the
@@ -383,15 +407,25 @@ impl OpenSource for VcfSource {
         self.options.ploidy
     }
 
+    fn starts_a_run(&self, consumer: &Consumer) -> RunOfAConsumer {
+        starts_a_run_of(self.in_javascript, consumer)
+    }
+
     fn reader(
         &self,
+        run: &RunOfAConsumer,
         num_vars_per_block: Option<usize>,
     ) -> Result<Box<dyn BlockReader>, popnei::Error> {
         let options = VcfOptions {
             num_vars_per_block,
             ..self.options
         };
-        Ok(Box::new(VcfReader::new(cursor_of(&self.bytes), options)?))
+        // The header is read here, which is the first read of the pass and
+        // the call that tells the page that it has read nothing yet.
+        Ok(Box::new(VcfReader::new(
+            PassOverTheBytes::of_a_run(&self.bytes, run),
+            options,
+        )?))
     }
 }
 
@@ -432,6 +466,7 @@ pub fn open_vcf(
         bytes,
         options,
         individuals,
+        in_javascript: the_entry_of_a_new_source()?,
     })
 }
 

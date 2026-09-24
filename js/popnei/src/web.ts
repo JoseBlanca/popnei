@@ -65,7 +65,12 @@ export type {
   StatsDistrib,
 } from "./stats.js";
 export { Variants } from "./variant.js";
-export type { Blocks, IterBlocksOptions, PassStats } from "./variant.js";
+export type {
+  Blocks,
+  IterBlocksOptions,
+  PassStats,
+  Progress,
+} from "./variant.js";
 
 let loading: Promise<void> | undefined;
 
