@@ -12,7 +12,7 @@ use super::distributions::t_sf_two_sided;
 use super::dosages::GwasDosages;
 use super::result::{Answers, NullModel};
 use super::study::{Design, GwasInputShape, GwasModel, TestType};
-use super::the_share_that_is_nothing;
+use super::{Answer, the_share_that_is_nothing};
 
 /// The linear model of a study fitted without any variant in it, with the
 /// buffers one block of variants is tested in.
@@ -328,57 +328,21 @@ impl LinearModel {
             operation: "product of a block of variants with the trait's residuals",
             source,
         })?;
-        let degrees_of_freedom = self.degrees_of_freedom as f64;
-        // The share of its own squared length that a variant has to keep
-        // once the design is taken out of it to be worth testing.
-        let share_that_is_nothing = the_share_that_is_nothing(self.num_individuals);
-        for ((row, num), of_the_variant) in self
-            .residualized
-            .chunks_exact(self.num_individuals)
-            .zip(&self.num)
-            .zip(dosages.dosages().chunks_exact(self.num_individuals))
-        {
-            let xx = row.iter().map(|value| value * value).sum::<f64>();
-            let of_the_dosages = of_the_variant
-                .iter()
-                .map(|value| value * value)
-                .sum::<f64>();
-            // A variant that is a combination of the columns of the design
-            // has nothing left once they are taken out, and what `xx` holds
-            // is the rounding of that cancellation: `beta` would be a
-            // number divided by noise, large and of whichever sign the
-            // rounding chose, and the two backends do not choose the same
-            // one. Such a variant has no answer, as one with no variance
-            // has.
-            if xx <= share_that_is_nothing * of_the_dosages {
-                self.beta.push(f64::NAN);
-                self.se.push(f64::NAN);
-                self.p_value.push(f64::NAN);
-                continue;
-            }
-            let beta = num / xx;
-            // What the variant leaves unexplained, formed from its own
-            // residuals and not taken from the null model's sum of squares
-            // by subtracting `beta * num`: those two quantities agree to
-            // their last bits once a variant explains most of what the
-            // null left, and the subtraction then gives the rounding of a
-            // cancelled sum, which is 0 or negative as often as not. "The
-            // linear model" of `docs/specs/gwas.md` measures what that
-            // gave: an `se` of 0 at one variant and NaN at another, and
-            // the two backends disagreeing about which.
-            let rss = row
-                .iter()
-                .zip(&self.residuals)
-                .map(|(value, residual)| {
-                    let left = residual - beta * value;
-                    left * left
-                })
-                .sum::<f64>();
-            let se = (rss / degrees_of_freedom / xx).sqrt();
+        let rows = TheRowsToTest {
+            residualized: &self.residualized,
+            num: &self.num,
+            dosages: dosages.dosages(),
+            residuals: &self.residuals,
+            num_individuals: self.num_individuals,
+            degrees_of_freedom: self.degrees_of_freedom as f64,
+            // The share of its own squared length that a variant has to
+            // keep once the design is taken out of it to be worth testing.
+            share_that_is_nothing: the_share_that_is_nothing(self.num_individuals),
+        };
+        for (beta, se, p_value) in the_answers_of_the_rows(&rows) {
             self.beta.push(beta);
             self.se.push(se);
-            self.p_value
-                .push(t_sf_two_sided(beta / se, degrees_of_freedom));
+            self.p_value.push(p_value);
         }
         Ok(self.answers())
     }
@@ -392,6 +356,135 @@ impl LinearModel {
             p_value: &self.p_value,
         }
     }
+}
+
+/// The rows of one block as the t test of the linear model reads them,
+/// once the three products have been made.
+///
+/// It is one value and four slices because they travel together through
+/// the two ways of walking the rows, and because a caller that swapped two
+/// of the slices, all of them `f64` of the same block, would compile.
+struct TheRowsToTest<'a> {
+    /// What is left of each variant that has variance once the design is
+    /// taken out of it, one row of `num_individuals` values for each, in
+    /// the order of the block.
+    residualized: &'a [f64],
+    /// Each of those rows against the trait's residuals, one value for
+    /// each of them.
+    num: &'a [f64],
+    /// The dosages of those variants as the block holds them, before the
+    /// design was taken out, one row of `num_individuals` values for each.
+    dosages: &'a [f64],
+    /// The trait less what the null model explains, one value for each
+    /// tested individual, which every variant is tested against.
+    residuals: &'a [f64],
+    /// How many individuals the study tests, which is the length of one
+    /// row.
+    num_individuals: usize,
+    /// The degrees of freedom of the t test, which is the tested
+    /// individuals less the columns of the design and the variant.
+    degrees_of_freedom: f64,
+    /// The share of its own squared length that a variant has to keep once
+    /// the design is taken out of it to be worth testing, which
+    /// [`the_share_that_is_nothing`] gives.
+    share_that_is_nothing: f64,
+}
+
+impl TheRowsToTest<'_> {
+    /// The effect of one variant, its standard error and its p-value, and
+    /// the three NaNs that "The variants that have no answer" of
+    /// `docs/specs/gwas.md` gives a variant that has none.
+    ///
+    /// `row` is what the design leaves of the variant, `num` is that row
+    /// against the trait's residuals, and `of_the_variant` is the dosages
+    /// the variant came with. Nothing outside the three of them and the
+    /// study's own values is read, and nothing is written, which is what
+    /// lets the rows be walked on the threads of rayon.
+    fn the_answer_of_the_row(&self, row: &[f64], num: f64, of_the_variant: &[f64]) -> Answer {
+        let xx = row.iter().map(|value| value * value).sum::<f64>();
+        let of_the_dosages = of_the_variant
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>();
+        // A variant that is a combination of the columns of the design has
+        // nothing left once they are taken out, and what `xx` holds is the
+        // rounding of that cancellation: `beta` would be a number divided
+        // by noise, large and of whichever sign the rounding chose, and
+        // the two backends do not choose the same one. Such a variant has
+        // no answer, as one with no variance has.
+        if xx <= self.share_that_is_nothing * of_the_dosages {
+            return (f64::NAN, f64::NAN, f64::NAN);
+        }
+        let beta = num / xx;
+        // What the variant leaves unexplained, formed from its own
+        // residuals and not taken from the null model's sum of squares by
+        // subtracting `beta * num`: those two quantities agree to their
+        // last bits once a variant explains most of what the null left,
+        // and the subtraction then gives the rounding of a cancelled sum,
+        // which is 0 or negative as often as not. "The linear model" of
+        // `docs/specs/gwas.md` measures what that gave: an `se` of 0 at
+        // one variant and NaN at another, and the two backends disagreeing
+        // about which.
+        let rss = row
+            .iter()
+            .zip(self.residuals)
+            .map(|(value, residual)| {
+                let left = residual - beta * value;
+                left * left
+            })
+            .sum::<f64>();
+        let se = (rss / self.degrees_of_freedom / xx).sqrt();
+        (beta, se, t_sf_two_sided(beta / se, self.degrees_of_freedom))
+    }
+}
+
+/// The answer of every row of a block, made on the threads of rayon, in
+/// the order of the block.
+///
+/// The rows are tested on those threads as section 3 of
+/// `docs/architecture.md` asks, and for the same reason the dosages of a
+/// block are read on them: no row reads another. Every sum of
+/// [`TheRowsToTest::the_answer_of_the_row`] runs over the values of one
+/// variant alone, left to right, and nothing is written, so the three
+/// columns are the same bits whatever the threads do and however many of
+/// them there are. They are read back in the order of the block, and a
+/// variant with no answer carries its three NaNs as a value instead of
+/// being skipped, which is what a row written by index cannot do.
+///
+/// The threads are those of the pool the caller is running in, and rayon's
+/// global pool only when the caller is in none. No product is made here:
+/// the three of the block were made before it, outside rayon, as section 3
+/// asks of a large product.
+#[cfg(not(target_family = "wasm"))]
+fn the_answers_of_the_rows(rows: &TheRowsToTest<'_>) -> Vec<Answer> {
+    use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+    use rayon::slice::ParallelSlice;
+
+    rows.residualized
+        .par_chunks_exact(rows.num_individuals)
+        .zip(rows.num.par_iter().copied())
+        .zip(rows.dosages.par_chunks_exact(rows.num_individuals))
+        .map(|((row, num), of_the_variant)| rows.the_answer_of_the_row(row, num, of_the_variant))
+        .collect()
+}
+
+/// The same rows, tested one after another, which is what WebAssembly
+/// does: it has no threads.
+#[cfg(target_family = "wasm")]
+fn the_answers_of_the_rows(rows: &TheRowsToTest<'_>) -> Vec<Answer> {
+    the_answers_of_the_rows_one_by_one(rows)
+}
+
+/// The rows tested one after another: what WebAssembly does, and what the
+/// test that compares the two ways of testing a block calls.
+#[cfg(any(target_family = "wasm", test))]
+fn the_answers_of_the_rows_one_by_one(rows: &TheRowsToTest<'_>) -> Vec<Answer> {
+    rows.residualized
+        .chunks_exact(rows.num_individuals)
+        .zip(rows.num.iter().copied())
+        .zip(rows.dosages.chunks_exact(rows.num_individuals))
+        .map(|((row, num), of_the_variant)| rows.the_answer_of_the_row(row, num, of_the_variant))
+        .collect()
 }
 
 /// The linear model against the worked example of `docs/specs/gwas.md`,
@@ -1350,6 +1443,122 @@ pub(crate) mod lm {
                 Err(error) => panic!("a kinship holding {held} was refused with {error}"),
                 Ok(result) => panic!("a study of {} variants was run", result.num_vars),
             }
+        }
+    }
+    /// The t test of a block gives the same three numbers, to the bit, on
+    /// the threads of rayon and one variant after another, and on one
+    /// thread and on four.
+    ///
+    /// Every sum of a row runs over the values of that row alone, left to
+    /// right, so no answer can depend on how many threads there are. This
+    /// is the test that fails the day something is shared between the
+    /// rows, and the one that says the answers come back in the order of
+    /// the block and not in the order the threads finished in.
+    ///
+    /// The block is 500 rows of 40 individuals, which is more than one
+    /// split of rayon at both thread counts. Every fifth row is a variant
+    /// of which the design left nothing, all of its residualized values 0
+    /// against dosages that are not, so it gets the three NaNs of a
+    /// variant with no answer and that path runs on the threads as well;
+    /// the other 400 are answered.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_t_tests_of_a_block_are_the_same_on_threads_and_one_after_another() {
+        use super::{TheRowsToTest, the_answers_of_the_rows, the_answers_of_the_rows_one_by_one};
+
+        /// How many individuals the block holds.
+        const INDIVIDUALS: usize = 40;
+        /// How many rows it holds.
+        const ROWS: usize = 500;
+        /// How many of those rows have no answer: every fifth.
+        const OF_EVERY: usize = 5;
+
+        let dosages: Vec<f64> = (0..ROWS)
+            .flat_map(|row| {
+                (0..INDIVIDUALS).map(move |individual| {
+                    (individual
+                        .saturating_mul(7)
+                        .saturating_add(row)
+                        .rem_euclid(3)) as f64
+                })
+            })
+            .collect();
+        let mut residualized = Vec::with_capacity(dosages.len());
+        for (row, of_the_variant) in dosages.as_chunks::<INDIVIDUALS>().0.iter().enumerate() {
+            for dosage in of_the_variant {
+                residualized.push(match row.rem_euclid(OF_EVERY) {
+                    0 => 0.0,
+                    _ => dosage - 0.75,
+                });
+            }
+        }
+        let residuals: Vec<f64> = (0..INDIVIDUALS)
+            .map(|individual| (individual as f64) * 0.125 - 2.5)
+            .collect();
+        let num: Vec<f64> = residualized
+            .as_chunks::<INDIVIDUALS>()
+            .0
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .zip(&residuals)
+                    .map(|(value, residual)| value * residual)
+                    .sum::<f64>()
+            })
+            .collect();
+        let rows = TheRowsToTest {
+            residualized: &residualized,
+            num: &num,
+            dosages: &dosages,
+            residuals: &residuals,
+            num_individuals: INDIVIDUALS,
+            degrees_of_freedom: INDIVIDUALS.saturating_sub(3) as f64,
+            share_that_is_nothing: crate::gwas::the_share_that_is_nothing(INDIVIDUALS),
+        };
+
+        let tested_on = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| the_answers_of_the_rows(&rows))
+        };
+        let on_one = tested_on(1);
+        let on_four = tested_on(4);
+        let one_after_another = the_answers_of_the_rows_one_by_one(&rows);
+
+        /// The three numbers of an answer as the bits that hold them, so
+        /// that the NaNs of a variant with no answer compare equal to each
+        /// other and to nothing else.
+        fn the_bits(answer: &(f64, f64, f64)) -> (u64, u64, u64) {
+            (answer.0.to_bits(), answer.1.to_bits(), answer.2.to_bits())
+        }
+
+        for (answers, how) in [
+            (&on_one, "on one thread"),
+            (&on_four, "on four threads"),
+            (&one_after_another, "one after another"),
+        ] {
+            assert_eq!(answers.len(), ROWS, "the answers {how}");
+            let with_no_answer = answers.iter().filter(|answer| answer.0.is_nan()).count();
+            assert_eq!(
+                with_no_answer,
+                ROWS.div_euclid(OF_EVERY),
+                "the rows with no answer {how}, which are the ones the design left nothing of"
+            );
+        }
+        for row in 0..ROWS {
+            let of_one = the_bits(&on_one[row]);
+            assert_eq!(
+                of_one,
+                the_bits(&on_four[row]),
+                "the row {row} on one thread and on four"
+            );
+            assert_eq!(
+                of_one,
+                the_bits(&one_after_another[row]),
+                "the row {row} on one thread and tested one after another"
+            );
         }
     }
 }

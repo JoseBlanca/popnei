@@ -15,7 +15,7 @@ use super::distributions::chi2_sf_1df;
 use super::dosages::GwasDosages;
 use super::result::{Answers, NullModel};
 use super::study::{Design, GwasInputShape, GwasModel, TestType};
-use super::the_share_that_is_nothing;
+use super::{Answer, the_share_that_is_nothing};
 
 /// How many rounds of iteratively reweighted least squares the null model
 /// is fitted in before a fit that is still moving is refused: 50, which is
@@ -668,42 +668,20 @@ impl LogisticModel {
                         design",
             source,
         })?;
-        // The share of what the variant weighed that the design has to
-        // leave of it for the variant to be worth testing.
-        let share_that_is_nothing = the_share_that_is_nothing(self.num_individuals);
-        for ((explained, num), of_the_variant) in self
-            .explained
-            .chunks_exact(self.num_individuals)
-            .zip(&self.num)
-            .zip(dosages.dosages().chunks_exact(self.num_individuals))
-        {
-            let weighted_length = of_the_variant
-                .iter()
-                .zip(&self.weights)
-                .map(|(dosage, weight)| weight * dosage * dosage)
-                .sum::<f64>();
-            // What the design leaves of the variant, weighed by the
-            // weights: a sum of terms that are 0 or above, formed from
-            // what the design makes of the variant and not taken from
-            // `x' w x` by subtracting the two nearly equal numbers the
-            // doc comment measures.
-            let den = explained
-                .iter()
-                .zip(of_the_variant.iter().zip(&self.weights))
-                .map(|(explained, (dosage, weight))| {
-                    let left = dosage - explained;
-                    weight * left * left
-                })
-                .sum::<f64>();
-            if den <= share_that_is_nothing * weighted_length {
-                self.beta.push(f64::NAN);
-                self.se.push(f64::NAN);
-                self.p_value.push(f64::NAN);
-                continue;
-            }
-            self.beta.push(num / den);
-            self.se.push(1.0 / den.sqrt());
-            self.p_value.push(chi2_sf_1df(num * num / den));
+        let rows = TheRowsToScore {
+            explained: &self.explained,
+            num: &self.num,
+            dosages: dosages.dosages(),
+            weights: &self.weights,
+            num_individuals: self.num_individuals,
+            // The share of what the variant weighed that the design has to
+            // leave of it for the variant to be worth testing.
+            share_that_is_nothing: the_share_that_is_nothing(self.num_individuals),
+        };
+        for (beta, se, p_value) in the_scores_of_the_rows(&rows) {
+            self.beta.push(beta);
+            self.se.push(se);
+            self.p_value.push(p_value);
         }
         Ok(self.answers())
     }
@@ -800,6 +778,126 @@ pub(super) fn the_system_that_is_left(
         true => TheSystemOfTheFit::RanAway,
         false => TheSystemOfTheFit::Worked,
     }
+}
+
+/// The rows of one block as the score test of the logistic model reads
+/// them, once the three products and the solve have been made.
+///
+/// It is one value and four slices because they travel together through
+/// the two ways of walking the rows, and because a caller that swapped two
+/// of the slices, all of them `f64` of the same block or of the same
+/// individuals, would compile.
+struct TheRowsToScore<'a> {
+    /// What the design makes of each variant that has variance at the
+    /// effects the solve gave, one row of `num_individuals` values for
+    /// each, in the order of the block.
+    explained: &'a [f64],
+    /// Each variant's dosages against the trait's residuals, one value for
+    /// each of those variants.
+    num: &'a [f64],
+    /// The dosages of those variants as the block holds them, one row of
+    /// `num_individuals` values for each.
+    dosages: &'a [f64],
+    /// `mu (1 - mu)` of each tested individual, which the null model
+    /// settled at and which no variant moves.
+    weights: &'a [f64],
+    /// How many individuals the study tests, which is the length of one
+    /// row.
+    num_individuals: usize,
+    /// The share of what the variant weighed that the design has to leave
+    /// of it for the variant to be worth testing, which
+    /// [`the_share_that_is_nothing`] gives.
+    share_that_is_nothing: f64,
+}
+
+impl TheRowsToScore<'_> {
+    /// The effect of one variant, its standard error and its p-value, and
+    /// the three NaNs that "The variants that have no answer" of
+    /// `docs/specs/gwas.md` gives a variant that has none.
+    ///
+    /// `explained` is what the design makes of the variant, `num` is the
+    /// variant against the trait's residuals, and `of_the_variant` is the
+    /// dosages the variant came with. Nothing outside the three of them
+    /// and the study's own values is read, and nothing is written, which
+    /// is what lets the rows be walked on the threads of rayon.
+    fn the_score_of_the_row(&self, explained: &[f64], num: f64, of_the_variant: &[f64]) -> Answer {
+        let weighted_length = of_the_variant
+            .iter()
+            .zip(self.weights)
+            .map(|(dosage, weight)| weight * dosage * dosage)
+            .sum::<f64>();
+        // What the design leaves of the variant, weighed by the weights: a
+        // sum of terms that are 0 or above, formed from what the design
+        // makes of the variant and not taken from `x' w x` by subtracting
+        // the two nearly equal numbers the doc comment of
+        // `score_test_the_block` measures.
+        let den = explained
+            .iter()
+            .zip(of_the_variant.iter().zip(self.weights))
+            .map(|(explained, (dosage, weight))| {
+                let left = dosage - explained;
+                weight * left * left
+            })
+            .sum::<f64>();
+        if den <= self.share_that_is_nothing * weighted_length {
+            return (f64::NAN, f64::NAN, f64::NAN);
+        }
+        (num / den, 1.0 / den.sqrt(), chi2_sf_1df(num * num / den))
+    }
+}
+
+/// The score of every row of a block, made on the threads of rayon, in the
+/// order of the block.
+///
+/// The rows are tested on those threads as section 3 of
+/// `docs/architecture.md` asks, and for the same reason the dosages of a
+/// block are read on them: no row reads another. Every sum of
+/// [`TheRowsToScore::the_score_of_the_row`] runs over the values of one
+/// variant alone, left to right, against weights the null model settled at
+/// and nothing writes, so the three columns are the same bits whatever the
+/// threads do and however many of them there are. They are read back in
+/// the order of the block, and a variant with no answer carries its three
+/// NaNs as a value instead of being skipped, which is what a row written
+/// by index cannot do.
+///
+/// The threads are those of the pool the caller is running in, and rayon's
+/// global pool only when the caller is in none. No product is made here:
+/// the three of the block and the solve were made before it, outside
+/// rayon, as section 3 asks of a large product.
+#[cfg(not(target_family = "wasm"))]
+fn the_scores_of_the_rows(rows: &TheRowsToScore<'_>) -> Vec<Answer> {
+    use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+    use rayon::slice::ParallelSlice;
+
+    rows.explained
+        .par_chunks_exact(rows.num_individuals)
+        .zip(rows.num.par_iter().copied())
+        .zip(rows.dosages.par_chunks_exact(rows.num_individuals))
+        .map(|((explained, num), of_the_variant)| {
+            rows.the_score_of_the_row(explained, num, of_the_variant)
+        })
+        .collect()
+}
+
+/// The same rows, tested one after another, which is what WebAssembly
+/// does: it has no threads.
+#[cfg(target_family = "wasm")]
+fn the_scores_of_the_rows(rows: &TheRowsToScore<'_>) -> Vec<Answer> {
+    the_scores_of_the_rows_one_by_one(rows)
+}
+
+/// The rows tested one after another: what WebAssembly does, and what the
+/// test that compares the two ways of scoring a block calls.
+#[cfg(any(target_family = "wasm", test))]
+fn the_scores_of_the_rows_one_by_one(rows: &TheRowsToScore<'_>) -> Vec<Answer> {
+    rows.explained
+        .chunks_exact(rows.num_individuals)
+        .zip(rows.num.iter().copied())
+        .zip(rows.dosages.chunks_exact(rows.num_individuals))
+        .map(|((explained, num), of_the_variant)| {
+            rows.the_score_of_the_row(explained, num, of_the_variant)
+        })
+        .collect()
 }
 
 /// The Wald fit of every row of a block, made on the threads of rayon, in
@@ -2793,6 +2891,127 @@ mod glm {
                  its {se} allowed",
                 id = ids[var],
                 se = unscaled.se[var]
+            );
+        }
+    }
+    /// The score test of a block gives the same three numbers, to the bit,
+    /// on the threads of rayon and one variant after another, and on one
+    /// thread and on four.
+    ///
+    /// Every sum of a row runs over the values of that row alone, left to
+    /// right, against the weights the null model settled at, so no answer
+    /// can depend on how many threads there are. This is the test that
+    /// fails the day something is shared between the rows, and the one
+    /// that says the answers come back in the order of the block and not
+    /// in the order the threads finished in.
+    ///
+    /// The block is 500 rows of 40 individuals, which is more than one
+    /// split of rayon at both thread counts. Every fifth row is a variant
+    /// the design explains entirely, its `explained` equal to its dosages,
+    /// so its denominator is 0 and it gets the three NaNs of a variant
+    /// with no answer, which puts that path on the threads as well; the
+    /// other 400 are answered.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_score_tests_of_a_block_are_the_same_on_threads_and_one_after_another() {
+        use super::{TheRowsToScore, the_scores_of_the_rows, the_scores_of_the_rows_one_by_one};
+
+        /// How many individuals the block holds.
+        const INDIVIDUALS: usize = 40;
+        /// How many rows it holds.
+        const ROWS: usize = 500;
+        /// How many of those rows have no answer: every fifth.
+        const OF_EVERY: usize = 5;
+
+        let dosages: Vec<f64> = (0..ROWS)
+            .flat_map(|row| {
+                (0..INDIVIDUALS).map(move |individual| {
+                    (individual
+                        .saturating_mul(7)
+                        .saturating_add(row)
+                        .rem_euclid(3)) as f64
+                })
+            })
+            .collect();
+        let mut explained = Vec::with_capacity(dosages.len());
+        for (row, of_the_variant) in dosages.as_chunks::<INDIVIDUALS>().0.iter().enumerate() {
+            for dosage in of_the_variant {
+                explained.push(match row.rem_euclid(OF_EVERY) {
+                    0 => *dosage,
+                    _ => dosage * 0.25,
+                });
+            }
+        }
+        let weights: Vec<f64> = (0..INDIVIDUALS)
+            .map(|individual| 0.1 + (individual.rem_euclid(4) as f64) * 0.05)
+            .collect();
+        let residuals: Vec<f64> = (0..INDIVIDUALS)
+            .map(|individual| (individual as f64) * 0.01 - 0.2)
+            .collect();
+        let num: Vec<f64> = dosages
+            .as_chunks::<INDIVIDUALS>()
+            .0
+            .iter()
+            .map(|of_the_variant| {
+                of_the_variant
+                    .iter()
+                    .zip(&residuals)
+                    .map(|(dosage, residual)| dosage * residual)
+                    .sum::<f64>()
+            })
+            .collect();
+        let rows = TheRowsToScore {
+            explained: &explained,
+            num: &num,
+            dosages: &dosages,
+            weights: &weights,
+            num_individuals: INDIVIDUALS,
+            share_that_is_nothing: crate::gwas::the_share_that_is_nothing(INDIVIDUALS),
+        };
+
+        let tested_on = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| the_scores_of_the_rows(&rows))
+        };
+        let on_one = tested_on(1);
+        let on_four = tested_on(4);
+        let one_after_another = the_scores_of_the_rows_one_by_one(&rows);
+
+        /// The three numbers of an answer as the bits that hold them, so
+        /// that the NaNs of a variant with no answer compare equal to each
+        /// other and to nothing else.
+        fn the_bits(answer: &(f64, f64, f64)) -> (u64, u64, u64) {
+            (answer.0.to_bits(), answer.1.to_bits(), answer.2.to_bits())
+        }
+
+        for (answers, how) in [
+            (&on_one, "on one thread"),
+            (&on_four, "on four threads"),
+            (&one_after_another, "one after another"),
+        ] {
+            assert_eq!(answers.len(), ROWS, "the answers {how}");
+            let with_no_answer = answers.iter().filter(|answer| answer.0.is_nan()).count();
+            assert_eq!(
+                with_no_answer,
+                ROWS.div_euclid(OF_EVERY),
+                "the rows with no answer {how}, which are the ones the design explains \
+                 entirely"
+            );
+        }
+        for row in 0..ROWS {
+            let of_one = the_bits(&on_one[row]);
+            assert_eq!(
+                of_one,
+                the_bits(&on_four[row]),
+                "the row {row} on one thread and on four"
+            );
+            assert_eq!(
+                of_one,
+                the_bits(&one_after_another[row]),
+                "the row {row} on one thread and tested one after another"
             );
         }
     }

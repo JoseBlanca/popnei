@@ -135,6 +135,17 @@ fn the_share_that_is_nothing(num_individuals: usize) -> f64 {
     num_individuals as f64 * f64::EPSILON
 }
 
+/// What testing one variant gives: its effect, the standard error of that
+/// effect and the p-value of the test, which are the three columns of the
+/// result in the order the result holds them.
+///
+/// A variant with no answer is the three NaNs of "The variants that have
+/// no answer" of `docs/specs/gwas.md` and not a value of its own, because
+/// this is what the models that test the variants of a block on the
+/// threads of rayon write for every row, answered or not: a row that is
+/// skipped cannot be written by its index.
+type Answer = (f64, f64, f64);
+
 /// The panels the tests of the dosages and of the result are read over,
 /// and what every one of them is asserted against.
 ///
