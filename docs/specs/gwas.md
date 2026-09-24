@@ -477,11 +477,32 @@ checks are common to all four:
   ones, and `beta`, `se` and `p_value` within a bound that is **per model**
   and set where it breaks, 1e-9 relative being the ceiling and not the
   value. Two are measured so far, on 24 September 2026. The logistic model
-  is far inside it, over both panels and both of its tests: `beta` within
-  1.105e-14 of the `se`, `se` 3.368e-15 of itself and `p_value` 4.524e-14 of
-itself, so its bound belongs near 1e-12, which is 90 times the worst. The
-linear mixed model is the opposite and is the reason this is per model at
-all: its own item says why 1e-9 sits at the noise of the search there.
+  is far inside it, and the measurement is below. The linear mixed model is
+  the opposite and is the reason this is per model at all: its own item says
+  why 1e-9 sits at the noise of the search there.
+
+The logistic model's bound is **1e-13**, and what it is 2.2 times is the
+p-value, which is the largest of the four quantities it governs. Measured on
+24 September 2026 over both panels, both of its tests and both linear
+algebra backends:
+
+| quantity | worst, and where | the other backend's worst |
+|---|---|---|
+| `p_value`, as a share of itself | 4.524e-14, `var1004`, every genotype called, Wald, Accelerate | 3.213e-14, `var0833`, genotypes missing, score, faer |
+| `beta`, as a share of its variant's `se` | 1.151e-14, `var0197`, every genotype called, score, faer | 1.090e-14, `var0833`, genotypes missing, score, Accelerate |
+| `se`, as a share of itself | 3.368e-15, `var1151`, every genotype called, Wald, Accelerate | 1.920e-15, `var0122`, genotypes missing, Wald, faer |
+| the null model's effects | 1.970e-16 of pyNei's, 2.220e-16 absolute | the same in all four runs |
+
+No quantity has its worst on the same backend, the same panel and the same
+test as any other, which is why each row carries all four and not a single
+number. A bound governing four quantities, quoted as one figure, is a figure
+that is wrong about three of them, and quoting `beta`'s is how this bound
+was first set to 3e-14, below the p-value it has to clear.
+
+At the 1e-12 this bound had before, it was 22 times the worst and would have
+let through an error of the 1e-13 class; the two real defects a reviewer
+planted, dropping either of the fit's final reweightings, move the columns
+by 1.1e-9 and 3.0e-9 and are caught at any of these.
 
 Two more hold for every model. That the block size changes nothing: the same
 panel read in blocks of 77 gives `stats` equal to the default within 1e-12
@@ -534,8 +555,9 @@ own estimate of the residual variance, which is what makes this a t test and
 not a normal one.
 
 **`rss` is formed from the residuals and not by subtracting**, which is a
-difference from pyNei's arithmetic and the one place this spec departs from
-the oracle's formula rather than its behaviour. pyNei writes it as the
+difference from pyNei's arithmetic and one of the two places this spec
+departs from the oracle's formula rather than its behaviour; the other is
+the logistic model's score test, for the same reason. pyNei writes it as the
 null's residual sum of squares minus `beta * num`, at `gwas.py:395-396`, and
 so did this spec. Those two quantities agree to their last bits once a
 variant explains most of what the null left, and the difference is then
@@ -885,6 +907,23 @@ the design:
 and then `beta = num / den`, `se = 1 / sqrt(den)` and a chi square with one
 degree of freedom of `num² / den`. The covariates take the place of the
 projection matrix of the mixed models, and nothing is inverted per variant.
+
+**`den` is formed and not subtracted**, which is the second place this spec
+departs from pyNei's arithmetic and it is the same departure as the linear
+model's. Written as `x' w x` minus what the covariates explain, it is a
+subtraction of two nearly equal numbers exactly where Open 2's threshold has
+to act, so the guard would be reading a quantity whose error is larger than
+the thing it is testing. Measured on 24 September 2026 over six decades, on
+200 individuals with a covariate that is a variant's dosages plus noise: at
+1.3 times the threshold the subtracted form is out by 4.6e-3 of itself and
+at the threshold by 29 per cent, while the formed one falls as the square of
+the collinearity throughout, which is what says it is the accurate one. It
+costs one more product per block, the design against the solved
+coefficients, into the buffer of variants by individuals that the linear
+model already keeps: the cheap repair, not the product with the projection
+matrix per variant that the linear mixed model's Wald test would need. On
+`panel_called` the smallest denominator is 0.297 of its scale, so no number
+popnei reports today moves and no test covers the regime.
 
 The **Wald test**, the default, fits one logistic regression per variant
 with the variant in the model, starting from the null's coefficients and an
@@ -1577,11 +1616,19 @@ that was tested and showed nothing. plink2 gives `NA`, `NA`, `NA` with
 
 The logistic model's score test: a covariate that is the first variant's
 dosages in units a tenth of theirs, which is what a user gets by putting a
-genotype in as a covariate. The denominator comes to 4.44e-16 on Accelerate
-and to exactly 0 on faer, against a threshold of 4.19e-15. Unguarded, that
-row is `beta` 0 with `se` 4.75e7 and `p` 1 on one backend and a NaN or an
-infinity on the other, which is the argument about the two builds arriving
-on data rather than in prose.
+genotype in as a covariate. With the denominator subtracted, as pyNei
+writes it, it came to 4.44e-16 on Accelerate and to exactly 0 on faer
+against a threshold of 4.19e-15, and unguarded that row was `beta` 0 with
+`se` 4.75e7 and `p` 1 on one backend and a NaN or an infinity on the other,
+which is the argument about the two builds arriving on data rather than in
+prose. Formed, as "The logistic model" now asks, it is 1.891e-31 on
+Accelerate and 9.565e-31 on faer, measured on 24 September 2026: still far
+below the threshold, so the variant is still one there is nothing left to
+test, and no longer of either sign. The formed denominator is a sum of
+terms that are not negative, so it cannot go below 0, and the threshold is
+what guards it rather than a comparison against 0 — which is not the same
+test, as a reviewer showed by replacing one with the other and watching it
+pass on faer alone, where the subtracted denominator was exactly 0.
 
 The linear mixed model's Wald test: six individuals, one covariate, an
 identity kinship and a trait built as `2 + 3*cov + 1*dosage`. It gives
@@ -1720,8 +1767,23 @@ whether the pivot does fall that far in this case, and that is what the
 meanwhile is for: the implementer builds it and measures it on both
 reference panels, and because it can only take answers away, a rule that
 takes away a variant either panel answers today stops there and is reported
-rather than moving a literal. Until it is measured, the case is recorded and
-the behaviour is unchanged.
+rather than moving a literal. It has since been built and measured, on 24 September 2026, and its
+condition held: on both panels and both backends no variant that was
+answered loses its answer and none gains one, the smallest pivot of an
+answered fit being 2.600e-2 of the largest on `panel_called` and 4.730e-5 on
+the panel with genotypes missing, against a threshold of 4.44e-14. That is
+nine orders below anything either panel reaches. The case above now gives
+three NaNs on the default build, and gives the three numbers again when the
+rule is switched off.
+
+**The meanwhile narrows this point and does not close it**, which is what
+the owner is deciding about. A fit can still settle with a collapsed system
+that the pivot does not see: one fixture stops at an effect of 36.45 with a
+standard error of 2.0e7, and it is the 30 that catches that one and not the
+pivot. An `se` of 2.0e7 beside an effect of 36 is the same signature as the
+case above, and reading it is the third option here, marking an `se` that is
+not small against the scale of the design. So the pivot rule is worth
+keeping whatever is chosen, and it is not on its own an answer.
 
 ## Not in this spec
 
