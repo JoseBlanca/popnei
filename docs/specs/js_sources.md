@@ -355,8 +355,8 @@ package already has for the memory of wasm, which
 
 The function is called with no table of the binding crate borrowed, so an
 application that calls popnei from inside it does not trap, and a consumer
-started there runs as any other call does. `free()` from inside it is the
-one call that does not go through: a `Variants` counts the consumer calls
+started there runs as any other call does. Two calls of it do not go
+through. `free()` is the first: a `Variants` counts the consumer calls
 over it that are running, and while one is, `free()` throws popnei's
 `Error` naming that a run is reading it and frees nothing. That throw is
 the application's own, since the application made the call, so it stops the
@@ -368,6 +368,15 @@ never freed for as long as the page lives, 100 sources of 117346 bytes
 costing 11993088 bytes of the memory of wasm. Inside an iteration of
 `iterBlocks` no call holds the source, the free is taken, and the pass
 reads on to its end, as the paragraph on `free()` of the item above says.
+The second is the counts of a pass of `iterBlocks`, which are read between
+two blocks and not while one is being read: the pass is held for the length
+of that read, so popnei refuses them with its own `Error` naming it. What
+both refusals prevent is the same, and it is not a message: the handle that
+wasm-bindgen was asked for is given up before the call it fails in, so the
+source or the pass, and the bytes they hold, would be unreachable and never
+freed. Measured on a pass over a VCF of 7004357 bytes whose function read
+those counts: 20 runs grew the memory of wasm by 133365760 bytes, where 20
+that did not grew it by none.
 
 ### How it is verified
 
