@@ -472,7 +472,7 @@ pub(crate) mod lm {
 
     /// The panel with every genotype called, 200 individuals and 1200
     /// biallelic diploid variants, which is the panel plink2 was run on.
-    fn the_panel_path() -> PathBuf {
+    pub(crate) fn the_panel_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/reference/kinship/panel_called.vcf.gz")
     }
@@ -853,16 +853,19 @@ pub(crate) mod lm {
         }
     }
 
-    /// The trait and the two covariates of the panel, read from
-    /// `tests/reference/gwas/phenotypes.csv`, in the order `individuals`
-    /// has the individuals, which is the order the VCF has them.
+    /// The trait of `trait_type` and the two covariates of the panel, read
+    /// from `tests/reference/gwas/phenotypes.csv`, in the order
+    /// `individuals` has the individuals, which is the order the VCF has
+    /// them.
     ///
     /// The file holds one line per individual with its name, the
     /// continuous trait, the binomial one, the two covariates and the
-    /// subpopulation. What is taken here is the continuous trait and the
-    /// two covariates, which is what plink2 was given.
+    /// subpopulation. What is taken here is one of the two traits and both
+    /// covariates, which is what every reference program was given: `cont`
+    /// for a continuous trait and `binom`, 0 or 1, for a binomial one.
     pub(crate) fn the_trait_and_the_design_of_the_panel(
         individuals: &[String],
+        trait_type: TraitType,
     ) -> (Vec<f64>, Vec<f64>) {
         let path = the_reference_path("phenotypes.csv");
         let text = match std::fs::read_to_string(&path) {
@@ -880,7 +883,10 @@ pub(crate) mod lm {
             None => panic!("phenotypes.csv has no column {name}"),
         };
         let of_the_name = column_of("IID");
-        let of_the_trait = column_of("cont");
+        let of_the_trait = column_of(match trait_type {
+            TraitType::Continuous => "cont",
+            TraitType::Binomial => "binom",
+        });
         let of_cov1 = column_of("cov1");
         let of_cov2 = column_of("cov2");
         let mut rows: HashMap<String, [f64; 3]> = HashMap::new();
@@ -967,7 +973,8 @@ pub(crate) mod lm {
             Err(error) => panic!("{path}: {error}", path = path.display()),
         };
         let individuals = reader.individuals().to_vec();
-        let (phenotype, design) = the_trait_and_the_design_of_the_panel(&individuals);
+        let (phenotype, design) =
+            the_trait_and_the_design_of_the_panel(&individuals, TraitType::Continuous);
         let tested: Vec<usize> = (0..individuals.len()).collect();
         let study = GwasInput {
             phenotype: &phenotype,
@@ -1020,12 +1027,17 @@ pub(crate) mod lm {
         }
     }
 
-    /// The two logistic models, which are not written, are refused, each
-    /// naming the study that asked for it.
+    /// The two studies of a binomial trait that popnei cannot run are
+    /// refused, each naming the model that was asked for: the Wald test of
+    /// the logistic model, which is the test that model takes when a user
+    /// asks for none, and the logistic mixed model, whose kinship is what
+    /// tells the two apart here.
     ///
     /// A continuous trait is not here with the two: it is the linear model
     /// without a kinship and the linear mixed model with one, and both are
-    /// written.
+    /// written. The score test of the logistic model is written too, and
+    /// `a_variant_the_design_leaves_nothing_of_has_no_answer` of the
+    /// `logistic` module is one of the tests that run it.
     #[test]
     fn a_model_that_is_not_written_yet_is_refused() {
         let vcf = the_worked_example_vcf();

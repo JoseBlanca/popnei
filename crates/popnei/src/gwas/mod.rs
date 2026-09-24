@@ -8,9 +8,11 @@
 //! [`calc_gwas`], of `pass`, is the study itself: it fits the null model
 //! once, over the individuals that are tested and the design they were
 //! given, and then reads the variants in one pass, giving one row for each
-//! of them. Of the four models two are written, the linear one and the
+//! of them. Of the four models three are written: the linear one and the
 //! linear mixed one, which are a continuous trait without and with a
-//! kinship, and the two logistic ones are refused until they are.
+//! kinship, and the score test of the logistic one, which is a binomial
+//! trait without one. The Wald test of the logistic model and the logistic
+//! mixed model are refused until they are written.
 //!
 //! `distributions` holds the two functions that turn the statistic of a
 //! test into a p-value, which every model of the module ends in, and
@@ -51,8 +53,14 @@
 //! intercept and the covariates, and the projection matrix every variant
 //! is taken through, by the Wald test or by the score test.
 //!
-//! The two logistic models are being written, and each of them is a module
-//! of its own beside those two: it takes its design from `study`, its
+//! [`LogisticModel`](logistic::LogisticModel), of `logistic`, is the
+//! third: the null model of a binomial trait fitted by iteratively
+//! reweighted least squares, and the score test of every variant against
+//! the weights and the residuals that fit left. Its Wald test, which fits
+//! one logistic regression per variant, is being written.
+//!
+//! The logistic mixed model is being written too, and it is a module of
+//! its own beside these three: it takes its design from `study`, its
 //! dosages from `dosages` and its p-value from `distributions`, it fills
 //! the [`Gwas`] of `result` with the answers of a block, and `pass` is
 //! what fits it and reads the blocks through it.
@@ -63,6 +71,7 @@ mod distributions;
 mod dosages;
 mod linear;
 mod linear_mixed;
+mod logistic;
 mod pass;
 mod result;
 mod study;
@@ -80,16 +89,25 @@ pub use study::{GwasInput, GwasInputShape, GwasModel, TestType, TraitType};
 /// The rounding of a sum of `n` products is about `n` times 2.2e-16 times
 /// the largest term of the sum, so a quantity that has fallen to that share
 /// of the scale it was formed from is the rounding of a cancellation and
-/// not a quantity. It is used in the three places that spec item names: `xx`
-/// in the linear model, what the variant's own squared length is weighted
-/// against; `x' p x` in both score tests, weighted against the variant's
-/// squared length times the largest value of the diagonal of the projection
-/// matrix; and `y' p y` minus `num² / den` in the linear mixed model's Wald
-/// test, weighted against `y' p y` itself.
+/// not a quantity. It is used in the four places that spec item names, each
+/// with the scale that place is judged against:
 ///
-/// It is written here once because the two logistic models add two more
-/// callers, and because a threshold that differed between the places would
-/// be a rule with three answers.
+/// - `xx` in the linear model, the variant with the covariates taken out
+///   of it, against the variant's own squared length;
+/// - `x' w x` less `(x' w d) (d' w d)⁻¹ (d' w x)` in the logistic model's
+///   score test, against `x' w x`, the weighted squared length the variant
+///   had before the covariates were taken out;
+/// - `x' p x` in the score test of a mixed model, against the variant's
+///   squared length times the largest value of the diagonal of the
+///   projection matrix;
+/// - `y' p y` less `num² / den` in the linear mixed model's Wald test,
+///   against `y' p y` itself, which is the one of the four that is what a
+///   variant leaves of the trait where the other three are what the design
+///   leaves of the variant.
+///
+/// It is written here once because the logistic mixed model adds a second
+/// caller of the third of them, and because a threshold that differed
+/// between the places would be a rule with four answers.
 fn the_share_that_is_nothing(num_individuals: usize) -> f64 {
     num_individuals as f64 * f64::EPSILON
 }

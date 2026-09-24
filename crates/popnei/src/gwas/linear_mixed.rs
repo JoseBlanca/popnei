@@ -1266,7 +1266,8 @@ mod lmm {
         assert_eq!(individuals.len(), 200, "the individuals of {name}");
         let kinship = the_kinship_of(name);
         assert_eq!(kinship.len(), 40000, "the entries of the kinship of {name}");
-        let (phenotype, values) = the_trait_and_the_design_of_the_panel(&individuals);
+        let (phenotype, values) =
+            the_trait_and_the_design_of_the_panel(&individuals, TraitType::Continuous);
         let tested: Vec<usize> = (0..individuals.len()).collect();
         let study = GwasInput {
             phenotype: &phenotype,
@@ -1447,7 +1448,8 @@ mod lmm {
             "the individuals of {name} against the ones of the kinship"
         );
         let kinship = the_kinship_of("panel_called");
-        let (phenotype, both) = the_trait_and_the_design_of_the_panel(&individuals);
+        let (phenotype, both) =
+            the_trait_and_the_design_of_the_panel(&individuals, TraitType::Continuous);
         let design: Vec<f64> = match with_cov1 {
             true => both,
             false => both
@@ -1720,7 +1722,8 @@ mod lmm {
     fn the_grammar_gamma_approximation_with_a_kinship_is_refused() {
         let individuals = the_individuals_of_the_kinship("panel_called");
         let kinship = the_kinship_of("panel_called");
-        let (phenotype, design) = the_trait_and_the_design_of_the_panel(&individuals);
+        let (phenotype, design) =
+            the_trait_and_the_design_of_the_panel(&individuals, TraitType::Continuous);
         let tested: Vec<usize> = (0..individuals.len()).collect();
         let study = GwasInput {
             phenotype: &phenotype,

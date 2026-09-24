@@ -1567,6 +1567,39 @@ pub enum Error {
         num_with_variance: usize,
     },
 
+    /// The null model of a study was still moving when its fit ended, so
+    /// the effects it would report are the ones it happened to be at and
+    /// not the ones that fit the trait. The message names the model and
+    /// how many rounds it ran.
+    ///
+    /// A logistic fit reaches it when a covariate separates the
+    /// individuals that have the condition from the ones that have not:
+    /// there is then no finite effect for that covariate to have, and the
+    /// fit walks towards an infinite one. The user takes that covariate
+    /// out. Two things end such a fit, and both are the same runaway: the
+    /// 50 rounds it is given run out, or the chances it fits reach 0 and 1
+    /// and the design weighted by them is no longer a matrix that can be
+    /// factored, which stops it earlier. pyNei only meets the first,
+    /// because it solves each round with an LU factorization, which
+    /// answers a matrix that a Cholesky refuses.
+    ///
+    /// In Python it is a `ValueError`, as "The logistic mixed model" of
+    /// `docs/specs/gwas.md` decides for both fits: pyNei raises a
+    /// `RuntimeError` there, and under the rule of `docs/specs/variant.md`
+    /// a `RuntimeError` is a defect of popnei where a fit that will not
+    /// settle is the data.
+    #[error(
+        "{what}, and its null model did not settle in the {rounds} rounds it was fitted in: a covariate that separates the individuals that have the condition from the ones that have not has no finite effect for a fit to reach, and the fit walks towards an infinite one; take that covariate out",
+        what = model.what_it_is_of()
+    )]
+    GwasFitDidNotSettle {
+        /// Which of the four models was being fitted, which the message
+        /// names with the trait and the kinship that chose it.
+        model: crate::gwas::GwasModel,
+        /// How many rounds the fit ran before it was given up.
+        rounds: usize,
+    },
+
     /// The GRAMMAR-Gamma approximation was asked for by a study with no
     /// kinship. It stands in for the denominator of a mixed model's test,
     /// which is a product with the covariance of the random effect the

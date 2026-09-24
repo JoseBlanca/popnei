@@ -13,6 +13,7 @@ use crate::variant::{ChromTable, Needs};
 use super::dosages::{BlockOfThePass, GwasDosages};
 use super::linear::LinearModel;
 use super::linear_mixed::LinearMixedModel;
+use super::logistic::LogisticModel;
 use super::result::{Answers, GrammarGammaApprox, Gwas, NullModel};
 use super::study::{
     Design, GwasInput, GwasModel, TestType, refuse_a_kinship_that_is_not_of_the_individuals,
@@ -22,17 +23,20 @@ use super::study::{
 /// The null model a study has fitted, which every variant is then tested
 /// against.
 ///
-/// The two models that are written keep different things, the thin QR of
-/// the design and the residuals of the trait for one and the projection
-/// matrix of the covariance for the other, and the pass over the blocks is
-/// the same for both: one call for each block, one answer for each variant
-/// of it that has variance. The two logistic models are two more variants
-/// here when they are written.
+/// The three models that are written keep different things, the thin QR of
+/// the design and the residuals of the trait for one, the projection matrix
+/// of the covariance for the second and the weights of the fitted chances
+/// for the third, and the pass over the blocks is the same for all of them:
+/// one call for each block, one answer for each variant of it that has
+/// variance. The logistic mixed model is one more variant here when it is
+/// written.
 enum TheFittedModel {
     /// The linear model, a continuous trait with no kinship.
     Linear(LinearModel),
     /// The linear mixed model, a continuous trait with a kinship.
     Mixed(LinearMixedModel),
+    /// The logistic model, a binomial trait with no kinship.
+    Logistic(LogisticModel),
 }
 
 impl TheFittedModel {
@@ -43,6 +47,7 @@ impl TheFittedModel {
         match self {
             TheFittedModel::Linear(fitted) => fitted.null_model(test),
             TheFittedModel::Mixed(fitted) => fitted.null_model(test),
+            TheFittedModel::Logistic(fitted) => fitted.null_model(test),
         }
     }
 
@@ -50,9 +55,10 @@ impl TheFittedModel {
     /// tested individuals, in the order of the block.
     ///
     /// A linear model makes the one test it has, the t test of the variant
-    /// against what the design left of the trait, and a linear mixed model
+    /// against what the design left of the trait; a linear mixed model
     /// makes whichever of the Wald test and the score test the study asked
-    /// for.
+    /// for; and a logistic model makes its score test, its Wald test being
+    /// the one this pass refuses before it fits anything.
     ///
     /// # Errors
     ///
@@ -61,6 +67,7 @@ impl TheFittedModel {
         match self {
             TheFittedModel::Linear(fitted) => fitted.test_the_block(dosages),
             TheFittedModel::Mixed(fitted) => fitted.test_the_block(dosages, test),
+            TheFittedModel::Logistic(fitted) => fitted.test_the_block(dosages, test),
         }
     }
 }
@@ -74,10 +81,13 @@ impl TheFittedModel {
 /// `input` says which individuals are tested, with their trait and the
 /// design the model is fitted on, and "The Rust interface" of
 /// `docs/specs/gwas.md` lays out what each of its fields holds. The trait
-/// and the kinship choose the model, and of the four the two of a
-/// continuous trait are written, the linear model without a kinship and
-/// the linear mixed model with one: the two logistic models are refused
-/// with [`Error::GwasModelNotBuilt`] until they are.
+/// and the kinship choose the model, and of the four three are written:
+/// the linear model, a continuous trait without a kinship, the linear
+/// mixed model, a continuous trait with one, and the score test of the
+/// logistic model, a binomial trait without one. The Wald test of the
+/// logistic model, which fits one logistic regression per variant, and the
+/// logistic mixed model are refused with [`Error::GwasModelNotBuilt`]
+/// until they are written.
 ///
 /// The null model is fitted before the first block is read, from the
 /// trait, the design and the kinship alone, and then one pass over the
@@ -98,8 +108,10 @@ impl TheFittedModel {
 ///
 /// # Errors
 ///
-/// [`Error::GwasModelNotBuilt`] when the study needs one of the two
-/// logistic models, which are not written,
+/// [`Error::GwasModelNotBuilt`] when the study asks for the Wald test of a
+/// logistic model or for the logistic mixed model, neither of which is
+/// written, [`Error::GwasFitDidNotSettle`] when the null model of a
+/// logistic one was still moving after the rounds it is given,
 /// [`Error::GwasGrammarGammaWithoutAKinship`] when the approximation was
 /// asked for by a study with no kinship and
 /// [`Error::GwasGrammarGammaNotBuilt`] when it was asked for by one with a
@@ -144,9 +156,14 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
     if let Some(kinship) = input.kinship {
         refuse_a_kinship_that_is_not_of_the_individuals(kinship, input.individuals.len())?;
     }
-    match model {
-        GwasModel::Lm | GwasModel::Lmm => {}
-        GwasModel::Glm | GwasModel::Glmm => {
+    match (model, test) {
+        (GwasModel::Lm | GwasModel::Lmm, _) | (GwasModel::Glm, TestType::Score) => {}
+        // The score test of the logistic model is written and its Wald
+        // test, which fits one logistic regression per variant, is not, so
+        // a binomial trait with no kinship is run when it asks for the
+        // score test and refused when it asks for the Wald one, which is
+        // the test that model takes when a user asks for none.
+        (GwasModel::Glm, TestType::Wald) | (GwasModel::Glmm, _) => {
             return Err(Error::GwasModelNotBuilt { model });
         }
     }
@@ -167,7 +184,10 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
             // a linear model and never arrives here.
             None => return Err(Error::GwasModelNotBuilt { model }),
         },
-        GwasModel::Glm | GwasModel::Glmm => return Err(Error::GwasModelNotBuilt { model }),
+        GwasModel::Glm => {
+            TheFittedModel::Logistic(LogisticModel::of_the_study(input.phenotype, &design)?)
+        }
+        GwasModel::Glmm => return Err(Error::GwasModelNotBuilt { model }),
     };
     let mut result = Gwas::of_the_null_model(
         fitted.null_model(test),
