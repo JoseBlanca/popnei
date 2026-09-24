@@ -416,9 +416,14 @@ at most the standardized number of alleles of the same population, since a
 private allele is an allele; and a population compared against a copy of
 itself has 0 private alleles at every draw size, since every allele it
 draws the copy can draw too. On the panel at a draw of 20 the values are
-0.0112196177, 0.0099715392 and 0.0089014974, computed by the reference
-script of this module and stored beside it, and they are literals of the
-same cargo test.
+0.0112196177, 0.0099715392 and 0.0089014974, and they are literals of a
+pytest test. Unlike every other number of this spec they are not stored
+beside the reference script, because no program outside popnei computes
+them: they come from `docs/reports/diversity-method/panel.py`, which
+computes the five quantities in Python as this spec defines them and which
+produced the tables here. So they check that popnei's Rust agrees with
+that Python and nothing more; what checks the formula itself is the
+enumeration above, over the 18 pairs, and the two properties.
 
 The worked example, the same six variants and two populations as above at
 `num_called_alleles` 4. Three variants have both populations at 4 called
