@@ -209,7 +209,9 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
     }
     if matches!(
         error,
-        popnei::Error::DiversitySfsWithoutADraw | popnei::Error::DiversityDrawTooSmall { .. }
+        popnei::Error::DiversitySfsWithoutADraw
+            | popnei::Error::DiversityDrawTooSmall { .. }
+            | popnei::Error::DiversityDrawLargerThanTheDataset { .. }
     ) {
         return message.replace("num_called_alleles", "numCalledAlleles");
     }

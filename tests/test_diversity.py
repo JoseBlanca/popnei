@@ -651,6 +651,38 @@ def test_a_name_that_is_of_no_statistic_is_refused_and_names_no_file() -> None:
     assert getattr(refusal.value, "filename", None) is None
 
 
+def test_a_draw_larger_than_the_dataset_is_refused_and_names_no_file() -> None:
+    """What a user who calls `popnei._core` themselves reads.
+
+    The package refuses every `num_called_alleles` until the draw is built
+    over it, so a draw reaches the Rust core only from a caller that went
+    round the package. The panel is 200 diploid individuals, so 400 called
+    alleles is every gene copy it holds and the largest draw it allows: that
+    draw is taken, although the missing genotypes of the panel leave no
+    population able to fill it, and 401 is refused. The message names the draw
+    and the largest one, and names no file: what a user wrote is wrong
+    whatever variants are read.
+    """
+    of_400 = _panel()
+    of_401 = _panel()
+
+    at_400 = _core.calc_pop_diversity(
+        of_400._source, of_400._steps, None, ["num_alleles"], 400, 20
+    )
+
+    with pytest.raises(ValueError, match="`num_called_alleles` is 401") as refusal:
+        _core.calc_pop_diversity(
+            of_401._source, of_401._steps, None, ["num_alleles"], 401, 20
+        )
+
+    assert at_400[0] == ["pop"]
+    message = str(refusal.value)
+    assert "the largest draw this dataset allows is 400" in message
+    assert "200 individuals at a ploidy of 2" in message
+    assert PANEL.name not in message
+    assert getattr(refusal.value, "filename", None) is None
+
+
 def test_one_statistic_written_on_its_own_is_that_one_statistic() -> None:
     """A member of a `StrEnum` is a string, so one written without its comma
     would be a sequence of its letters."""

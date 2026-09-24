@@ -1280,12 +1280,12 @@ impl Totals {
 /// # Errors
 ///
 /// A `stats` that holds no statistic, [`DiversityStats::FOLDED_SFS`] asked
-/// for with no `num_called_alleles`, a `num_called_alleles` below 2, a
-/// population with no individual, an index that is not an individual of the
-/// dataset, an individual asked for more than once, no variant in the
-/// reader, a variant of more alleles than a count of them holds, and those
-/// of the reader, among them a ploidy of 0 or above the 255 a genotype of
-/// popnei holds.
+/// for with no `num_called_alleles`, a `num_called_alleles` below 2 or above
+/// the individuals of the reader times its ploidy, a population with no
+/// individual, an index that is not an individual of the dataset, an
+/// individual asked for more than once, no variant in the reader, a variant
+/// of more alleles than a count of them holds, and those of the reader,
+/// among them a ploidy of 0 or above the 255 a genotype of popnei holds.
 pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
     reader: &mut R,
     pops: &[&[usize]],
@@ -1328,16 +1328,19 @@ fn the_pass<R: BlockReader + ?Sized>(
     add_the_block: fn(&Block, usize, &OfThePass, &mut Totals) -> Result<()>,
 ) -> Result<PopDiversity> {
     check_the_statistics(options)?;
-    check_the_draw(options)?;
     let num_individuals = reader.individuals().len();
-    let of_the_pops = pops_of_the_pass(pops, num_individuals)?;
     let ploidy = reader.ploidy();
     // The ploidy the reader states, which the threshold of called
     // genotypes is measured in. A reader that states one of 0, or one above
     // the 255 a genotype of popnei holds, is refused here: a threshold
     // built from a ploidy that did not fit would be one no population ever
-    // meets, and every population would silently count no variant.
+    // meets, and every population would silently count no variant. It is
+    // checked before the draw because the largest draw the dataset allows is
+    // the individuals times this ploidy, and a ploidy of 0 would make that
+    // largest draw 0 and refuse every draw in its name.
     let ploidy_of_the_gts = checked_ploidy("ploidy", ploidy)?;
+    check_the_draw(options, num_individuals, ploidy_of_the_gts)?;
+    let of_the_pops = pops_of_the_pass(pops, num_individuals)?;
     // The five statistics follow from the genotypes of a row, so no column
     // of a block is read and the reader is asked to fill none of them.
     reader.set_needs(Needs::GTS);
@@ -1409,12 +1412,21 @@ fn check_the_statistics(options: &DiversityOptions) -> Result<()> {
 
 /// It refuses a draw that no standardized value can be taken over.
 ///
+/// `num_individuals` and `ploidy` are the dataset's, and their product is
+/// every gene copy it holds: the most alleles any population can have called
+/// at any variant, and so the largest draw the dataset allows. A draw at or
+/// below it that this dataset's missing genotypes leave no population able
+/// to fill is not refused here: that draw gives NaN in the standardized
+/// values and a spectrum of zeros, which "The cases" of
+/// `docs/specs/diversity.md` asks for.
+///
 /// # Errors
 ///
 /// The folded spectrum asked for with no `num_called_alleles`, whose bins
-/// are the counts of the rarer allele in a draw of that many, and a
-/// `num_called_alleles` below 2.
-fn check_the_draw(options: &DiversityOptions) -> Result<()> {
+/// are the counts of the rarer allele in a draw of that many, a
+/// `num_called_alleles` below 2, and one above the individuals of the
+/// dataset times the ploidy.
+fn check_the_draw(options: &DiversityOptions, num_individuals: usize, ploidy: u32) -> Result<()> {
     match options.num_called_alleles {
         None => {
             if options.stats.contains(DiversityStats::FOLDED_SFS) {
@@ -1424,6 +1436,23 @@ fn check_the_draw(options: &DiversityOptions) -> Result<()> {
         Some(num_called_alleles) => {
             if num_called_alleles < 2 {
                 return Err(Error::DiversityDrawTooSmall { num_called_alleles });
+            }
+            // The gene copies of the dataset are counted in a `u64`: the
+            // individuals times the ploidy passes what a `u32` holds above
+            // 2147483647 of them, and passes a `usize` in WebAssembly, where
+            // it is 32 bits. A dataset whose individuals, or whose product,
+            // do not fit in a `u64` allows every draw a `u32` holds, so
+            // saturating at the largest `u64` refuses none of them.
+            let largest_draw = u64::try_from(num_individuals)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(u64::from(ploidy));
+            if u64::from(num_called_alleles) > largest_draw {
+                return Err(Error::DiversityDrawLargerThanTheDataset {
+                    num_called_alleles,
+                    largest_draw,
+                    num_individuals,
+                    ploidy,
+                });
             }
         }
     }
@@ -2445,7 +2474,7 @@ mod the_pass {
     use super::{DiversityOptions, DiversityStats, PopDiversity, calc_pop_diversity};
     use crate::block::BlockReader;
     use crate::error::Error;
-    use crate::variant::Needs;
+    use crate::variant::{MISSING_ALLELE, Needs};
 
     /// The options of the worked example: every statistic, no draw, and a
     /// threshold of one called genotype.
@@ -3229,6 +3258,67 @@ mod the_pass {
             "{error}"
         );
     }
+
+    /// A draw of every gene copy the dataset holds is taken and a draw of one
+    /// more is refused: that product, the individuals times the ploidy, is
+    /// the largest number of alleles any population can have called at any
+    /// variant, so a draw above it is what a user wrote and not a fact about
+    /// the data.
+    ///
+    /// The source is 200 diploid individuals, so 400 is the largest draw it
+    /// allows and 401 is refused. Its two variants each leave the first
+    /// individual's genotype missing, so the one population called 398
+    /// alleles at both and neither variant is in the draw at 400: that is the
+    /// case of a `num_called_alleles` above every population's called alleles
+    /// of "The cases" of `docs/specs/diversity.md`, which the refusal must
+    /// leave as it is, NaN in the standardized values and a spectrum of
+    /// zeros, and not an error.
+    #[test]
+    fn a_draw_of_every_gene_copy_of_the_dataset_is_taken_and_one_more_is_refused() {
+        let of_the_source: Vec<Vec<i8>> = (1..=2)
+            .map(|variant| {
+                [MISSING_ALLELE, MISSING_ALLELE]
+                    .into_iter()
+                    .chain((1..200).flat_map(|individual| [0, i8::from(individual % variant == 0)]))
+                    .collect()
+            })
+            .collect();
+        let rows: Vec<&[i8]> = of_the_source.iter().map(|row| &row[..]).collect();
+
+        let of_a_draw_of_400 = calc_pop_diversity(
+            &mut GivenBlocks::of_a_source_of(200, 2, blocks_of(&rows, 200, 2, 2)),
+            &[],
+            &options_of_a_draw(1, 400),
+        )
+        .expect("the diversity at a draw of every gene copy of the dataset");
+        let error = calc_pop_diversity(
+            &mut GivenBlocks::of_a_source_of(200, 2, blocks_of(&rows, 200, 2, 2)),
+            &[],
+            &options_of_a_draw(1, 401),
+        )
+        .expect_err("a draw of one allele more than the dataset holds");
+
+        assert_eq!(of_a_draw_of_400.num_vars(0), Some(2));
+        assert_eq!(of_a_draw_of_400.num_vars_in_draw(0), Some(0));
+        assert_no_standardized_value(
+            &of_a_draw_of_400,
+            0,
+            "the one population of 200 individuals at a draw of 400",
+        );
+        assert!(
+            matches!(
+                error,
+                Error::DiversityDrawLargerThanTheDataset {
+                    num_called_alleles: 401,
+                    largest_draw: 400,
+                    num_individuals: 200,
+                    ploidy: 2
+                }
+            ),
+            "{error}"
+        );
+    }
+
     /// `pop1` of the worked example called 2, 2, 4 and 1 different alleles
     /// at the variants 1, 2, 3 and 5 that count for it, 9 in all and a mean
     /// of 2.25, and `pop2` called 1, 1, 4 and 2, 8 in all and a mean of 2.

@@ -140,8 +140,9 @@ pub(crate) fn calc_pop_diversity<'py>(
 /// When the source cannot be opened or read, when a population names an
 /// individual the pass does not give, and when the core refuses the
 /// calculation: the folded spectrum with no draw, a draw of fewer than two
-/// alleles, a pass that gave no variant, and a variant of more alleles than
-/// a count of them holds.
+/// alleles, a draw of more alleles than the dataset holds gene copies, a pass
+/// that gave no variant, and a variant of more alleles than a count of them
+/// holds.
 fn over_the_source(
     source: &dyn OpenSource,
     steps: &[Step],
@@ -373,32 +374,33 @@ fn no_count_of_alleles(value: &Bound<'_, PyAny>) -> String {
 /// What the pass failed with, with the file it was reading where that file
 /// is part of what went wrong.
 ///
-/// Seven of the nine refusals that "The Rust interface" of
+/// Eight of the eleven refusals that "The Rust interface" of
 /// `docs/specs/diversity.md` lists are of what a user wrote and are wrong
 /// whatever file is read, so they name none, which is what "Errors, and no
 /// panics" of `.claude/skills/coding/SKILL.md` asks of an argument that is
-/// refused. The list below is those seven and nothing else, in the order that
+/// refused. The list below is those eight and nothing else, in the order that
 /// item gives them, so that a reader can count the two against each other.
 ///
 /// A name that is of no statistic is among them although it cannot arrive
 /// here today: [`the_stats`] reads a user's `stats` before the pass is built,
 /// so that refusal travels back through `?` and never through this function. A
 /// list of the reachable cases alone would have to be read together with every
-/// call site of this module, and the case is one of the seven whichever call
+/// call site of this module, and the case is one of the eight whichever call
 /// site raises it.
 ///
-/// The two refusals of the item that are not here are of the variants the pass
-/// read, and so are the errors of the reader: `PassGaveNoVariant`, where which
-/// file it was is what tells a user whether the source held none or the steps
-/// kept none, and `MoreAllelesThanACountHolds`, which is a variant of the
-/// file. `DiversityMoreVarsThanACountHolds`, a block that says it holds more
-/// variants than a count of them holds, is of the file for the same reason and
-/// is the one case of the module that item does not carry.
+/// The three refusals of the item that are not here are of the variants the
+/// pass read, and so are the errors of the reader: `PassGaveNoVariant`, where
+/// which file it was is what tells a user whether the source held none or the
+/// steps kept none; `MoreAllelesThanACountHolds`, which is a variant of the
+/// file; and `DiversityMoreVarsThanACountHolds`, a block that says it holds
+/// more variants than a count of them holds, which is of the file for the
+/// same reason.
 fn with_its_file(error: popnei::Error, path: &Path) -> PyPopneiError {
     if matches!(
         error,
         popnei::Error::DiversitySfsWithoutADraw
             | popnei::Error::DiversityDrawTooSmall { .. }
+            | popnei::Error::DiversityDrawLargerThanTheDataset { .. }
             | popnei::Error::DiversityWithNoStatistic
             | popnei::Error::DiversityStatOfAnUnknownName { .. }
             | popnei::Error::DiversityPopWithNoIndividual { .. }

@@ -1871,6 +1871,34 @@ pub enum Error {
         num_called_alleles: u32,
     },
 
+    /// The number of called alleles every population is brought down to is
+    /// above the individuals of the dataset times the ploidy, which is every
+    /// gene copy the dataset holds and so the most alleles any population can
+    /// have called at any variant. A draw above it is reached by no variant
+    /// of any population, so it is what a user wrote and not a fact about the
+    /// data, and the folded spectrum of it is as long as half the draw: at
+    /// the top of a `u32` that is 2147483648 bins for each population, 51 GB
+    /// over three of them, which the pass would die allocating rather than
+    /// say what was wrong. A draw that this dataset's missing genotypes leave
+    /// no population able to fill is a different case, and it is no error. In
+    /// Python it is a `ValueError`.
+    #[error(
+        "`num_called_alleles` is {num_called_alleles} and the largest draw this dataset allows is {largest_draw}, every gene copy of its {num_individuals} individuals at a ploidy of {ploidy}: no population can have called more alleles than that at a variant"
+    )]
+    DiversityDrawLargerThanTheDataset {
+        /// The number of called alleles that was asked for.
+        num_called_alleles: u32,
+        /// The largest draw the dataset allows, its individuals times its
+        /// ploidy. It is a `u64` because that product passes what a `u32`
+        /// holds above 2147483647 gene copies, and a `usize` in WebAssembly,
+        /// where it is 32 bits.
+        largest_draw: u64,
+        /// How many individuals the dataset has.
+        num_individuals: usize,
+        /// The ploidy the reader of the pass states.
+        ploidy: u32,
+    },
+
     /// One of the populations the diversity is calculated for holds no
     /// individual. Every statistic of a population is over the alleles its
     /// individuals called, so a population with none has no allele to count
