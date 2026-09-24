@@ -276,7 +276,7 @@ mixed model it is also checked on.
       both mixed models, in the core, with the cargo tests. Built from "The
       GRAMMAR-Gamma approximation" of `docs/specs/gwas.md`. Serves
       deliverable 1. Needs 2.2.
-- [ ] 3.2 The argument through both bindings and both packages, with the
+- [x] 3.2 The argument through both bindings and both packages, with the
       pytest tests of the relation to the exact answer and of the refusal,
       and the node test. Built from the same item. Serves deliverables 2, 3
       and 4. Needs 3.1 and 2.3.

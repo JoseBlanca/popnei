@@ -758,6 +758,51 @@ so these are the owner's:
 - **Open 2's fourth place now has a fixture**, whose numbers are in this
   report and in the code but not in the item.
 
+## Work package 3: the GRAMMAR-Gamma approximation
+
+Both mixed models can now replace the per variant product with the
+projection matrix, which costs the square of the individuals, by one factor
+times the squared length of the variant's centered dosages, which is linear
+in them. The factor is the mean, over the first 100 variants that vary, of
+the exact denominator divided by the approximate one.
+
+**The factor is pyNei's.** 0.51730062 for the linear mixed model on the
+panel with every genotype called, 3.4e-9 from pyNei's own, and 0.10532073
+for the logistic mixed model, 1.8e-14 from it; on the panel with genotypes
+missing, 0.52850585 and 0.10605886. The same on both backends.
+
+**Deliverable 2 holds and spends 98 per cent of its bound.** Measured by the
+orchestrator on the called panel with the linear mixed model, all 1200
+variants answered by both modes: the median of `log10(p_approx / p_exact)`
+is -5.1885e-4 where 0.1 is allowed, the largest is 0.51185 where 1.5 is
+allowed, and the worst `beta` moves 0.48966 of itself where 0.5 is allowed.
+Under the score test the largest is 0.4887 and the worst `beta` is the same.
+Accelerate, faer and WebAssembly agree to 1e-8.
+
+**Why that bound is nearly spent, which the plan did not expect.** The plan
+says the factor is a mean of ratios that lie near each other, so that a
+factor far from them is the sign of an error. They do not lie near each
+other: over the 100 variants the factor is taken from, the ratios run from
+0.3124 to 0.6704, a spread of 2.15 times, with a standard deviation 12.9 per
+cent of the mean. The logistic mixed model's are tighter, 9.2 per cent. A
+variant's effect moves by the share its own ratio sits from the factor, so
+the worst variant moves nearly the whole of what pyNei's bound allows — and
+pyNei's bound was set where pyNei's own worst case landed. The check passes
+because the method is pyNei's, not because it has room.
+
+Over all 1200 variants rather than the first 100, the linear mixed model's
+factor is 0.518269 and the ratios run 0.307 to 0.771. So the 100 that pyNei
+fixed under-sample the spread and leave the factor 0.19 per cent from the
+whole-panel mean. `NUM_VARS_FOR_GAMMA` is unchanged, as the spec says it is
+inherited and unmeasured.
+
+**Which variants have no answer now depends on the argument.** Open 2's
+threshold stops firing under the approximation: a factor above 0 times a sum
+of squares holds no cancellation, so the variant that the exact test refuses
+with three NaNs is answered with an effect of -5.7e-16 and a p-value of 1.
+The rule itself is unchanged and is still compared against whichever
+denominator the study formed. It is in the spec.
+
 ## How the work went
 
 This last section is not written for the owner, who can stop here. It is for
