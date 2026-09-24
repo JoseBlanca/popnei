@@ -78,10 +78,26 @@ both from the one argument `num_called_alleles`, which is that `g`.
 ```python
 calc_pop_diversity(variants: Variants,
                    pops: dict[str, Sequence[str]] | None = None,
+                   *,
                    stats: Iterable[PopDiversityStat] = WITHOUT_A_DRAW,
                    num_called_alleles: int | None = None,
                    min_num_individuals: int = 20) -> PopDiversity
 ```
+
+`stats` and everything after it are given by name. The owner decided this
+on 24 September 2026, for a reason that is about popnei and not about this
+function: three of its calculations take both a set of populations and a
+choice of what to compute, and they disagreed about which came second.
+`calc_per_var_distribs` of `docs/specs/stats.md` takes `stats` there and
+`calc_pop_dists` of `docs/specs/dists.md` takes `pops`, as this one does,
+so the same position meant two things and a reader of one call could not
+tell. Naming the choice of what to compute settles it without anyone
+having to remember an order, and the argument was one people wrote by name
+in any case. `calc_per_var_distribs` and `calc_pop_dists` are to follow,
+which `docs/reports/diversity.md` records as asked for and not yet done:
+theirs is a change to two settled specs and two built modules and so is
+not part of this plan. Until they do, a caller of those two can still pass
+the choice positionally and a caller of this one cannot.
 
 It is a consumer of the `variants`: one pass over the source through the
 steps the `Variants` has when it is called, and the `Variants` is as it
