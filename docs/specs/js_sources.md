@@ -211,14 +211,18 @@ page the decision to stop.
 
 The application gives a function, and the source calls it with how many
 bytes of the file the pass has read, how many the file holds, which pass of
-the run is reading and how many passes the run makes. The calls of a pass
-are made by its reads: the first read of the pass makes one with no bytes
-read; a read that brings the bytes read since the last call to the size of a
-range makes another; and so does a read that finds no more bytes in the
-source, which is the last call of a pass over a VCF, read to its end. A page
-that draws a bar from those numbers sees it fill once per pass and knows
-which pass it is on, so a PCA that reads the file twice does not look broken
-when the bar goes back to empty.
+the run is reading and how many passes the run makes. Three things make a
+call: the first read of a pass, which says it has read nothing; a read that
+brings the bytes read since the last call to the size of a range; and the
+end of the run, which makes one for each of its passes, in the order of
+their numbers, with the bytes that pass read. The last of the three is what
+says a pass is over, and it is needed because no read does: a pass over a
+vars file stops after its last batch, with up to a range of bytes read
+since the last call, and a run that fails stops wherever it failed. A value
+thrown in one of those last calls is dropped and stops nothing, because the
+run is over. A page that draws a bar from these numbers sees it fill once
+per pass and knows which pass it is on, so a PCA that reads the file twice
+does not look broken when the bar goes back to empty.
 
 When that function throws, the pass ends there: the read fails, the error
 travels out through the readers, and the consumer throws the value the
@@ -288,15 +292,16 @@ file and a smaller share of a real one, where the batches are most of the
 bytes. So a bar over a vars file ends below the size of the file. The count
 is capped at that size, so a bar never passes 100 in 100.
 
-A file of fewer bytes than one range gives two calls over a VCF, at the
-first read and at the read that finds the end of the file, and one call over
-a vars file, which never reads past its last batch.
+A file of fewer bytes than one range gives two calls, at the first read of
+the pass and at the end of the run.
 
 `openVcf` and `openVars` read the header or the schema before any pass, and
 those reads are told to nobody: what the function is set on is the
 `Variants` that those calls give.
 
-A function that throws is called no more in that pass.
+A function that throws is called no more in that pass, and the call that
+ends that pass is not made either: what the application stopped it is not
+told how far it had got.
 
 A pass that never reads a byte is never told of: the PCA of a source whose
 first pass gives no variant with variance fails before its second reader
@@ -348,8 +353,12 @@ from it, with ranges of the size popnei chose:
   `vars_memory.test.ts` writes one, the first call is 0, `bytesRead` never
   goes down and never passes `numBytes`, and the last call is the bytes of
   its footer and its batches, which goes into the test as a literal when it
-  is first run, with the file it was measured on. Over a vars file of fewer
-  bytes than one range there is the one call of 0 bytes.
+  is first run, with the file it was measured on. That last call is the one
+  the end of the run makes: without it a pass over a vars file of 12231602
+  bytes was last told at 8476400, two thirds of the way, because its reads
+  after that never reached a range.
+- Over a vars file of fewer bytes than one range there are two calls, of 0
+  bytes and of the bytes of its footer and its batches.
 - `doPcaFromVariants` with `numPrinComps` 10 over `many.vcf` gives four
   calls, of pass 1, pass 2, pass 1 and pass 2, with 0, 0, 117346 and 117346
   bytes read, and `numPasses` 2 in every one. With `numPrinComps` 0 there
@@ -368,6 +377,14 @@ from it, with ranges of the size popnei chose:
   reads them, and one that runs `calcPerIndividualStats` over the same
   `Variants`: neither traps, and the pass that was reading gives its
   variants.
+- A function that throws only in the calls that end the run: the consumer
+  returns its result, and the value is not thrown.
+- A function that stops a pass is not called again for that pass, the call
+  that would end it among them.
+- A function that throws over a gzipped VCF and over a vars file: the
+  consumer throws its value, which is what says that the failed read is not
+  swallowed by the decompressor or turned into the error of a file that was
+  cut short.
 - For each of the ten consumers, the largest `pass` of the calls of one run
   equals `numPassesOf` of it with the same options.
 
