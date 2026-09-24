@@ -853,6 +853,32 @@ mod tests {
         );
     }
 
+    /// One individual is the other count whose curve never falls to half,
+    /// and the one whose curve stands highest: "The curve that is fitted"
+    /// of `docs/specs/ld.md` gives it as running from 1.1983471074380165
+    /// at a distance of 0 down to 1, where half of the first is
+    /// 0.5991735537190083. The correction for the sample being finite is
+    /// divided by n, so at n of 1 it is the whole of that height, and
+    /// nothing else of the module fits an n below 2.
+    #[test]
+    fn a_population_of_one_individual_has_no_half_distance_and_keeps_the_other_two() {
+        let dists = the_dists_from(1000, 250_000);
+        let (num_pairs, sum_r2) = the_table_of_the_curve(&dists, 0.0001, 1);
+        let decay = fit_ld_decay(&dists, &num_pairs, &sum_r2, 1).expect("the fit");
+        assert_close(decay.rho_per_bp(), 0.0001, "the fitted rho per base pair");
+        assert_close(
+            decay.r2_at_zero(),
+            1.1983471074380165,
+            "the r² at a distance of 0",
+        );
+        assert!(
+            decay.half_dist().is_nan(),
+            "the half distance of one individual is {half}, where the curve runs from \
+             1.1983471074380165 down to 1 and never reaches half of the first",
+            half = decay.half_dist()
+        );
+    }
+
     #[test]
     fn a_population_of_two_individuals_has_no_half_distance_and_keeps_the_other_two() {
         let dists = the_dists_from(1000, 250_000);
