@@ -518,9 +518,22 @@ relative, the two being the same sum of the same terms taken in different
 orders. The identity was checked on 24 September 2026 on the counts
 (10, 6), (17, 3), (1, 19) and (55, 45) at draws of 2, 4 and 10 and on
 (3, 1) at draws of 2 and 4, its 4 called alleles having no draw of 10:
-over those 14 pairs the two sides agree to 1.1e-16 or exactly, and
-`tests/reference/diversity/make_reference.R` checks those 14 pairs on
-every run. It was
+over those 14 pairs the two sides agree to 1.1e-16 or exactly when both
+are computed in exact arithmetic, which is the identity itself and says
+nothing about any program.
+
+`tests/reference/diversity/make_reference.R` checks those same 14 pairs on
+every run, and it checks a stronger thing: `vegan::rarefy`'s own output
+against the chance of varying computed from exact binomial coefficients.
+What is left over there is `rarefy`'s arithmetic and not the identity,
+since `rarefy` computes its terms as `exp(lchoose(c - n, g) - lchoose(c,
+g))` through the log gamma function. Over the 14 pairs the largest
+difference is 2.44e-15, 1.6e-15 of the value, on the counts (17, 3) at a
+draw of 4; five pairs agree exactly. Compared the way `rarefy` computes
+it, through `lchoose` on both sides, 13 of the 14 agree exactly and the
+fourteenth to 2.22e-16. All three numbers are far inside the 1e-12
+relative this item is compared within, and they are given apart because
+they measure three different things. Measured on 24 September 2026. It was
 checked on the panel too, whose standardized ratios are
 0.9283948650, 0.9219209943 and 0.9197370844 against the standardized
 allele counts of 1.9283948650, 1.9219209943 and 1.9197370844. A dataset
