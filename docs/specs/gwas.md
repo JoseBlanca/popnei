@@ -798,6 +798,19 @@ trait and `mu`. It stops when the largest change in a coefficient is below
 1e-8, in at most 50 steps, and a fit that has not converged by then is an
 error, not a warning.
 
+A fit can end before those 50 steps, and it is the same error with the
+steps it ran. Once the chances it fits reach 0 and 1 the weights are 0, and
+`d' w d`, the design weighted by them and taken against itself, is no longer
+a matrix a Cholesky factorization accepts. That is the same runaway seen
+sooner: the columns of the design are independent, a design whose columns
+are not being refused before any fit, so the weights are the only thing that
+can take `d' w d` there. pyNei meets only the first of the two, since it
+solves each step with an LU factorization, which answers a matrix that a
+Cholesky refuses. Measured on 24 September 2026, on eight individuals whose
+covariate is 0 to 7 and whose four above 3 have the condition: popnei stops
+at the step 45 on both linear algebra backends, where numpy 2.5.3 runs all
+50 and is still moving, at an intercept of -299.6 and an effect of 84.0.
+
 The **score test**, which needs only the null, tests every variant of a
 block at once. With `w` the weights, `resid` the trait minus `mu` and `d`
 the design:
