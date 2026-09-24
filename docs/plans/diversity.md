@@ -435,9 +435,17 @@ and under node.
 **Tasks.**
 
 - [ ] 4.1 The measurement and the report, and the commit that writes the
-  target into the spec. Serves deliverables 1 and 2.
+  target into the spec. Serves deliverables 1 and 2. It is carried out in
+  two parts, split on 24 September 2026: the harnesses and every number,
+  which change no code of the library, and then the target written into the
+  spec followed by the experiment of deliverable 2, in that order, so that
+  the target is set against the code as it was measured.
 - [ ] 4.2 The browser and pyodide checks, and the call added to the smoke
-  test. Serves deliverables 3 and 4. Can run side by side with 4.1.
+  test. Serves deliverables 3 and 4. It ran after 4.1 and not beside it,
+  decided on 24 September 2026: 4.1 takes wall times and 4.2 runs the
+  release build of `crates/popnei-js` and the build of the pyodide wheel,
+  and the `performance-review` skill takes a wall time with nothing else
+  building on the machine, because two builds at once measure each other.
 
 **What could go wrong.** The spectrum does one hypergeometric term per
 count of the rarer allele per variant and per population, which at a draw
