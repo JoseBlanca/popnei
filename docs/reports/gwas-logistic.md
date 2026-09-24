@@ -139,10 +139,90 @@ tests of this plan rather than of `gwas-linear`. The plan now says so, with
 what each task does under the meanwhile and what it would do under the other
 answer.
 
+## Work package 1: the logistic model
+
+### Task 1.1, the null fit and the score test
+
+`crates/popnei/src/gwas/logistic.rs` fits the null model by iteratively
+reweighted least squares, which turns each step of a logistic fit into a
+weighted linear one, and tests a whole block against the one Cholesky
+factorization of the weighted design, with nothing factored per variant. The
+core's `calc_gwas` no longer refuses a binomial trait with no kinship. The
+core has 791 tests where it had 787, the same count on both linear algebra
+backends.
+
+**Against R.** Over the six literal variants the score statistic is within
+6.024e-4 of R's where 1e-3 is allowed, and the p-value within 1.430e-4 in
+`log10` where 1e-3 is allowed. The two backends give the same ten digits;
+they part at 5.3e-14 of a statistic of 12.48. Those two tolerances are the
+spec's and were not lowered, because what they measure is where R's own fit
+stopped and not popnei's arithmetic: R's `glm` converges to 1e-8 in the
+deviance.
+
+**Against numpy, on a fixture of eight individuals.** `beta` and `se` are
+each within 1.5e-15 times the `se` numpy gives, 0.8282, and the p-value
+within 1e-14 in `log10`. Both were lowered until they failed on both
+backends: the first breaks at 5e-16 of that `se`, where the effect is
+6.70e-16 away on faer and 2.68e-16 on Accelerate and the standard error
+2.68e-16 on either, and was set at three times the break; the second breaks
+at 4e-15, where the p-value is 4.44e-15 away on Accelerate and 4.63e-15 on
+faer, and was set at 2.5 times it. What the p-value costs above the other
+two is the distribution: popnei reads the chi square off `erfc` and scipy
+computes the same function another way.
+
+**Open 2 has a reproduction at a score test, and it is an ordinary
+mistake.** The covariate is a variant's own dosages in units a tenth of
+theirs, which is what a user gets by putting a genotype in as a covariate.
+The denominator of that variant's score test comes to 4.44e-16 on Accelerate
+and to exactly 0 on faer, against a threshold of 4.19e-15. With no guard the
+row reads `beta` 0, `se` 4.75e7 and `p_value` 1 on one backend and a NaN or
+an infinity on the other. Two of the four places of that rule were reached
+on fixtures built to break them, a collinear design and an identity kinship;
+this one is reached by a mistake a user makes. That is a different claim
+about the risk than "it is reachable", and it is the third case this week
+where the two turned out not to be the same claim.
+
+**Thirteen lines went into the spec before the code, as f7aa25c.** The
+logistic fit can end before its 50 steps: once the chances it fits reach 0
+and 1 the weights are 0, and the weighted design taken against itself is no
+longer a matrix a Cholesky factorization accepts. The design's own columns
+cannot cause it, since a design whose columns are not independent is refused
+before any fit, so the weights are the only route. pyNei never meets it,
+because it solves each step with an LU factorization, which answers a matrix
+a Cholesky refuses. Measured on eight individuals whose covariate is 0 to 7
+and whose four above 3 have the condition: popnei stops at step 45 on both
+backends where numpy 2.5.3 runs all 50 and is still moving, at an intercept
+of -299.6 and an effect of 84.0. It is a divergence from pyNei that a user
+does not see, since both end in the same error, and `docs/objectives.md`
+asks for those to be written down. The error is `GwasFitDidNotSettle`, which
+names the model and the rounds it ran, and which a user meets as a
+`ValueError`.
+
+**For task 1.3.** The Python binding maps that new error through its
+wildcard arm rather than by name, so the case has to be listed there and in
+`tests/reference/gwas/refusals_of_both_layers.json`, which both test suites
+walk.
+
 ## How the work went
 
 This last section is not written for the owner, who can stop here. It is for
 whoever next revises a skill or writes a plan, and it holds what would
 change one of those.
 
-Nothing to record yet.
+**A tolerance that passes for the wrong reason is what the next test
+copies.** Task 1.1 came back comparing with numpy at a share of each value,
+where the spec says `beta` and `se` go against a share of `se` and a
+p-value goes in `log10`. On that fixture the two forms are the same bound,
+because `beta` is 0.855 and `se` is 0.828, and the doc comment said so and
+argued the form was therefore fine. It was sent back, and the rewrite also
+tightened the bound from 3e-14 to 1.5e-15, since the loose one had been
+chosen to cover a p-value that now has a bound of its own and was 45 times
+the worst measured. Both halves of the spec's rule were being broken by one
+constant, the form and the two-or-three-times-the-break, and only the form
+was visible.
+
+**What the tasks cost.** The split of the module cost its subagent 174000
+tokens and 91 tool calls. Task 1.1 cost 292000 tokens and 114 tool calls,
+and the one correction 11000 more over 11 calls. The orchestrator ran the
+nine checks itself after each, which is about four minutes of wall clock a
+time and no context to speak of, since it reads the last line of each.

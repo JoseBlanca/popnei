@@ -126,7 +126,7 @@ The plans `gwas-linear` and `kinship`, merged.
 
 ### Its tasks
 
-- [ ] 1.1 The logistic null fit by iteratively reweighted least squares and
+- [x] 1.1 The logistic null fit by iteratively reweighted least squares and
       the score test, in `crates/popnei/src/gwas.rs`, with the six R
       literals as cargo tests. Built from "The logistic model" of
       `docs/specs/gwas.md`. Serves deliverable 1. Needs nothing of this
