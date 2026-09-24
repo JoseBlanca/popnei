@@ -1,9 +1,60 @@
 # Work report: a file of a page read by ranges in the wasm package
 
 24 September 2026. The work of `docs/plans/js-sources.md`, on the branch
-`plan/js-sources`, which builds the source of bytes over a `File` of
-`docs/specs/js_sources.md`. It is under way; this top section says what the
-owner needs when it is done.
+`plan/js-sources`, which builds what issue 1 of popnei asks for: the wasm
+package reads a file the user picked in the page one range of bytes at a
+time, instead of taking the whole of it into the memory of WebAssembly.
+
+**The plan is done.** Every task is carried out, every deliverable was
+checked by the orchestrator with the command the plan gives, and each of
+its four work packages was reviewed, by seven reviewers for the first and
+by four, four and two for the others.
+
+What exists now that did not:
+
+- `openVcf` and `openVars` take a `File` or a `Blob` as well as an array of
+  bytes, and read it 4 MiB at a time through `FileReaderSync`. A pass over
+  a VCF of 299994147 bytes takes 996 ms in Chromium against 921 ms with the
+  file in the memory of wasm whole, 8.1 % more, and holds 14155776 bytes of
+  that memory against 302383104, 21.4 times fewer. So what limits the size
+  of a file a user can open is time and not memory.
+- `variants.onProgress(fn)` calls a function of the application with the
+  bytes the pass has read, the size of the file, which pass of the run is
+  reading and how many passes it makes. A function that throws ends the run
+  and the consumer throws back the application's own value, so a cancelled
+  analysis keeps its worker, where today it ends it and the new worker
+  reads the file again.
+- `numPassesOf` says how many passes a consumer will make before it starts,
+  from the same place the calls above take that number.
+- Eight tests run popnei in Chromium, through Playwright, where nothing of
+  popnei had ever run in a browser. `npm run test:browser` in `js/popnei`
+  takes 1.8 s and builds the wasm it tests.
+- The package is smaller than before the work: 2021550 bytes of wasm and
+  650486 gzipped, against 2034662 and 657075.
+
+What is asked of the owner:
+
+1. **The merge.** Nothing of this is in `main`. The branch holds the spec
+   `docs/specs/js_sources.md` as well, which `main` does not have, since
+   this branch starts from `spec/file-source`.
+2. **The three open points of the spec**, which the work followed the
+   "meanwhile" of and which the code now shows working: where the progress
+   function is set, what a stopped run throws, and whether an application
+   picks the size of a range.
+3. **Issue 2**, which this work found and did not touch: popnei refuses to
+   read a vars file it wrote itself when its genotypes compress below one
+   bit per value.
+4. **Section 11 of `docs/architecture.md`** says every error of the core is
+   thrown as a JavaScript `Error` with its message. A run that an
+   application stopped now throws the application's own value, which need
+   be no `Error` at all. That line follows from Open 2 and is left for the
+   owner's answer to it.
+
+What was left out, and where it goes: Firefox and WebKit in the tests,
+which the owner left for when an application needs them; the other three
+requests of the applications, the fingerprint of a variant file, the reader
+of CSV and TSV and the inference of the types of its columns; and stopping
+a run while it is not reading, which would be a request to the core crate.
 
 ## Before the first task
 
@@ -238,3 +289,56 @@ The bench left `js/popnei/wasm/` built at the last size it measured while
 saying it put everything back, so the next run of the browser tests failed
 at a case that names nothing about the bench. It rebuilds now, on an
 interrupt as well.
+
+## How the work went
+
+The owner can stop here: this section is for whoever next revises a skill
+or writes a plan.
+
+**A reviewer checked out the commit under review in the shared worktree,
+and two commits went off the branch.** The `code-review` skill sends the
+`spec` and `tests` reviewers with a worktree of their own and tells them to
+check the commit out; the other five read the tree that the work is going
+on in. One of those five checked out the reviewed commit there to rebuild
+the wasm from it. The branch was left pointing at an older commit, the
+orchestrator committed twice on a detached head without noticing, and the
+two were put back with a cherry-pick and one conflict resolved by hand. The
+skill should say, where it says which reviewers get a worktree, that a
+reviewer without one runs `git checkout` nowhere: what it reads is the tip,
+and a build it needs it makes in place. The prompts of every later review
+said so and no reviewer did it again.
+
+**The reviews found more than the writing did, and the numbers say by how
+much.** The seven reviewers of work package 1 cost 991000 tokens against
+the 682000 of the three tasks that wrote it, and they found two defects a
+user would have met, each with a measurement: a leak of 120 KB per source
+and a progress bar that stopped at two thirds. The reviewers that ran the
+code found those; the ones that read it found stale prose. Both kinds of
+finding are worth what they cost, and the second kind is what a first
+reader of a document would have caught.
+
+**Six sentences of the spec were wrong, and every one of them was found by
+building what it described.** They were not careless: each was a claim
+about what popnei's own readers do, written from reading them. A reader
+reads its header when it is built, so the calls of the two passes of a PCA
+interleave; no read of a vars file finds the end of the file, so no call
+said a pass was over. The writing of a spec cannot check those; the first
+task that builds from it can, and the plan should expect it. What worked
+was the rule that the spec changes first, in a commit of its own: the
+history now says what was believed and when it stopped being believed.
+
+**A measurement that nobody questions is a number without a rule.** The
+report of work package 4 kept 4 MiB with an argument that, taken
+symmetrically, chose 1 MiB. The reviewer of the spec found it by applying
+the report's own trade to another row of its own table. A measurement that
+picks one of several numbers says which rule it picks by, or it has not
+finished.
+
+**What a task of this size costs.** The tasks that wrote code cost between
+130000 and 284000 tokens each; the reviewers between 87000 and 182000; the
+two rounds of fixes 240000 and 172000. The whole plan, with its reviews and
+its fixes, is about 3.6 million tokens of subagents. The tasks that were
+one clear piece of work came back once and right; the two that were "the
+findings of the review" needed a second message from the orchestrator when
+a reviewer reported late, which is a reason to hold a fix until every
+reviewer of its work package is back.
