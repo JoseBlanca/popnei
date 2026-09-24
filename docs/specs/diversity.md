@@ -78,7 +78,7 @@ both from the one argument `num_called_alleles`, which is that `g`.
 ```python
 calc_pop_diversity(variants: Variants,
                    pops: dict[str, Sequence[str]] | None = None,
-                   stats: Iterable[PopDiversityStat] = tuple(PopDiversityStat),
+                   stats: Iterable[PopDiversityStat] = WITHOUT_A_DRAW,
                    num_called_alleles: int | None = None,
                    min_num_individuals: int = 20) -> PopDiversity
 ```
@@ -101,6 +101,22 @@ and one not asked for is `None` in the result. The members of
 `PopDiversityStat` are `NUM_ALLELES`, `PRIVATE_ALLELES`,
 `VARIABLE_VARS_RATIO`, `FOLDED_SFS` and `FIS`, and each is the name of the
 field that holds its result.
+
+**The default is the four that need no draw**, `NUM_ALLELES`,
+`PRIVATE_ALLELES`, `VARIABLE_VARS_RATIO` and `FIS`, which
+`PopDiversityStat.WITHOUT_A_DRAW` names, and not all five. So
+`calc_pop_diversity(variants)` works and gives those four over the called
+alleles each population happens to have. The owner decided this on 24
+September 2026, when the work found that the plain call could not run at
+all: the default had been every statistic, the folded spectrum needs a
+draw size, and asking for the spectrum without one is a `ValueError`, so
+the simplest call in the module refused itself and its message named an
+argument the user had not written. The option not taken was to let the
+spectrum be quietly absent without a draw, which this spec chose against
+because a user who asks for a spectrum and gets nothing should be told
+why. Asking for `FOLDED_SFS` by name without `num_called_alleles` is still
+a `ValueError`, since that is a user asking for something popnei cannot
+give; what changed is only what a user who names nothing gets.
 
 `min_num_individuals` is how many called genotypes a population needs at a
 variant for the variant to count for it, 20 by default, and it is measured
@@ -877,6 +893,9 @@ impl DiversityStats {
     pub const FOLDED_SFS: DiversityStats;
     pub const FIS: DiversityStats;
     pub const ALL: DiversityStats;
+    /// The four that need no draw, which is what a Python or a TypeScript
+    /// user who names no statistic asks for.
+    pub const WITHOUT_A_DRAW: DiversityStats;
     /// No statistic, which a caller that builds a set one name at a time
     /// starts from.
     pub fn empty() -> DiversityStats;
