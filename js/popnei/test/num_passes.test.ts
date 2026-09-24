@@ -4,13 +4,15 @@
  *
  * A consumer is the function that runs a `Variants`, `calcKinship` or the
  * iteration of `iterBlocks`, and a pass is one reading of the source from
- * its start. Every consumer of popnei makes one pass, except the principal
- * components of the variants, which reads the source a second time for the
- * weights of the variants: those need the eigenvectors, which are known
- * when the first pass ends. A page that draws one bar for a whole run asks
- * this function how many passes the bar covers, as
- * `docs/specs/js_sources.md` has it under "How many passes a consumer
- * makes".
+ * its start. Every consumer of popnei makes one pass, except two. The
+ * principal components of the variants read the source a second time for
+ * the weights of the variants: those need the eigenvectors, which are known
+ * when the first pass ends. The association study reads it a second time
+ * when it is asked for the GRAMMAR-Gamma approximation: the factor of that
+ * approximation is estimated from the first block of that second pass. A
+ * page that draws one bar for a whole run asks this function how many
+ * passes the bar covers, as `docs/specs/js_sources.md` has it under "How
+ * many passes a consumer makes".
  */
 
 import assert from "node:assert/strict";
@@ -20,8 +22,13 @@ import type { ConsumerName } from "popnei";
 import { init, numPassesOf } from "popnei";
 
 /**
- * The nine consumers that read the source once, which is every one of them
- * but the principal components of the variants.
+ * The ten consumers that read the source once when they are asked with no
+ * options, which is every one of them but the principal components of the
+ * variants.
+ *
+ * The association study is among them: it reads the source twice only when
+ * it is asked for the GRAMMAR-Gamma approximation, which the default does
+ * not ask for, and the two tests below are of that option.
  */
 const THE_CONSUMERS_OF_ONE_PASS: readonly ConsumerName[] = [
   "calcPerVarDistribs",
@@ -29,6 +36,7 @@ const THE_CONSUMERS_OF_ONE_PASS: readonly ConsumerName[] = [
   "calcPairwiseKosmanDists",
   "calcPopDists",
   "calcRogersHuffR2Matrix",
+  "calcLdAndDistPerPop",
   "calcKinship",
   "calcGwas",
   "writeVars",
@@ -36,7 +44,7 @@ const THE_CONSUMERS_OF_ONE_PASS: readonly ConsumerName[] = [
 ];
 
 /**
- * The ten consumers of the package, which are the nine above and the
+ * The eleven consumers of the package, which are the ten above and the
  * principal components of the variants.
  */
 const THE_CONSUMERS: readonly ConsumerName[] = [
@@ -57,6 +65,21 @@ test("the pca of the variants makes one pass when no weights are asked for", asy
 test("the pca of the variants with no options makes the two passes of its ten components", async () => {
   await init();
   assert.equal(numPassesOf("doPcaFromVariants"), 2);
+});
+
+test("the study makes two passes when the grammar gamma approximation is asked for", async () => {
+  await init();
+  assert.equal(numPassesOf("calcGwas", { useGrammarGammaApprox: true }), 2);
+});
+
+test("the study makes one pass when the grammar gamma approximation is not asked for", async () => {
+  await init();
+  assert.equal(numPassesOf("calcGwas", { useGrammarGammaApprox: false }), 1);
+});
+
+test("the study with no options makes the one pass of its exact denominator", async () => {
+  await init();
+  assert.equal(numPassesOf("calcGwas"), 1);
 });
 
 for (const consumer of THE_CONSUMERS_OF_ONE_PASS) {
@@ -98,12 +121,13 @@ function theNamesOfTheRefusal(): string[] {
 
 test("every name the refusal gives is a name numPassesOf takes", async () => {
   await init();
-  // The ten names live twice in the binding crate, in the function that
+  // The eleven names live twice in the binding crate, in the function that
   // takes a name and in the list the message of a refused name is built
   // from, and nothing else holds the two together. A name that the message
   // gives and the function refuses fails the loop below; a name the
   // function takes and the message leaves out fails the comparison with the
-  // ten of this file, which are the ten of `docs/specs/js_sources.md`.
+  // eleven of this file, which are the eleven of
+  // `docs/specs/js_sources.md`.
   const names = theNamesOfTheRefusal();
   assert.deepEqual([...names].sort(), [...THE_CONSUMERS].sort());
   for (const name of names) {
@@ -117,6 +141,17 @@ test("a numPrinComps that is not a whole number of 0 or more is refused", async 
     name: "Error",
     message: /`numPrinComps` is a whole number of 0 or more/,
   });
+});
+
+test("a useGrammarGammaApprox that is not a boolean is refused", async () => {
+  await init();
+  assert.throws(
+    () => numPassesOf("calcGwas", { useGrammarGammaApprox: "yes" }),
+    {
+      name: "Error",
+      message: /`useGrammarGammaApprox` is /,
+    },
+  );
 });
 
 test("a consumer that is not a name is refused where it was written", async () => {

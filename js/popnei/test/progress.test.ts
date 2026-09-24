@@ -31,6 +31,7 @@ import type { ConsumerName, Progress, Variants } from "popnei";
 import {
   calcGwas,
   calcKinship,
+  calcLdAndDistPerPop,
   calcPairwiseKosmanDists,
   calcPerIndividualStats,
   calcPerVarDistribs,
@@ -109,6 +110,22 @@ const THE_POPS = {
   one: THE_INDIVIDUALS.slice(0, 25),
   two: THE_INDIVIDUALS.slice(25),
 };
+
+/**
+ * The kinship of the 50 individuals of `many.vcf`, for the study that asks
+ * for the GRAMMAR-Gamma approximation, which only a mixed model has.
+ *
+ * It is taken over a `Variants` of its own, so that the pass that builds it
+ * is not among the calls the test of a run reads.
+ */
+const THE_KINSHIP = (() => {
+  const variants = openVcf(MANY_VCF);
+  try {
+    return calcKinship(variants, { transformToBiallelic: true });
+  } finally {
+    variants.free();
+  }
+})();
 
 /**
  * The calls the source of `variants` will make, which fill as the consumers
@@ -318,6 +335,75 @@ test("the two passes of the pca take their numbers in the order they start", () 
   );
 });
 
+test("the two passes of the study asked for the approximation take their numbers in the order they start", () => {
+  const variants = openVcf(MANY_VCF);
+  const calls = theCallsOf(variants);
+  try {
+    calcGwas(variants, {
+      phenotype: THE_TRAIT,
+      trait: "continuous",
+      kinship: THE_KINSHIP,
+      useGrammarGammaApprox: true,
+      transformToBiallelic: true,
+    });
+  } finally {
+    variants.free();
+  }
+  assertTheyRise(
+    calls.filter((call) => call.pass === 1),
+    "the first pass of the study",
+  );
+  assertTheyRise(
+    calls.filter((call) => call.pass === 2),
+    "the second pass of the study",
+  );
+  assert.ok(
+    calls.every((call) => call.numPasses === 2),
+    `a call of the study says ${JSON.stringify(calls)}`,
+  );
+  // Both readers are built before either is asked for a block, and the
+  // header of a VCF is read when its reader is built, so the two passes take
+  // their numbers, 1 and then 2, at the two calls of 0 bytes. The second
+  // pass gives the first block the factor of the approximation is estimated
+  // from and is then dropped, so it ends where the end of the run tells the
+  // page of it, below the whole file, while the first pass reads the file to
+  // its end.
+  assert.deepEqual(
+    calls.map((call) => call.pass),
+    [1, 2, 1, 2],
+  );
+  assert.deepEqual(
+    calls.map((call) => call.bytesRead).slice(0, 2),
+    [0, 0],
+  );
+  assert.equal(
+    calls.filter((call) => call.pass === 1).at(-1)?.bytesRead,
+    BYTES_OF_MANY_VCF,
+  );
+});
+
+test("the study that is not asked for the approximation reads the source once", () => {
+  const variants = openVcf(MANY_VCF);
+  const calls = theCallsOf(variants);
+  try {
+    calcGwas(variants, {
+      phenotype: THE_TRAIT,
+      trait: "continuous",
+      kinship: THE_KINSHIP,
+      transformToBiallelic: true,
+    });
+  } finally {
+    variants.free();
+  }
+  assert.deepEqual(
+    calls.map((call) => ({ pass: call.pass, numPasses: call.numPasses })),
+    [
+      { pass: 1, numPasses: 1 },
+      { pass: 1, numPasses: 1 },
+    ],
+  );
+});
+
 test("the pca that is asked for no weight reads the source once", () => {
   const variants = openVcf(MANY_VCF);
   const calls = theCallsOf(variants);
@@ -363,8 +449,10 @@ test("twelve iterations of blocks over one source are twelve runs of one pass", 
 });
 
 /**
- * The ten consumers of the package, each with the options its run is made
- * with and the ones `numPassesOf` is asked with.
+ * The eleven consumers of the package, each with the options its run is made
+ * with and the ones `numPassesOf` is asked with, and the association study
+ * twice, once for each number of passes its GRAMMAR-Gamma approximation
+ * gives.
  *
  * `transformToBiallelic` is true where the calculation asks for it, because
  * `many.vcf` holds variants of more than two alleles and the core's default
@@ -410,6 +498,12 @@ const THE_CONSUMERS: readonly {
     },
   },
   {
+    name: "calcLdAndDistPerPop",
+    run: (variants) => {
+      calcLdAndDistPerPop(variants, { pops: THE_POPS });
+    },
+  },
+  {
     name: "calcKinship",
     run: (variants) => {
       calcKinship(variants, { transformToBiallelic: true });
@@ -431,6 +525,19 @@ const THE_CONSUMERS: readonly {
       calcGwas(variants, {
         phenotype: THE_TRAIT,
         trait: "continuous",
+        transformToBiallelic: true,
+      });
+    },
+  },
+  {
+    name: "calcGwas",
+    options: { useGrammarGammaApprox: true },
+    run: (variants) => {
+      calcGwas(variants, {
+        phenotype: THE_TRAIT,
+        trait: "continuous",
+        kinship: THE_KINSHIP,
+        useGrammarGammaApprox: true,
         transformToBiallelic: true,
       });
     },
