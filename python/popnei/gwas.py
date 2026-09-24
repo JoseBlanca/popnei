@@ -133,7 +133,8 @@ class NullModel:
 
     covariate_effects: pandas.Series
     """The effect of the column of ones, under the name ``intercept``, and of
-    every covariate, under the name it was given.
+    every covariate, under the name it was given, in the units of the trait
+    for a continuous one and as a log odds ratio for a binomial one.
 
     A covariate named ``intercept`` is refused at the call, since the two
     would be one row of this series."""
@@ -185,9 +186,12 @@ class GWASResult:
     the variant has none. A variant whose dosages are all the same among
     the tested individuals has no variance and cannot be tested: its row is
     here with its ``allele_freq``, and the other three are NaN. So is a
-    variant whose logistic fit walks towards an infinite effect instead of
-    settling, which is one that separates the individuals that have the
-    condition from those that have not."""
+    variant whose logistic fit does not settle, under the Wald test of a
+    binomial trait alone: one that separates the individuals that have the
+    condition from those that have not, whose effect has no finite value to
+    walk towards, and one that repeats a covariate, which separates nobody
+    and leaves the fit a system with no one solution. The score test fits
+    nothing for a variant and gives all three numbers for either of them."""
 
     null_model: NullModel
     """The model fitted with no variant in it."""

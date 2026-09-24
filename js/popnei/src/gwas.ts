@@ -119,10 +119,13 @@ export type GwasModel = "lm" | "lmm" | "glm" | "glmm";
  * The rows are in the order the variants came. A variant whose dosages are
  * all the same among the tested individuals has no variance and cannot be
  * tested: its row is here with its `alleleFreq`, and its `beta`, its `se`
- * and its `pValue` are NaN. So is a variant whose logistic fit walks
- * towards an infinite effect instead of settling, which is one that
- * separates the individuals that have the condition from those that have
- * not.
+ * and its `pValue` are NaN. So is a variant whose logistic fit does not
+ * settle, under the Wald test of a binomial trait alone: one that separates
+ * the individuals that have the condition from those that have not, whose
+ * effect has no finite value to walk towards, and one that repeats a
+ * covariate, which separates nobody and leaves the fit a system with no one
+ * solution. The score test fits nothing for a variant and gives all three
+ * numbers for either of them.
  */
 export interface GwasStats {
   /**
@@ -171,7 +174,8 @@ export interface GwasNullModel {
   readonly model: GwasModel;
   /**
    * The effect of the intercept, under the name `intercept`, and of every
-   * covariate, under the name it was given.
+   * covariate, under the name it was given, in the units of the trait for a
+   * continuous one and as a log odds ratio for a binomial one.
    */
   readonly covariateEffects: Readonly<Record<string, number>>;
   /**
@@ -375,6 +379,14 @@ export function calcGwas(
       : aBoolean("transformToBiallelic", options.transformToBiallelic);
   // An option written and left `undefined` is one that was not given, which
   // is what spreading an object of options over a call leaves behind.
+  //
+  // The default is written here and not taken from the core's
+  // `DEFAULT_USE_GRAMMAR_GAMMA_APPROX`, which is what a study that can make
+  // the approximation takes when the user says nothing, as the Python
+  // package writes it too: popnei refuses the approximation until it is
+  // written, so a core whose default became true would turn every plain
+  // call into a refusal. Until then this default changes no result, since
+  // the approximation is refused whatever is written here.
   const useGrammarGammaApprox =
     options.useGrammarGammaApprox === undefined
       ? false
