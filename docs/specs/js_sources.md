@@ -21,11 +21,11 @@ unchanged. The specs of those two readers, `docs/specs/io_vcf.md` and
 `docs/specs/variant.md` has the counts of a pass, which the progress of this
 spec stands beside; `docs/specs/block.md` has `iterBlocks`.
 
-Two words of `docs/glossary.md` are used throughout. A **pass** is one
+Three words of `docs/glossary.md` are used throughout. A **pass** is one
 reading of a source of variants from its start to its end. A **consumer** is
 what takes a `Variants`, makes the passes it needs and gives a result: a
-calculation, the writer `writeVars`, or `iterBlocks`. The package has ten of
-them.
+calculation, the writer `writeVars`, or `iterBlocks`; the package has ten of
+them. A **run** is one call of one consumer, with the passes it makes.
 
 What the user of an application pays today, with the file taken whole:
 
@@ -35,15 +35,14 @@ What the user of an application pays today, with the file taken whole:
   estimate from those sizes; no browser has been measured at it.
 - The memory of wasm grows and never shrinks, so the worker holds the file
   until it is restarted.
-- A consumer that the user cancels ends its worker, which is the only way to
-  stop a loop inside wasm: a page tells a worker something by sending it a
+- A run that the user cancels ends its worker, which is the only way to stop
+  a loop inside wasm: a page tells a worker something by sending it a
   message, which the worker reads when it is between two messages and not
   while it is inside a calculation, and the one memory a page and a worker
   can share and read at the same time, a `SharedArrayBuffer`, needs headers
   that GitHub Pages does not send. The new worker then reads the whole file
-  again before the next consumer starts.
-- Nothing can be shown of how far a consumer has got, only that it is
-  running.
+  again before the next run starts.
+- Nothing can be shown of how far a run has got, only that it is running.
 
 ## The source over a file of the page
 
@@ -57,7 +56,7 @@ has the bytes, which is what Rust's `Read` and `Seek` need; it exists only
 inside a web worker.
 
 `openVcf` and `openVars` take a `File` as well as an array of bytes. With a
-`File`, popnei reads the ranges it needs through `FileReaderSync`, a few MB
+`File`, popnei reads the ranges it needs through `FileReaderSync`, a few MiB
 at a time, so the file is never in the memory of wasm whole: what a pass
 holds is one range, the block it is building and, over a vars file, the
 batch it is reading. The size of a file a user can open stops being limited
@@ -101,11 +100,12 @@ handle, and a reader that took it for the end would give the variants it had
 and say nothing. What each browser does with a file that changed has not
 been tested here.
 
-A pass over a vars file holds one batch, which arrow-rs, the library popnei
-reads and writes that file with, reads whole before it decompresses the
-columns the pass asked for. At the size popnei writes, that is about 10 MB
-of genotypes for 1000 individuals. So the file is no longer in memory whole
-and a batch of it is.
+A pass over a vars file holds one batch: the reader reads the bytes of a
+whole batch, the ones its footer says it holds, and hands them to arrow-rs,
+the library popnei reads and writes that file with, which decompresses the
+columns the pass asked for. At the size popnei writes, a batch is about
+10 MB of genotypes for 1000 individuals. So the file is no longer in memory
+whole and a batch of it is.
 
 A `Variants` over a `File` keeps the handle until its `free()` is called,
 and the handle is not the bytes: what the page holds for an unfreed
@@ -139,10 +139,9 @@ in this crate, and a change to the trait of the core.
 Each range crosses once into the memory of wasm, copied out of the
 `ArrayBuffer`, the block of bytes JavaScript gives back, that
 `FileReaderSync` fills. The memory of a pass is that one range, plus what
-the reader holds: the lines of a block for a VCF, the batch for a vars
-file. A source with several passes open at once holds one range for each of
-them; a test of the package keeps twelve passes over one vars file open
-together.
+the reader holds: the lines of a block for a VCF, the batch for a vars file.
+A source with several passes open at once holds one range for each of them;
+a test of the package keeps twelve passes over one vars file open together.
 
 The two crates that call `FileReaderSync` and `Blob.slice` are `js-sys` and
 `web-sys`, which the binding crate does not depend on yet. They are pure
@@ -201,7 +200,7 @@ added is a line of its configuration and their download.
 
 ### What it gives
 
-While a consumer runs, the worker is inside wasm and reads no message, so
+While a run is going on, the worker is inside wasm and reads no message, so
 the page learns nothing about it. The source is the one part of a pass that
 comes back out to JavaScript, once per range, and it is where both of these
 are done: it tells the page how far the pass has got, and it takes from the
@@ -209,24 +208,22 @@ page the decision to stop.
 
 The application gives a function, and the source calls it with how many
 bytes of the file the pass has read, how many the file holds, which pass of
-the run is reading and how many passes the run makes. The call is made when
-a pass starts, with no bytes read; every time the bytes read since the last
-call reach the size of a range; and when the pass ends. A page that draws a
-bar from those numbers sees it fill once per pass and knows which pass it is
-on, so a PCA that reads the file twice does not look broken when the bar
-goes back to empty.
+the run is reading and how many passes the run makes. The calls of a pass
+are made by its reads: the first read of the pass makes one with no bytes
+read; a read that brings the bytes read since the last call to the size of a
+range makes another; and so does a read that finds no more bytes in the
+source, which is the last call of a pass over a VCF, read to its end. A page
+that draws a bar from those numbers sees it fill once per pass and knows
+which pass it is on, so a PCA that reads the file twice does not look broken
+when the bar goes back to empty.
 
 When that function throws, the pass ends there: the read fails, the error
 travels out through the readers, and the consumer throws the value the
-function threw. So an application cancels a consumer without ending its
-worker, and what it gets back is its own object, which it recognises without
-reading a message (**Open 2**, below). Nothing of popnei is left in a state
-a later call notices: the `Variants` is the one it was, and the next
-consumer over it reads the file from its start.
-
-The call when a pass ends is the one exception: the pass is over, there is
-nothing left to stop, and a value thrown in it is dropped. The page is told
-so where `onProgress` is documented.
+function threw. So an application cancels a run without ending its worker,
+and what it gets back is its own object, which it recognises without reading
+a message (**Open 2**, below). Nothing of popnei is left in a state a later
+call notices: the `Variants` is the one it was, and the next run over it
+reads the file from its start.
 
 The stop happens while the file is being read, and not inside the linear
 algebra. A kinship of 10000 individuals reads the file once and then spends
@@ -262,6 +259,12 @@ Every consumer of the package can throw the value that `told` threw:
 `doPcaFromVariants`, `calcGwas`, `writeVars` and the iteration of
 `iterBlocks`.
 
+`onProgress` has no Python counterpart, and neither has `numPassesOf` of the
+item below. Goal 2 of `docs/objectives.md` asks for every difference between
+the two APIs to be written down, and this is one: what they are for is a
+page that draws a bar and a user who presses a button, and Python reads a
+file by its path in a program that has neither.
+
 ### The cases a reader of the rules would not guess
 
 The bytes read are the bytes that pass gave to its reader, and they are
@@ -269,24 +272,30 @@ counted against the size of the file as it is on disk. For a gzipped VCF
 that is the compressed bytes: a pass over a VCF of 21904 bytes gzipped ends
 at 21904 and not at the 117346 bytes of its text.
 
-A pass over a vars file does not read the file evenly. It reads the last
-bytes of the file first, the trailer and the footer, which say where the
-batches are, and then each batch whole, one after another. So its bar jumps
-at the first call and then moves batch by batch, and it ends a little below
-the size of the file, which the padding between batches accounts for; the
-count is capped at the size of the file so that a bar never passes 100%.
-Every pass over a vars file reads that footer again, because a pass builds
-its own reader.
+A pass over a vars file does not read the file evenly, and it does not read
+all of it. It reads the last ten bytes first, which say how long the footer
+is, then the footer, which says where the batches are, and then each batch
+whole, one after another; the schema message at the head of the file it
+never reads, because the footer carries the schema too. Measured on
+`tests/reference/vars/zstd.vars`, 2418 bytes for three individuals: the
+footer is 784 bytes and the schema message 624, which is a quarter of that
+file and a smaller share of a real one, where the batches are most of the
+bytes. So a bar over a vars file ends below the size of the file. The count
+is capped at that size, so a bar never passes 100 in 100.
 
-A file of fewer bytes than one range gives two calls, at the start and when
-the pass ends: the bytes read never reach one range.
+A file of fewer bytes than one range gives two calls over a VCF, at the
+first read and at the read that finds the end of the file, and one call over
+a vars file, which never reads past its last batch.
 
 `openVcf` and `openVars` read the header or the schema before any pass, and
 those reads are told to nobody: what the function is set on is the
 `Variants` that those calls give.
 
-A function that throws is called no more in that pass, and the end of that
-pass is not told either.
+A function that throws is called no more in that pass.
+
+A pass that never reads a byte is never told of: the PCA of a source whose
+first pass gives no variant with variance fails before its second reader
+reads, and the page hears of one pass and not of two.
 
 Passes are counted inside a run and not inside a source. A consumer opens a
 run, every reader it opens belongs to it, and a pass takes its number when
@@ -294,6 +303,17 @@ it first reads: the PCA builds both of its readers before either has read a
 byte, and they are pass 1 and pass 2 in the order they start. Twelve
 `iterBlocks` over one source at once are twelve runs, each of one pass, and
 each of them is pass 1 of 1.
+
+An `iterBlocks` that a user abandons without freeing it holds its run, and
+with it the entry of its source, until the `FinalizationRegistry` of the
+package frees the pass, at a moment nobody chooses. It is the rule the whole
+package already has for the memory of wasm, which
+`docs/specs/block.md` states: what a user does not free is freed late.
+
+The function is called with no table of the binding crate borrowed, so an
+application that calls popnei from inside it does not trap: `free()` there
+leaves the entry until the pass that is reading is done with it, and a
+consumer started there runs as any other call does.
 
 ### How it is verified
 
@@ -306,14 +326,13 @@ from it, with ranges of the size popnei chose:
   down. Over `many.vcf.gz` the last call has `bytesRead` 21904 and
   `numBytes` 21904.
 - Over the vars file the first call is 0, `bytesRead` never goes down and
-  never passes `numBytes`, and the last call is above 90 in every 100 bytes
-  of the file: a pass reads the trailer, the footer and every batch, which
-  is the file but for the padding between them. The exact number goes into
-  the test as a literal when it is first run, with the file it was measured
-  on.
+  never passes `numBytes`, and the last call is the bytes of its footer and
+  its batches, which goes into the test as a literal when it is first run,
+  with the file it was measured on.
 - `doPcaFromVariants` with `numPrinComps` 10 gives calls of `pass` 1 and
   then of `pass` 2, each starting at 0 bytes and ending at 117346, and every
-  call has `numPasses` 2. With `numPrinComps` 0 there is one pass.
+  call has `numPasses` 2; no call of `pass` 1 comes after a call of `pass`
+  2. With `numPrinComps` 0 there is one pass.
 - Twelve `iterBlocks` over one source, opened together and read one after
   another, give calls of `pass` 1 and `numPasses` 1 for each of the twelve.
 - A function that throws on its first call: the consumer throws that same
@@ -322,8 +341,9 @@ from it, with ranges of the size popnei chose:
 - A function that throws on the first call of the second pass: the PCA
   throws it, and what it threw is not popnei's error for a source that ended
   early.
-- A function that throws only in the call that ends a pass: the consumer
-  returns its result, and the value is not thrown.
+- A function that calls `variants.free()` and one that runs
+  `calcPerIndividualStats` over the same `Variants`: neither traps, and the
+  pass that was reading gives its variants.
 - For each of the ten consumers, the largest `pass` of the calls of one run
   equals `numPassesOf` of it with the same options.
 
@@ -347,9 +367,12 @@ passes: `"calcPerVarDistribs"`, `"calcPerIndividualStats"`,
 `"calcPairwiseKosmanDists"`, `"calcPopDists"`,
 `"calcRogersHuffR2Matrix"`, `"calcKinship"`, `"doPcaFromVariants"`,
 `"calcGwas"`, `"writeVars"` and `"iterBlocks"`. `options` is the options
-object that function takes, and only `numPrinComps` of
-`doPcaFromVariants` changes the answer. A name that is of no consumer of the
-package is an `Error`.
+object that function takes, and only `numPrinComps` of `doPcaFromVariants`
+changes the answer; it is checked as that function checks it, so a
+`numPrinComps` that is not a whole number of 0 or more is an `Error` here
+too. A name that is of no consumer of the package is an `Error`. Like every
+other function of the package it reads the default of `numPrinComps` from
+the core, so it throws until `init` has been awaited.
 
 The number the `Progress` of each call carries is this same number, from the
 same function of the binding crate: the consumer asks it what its run makes
@@ -364,15 +387,18 @@ the reader of its pass, as section 1 of the architecture says.
 Under node: `numPassesOf("doPcaFromVariants", { numPrinComps: 10 })` is 2,
 with `numPrinComps` 0 it is 1, and with no options it is 2, which is the
 default of 10 components; each of the other nine names gives 1; a name that
-is of no consumer throws. The test of the item above runs each of the ten
-and compares the passes the calls showed with the number this function
-gives, which is what would catch a consumer that grew a pass and did not say
-so.
+is of no consumer throws, and so does a `numPrinComps` of -1. The test of
+the item above runs each of the ten and compares the passes the calls showed
+with the number this function gives, which is what would catch a consumer
+that grew a pass and did not say so.
 
 ## The Rust interface
 
 In the binding crate. Nothing of this is in the core crate, and nothing of
-it is public to a user of the core.
+it is public to a user of the core. `VcfSource` and `VarsSource`, which
+implement `OpenSource` and today hold the bytes of their file, and
+`JsPopneiError`, the error every function of the crate gives, are the types
+that `crates/popnei-js/src/` already has.
 
 ```rust
 /// One pass over the bytes of a source, which the readers of the core take
@@ -411,9 +437,6 @@ enum TheBytes {
 impl Read for PassOverTheBytes {}
 impl BufRead for PassOverTheBytes {}
 impl Seek for PassOverTheBytes {}
-/// The call that tells the page the pass has ended, whose thrown value is
-/// dropped.
-impl Drop for PassOverTheBytes {}
 
 /// What a source keeps in JavaScript, which nothing of Rust may hold and
 /// stay `Send`. One entry per source, which `VcfSource` and `VarsSource`
@@ -434,7 +457,7 @@ struct InJavaScript {
 /// One run of one consumer: which source it reads, how many passes it
 /// makes, how many have begun, and what the function threw. It is taken out
 /// when the consumer returns, and for `iterBlocks` when the iteration ends
-/// or the pass is dropped.
+/// or the pass is freed.
 struct Run {
     source: u32,
     num_passes: u32,
@@ -479,34 +502,41 @@ pub(crate) trait OpenSource {
 }
 
 /// The run a consumer holds: the number of its entry of `RUNS`, which its
-/// readers carry, and which is taken out of that table when the consumer
-/// is done with it.
+/// readers carry, and which is taken out of that table when the consumer is
+/// done with it.
 pub(crate) struct RunOfAConsumer(u32);
 
 impl Drop for RunOfAConsumer {}
 ```
 
-The error that a stopped pass gives the core is an `io::Error`, which the
-core wraps and gives back as its own. What the consumer throws is not that
-error: `JsPopneiError` has a case that carries a `JsValue` through
-untouched, and `impl From<JsPopneiError> for JsValue` gives it back as it
-is, where every other case becomes an `Error` with its message. The binding
-puts the error of a consumer into that case when the run it opened was
-stopped, whatever error the core gave, so nothing depends on which reader
-turned the failed read into which error.
+The read that a thrown value ends fails with `std::io::Error::other`. The
+kind matters: `ErrorKind::Interrupted` is read again by three loops of the
+core, `read_line_of` of `io::vcf`, `take_from` of `io::bgzf` and the
+`read_exact` of `bytes_at` of `io::vars`, so a stop written with it would
+never end the pass; and `ErrorKind::UnexpectedEof` is what `bytes_at` turns
+into the error of a vars file that was cut short, so a stop written with it
+would reach the user as a damaged file.
+
+What the consumer throws is not the error the core gives back for that read:
+`JsPopneiError` has a case that carries a `JsValue` through untouched, and
+`impl From<JsPopneiError> for JsValue` gives it back as it is, where every
+other case becomes an `Error` with its message. The binding puts the error
+of a consumer into that case when the run it opened was stopped, whatever
+error the core gave, so nothing depends on which reader turned the failed
+read into which error.
 
 ## Speed
 
 The size of a range is the number to measure, and no argument of the API
 carries it (**Open 3**, below). What one call into JavaScript costs, and
-what a pass costs at each size, is measured in Chromium on the
-owner's Apple M5 Pro, on a VCF of a few hundred MB built from `many.vcf`, at
-256 KiB, 1 MB, 4 MB and 16 MB, against the same file read whole as an array
-of bytes, which is what the applications do today. The measurement gives two
+what a pass costs at each size, is measured in Chromium on the owner's Apple
+M5 Pro, on a VCF of a few hundred MB built from `many.vcf`, at 256 KiB,
+1 MiB, 4 MiB and 16 MiB, against the same file read whole as an array of
+bytes, which is what the applications do today. The measurement gives two
 numbers this spec then carries: the size of a range, and what a pass over a
 file of that size holds in the memory of wasm, which is the bound the
-browser test asserts. Until it is made the implementer writes 4 MB, which is
-where the plan's first task starts, and no other number is picked for it.
+browser test asserts. Until it is made the implementer writes 4 MiB, which
+is where the plan's first task starts, and no other number is picked for it.
 
 ## Open points
 
