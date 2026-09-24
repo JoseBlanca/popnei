@@ -107,6 +107,14 @@ and not against a number typed out of a session. It stops before Python:
 no code of the module exists yet, and the comparisons that read these
 files are deliverables of the two work packages after it.
 
+One number of "How it is verified" does not become a file here, and task
+1.1 found it: the standardized private alleles of the panel at a draw of
+20, 0.0112196177, 0.0099715392 and 0.0089014974. No outside program gives
+any standardized value, so no script of this work package can write them.
+They stay literals of a pytest test, which is what deliverable 3 of work
+package 3 already asks for, and the spec was corrected in commit `b580a21`
+to name where they do come from, `docs/reports/diversity-method/panel.py`.
+
 It goes first because every later check reads these numbers, and because
 it is the one part that could change the plan: if `dadi` cannot be
 installed the same way twice, the folded spectrum loses its only outside
@@ -149,16 +157,16 @@ five programs of "What has to be in place".
 **Tasks.** 1.1, 1.2 and 1.3 touch different files and can run side by
 side; 1.4 comes after all three.
 
-- [ ] 1.1 `make_reference.R` and its output, from "How it is verified" of
+- [x] 1.1 `make_reference.R` and its output, from "How it is verified" of
   "The number of alleles", of "The private alleles" and of "The variable
   variants" of `docs/specs/diversity.md`. Serves deliverable 1.
-- [ ] 1.2 `make_reference.py`, the two environments it makes and its
+- [x] 1.2 `make_reference.py`, the two environments it makes and its
   output, from "How it is verified" of "The folded site frequency
   spectrum" and of "The inbreeding coefficient F_IS". Serves deliverable
   2. `docs/reports/diversity-method/check_dadi.py` and `check_allel.py`
   are what it grows from; they read `panel_counts.tsv`, which this script
   has to write itself.
-- [ ] 1.3 `enumerate_private.py` and its output, from "How it is
+- [x] 1.3 `enumerate_private.py` and its output, from "How it is
   verified" of "The private alleles". Serves deliverable 3.
   `docs/reports/diversity-method/check_by_enumeration.py` is what it
   grows from.
