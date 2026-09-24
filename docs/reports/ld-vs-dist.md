@@ -213,8 +213,9 @@ core already raises are not raised twice.
 The four defaults became `pub const` of the core, `DEFAULT_MIN_DIST`,
 `DEFAULT_MAX_DIST`, `DEFAULT_NUM_DIST_BINS` and
 `DEFAULT_MAX_ALLOWED_MAF`, which is how every other Python default of
-popnei is fed. The bins' constant is `DEFAULT_NUM_DIST_BINS` and not
-`DEFAULT_NUM_BINS`, which the histogram already has.
+popnei is fed. The bins' constant was `DEFAULT_NUM_BINS` in the core and
+`DEFAULT_NUM_DIST_BINS` in both bindings, which the review found and the
+fixes made one name in the three layers.
 
 The test that compares with pyNei does ask pyNei: it asserts that
 `num_vars_per_pop` equals both the 396 and 402 of the spec and what
@@ -357,3 +358,59 @@ backend, 50 tests under `ld::dist`, 505 pytest, 332 node, fmt, clippy,
 wasm-check and ruff clean, and `run_plink2.sh` into an empty directory
 exits 0 naming no differing file. Every one of these was run by the
 orchestrator.
+
+### The rest of the findings, and one belief the work disproved
+
+Nine smaller findings were fixed in commits `5ffd4fd` to `3739562`: the
+one default that had two names across the three layers; the module
+documentation of both `ld` files, which described what the file held
+before the later tasks filled it; a check in the TypeScript package
+whose doc comment listed its callers and had fallen two behind; three
+comments that no longer said what the code does, one of them miscounting
+the worked example; the two stale notes about which errors a Python user
+can reach; and two statements of the spec that had no test, an individual
+in more than one population or in none, and a dataset of variants each on
+its own chromosome, whose fixture read one variant a block and so never
+made a pair at all.
+
+Two of them were judged and not simply applied.
+
+**The count of the variants of a pass keeps the plain sum.** The review
+asked for `checked_add`, which the `coding` skill prefers. The bound is
+real: the count would have to pass 1.8·10¹⁹ variants, whose positions
+alone are 147 exabytes, so the skill's own rule for a bound that cannot
+be reached applies and the operator stays with the bound written beside
+it. `checked_add` would need a new case in the public error enum and in
+the spec for a pass no machine can run, which is an interface change and
+so the owner's, not a review fix. `crates/popnei/src/dists.rs:824`
+counts its own pass the same way, so the two modules agree.
+
+**Cutting the tiles from the first variant of the pass buys nothing that
+can be measured.** The plan's "What could go wrong" says that a tiling
+which follows the blocks instead "passes deliverable 2 and fails
+deliverable 3 at the second block size". Two reviewers and then the fix
+tried it: with the alignment removed, so that the tiles are cut from the
+start of the window rather than from the first variant of the pass, all
+190 tests of the `ld` module still pass, and the three reference tables
+are identical at tiles of 7, 64, 256 and 500. What actually buys the
+promise that the answer does not move is the correction of `71e69bd`,
+adding the bins up one newest variant at a time in the order of the pass.
+The alignment is kept, because it costs nothing and keeps the buffers a
+fixed size, and its doc comment now says that it is not what fixes the
+numbers. Nobody has found a case where it changes one.
+
+After the nineteen fixes of the three rounds: `cargo test --workspace`
+gives 837 passed with 2 ignored and 149 in the linear algebra crate, the
+same 837 on faer, 50 under `ld::dist`, 506 pytest with 7 of them under
+`-k ld_and_dist`, 332 node, fmt, clippy, wasm-check and ruff clean, and
+`run_plink2.sh` into an empty directory exits 0 naming no differing
+file. Every one was run by the orchestrator.
+
+**Three things found on the way that are nobody's task in this plan.**
+`cargo doc -p popnei` fails on an unresolved link to
+`Error::ReaderGaveNoVariants` at `crates/popnei/src/ld.rs:973`, which was
+already broken before this work package and is not among the checks the
+`coding` skill lists. The chromosome comparison in
+`the_first_row_in_reach` is an optimisation that no test covers: removing
+it breaks nothing. And `js/popnei/README.md` lists five calculations and
+leaves out four of them.
