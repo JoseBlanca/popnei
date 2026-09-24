@@ -535,8 +535,9 @@ M5 Pro, on a VCF of a few hundred MB built from `many.vcf`, at 256 KiB,
 bytes, which is what the applications do today. The measurement gives two
 numbers this spec then carries: the size of a range, and what a pass over a
 file of that size holds in the memory of wasm, which is the bound the
-browser test asserts. Until it is made the implementer writes 4 MiB, which
-is where the plan's first task starts, and no other number is picked for it.
+browser test asserts. It needs the source of this spec reading a `File` in
+a browser, so it comes after that work and not before it; until then the
+implementer writes 4 MiB, and no other number is picked for it.
 
 ## Open points
 
