@@ -817,6 +817,25 @@ differs from the plain one by the `c / (c - 1)` factor of each variant's
 expected heterozygosity, whose own verification against pyNei and plink2
 is in `docs/specs/stats.md`, so no program is run twice for it.
 
+Those three are what a reader reads, and they are too short for the test
+to use: a value printed to ten decimals stands for anything within 5e-11
+of itself, where 1e-12 relative of 0.0128 is 1.3e-14, so no
+implementation could be compared against them at the tolerance this item
+asks for. The literals the pytest test holds are the same three values at
+the precision `docs/reports/diversity-method/panel.py` computed them to,
+that script being where every unbiased number of this spec comes from:
+
+    p0  -0.012758486763377208
+    p1  -0.018110713076467277
+    p2  -0.018458583231322434
+
+Run again on 24 September 2026. popnei's Rust agrees with them to 5.2e-14,
+1.2e-14 and 0 relative, which is 19 times inside the 1e-12 this item
+compares within. The comparison says that popnei's Rust agrees with that
+Python and nothing more, as the standardized private alleles do; what
+checks the statistic against a program outside popnei is the plain form
+above, against `scikit-allel`.
+
 `adegenet` 2.1.11 is the other program with the ingredients, and it is not
 the reference: its `Hs` is the plain expected heterozygosity with no
 correction for the sample, 0.3481518, 0.3477311 and 0.3427402 on the three
