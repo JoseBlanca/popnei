@@ -182,7 +182,7 @@ impl From<JsPopneiError> for JsValue {
 /// `poly_threshold` and `bin_type`, which `stats.rs` writes as
 /// `polyThreshold` and `binType` before the error gets here.
 ///
-/// Three of the eight names the core writes are left as they are.
+/// Three of the nine names the core writes are left as they are.
 /// `num_prin_comps` is in the error of a second pass that was not made,
 /// which `pca.rs` of this crate opens a reader for whenever the weights are
 /// asked for, so no call of TypeScript reaches it. The `max_num_vars` of a
@@ -206,6 +206,12 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
         popnei::Error::BlockTooLarge { .. } | popnei::Error::VarsTextTooLarge { .. }
     ) {
         return message.replace("num_vars_per_block", "numVarsPerBlock");
+    }
+    if matches!(
+        error,
+        popnei::Error::DiversitySfsWithoutADraw | popnei::Error::DiversityDrawTooSmall { .. }
+    ) {
+        return message.replace("num_called_alleles", "numCalledAlleles");
     }
     message
 }

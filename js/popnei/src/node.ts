@@ -16,6 +16,15 @@ export type { Block, Field } from "./block.js";
 export { version } from "./core.js";
 export { calcPairwiseKosmanDists, Distances } from "./dists.js";
 export type { CalcPairwiseKosmanDistsOptions } from "./dists.js";
+export { calcPopDiversity } from "./diversity.js";
+export type {
+  CalcPopDiversityOptions,
+  DiversityNumVars,
+  PopAlleleCounts,
+  PopDiversity,
+  PopDiversityStat,
+  VariableVarsRatio,
+} from "./diversity.js";
 export type { FilteringStats, Step } from "./filters.js";
 export { calcGwas } from "./gwas.js";
 export type {
