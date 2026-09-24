@@ -59,13 +59,16 @@
 //! weights and the residuals that fit left, and the Wald test, which fits
 //! one logistic regression per variant with the variant in the design.
 //!
-//! [`TheLinearization`](logistic_mixed::TheLinearization), of
+//! [`LogisticMixedModel`](logistic_mixed::LogisticMixedModel), of
 //! `logistic_mixed`, is the fourth model being written: it starts from the
-//! logistic null of `logistic` and runs one linearization of the logistic
-//! mixed model at one value of the variance of the kinship effect, the
-//! working trait and its weights, the covariance of that trait factored
-//! with a Cholesky and applied by solving, and the working trait through
-//! the projection matrix. The step on that variance, the score test of a
+//! logistic null of `logistic` and searches for the variance of the
+//! kinship effect, running a linearization of the logistic mixed model at
+//! each value of it and then taking one Newton step on that variance
+//! inside a bracket. A linearization is the working trait and its weights,
+//! the covariance of that trait factored with a Cholesky and applied by
+//! solving, and the working trait through the projection matrix; nothing
+//! of an individuals by individuals size is inverted until the search has
+//! settled, and then once, for the projection matrix. The score test of a
 //! block and the model reaching `pass` are being written beside it.
 //! `the_share_that_is_nothing` is here and not in a model because every
 //! model reads it.
@@ -76,16 +79,16 @@ mod linear;
 mod linear_mixed;
 mod logistic;
 // Nothing outside the tests reaches this module yet: `calc_gwas` refuses
-// the logistic mixed model until the step on the variance of the kinship
-// effect and the score test are written, so every item here is dead in a
-// build without them. It is committed on its own because a linearization
-// that is wrong in its last digits moves the fit and crashes nothing.
+// the logistic mixed model until its score test is written, so every item
+// here is dead in a build without it. It is committed on its own because a
+// fit that is wrong in its last digits moves the variance of the kinship
+// effect and crashes nothing.
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the study refuses the logistic mixed model until its step on the \
-                  variance of the kinship effect and its score test are written"
+        reason = "the study refuses the logistic mixed model until its score test is \
+                  written"
     )
 )]
 mod logistic_mixed;
