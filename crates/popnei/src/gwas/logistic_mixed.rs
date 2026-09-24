@@ -345,9 +345,15 @@ impl<'a> TheLinearization<'a> {
             collapsed = collapsed || !working.is_finite() || !(1.0 / *weight).is_finite();
         }
         match collapsed {
+            // The search reads the working trait once before any round is
+            // run, for the variance it starts at, and the round counter is
+            // still the 0 the logistic null left there. So the round named
+            // is the one the fit was about to run and never a round it did
+            // not run: a refusal that said it did not settle in the 0
+            // rounds it was fitted in names a fit that was never made.
             true => Err(Error::GwasFitDidNotSettle {
                 model: GwasModel::Glmm,
-                rounds: self.rounds,
+                rounds: self.rounds.max(1),
             }),
             false => Ok(()),
         }
@@ -458,10 +464,23 @@ impl<'a> TheLinearization<'a> {
                 });
             }
         }
-        the_system_of(
+        // The factorization above succeeded, so the solve against it
+        // cannot find the system singular today. What it answers is read
+        // all the same, as both callers in `logistic` read it: a solve
+        // whose answer is thrown away leaves a set of effects that nothing
+        // solved for and that the round would carry on with.
+        match the_system_of(
             popnei_linalg::solve_with_cholesky(&self.dsd, num_coefs, &mut self.coefs, 1),
             "solve of the design weighted by the covariance of the working trait",
-        )?;
+        )? {
+            TheSystemOfTheFit::Worked => {}
+            TheSystemOfTheFit::RanAway => {
+                return Err(Error::GwasFitDidNotSettle {
+                    model: GwasModel::Glmm,
+                    rounds: self.rounds,
+                });
+            }
+        }
         // The working trait through the projection matrix is the working
         // trait solved against the covariance, less what the design
         // explains of it there.
@@ -637,8 +656,20 @@ impl TheBracket {
     /// It is that step, unless the bracket is known at both ends and the
     /// step would leave it, and then it is the geometric mean of the two
     /// ends. Before both ends are known there is no interval to stay
-    /// inside, and a step that would take the variance to 0 or below
-    /// quarters it instead, which is a smaller move in the same direction.
+    /// inside, and a step that would take the variance to 0 or below, or
+    /// to a value that is not a finite number, quarters it instead, which
+    /// is a smaller move in the same direction.
+    ///
+    /// A step that is not finite is what an average information that has
+    /// underflowed to 0 gives, and it is the everyday case and not a
+    /// remote one: a kinship of all zeros leaves the derivative and the
+    /// information both exactly 0 only because every quotient of the
+    /// trace's triangular solve rounds to exactly 1, and one unit in the
+    /// last place of that solve's right hand side leaves a derivative of
+    /// 5e-15 over an information of 0. Without the test for a finite
+    /// number here that infinity is the variance the next linearization is
+    /// run at, and the covariance is then an infinity times a kinship
+    /// entry of 0, which is not a number.
     fn the_variance_after(&self, genetic_variance: f64, step: f64) -> f64 {
         let next = genetic_variance + step;
         match (self.too_small, self.too_large) {
@@ -646,7 +677,7 @@ impl TheBracket {
                 true => next,
                 false => (too_small * too_large).sqrt(),
             },
-            (None, _) | (_, None) => match next > 0.0 {
+            (None, _) | (_, None) => match next > 0.0 && next.is_finite() {
                 true => next,
                 false => genetic_variance / 4.0,
             },
@@ -852,20 +883,40 @@ impl LogisticMixedModel {
         let mut settled = false;
         while steps_on_the_variance < STEPS_ON_THE_VARIANCE && !settled {
             steps_on_the_variance = steps_on_the_variance.saturating_add(1);
+            // The variance the next linearization is run at is refused
+            // here when it is not a finite number, with the step it
+            // reached, and not left to the covariance it would build: an
+            // infinity times a kinship entry of 0 is not a number, which
+            // the linear algebra crate refuses as a matrix the user never
+            // saw, a `RuntimeError` in Python and so a defect of popnei,
+            // for a kinship the user brought. What
+            // [`TheBracket::the_variance_after`] does with a step that is
+            // not finite is what keeps this arm from firing on a kinship
+            // whose average information has underflowed; the variance the
+            // search starts at is the other way in, since the variance of
+            // a working trait of finite values can still overflow.
+            if !genetic_variance.is_finite() {
+                return Err(Error::GwasFitDidNotSettle {
+                    model: GwasModel::Glmm,
+                    rounds: steps_on_the_variance,
+                });
+            }
             fitted.at(genetic_variance)?;
             let (score, information) = step.at(&fitted, genetic_variance)?;
             // A step that is not a finite number is not refused here, and
             // the bracket is what makes that safe: a kinship that says
             // nothing about the trait leaves the derivative and the
             // information both 0 and the step their quotient, and
-            // [`TheBracket::the_variance_after`] sends every step that is
-            // not above 0, a NaN among them, to a quarter of the variance
-            // or to the geometric mean of two ends that are finite. So the
+            // [`TheBracket::the_variance_after`] sends every step that
+            // does not land on a finite variance above 0, a NaN and both
+            // infinities among them, to a quarter of the variance or to
+            // the geometric mean of two ends that are finite. So the
             // variance walks down to the boundary where the kinship
             // explains nothing instead of becoming a number that is not
             // one. Measured on 24 September 2026 on the panel with every
             // genotype called and a kinship of all zeros: 12 steps to a
-            // variance of 0.
+            // variance of 0, and the same 12 over a kinship of 1e-165
+            // times the identity, whose average information underflows.
             let of_the_step = score / information;
             if of_the_step.abs()
                 < THE_STEP_THAT_HAS_SETTLED * (genetic_variance + THE_STEP_THAT_HAS_SETTLED)
@@ -1305,7 +1356,18 @@ impl TheStepOnTheVariance {
                 {
                     row.fill(0.0);
                     if let Some(value) = row.get_mut(at) {
-                        *value = 1.0 / weight.sqrt();
+                        // The reciprocal of the weight is what went on the
+                        // diagonal of the covariance, and this is the
+                        // square root of that same number and not the
+                        // reciprocal of the square root of the weight,
+                        // which rounds elsewhere. At a variance of 0 the
+                        // covariance is the weights alone, its factor is
+                        // the square roots of their reciprocals, and every
+                        // quotient of the solve below is then exactly 1,
+                        // so the trace is exactly the tested individuals
+                        // and the derivative of a kinship that says
+                        // nothing is exactly 0 by construction.
+                        *value = (1.0 / weight).sqrt();
                     }
                 }
                 popnei_linalg::solve_triangular(
@@ -1487,7 +1549,9 @@ fn the_projection_of(fitted: &TheLinearization<'_>, of_the_design: Vec<f64>) -> 
 mod glmm {
     use std::cmp::Ordering;
 
-    use super::{LogisticMixedModel, TheLinearization, TheStepOnTheVariance, the_projection_of};
+    use super::{
+        LogisticMixedModel, TheBracket, TheLinearization, TheStepOnTheVariance, the_projection_of,
+    };
     use crate::block::BlockReader;
     use crate::error::Error;
     use crate::gwas::linear::lm::{
@@ -2242,6 +2306,136 @@ mod glmm {
                 "the effect {at} over a kinship of all zeros is {found} and the logistic null \
                  gives {expected}, {difference} away, against the {allowed} allowed"
             );
+        }
+    }
+
+    /// A kinship whose magnitude is too small for the variance that fits
+    /// it to be a finite number is answered with the boundary, and not
+    /// with the linear algebra crate refusing a matrix the user never saw.
+    ///
+    /// The average information is quadratic in the kinship, so a kinship of
+    /// 1e-165 times the identity leaves it below what a `f64` holds while
+    /// the derivative is still a number: the Newton step is then an
+    /// infinity, and before this was fixed that infinity became the
+    /// variance, the covariance became an infinity times a kinship entry of
+    /// 0, and the Cholesky refused a matrix that is not finite. That is
+    /// [`Error::GwasLinalg`], a `RuntimeError` in Python and so a defect of
+    /// popnei, for a kinship that is finite, symmetric and positive
+    /// definite.
+    ///
+    /// Measured on 24 September 2026 on both backends: the default build
+    /// raised at 1e-162 and below and answered a variance of 1.27e159 at
+    /// 1e-160, and the search now walks down to the boundary in 12 steps
+    /// instead. What it lands on is the plain logistic null, which is what
+    /// a variance of 0 means, and the effects are held to
+    /// [`OF_THE_LOGISTIC_NULL`] against that null's own.
+    #[test]
+    fn a_kinship_too_small_for_its_variance_to_be_finite_lands_at_the_boundary() {
+        let (phenotype, values, _) = the_panel("panel_called");
+        let tested: Vec<usize> = (0..phenotype.len()).collect();
+        let num_individuals = phenotype.len();
+        let mut kinship = vec![0.0_f64; num_individuals * num_individuals];
+        for (at, row) in kinship.chunks_exact_mut(num_individuals).enumerate() {
+            row[at] = 1.0e-165;
+        }
+        let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
+        let model = match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
+            Ok(model) => model,
+            Err(error) => panic!("the fit over a kinship of 1e-165 times the identity: {error}"),
+        };
+        let found = model.genetic_variance;
+        assert_eq!(
+            found.total_cmp(&0.0),
+            Ordering::Equal,
+            "the variance of the kinship effect over a kinship of 1e-165 times the identity \
+             is {found}"
+        );
+        let allowed = OF_THE_LOGISTIC_NULL;
+        for (at, (found, expected)) in model.coefs.iter().zip(null.coefs()).enumerate() {
+            let difference = (found - expected).abs();
+            assert!(
+                difference <= allowed,
+                "the effect {at} over a kinship of 1e-165 times the identity is {found} and \
+                 the logistic null gives {expected}, {difference} away, against the {allowed} \
+                 allowed"
+            );
+        }
+    }
+
+    /// A Newton step that is not a finite number quarters the variance,
+    /// which is where a step that would take it to 0 or below goes, and an
+    /// infinity is as much a step that is not a step as a NaN is.
+    ///
+    /// The bracket is what the search leans on instead of refusing such a
+    /// step itself, and until this was fixed only a NaN and an infinity
+    /// below 0 went to the quarter, while an infinity above 0 passed the
+    /// test for a variance above 0 and became the variance.
+    #[test]
+    fn a_step_that_is_not_a_finite_number_quarters_the_variance() {
+        let bracket = TheBracket::of_a_search_that_has_not_started();
+        for step in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -8.0] {
+            let found = bracket.the_variance_after(4.0, step);
+            assert_eq!(
+                found.total_cmp(&1.0),
+                Ordering::Equal,
+                "a step of {step} from a variance of 4 gave {found}"
+            );
+        }
+        let found = bracket.the_variance_after(4.0, 3.0);
+        assert_eq!(
+            found.total_cmp(&7.0),
+            Ordering::Equal,
+            "a step of 3 from a variance of 4 gave {found}"
+        );
+    }
+
+    /// A weight that is already 0 at the plain logistic null is refused
+    /// naming the round the fit was about to run, and never the round 0
+    /// that no fit ran.
+    ///
+    /// The search reads the working trait once before its first
+    /// linearization, for the variance it starts at, and the round counter
+    /// is the 0 the logistic null left there, so the message said that the
+    /// null model did not settle in the 0 rounds it was fitted in. Six
+    /// individuals reach it, with a covariate of 1198.97 for one of them
+    /// against values between -17 and 0 for the others: the logistic null
+    /// fits that individual a chance of 1 and its weight is 0.
+    #[test]
+    fn a_weight_that_is_zero_at_the_logistic_null_names_the_first_round() {
+        let phenotype = [0.0_f64, 1.0, 1.0, 1.0, 0.0, 0.0];
+        let covariate = [-16.95_f64, -0.294, 1198.97, -3.188, -6.947, -0.641];
+        let values: Vec<f64> = covariate.iter().flat_map(|value| [1.0, *value]).collect();
+        let num_individuals = phenotype.len();
+        let mut kinship = vec![0.0_f64; num_individuals * num_individuals];
+        for (at, row) in kinship.chunks_exact_mut(num_individuals).enumerate() {
+            row[at] = 1.0;
+        }
+        let tested: Vec<usize> = (0..num_individuals).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Binomial,
+            design: &values,
+            num_coefs: 2,
+            kinship: Some(&kinship),
+            test: Some(TestType::Score),
+            use_grammar_gamma_approx: false,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        let design = match Design::of_the_study(&study, num_individuals) {
+            Ok(design) => design,
+            Err(error) => panic!("the design of the six individuals: {error}"),
+        };
+        match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
+            Err(Error::GwasFitDidNotSettle { model, rounds }) => {
+                assert_eq!(model, GwasModel::Glmm, "the model the refusal names");
+                assert_eq!(rounds, 1, "the round the refusal names");
+            }
+            Err(error) => panic!("the fit of the six individuals gave {error}"),
+            Ok(model) => panic!(
+                "the fit of the six individuals gave a variance of {}",
+                model.genetic_variance
+            ),
         }
     }
 

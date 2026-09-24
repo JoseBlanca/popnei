@@ -1605,6 +1605,11 @@ pub enum Error {
     /// because it solves each round with an LU factorization, which
     /// answers a matrix that a Cholesky refuses.
     ///
+    /// The logistic mixed model reaches it for a third reason, which is
+    /// the kinship, so the message it gets is not the one the two fits
+    /// without a kinship get: see
+    /// [`the_remedies_of_a_fit_that_did_not_settle`].
+    ///
     /// The design alone reaches it too, with another remedy, which is why
     /// the message names two causes. A study whose covariates are so
     /// nearly a combination of each other that the factorization refuses
@@ -1624,8 +1629,9 @@ pub enum Error {
     /// a `RuntimeError` is a defect of popnei where a fit that will not
     /// settle is the data.
     #[error(
-        "{what}, and its null model did not settle in the {rounds} rounds it was fitted in. Two things do that and they have different remedies: a covariate that separates the individuals that have the condition from the ones that have not has no finite effect for a fit to reach, and the fit walks towards an infinite one, so take that covariate out; or two covariates carry so nearly the same thing that the system of a round can no longer be factored, although they are independent enough for the study to have been accepted, so take one of the two out",
-        what = model.what_it_is_of()
+        "{what}, and its null model did not settle in the {rounds} rounds it was fitted in. {remedies}",
+        what = model.what_it_is_of(),
+        remedies = the_remedies_of_a_fit_that_did_not_settle(*model)
     )]
     GwasFitDidNotSettle {
         /// Which of the four models was being fitted, which the message
@@ -2404,6 +2410,31 @@ fn a_pair_with_no_variant_called(
     )
 }
 
+/// The causes of [`Error::GwasFitDidNotSettle`] and the remedy of each,
+/// which are the model's own: a fit with a kinship has a third cause that a
+/// fit without one has not, and its remedy is the kinship and not a
+/// covariate.
+///
+/// The two covariates of the first message were the whole of it while the
+/// logistic regression was the only fit that ran in rounds. The logistic
+/// mixed model then took the same message, and a study of one covariate and
+/// a kinship that relates every pair alike was told to take one of its two
+/// covariates out, which it cannot do and which is not what went wrong.
+///
+/// A linear model and a linear mixed model are fitted without rounds and
+/// reach neither message; they take the one the logistic regression has, so
+/// that a case nobody has written yet says something true of any fit.
+fn the_remedies_of_a_fit_that_did_not_settle(model: crate::gwas::GwasModel) -> &'static str {
+    match model {
+        crate::gwas::GwasModel::Lm | crate::gwas::GwasModel::Lmm | crate::gwas::GwasModel::Glm => {
+            "Two things do that and they have different remedies: a covariate that separates the individuals that have the condition from the ones that have not has no finite effect for a fit to reach, and the fit walks towards an infinite one, so take that covariate out; or two covariates carry so nearly the same thing that the system of a round can no longer be factored, although they are independent enough for the study to have been accepted, so take one of the two out"
+        }
+        crate::gwas::GwasModel::Glmm => {
+            "Three things do that and they have different remedies: a covariate that separates the individuals that have the condition from the ones that have not has no finite effect for a fit to reach, and the fit walks towards an infinite one, so take that covariate out; or two covariates carry so nearly the same thing that the system of a round can no longer be factored, although they are independent enough for the study to have been accepted, so take one of the two out; or the kinship asks for a random effect that the trait cannot fit, which a kinship that relates every pair alike does, its effect being one number for every individual that the intercept already holds, and then it is the kinship to look at and not a covariate"
+        }
+    }
+}
+
 /// The five statistics of a variant under the names a user writes them, for
 /// the message that refuses a name that is of none of them: "`obs_het`,
 /// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
@@ -2428,8 +2459,46 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::Error;
+    use crate::gwas::GwasModel;
     use crate::io::vcf::VcfPlace;
     use crate::variant::Needs;
+
+    /// A fit that did not settle names the causes of the model it was
+    /// fitting: the logistic mixed model has the kinship among them, and
+    /// the logistic regression, which has no kinship, has not.
+    ///
+    /// What the message is for is what the user does next, and a study of
+    /// one covariate and a kinship that relates every pair alike was being
+    /// told to take one of its two covariates out.
+    #[test]
+    fn the_message_of_a_mixed_fit_that_did_not_settle_names_the_kinship() {
+        let of_the_mixed_model = Error::GwasFitDidNotSettle {
+            model: GwasModel::Glmm,
+            rounds: 200,
+        }
+        .to_string();
+        assert!(
+            of_the_mixed_model.contains("it is the kinship to look at"),
+            "the logistic mixed model was refused with {of_the_mixed_model}"
+        );
+        assert!(
+            of_the_mixed_model.contains("separates"),
+            "the logistic mixed model was refused with {of_the_mixed_model}"
+        );
+        let of_the_logistic = Error::GwasFitDidNotSettle {
+            model: GwasModel::Glm,
+            rounds: 50,
+        }
+        .to_string();
+        assert!(
+            !of_the_logistic.contains("it is the kinship to look at"),
+            "the logistic regression, which has no kinship, was refused with {of_the_logistic}"
+        );
+        assert!(
+            of_the_logistic.contains("separates"),
+            "the logistic regression was refused with {of_the_logistic}"
+        );
+    }
 
     /// The message has to name the fields, because that is what tells the
     /// caller which reader to ask or which calculation to drop.
