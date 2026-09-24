@@ -194,3 +194,47 @@ of a page has. The spec asks nothing there, the coding skill says
 JavaScript has no path to add, and a worker of the applications opens one
 variant file at a time, so what it would add is a feature of `web-sys` for
 a message that already names the range.
+
+## Work package 4: the size of a range, measured
+
+Done at 91cf7ba, 9233fc5, bc2d2c6 and edb9001, and reviewed by its spec and
+its tests. `docs/reports/js-sources-measurement.md` has the tables; the two
+numbers it sets are the size of a range, which stays at 4 MiB, and what a
+pass holds in the memory of wasm at that size, 14155776 bytes.
+
+| deliverable | command | what it gave |
+|---|---|---|
+| 1 | `node js/popnei/bench/time_ranges_in_chromium.mjs` | the times of one pass at four sizes and of the whole file, in `docs/reports/js-sources-measurement.md` |
+| 2 | the constant and the spec | `NUM_BYTES_PER_RANGE` at 4 MiB with its measurement, and "Speed" of the spec with both numbers |
+| 3 | `npm run test:browser` | 8 tests, 0 failed, the last a `File` of 299994147 bytes read with the memory of wasm under 16 MiB |
+| 4 | the checks of the `coding` skill | all green |
+
+One pass over a VCF of 299994147 bytes, 1285000 variants, with
+`calcPerIndividualStats`, best of five runs in Chromium on the owner's
+Apple M5 Pro: 996 ms at a range of 4 MiB against 921 ms with the file in
+the memory of wasm whole, 8.1 % more, holding 14155776 bytes of that memory
+against 302383104, 21.4 times fewer. 256 KiB takes 1069 ms, 1 MiB 1006 and
+16 MiB 958.
+
+### What the review found
+
+The memory a pass holds is `3 * range + 1572864` bytes, to the byte, from
+1 MiB up, which both reviewers measured before either of them knew why. The
+three blocks are the two ranges a pass holds while it builds the next and
+the range the header read of `openVcf` allocated and freed, which the
+allocator does not give back for the next request of its size. The test's
+bound was 1.78 times the measured figure, loose enough that a range of
+6 MiB passed it; it is 16 MiB now, which fails at one range more.
+
+The choice of 4 MiB did not follow from the table as the report first
+argued it: by the trade that refuses 16 MiB, 1 MiB would beat 4 MiB, at
+1.0 % of a pass for three times less memory. What keeps 4 MiB is that every
+byte of the measurement came from a file built in the memory of the
+browser, so what one call costs when the file is on a disc was not
+measured, and 1 MiB makes 287 of those calls over a file of 300 MB where
+4 MiB makes 72.
+
+The bench left `js/popnei/wasm/` built at the last size it measured while
+saying it put everything back, so the next run of the browser tests failed
+at a case that names nothing about the bench. It rebuilds now, on an
+interrupt as well.
