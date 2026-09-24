@@ -286,11 +286,11 @@ is checked by Y" is worth a task of its own that runs Y.
 
 ## Work package 2: the counts with no draw, through the four layers
 
-All six tasks are done and all eight deliverables pass. **The review is not
-finished**: five of its seven reviewers were cut off by a rate limit on 24
-September 2026 and have to be run again, so this work package is not yet
-reported as done. What the two that finished found is below, and one of
-their findings is a wrong number a user could see.
+It finished as planned. All six tasks are done, all eight deliverables
+pass, and the seven reviewers found twenty findings that held, every one of
+them fixed and every deliverable run again afterwards. Five of the seven
+had to be run twice, having been cut off by a rate limit the first time,
+which cost the work nothing but the wait.
 
 A user can now call `calc_pop_diversity` in Python and `calcPopDiversity`
 in TypeScript and get, per population, the alleles it called, the private
@@ -331,64 +331,163 @@ and each later task adds its own accessor with its computation. But nothing
 fails if one is forgotten, so the plan's final check now names the ten and
 requires them with the signatures the spec gives.
 
-### What the review found so far
 
-Seven reviewers were sent over `053562f`: all seven categories apply,
-because this work package builds a module through the core crate, both
-binding crates, the Python package and the TypeScript package. **Two
-finished and five were cut off by a rate limit**, so this section will grow
-when they are run again.
+### What the review found
 
-**A user who asks for a draw gets a wrong number and nothing says so.**
-The `api` reviewer found it and the orchestrator reproduced it: with
-`num_called_alleles` of 20 on the panel, `num_alleles.in_draw` is NaN for
-all three populations, where "How it is verified" of "The number of
-alleles" gives 1.9283948650, 1.9219209943 and 1.9197370844, and
-`folded_sfs` is `None`. Both values are what the documented contract
-reserves for something else: NaN for a draw larger than every population's
-called alleles, and `None` for a statistic nobody asked for. So the answer
-is wrong and reads as an answer.
+Seven reviewers over `053562f`: all seven categories apply, because this
+work package builds a module through the core crate, both binding crates,
+the Python package and the TypeScript package. They cost 1.15 million
+tokens of subagent context, against 1.24 million for the six tasks that
+wrote the work, and they found two ways of breaking the code that pass all
+1176 tests of the three suites.
 
-It is the orchestrator's doing. Tasks 2.5 and 2.6 were told to pass
-`num_called_alleles` through and let the core refuse what it refuses,
-leaving the standardized fields as the spec describes them until work
-package 3 fills them, and that instruction produced a silent wrong answer,
-against the rule the owner gave on 21 September 2026. Both packages will
-refuse `num_called_alleles` and the folded spectrum outright, saying that
-the draw is not built yet, until task 3.5 fills them. Deliverable 5 of work
-package 3 requires tests that a draw above every population's called
-alleles gives NaN and that the spectrum works with a draw, so that task
-cannot pass its own checks while the refusal is still there: the temporary
-guard cannot be forgotten.
+**Everything the four statistics compute was confirmed against
+independent arithmetic.** One reviewer recomputed the panel from
+`panel.vcf.gz` in exact rational arithmetic: the four counts of all three
+populations exactly, and F_IS within 3.9e-14 relative of exact. Two went
+outside the panel's regime, which has no half called genotype and no
+variant of three alleles: a random VCF of 300 variants with four alleles
+and a quarter of the genotypes missing, `many.vcf` with its 54 triallelic
+variants under three population layouts including overlapping populations
+and a population of one, and a hand-built tetraploid file. popnei matched
+an exact oracle on every count, every mean to the bit, and F_IS to
+3.4e-14. A third measured the memory of the pass and found the trap the
+work package warned of avoided: 4.56 MB of allocation at a block of 10000
+rows with 50 populations is 157 chunks of 25.6 KB and not 10000 of them,
+which would be 256 MB, with one live at a time.
 
-**The parallel reduction is never exercised by a cargo test.** The
-`architecture` reviewer found that a chunk is 64 rows and every fixture in
-the module has at most 6, so `par_chunks` yields one chunk in every cargo
-test, the sum of the partials in index order is never run over more than
-one, and no test varies the thread count, where eight other modules each
-have a `the_number_of_threads_does_not_change_the_measures`. It checked the
-property itself outside the tree, 5000 variants of 40 individuals in pools
-of 1, 2, 4 and 8 threads, and got bit-identical F_IS, so the code is right
-today; what is missing is the test that would catch the next change to it.
+**Two mutations passed every test.** They are the findings that justify
+the review.
 
-**What the pass keeps was measured and is right.** The trap the work
-package warned of, an array of the populations by the alleles kept per
-block instead of per row, is avoided: 4.56 MB of total allocation at a
-block of 10000 rows with 50 populations is 157 chunks of 25.6 KB and not
-10000 of them, which would be 256 MB, and one is live at a time. Nothing
-accumulates from block to block.
+- **A variant with only one of the two heterozygosities.** The rule that
+  such a variant enters neither of F_IS's means can be replaced by
+  counting it as zero in both, and all 822 cargo, 18 pytest and 336 node
+  tests still pass. It needs half called genotypes of different alleles,
+  which no fixture had. On two diploid individuals with `0/1 0/1` then
+  `0/. 1/.` the pass gives -0.4999999999999998, which the orchestrator
+  confirmed, and the broken version 0.4.
+- **The allele count on the per-population path.** Bounded so that it does
+  not trip the whole-row path's 128, exactly one test fails, and nothing
+  at all guarded the variable-variants side: a population whose only
+  genotype is `3/3` would have been called variable.
 
-**Two smaller findings hold.** The list of reasons F_IS is NaN, in all
-three layers, misses the commonest one, a population whose counted
-variants hold no whole called genotype. And `DiversityStats::of_name`
-returns an `Option`, so the sentence a user reads for a statistic of no
-such name is written out byte for byte in both binding crates, where
-`stats::PerVarStat::of_name`, which it says it mirrors, returns a `Result`
-and lets each binding write `?`.
+**A user who asked for a draw got a wrong number and nothing said so.**
+With a valid `num_called_alleles` the three standardized values came back
+NaN, the two counts of the draw 0 and the spectrum absent, which are the
+values the documented contract reserves for a draw above every
+population's called alleles and for a statistic nobody asked for. So the
+answer was wrong and read as an answer, against the rule the owner gave on
+21 September 2026. It came from the orchestrator's brief to tasks 2.5 and
+2.6, which said to pass the argument through and leave those fields as the
+spec describes them. Both packages now refuse the draw and the spectrum
+outright, with a `NotImplementedError` in Python and a thrown `Error` in
+TypeScript, naming work package 3. Three strict `xfail` tests in pytest
+and one guard test in node hold the finished assertions and fail the day
+the pass fills the values, so the refusal cannot outlive its reason.
 
-**One warning for work package 3**, which the orchestrator had asked for.
-When the spectrum arrives, `Totals` gains a per population vector of bins,
-and the shape as built would then hold one per chunk at once: about 7 MB
-and 7850 allocations for a block of 10000 rows with 50 populations at a
-draw of 180. The reviewer suggests one flat buffer of populations by bins,
-reused, and that goes into the brief of the task that builds the spectrum.
+**Nothing exercised the parallel reduction or the wasm path.** A chunk is
+64 rows and every cargo fixture had at most 6, so `par_chunks` yielded one
+chunk in every cargo test and no test varied the thread count, where eight
+other modules each have one that does. The panel tests of pytest and node
+do span 19 chunks, but reversing the order of the partials leaves the
+panel F_IS bit-identical, so they would pass over an unordered reduction.
+And `add_the_chunks_one_by_one`, which is the whole wasm path, was run by
+no cargo test at all: deleting a line from it left all 822 cargo tests
+passing while four node tests failed.
+
+**A table and the thing it described had drifted apart, twice.**
+`make_reference.R` divided the mean private alleles by the variants each
+population counted while writing that column under a header naming the
+variants every population counted, two different numbers that happen to
+coincide at 1200 on this panel, so the reference file encoded a rule that
+is not the spec's. And `DiversityStats::of_name` swallowed any name not in
+its five match arms, which a reviewer demonstrated by adding a sixth name
+to the table: the refusal then listed the very name it had just refused.
+
+**Eleven smaller findings held**, each fixed: the list of reasons F_IS is
+NaN missed the commonest one in all three layers; `of_name` returned an
+`Option` so both bindings wrote the same sentence out; the core took a
+`stats` naming no statistic and made a whole pass for nothing, with the
+refusal living in both packages instead; the message for a spectrum
+without a draw told a user to change an argument they had not written;
+TypeScript gave "a whole number of 0 or more" for a `num_called_alleles`
+where 0 and 1 are refused; the mean private alleles' divisor was guarded
+by no test in either package; two conversions carried a dead
+`unwrap_or(MAX)` that would have inflated a count rather than raised;
+nothing tested F_IS at a ploidy other than 1 or 2, which is the `coding`
+skill's own example of a suite that cannot tell which of two things the
+code reads; two cases of the spec had code and no test at the package
+layer; the module doc said one statistic was left where four things were;
+and a comment in both bindings said every statistic comes out the same
+whatever the blocks are, which is false for F_IS, whose panel value moves
+6.7e-16, 5.2e-14 relative, between block sizes.
+
+**Two findings were not taken.** The `saturating_add` calls on the per
+variant counters: the bounds are true, the fastest growing needing 1.44e17
+variants where the objectives' largest dataset reaches 1.28e8, and `stats`
+uses the same shape for the same counters, so changing it here alone would
+make the two inconsistent; if the convention changes it is crate-wide.
+And the `Option<f64>` the `coding` skill asks for inside the core where
+this module returns `Some(NaN)`, which is under "What the owner should
+know" below.
+
+**Three of the fixers refused the shape the orchestrator asked for, and
+were right each time.** Comparing F_IS bit for bit across thread counts
+cannot fail, because the division absorbs a one-ulp difference in the
+sums, so the test compares the two sums through a test-only accessor. A
+fixture of repeating rows makes every 64-row chunk identical, so no order
+of them differs. And 200 variants in four chunks cannot tell one thread
+from eight, because rayon splits them the same way; the test uses 2000
+variants and 32 chunks, where a broken reduction does show.
+
+### After the fixes
+
+The fixes are five commits: `66f2fff` the reference script, `abde1f0` the
+core and both binding crates' call sites, `3992bb5` and one follow-up for
+the Python layer, and `41fcb68` the TypeScript layer. Every deliverable
+and every check was run again.
+
+| what | command | what it gave |
+|---|---|---|
+| deliverable 1 | `cargo test -p popnei --lib -- diversity:: --list` | `44 tests`, from 35 |
+| deliverables 2, 3, 4 | the named cargo tests | all pass |
+| deliverable 5 | `uv run pytest tests/test_diversity.py` | `20 passed, 3 xfailed` |
+| deliverable 6 | `-k one_population` | `1 passed` |
+| deliverable 7 | `npm run build && npm test` in `js/popnei` | `tests 337`, `pass 337`, `fail 0` |
+| deliverable 8 | `-k stats_module_counts` | `4 passed` |
+| the seven checks | as the `coding` skill gives them | `831 passed` with 2 ignored and `149 passed`, `831` again on faer, `519 passed, 3 xfailed`, the other four clean |
+| the plan's final check | both reference scripts again | `git status --short tests/reference/diversity` empty |
+
+Across the plan: 787 cargo tests, 499 pytest and 325 node when it started,
+and 831, 519 and 337 now.
+
+### What the owner should know
+
+Three questions, none of which blocks the plan.
+
+**The simplest call fails.** `calc_pop_diversity(variants)` with no other
+argument is refused, because the default `stats` is all five statistics and
+the folded spectrum needs a draw size. That is what the spec says. Leave
+it, with the message saying what to type; or default `stats` to the four
+that need no draw, so the plain call works and an explicit ask for the
+spectrum without a draw is still refused; or make the spectrum silently
+absent, which the spec chose against. The second is the recommendation. It
+changes what a user gets from a call, so it is the owner's.
+
+**The two optional arguments are in the opposite order from the sibling
+function.** `calc_pop_diversity(variants, pops, stats, ...)` against
+`calc_per_var_distribs(variants, stats, pops, ...)`, which the spec fixes
+for both. A reviewer asked for a deliberate answer rather than a
+coincidence.
+
+**`fis` returns `Some(NaN)` from the core**, where the `coding` skill says
+a missing value is an `Option<f64>` inside the core and becomes NaN only at
+the boundary with Python. The spec's "The Rust interface" documents NaN as
+an accessor's value, and `gwas` and `kinship` put NaN in their result
+columns too, so the skill and three specs disagree. Whichever way it goes
+it is crate-wide and not this module's.
+
+And the one from work package 1 is still open: whether `scikit-allel` and
+`dadi` become development dependencies of popnei, as the spec's opening
+records the owner deciding, or stay in the environments the reference
+script builds, which is what the plan does and what the work kept.

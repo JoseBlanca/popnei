@@ -204,6 +204,20 @@ on it.
 
 ## Work package 2: the counts with no draw, through the four layers
 
+**Done on 24 September 2026**, reviewed in all seven categories, with
+every finding that held fixed and every deliverable run again after.
+`docs/reports/diversity.md` has the rest, including three questions left
+for the owner that nothing in the plan waits on.
+
+One thing work package 3 inherits. Both packages now **refuse**
+`num_called_alleles` and the folded spectrum outright, rather than
+answering NaN and nothing, because the values they were giving are the ones
+the spec reserves for a draw above every population's called alleles and
+for a statistic nobody asked for. Task 3.5 removes those refusals. It
+cannot forget to: three strict `xfail` tests in `tests/test_diversity.py`
+and one guard test in `js/popnei/test/diversity.test.ts` hold the finished
+assertions and fail the suite the day the pass fills the values.
+
 **What it gives.** A user calls `calc_pop_diversity(variants, pops=...,
 stats=..., min_num_individuals=...)` in Python and gets, per population,
 the alleles it called and the private ones as a total and a mean, the
