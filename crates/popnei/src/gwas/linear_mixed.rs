@@ -913,6 +913,15 @@ impl LinearMixedModel {
     /// is the variant the exact test refuses and has what it is answered
     /// with instead.
     ///
+    /// The Wald test has a second comparison of its own, on `y' p y` less
+    /// `num² / den`, and that one is skipped under the approximation
+    /// instead of stopping: it holds because the exact `den` keeps
+    /// `num² / den` under `y' p y`, and the approximate one does not, so
+    /// applying it there refuses a variant the exact test answers. The
+    /// same item of the spec and the same decision of 24 September 2026,
+    /// with the cargo test
+    /// `a_variant_whose_approximate_denominator_passes_ypy_is_answered`.
+    ///
     /// # Errors
     ///
     /// [`Error::GwasVariantsTooLarge`] when the values of the block are
@@ -959,6 +968,10 @@ impl LinearMixedModel {
         // subtraction has to leave, for the variant to be worth testing.
         let share_that_is_nothing = the_share_that_is_nothing(self.num_individuals);
         let largest_of_the_projection = self.largest_of_the_projection;
+        // Whether `den` is `x' p x` itself or the GRAMMAR-Gamma
+        // approximation of it, which is what the Wald test's own comparison
+        // below turns on.
+        let the_denominator_is_exact = self.approximation.is_none();
         for ((den, num), of_the_variant) in self
             .den
             .iter()
@@ -980,18 +993,31 @@ impl LinearMixedModel {
             let statistic = num * num / den;
             let answered = match test {
                 TestType::Wald => {
-                    // What the variant leaves of `y' p y`. The projection
-                    // annihilates the design, so any affine image of the
-                    // trait gives `num² / den = y' p y` in exact
-                    // arithmetic, and what this holds for such a variant is
-                    // the rounding of that cancellation, of whichever sign
-                    // it fell on and differing by half between the two
-                    // backends. `se` would be the square root of a number
-                    // divided by noise, or of a negative one, which is the
-                    // NaN beside a finite `beta` that **Open 2** of
+                    // What the variant leaves of `y' p y`. With the exact
+                    // denominator `num² / den` cannot pass `y' p y`, so a
+                    // value at or below the threshold is the rounding of a
+                    // cancellation: the projection annihilates the design,
+                    // so any affine image of the trait gives
+                    // `num² / den = y' p y` in exact arithmetic, and the
+                    // remainder falls on whichever side of 0 the rounding
+                    // chose and differs between the two backends. `se`
+                    // would be the square root of a number divided by
+                    // noise, or of a negative one, which is the NaN beside
+                    // a finite `beta` that **Open 2** of
                     // `docs/specs/gwas.md` records.
+                    //
+                    // The approximate denominator gives no such bound, so
+                    // the comparison is skipped under it, which "Open 2's
+                    // threshold under the approximation" of that spec
+                    // states and which the owner decided on 24 September
+                    // 2026. A variant whose own ratio of `x' p x` to the
+                    // squared length of its centered dosages is above the
+                    // factor gets a denominator smaller than the exact one,
+                    // and `num² / den` then passes `y' p y` honestly rather
+                    // than by cancellation. Applying the rule there refuses
+                    // a variant the exact test answers.
                     let left = ypy - statistic;
-                    if left <= share_that_is_nothing * ypy {
+                    if the_denominator_is_exact && left <= share_that_is_nothing * ypy {
                         None
                     } else {
                         let se = (left / (degrees_of_freedom * den)).sqrt();
@@ -3205,6 +3231,249 @@ pub(crate) mod lmm {
                 "so nothing of it is read as an association; under the {test:?} test its \
                  p-value is {p_value}"
             );
+        }
+    }
+
+    /// The header of a VCF of twelve diploid individuals and no variant.
+    const THE_HEADER_OF_TWELVE: &str = "##fileformat=VCFv4.2\n\
+        ##contig=<ID=1>\n\
+        ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+        #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\
+        \ti0\ti1\ti2\ti3\ti4\ti5\ti6\ti7\ti8\ti9\ti10\ti11\n";
+
+    /// The one covariate of the twelve individual fixture of "Open 2's
+    /// threshold under the approximation" of `docs/specs/gwas.md`, which
+    /// marks two groups of six.
+    const THE_COVARIATE_OF_TWELVE: [f64; 12] =
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+
+    /// The vector the noise of that fixture's trait is a multiple of. Its
+    /// twelve values sum to 0.
+    const THE_NOISE_OF_TWELVE: [f64; 12] = [
+        0.5, -0.3, 0.2, -0.1, 0.4, -0.6, 0.15, -0.25, 0.35, -0.45, 0.05, 0.05,
+    ];
+
+    /// The dosages of the variant that fixture tests, the one the trait is
+    /// built from.
+    const OF_THE_TESTED_VARIANT: [u8; 12] = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2];
+
+    /// The dosages of the two variants beside it, which are there for the
+    /// factor of the approximation alone: each of them is explained by the
+    /// covariate more than the tested variant is, so the mean of the three
+    /// ratios comes out below the tested variant's own.
+    const OF_THE_TWO_COMPANIONS: [[u8; 12]; 2] = [
+        [2, 1, 1, 0, 0, 0, 0, 0, 0, 2, 1, 2],
+        [1, 1, 2, 2, 1, 1, 1, 2, 0, 2, 2, 0],
+    ];
+
+    /// How far a `beta`, an `se` and a `p_value` of the twelve individual
+    /// fixture may be from the literal of the spec beside it: 1e-4 of it,
+    /// relative.
+    ///
+    /// The spec prints those numbers to five or six digits, and the bound
+    /// is the width of the last one printed and not the distance between
+    /// two backends: every one of them comes off a restricted maximum
+    /// likelihood search whose criterion is flat for an identity kinship,
+    /// which **Open 3** of `docs/specs/gwas.md` is about, so the search
+    /// lands somewhere else on faer than on Accelerate. What the test turns
+    /// on is not the digits anyway but which of the three are numbers.
+    const OF_THE_TWELVE: f64 = 1e-4;
+
+    /// One row of the table of "Open 2's threshold under the
+    /// approximation" of `docs/specs/gwas.md`: what the two runs of the
+    /// Wald test give for the tested variant at one noise level.
+    struct OfANoise {
+        /// The multiple of [`THE_NOISE_OF_TWELVE`] the trait carries.
+        noise: f64,
+        /// The `beta` and the `p_value` of the exact run.
+        exact: (f64, f64),
+        /// The `beta` of the approximated run.
+        approximate_beta: f64,
+        /// The `se` and the `p_value` of the approximated run, and `None`
+        /// where what is left of `y' p y` is below 0 and both are NaN.
+        approximate_rest: Option<(f64, f64)>,
+    }
+
+    /// The genotype text of a dosage of a diploid biallelic variant.
+    fn the_genotype_of(dosage: u8) -> &'static str {
+        match dosage {
+            0 => "0/0",
+            1 => "0/1",
+            _ => "1/1",
+        }
+    }
+
+    /// A variant the approximation gives a denominator smaller than the
+    /// exact one is answered under the Wald test, where the fourth row of
+    /// **Open 2** of `docs/specs/gwas.md` would refuse it.
+    ///
+    /// That row refuses a variant when `y' p y` less `num² / den` falls to
+    /// the tested individuals times 2.2e-16 of `y' p y`, and it holds
+    /// because with the exact `den` the subtraction cannot go below 0, so
+    /// anything at or under that is a cancellation. The approximate `den`
+    /// gives no such bound: the tested variant here has a ratio of `x' p x`
+    /// to the squared length of its centered dosages 1.00787 above the
+    /// factor the two companions pull down, so its approximate denominator
+    /// is the smaller of the two, `num² / den` passes `y' p y` honestly and
+    /// what is left is -0.0068 and -0.0036 of `y' p y` at the two lower
+    /// noise levels. With the rule applied there the variant got the three
+    /// NaNs of a variant there is nothing left to test. The owner decided
+    /// on 24 September 2026 that it is skipped under the approximation, and
+    /// taking the skip out turns the two `beta` asserted below back into
+    /// NaN.
+    ///
+    /// What the exact run gives for the same variant, and what the
+    /// approximated one gives, are the table of "Open 2's threshold under
+    /// the approximation" of that spec. The exact answers are `beta` 4.995,
+    /// 4.990 and 4.980 with p-values of 1.0518e-14, 5.3636e-12 and
+    /// 2.6550e-09, against the 5.0 the trait was built with; the
+    /// approximated ones are 5.03433, 5.02929 and 5.01921, which carry the
+    /// error of one factor standing in for each variant's own ratio.
+    ///
+    /// `se` and `p_value` stay NaN at the two lower noise levels, because
+    /// `se` is the square root of what is left and what is left is below 0
+    /// there. pyNei gives the same three values on the same inputs, its
+    /// `beta` agreeing with popnei's to fifteen digits and its `se` coming
+    /// out of a numpy square root that warns of an invalid value. So the
+    /// skip answers the effect and not the whole row, which is what the
+    /// spec records.
+    #[test]
+    fn a_variant_whose_approximate_denominator_passes_ypy_is_answered() {
+        const OF_EACH_NOISE: [OfANoise; 3] = [
+            OfANoise {
+                noise: 0.4,
+                exact: (4.995, 1.0518e-14),
+                approximate_beta: 5.03433,
+                approximate_rest: None,
+            },
+            OfANoise {
+                noise: 0.8,
+                exact: (4.990, 5.3636e-12),
+                approximate_beta: 5.02929,
+                approximate_rest: None,
+            },
+            OfANoise {
+                noise: 1.6,
+                exact: (4.980, 2.6550e-09),
+                approximate_beta: 5.01921,
+                approximate_rest: Some((0.15954, 1.6250e-10)),
+            },
+        ];
+        let mut vcf = String::from(THE_HEADER_OF_TWELVE);
+        for (at, of_the_variant) in std::iter::once(&OF_THE_TESTED_VARIANT)
+            .chain(OF_THE_TWO_COMPANIONS.iter())
+            .enumerate()
+        {
+            let pos = at.saturating_add(1).saturating_mul(1000);
+            vcf.push_str(&format!("1\t{pos}\tv{at}\tA\tT\t.\t.\t.\tGT"));
+            for dosage in of_the_variant {
+                vcf.push('\t');
+                vcf.push_str(the_genotype_of(*dosage));
+            }
+            vcf.push('\n');
+        }
+        let design: Vec<f64> = THE_COVARIATE_OF_TWELVE
+            .iter()
+            .flat_map(|covariate| [1.0, *covariate])
+            .collect();
+        let kinship: Vec<f64> = (0..12)
+            .flat_map(|row| (0..12).map(move |col| if row == col { 1.0 } else { 0.0 }))
+            .collect();
+        let individuals: Vec<usize> = (0..12).collect();
+        for of_the_noise_level in OF_EACH_NOISE {
+            let OfANoise {
+                noise,
+                exact: (of_the_exact, of_the_exact_p),
+                approximate_beta: of_the_approximate,
+                approximate_rest: of_the_rest,
+            } = of_the_noise_level;
+            let phenotype: Vec<f64> = THE_COVARIATE_OF_TWELVE
+                .iter()
+                .zip(&OF_THE_TESTED_VARIANT)
+                .zip(&THE_NOISE_OF_TWELVE)
+                .map(|((covariate, dosage), of_the_noise)| {
+                    2.0 + 3.0 * covariate + 5.0 * f64::from(*dosage) + noise * of_the_noise
+                })
+                .collect();
+            let study = GwasInput {
+                phenotype: &phenotype,
+                trait_type: TraitType::Continuous,
+                design: &design,
+                num_coefs: 2,
+                kinship: Some(&kinship),
+                test: Some(TestType::Wald),
+                use_grammar_gamma_approx: false,
+                individuals: &individuals,
+                transform_to_biallelic: false,
+            };
+            let mut reader = reader_over(vcf.as_bytes());
+            let exact = match the_study_of(&mut reader, &study) {
+                Ok(result) => result,
+                Err(error) => panic!("the exact study at a noise of {noise}: {error}"),
+            };
+            for (what, found, expected) in [
+                ("beta", exact.beta[0], of_the_exact),
+                ("p-value", exact.p_value[0], of_the_exact_p),
+            ] {
+                let away = (found - expected).abs() / expected.abs();
+                assert!(
+                    away <= OF_THE_TWELVE,
+                    "the exact {what} at a noise of {noise} is {found} and the spec has \
+                     {expected}, {away} of it away"
+                );
+            }
+            let approximated_study = GwasInput {
+                use_grammar_gamma_approx: true,
+                ..study
+            };
+            let mut reader = reader_over(vcf.as_bytes());
+            let mut gamma_pass = reader_over(vcf.as_bytes());
+            let approximated = match crate::gwas::calc_gwas(
+                &mut reader,
+                Some(&mut gamma_pass),
+                &approximated_study,
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    panic!("the approximated study at a noise of {noise}: {error}")
+                }
+            };
+            assert!(
+                approximated.used_grammar_gamma_approx,
+                "the study at a noise of {noise} approximated"
+            );
+            let (beta, se, p_value) = (
+                approximated.beta[0],
+                approximated.se[0],
+                approximated.p_value[0],
+            );
+            let away = (beta - of_the_approximate).abs() / of_the_approximate.abs();
+            assert!(
+                away <= OF_THE_TWELVE,
+                "the approximated beta at a noise of {noise} is {beta} and the spec has \
+                 {of_the_approximate}, {away} of it away; a NaN here is the rule of the \
+                 fourth row of Open 2 firing on a variant the exact test answers with a \
+                 beta of {of_the_exact}"
+            );
+            match of_the_rest {
+                None => assert!(
+                    se.is_nan() && p_value.is_nan(),
+                    "what is left is below 0 at a noise of {noise}, so its square root is \
+                     NaN; the se is {se} and the p-value is {p_value}"
+                ),
+                Some((of_the_se, of_the_p)) => {
+                    for (what, found, expected) in
+                        [("se", se, of_the_se), ("p-value", p_value, of_the_p)]
+                    {
+                        let away = (found - expected).abs() / expected.abs();
+                        assert!(
+                            away <= OF_THE_TWELVE,
+                            "the approximated {what} at a noise of {noise} is {found} and \
+                             the spec has {expected}, {away} of it away"
+                        );
+                    }
+                }
+            }
         }
     }
 }
