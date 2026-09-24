@@ -100,6 +100,7 @@ export function assertsTheVariantsOfMany(
 
   const positions: number[] = [];
   const gts: number[] = [];
+  let numBlocks = 0;
   let numVarsOfTheFirstBlock = 0;
   for (const block of variants.iterBlocks({
     fields: ["pos"],
@@ -110,7 +111,11 @@ export function assertsTheVariantsOfMany(
         `${what}: the pass was asked for the positions and gave none`,
       );
     }
-    if (positions.length === 0) {
+    numBlocks += 1;
+    // The blocks are counted and not the positions read so far: a first
+    // block of no variants is a block, and taking the second one for the
+    // first would assert its 100 variants and say nothing.
+    if (numBlocks === 1) {
       numVarsOfTheFirstBlock = block.numVars;
     }
     positions.push(...block.pos);
