@@ -508,6 +508,33 @@ const THE_CURVE_OF_EVERY_INDIVIDUAL = {
 };
 
 /**
+ * The second and the third row of that table, the curves of `pop_a` and of
+ * `pop_b` over the same pairs as their ten bins above, from the same run of
+ * R 4.6.1's `optimize`.
+ *
+ * The two populations have 50 individuals each, so they share the curve's
+ * ceiling at a distance of 0 and are told apart by the other two values:
+ * their half distances are 7530.10 and 7259.81 base pairs, 3.7 per 100
+ * apart. Handing every population the curve of the first one is what that
+ * gap is here to catch.
+ */
+const THE_CURVES_OF_THE_TWO_POPS: Record<
+  string,
+  { rhoPerBp: number; r2AtZero: number; halfDist: number }
+> = {
+  pop_a: {
+    rhoPerBp: 0.00030068285442483295,
+    r2AtZero: 0.46942148760330576,
+    halfDist: 7530.1038938711654,
+  },
+  pop_b: {
+    rhoPerBp: 0.00031187790821896646,
+    r2AtZero: 0.46942148760330576,
+    halfDist: 7259.8060755719744,
+  },
+};
+
+/**
  * How close the fitted ρ per base pair and the half distance have to be to
  * R's, relative, which is the tolerance "How it is verified" of the spec
  * gives them: both are where a search stopped, and R's two optimisers land
@@ -651,6 +678,32 @@ test("two populations of one pass count their own pairs and their own variants",
           `the bin ${bin} of ${pop}`,
         );
       }
+    }
+    // Each population gets the curve fitted to its own pairs. The three
+    // values of a curve cross from the core in one array of a value for
+    // each population, and reading the first population's value for every
+    // one of them would leave `pop_b` with `pop_a`'s half distance, 3.7 per
+    // 100 away from its own.
+    for (const [pop, fitted] of Object.entries(THE_CURVES_OF_THE_TWO_POPS)) {
+      const curve = theCurveOf(ofThePass, pop);
+      assertTheFitIs(
+        curve.rhoPerBp,
+        fitted.rhoPerBp,
+        TOLERANCE_OF_THE_FIT,
+        `the ρ per base pair of ${pop}`,
+      );
+      assertTheFitIs(
+        curve.r2AtZero,
+        fitted.r2AtZero,
+        TOLERANCE,
+        `the r² at a distance of 0 of ${pop}`,
+      );
+      assertTheFitIs(
+        curve.halfDist,
+        fitted.halfDist,
+        TOLERANCE_OF_THE_FIT,
+        `the half distance of ${pop}`,
+      );
     }
   } finally {
     variants.free();
