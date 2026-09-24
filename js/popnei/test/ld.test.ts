@@ -1,14 +1,17 @@
 /**
- * The matrix of r² of every pair of variants from TypeScript:
- * `calcRogersHuffR2Matrix` and the `R2Matrix` it gives.
+ * The r² between variants from TypeScript: `calcRogersHuffR2Matrix` with
+ * the `R2Matrix` it gives, and `calcLdAndDistPerPop` with the bins of
+ * distance of each population that it gives.
  *
  * "How it is verified" of `docs/specs/ld.md` has the numbers. The dataset
  * is `tests/reference/ld/ld.vcf.gz`: two chromosomes of 250 biallelic
  * variants each, 1000 bp apart, of 100 diploid individuals with 3 in 100
  * genotypes missing, and 68 of its 500 variants have no variance. The five
  * r² asserted here are the table of that section, which plink2
- * v2.0.0-a.7.7 gave on 22 September 2026, and they are written as literals.
- * Nothing here computes an expected value with popnei.
+ * v2.0.0-a.7.7 gave on 22 September 2026, and the bins are its three
+ * tables, which `docs/reports/ld-method/bins.py` worked out from the r²
+ * plink2 gave on 24 September 2026. All of them are written as literals,
+ * and nothing here computes an expected value with popnei.
  *
  * The bytes of the file are read into a `Uint8Array` and given to
  * `openVcf`, which is how a page gives popnei a file: a tab has no
@@ -18,10 +21,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { R2Matrix, Variants } from "popnei";
-import { calcRogersHuffR2Matrix, init, openVcf } from "popnei";
+import type { LdAndDistPerPop, LdBins, R2Matrix, Variants } from "popnei";
+import {
+  calcLdAndDistPerPop,
+  calcRogersHuffR2Matrix,
+  init,
+  openVcf,
+} from "popnei";
 
-import { referenceLd } from "./reference.ts";
+import { referenceLd, vcfOf } from "./reference.ts";
 
 await init();
 
@@ -365,6 +373,396 @@ test("a source with no variant says so", async () => {
       () => calcRogersHuffR2Matrix(variants),
       /the pass gave no variant and its source holds none/,
     );
+  } finally {
+    variants.free();
+  }
+});
+
+/**
+ * The ten bins of the first table of "How it is verified" of
+ * `docs/specs/ld.md`: the distances from 1 to 250000 base pairs cut into
+ * ten of 25000, with the smallest and the largest distance of each, both
+ * included.
+ */
+const THE_BOUNDS_OF_THE_TEN_BINS: [number, number][] = [
+  [1, 25000],
+  [25001, 50000],
+  [50001, 75000],
+  [75001, 100000],
+  [100001, 125000],
+  [125001, 150000],
+  [150001, 175000],
+  [175001, 200000],
+  [200001, 225000],
+  [225001, 250000],
+];
+
+/**
+ * That first table itself, the one population of every one of the 100
+ * individuals at a `maxAllowedMaf` of 0.95: for each of the ten bins, how
+ * many pairs it holds and the mean of their r².
+ *
+ * Every value is the one the table prints, which
+ * `docs/reports/ld-method/bins.py` worked out from the r² plink2
+ * v2.0.0-a.7.7 gives for these individuals and these variants, and which
+ * `tests/reference/ld/ld.bins.txt` holds again with the standard
+ * deviations. The cargo tests of the core assert all three tables with
+ * their standard deviations.
+ */
+const THE_BINS_OF_EVERY_INDIVIDUAL: [number, number][] = [
+  [8744, 0.20767885551844031],
+  [7815, 0.07890359176062511],
+  [6846, 0.03508441302751711],
+  [5962, 0.02056917580626069],
+  [5140, 0.015026451851395499],
+  [4168, 0.011542104404978385],
+  [3308, 0.01145438215819949],
+  [2447, 0.012095572873545887],
+  [1481, 0.015365254218410632],
+  [530, 0.013266303346602112],
+];
+
+/**
+ * The two populations of the second and the third table of that same part:
+ * `pop_a` the individuals `i000` to `i049` of `ld.vcf.gz` and `pop_b`
+ * `i050` to `i099`.
+ */
+const THE_TWO_POPS: Record<string, string[]> = {
+  pop_a: Array.from(
+    { length: 50 },
+    (_unused, which) => `i${String(which).padStart(3, "0")}`,
+  ),
+  pop_b: Array.from(
+    { length: 50 },
+    (_unused, which) => `i${String(which + 50).padStart(3, "0")}`,
+  ),
+};
+
+/**
+ * How many pairs each of the ten bins holds for each of those two
+ * populations and the mean of their r², from the second and the third
+ * table, which are of a `maxAllowedMaf` of 0.8.
+ */
+const THE_BINS_OF_THE_TWO_POPS: Record<string, [number, number][]> = {
+  pop_a: [
+    [7394, 0.22226316432228382],
+    [6564, 0.09426862122352],
+    [5648, 0.04565040582359873],
+    [4918, 0.030489796800475328],
+    [4304, 0.024750005446480792],
+    [3540, 0.02220350204444288],
+    [2872, 0.01770136991605654],
+    [2137, 0.02022495044871507],
+    [1240, 0.01792337843122636],
+    [438, 0.020745833685396994],
+  ],
+  pop_b: [
+    [7625, 0.21935192592998345],
+    [6779, 0.08778756463719926],
+    [5968, 0.0442939962514918],
+    [5189, 0.0321335996857634],
+    [4473, 0.02676089802517462],
+    [3567, 0.02136589829323258],
+    [2823, 0.02578147369672746],
+    [2086, 0.02294629377272581],
+    [1275, 0.022448095913909734],
+    [415, 0.016086351215632733],
+  ],
+};
+
+/**
+ * How many of the 500 variants each of those three tables keeps, from the
+ * same part: 432 at the `maxAllowedMaf` of 0.95 of the first table, and 396
+ * and 402 at the 0.8 of `pop_a` and of `pop_b`, worked out over the
+ * individuals of each population alone.
+ */
+const VARS_AT_THE_MAF_OF_THE_FIRST_TABLE = 432;
+const VARS_OF_POP_A = 396;
+const VARS_OF_POP_B = 402;
+
+/** The distances and the bins the three tables were run with. */
+const OF_THE_TABLES = { minDist: 1, maxDist: 250000, numBins: 10 };
+
+/** That the mean r² `found` is `expected` within [`TOLERANCE`], relative. */
+function assertTheMeanIs(found: number, expected: number, what: string): void {
+  assert.ok(
+    Math.abs(found - expected) <= TOLERANCE * Math.abs(expected),
+    `${what}: the mean r² is ${found} and not ${expected}`,
+  );
+}
+
+/** The bins of the population `pop`, which the pass has to have given. */
+function theBinsOf(ofThePass: LdAndDistPerPop, pop: string): LdBins {
+  const bins = ofThePass.perPop[pop];
+  if (bins === undefined) {
+    throw new Error(`the pass gave no bins for the population ${pop}`);
+  }
+  return bins;
+}
+
+test("the ten bins of one population are the ones plink2 gives", async () => {
+  const variants = await theLdDataset();
+  try {
+    const ofThePass = calcLdAndDistPerPop(variants, {
+      ...OF_THE_TABLES,
+      maxAllowedMaf: 0.95,
+    });
+
+    // With no `pops` there is one population of every individual, named as
+    // pyNei names it.
+    assert.deepEqual(Object.keys(ofThePass.perPop), ["pop"]);
+    assert.deepEqual(ofThePass.numVarsPerPop, {
+      pop: VARS_AT_THE_MAF_OF_THE_FIRST_TABLE,
+    });
+    // The pass counted every variant of the file: the major allele
+    // frequency takes variants out of a population and not out of the pass.
+    assert.equal(ofThePass.passStats.numVars, NUM_VARS);
+
+    const bins = theBinsOf(ofThePass, "pop");
+    for (const values of [
+      bins.smallestDist,
+      bins.largestDist,
+      bins.numPairs,
+      bins.meanR2,
+      bins.sdR2,
+    ]) {
+      assert.ok(values instanceof Float64Array, "the bins are Float64Arrays");
+      assert.equal(values.length, OF_THE_TABLES.numBins);
+    }
+    assert.deepEqual(
+      [...bins.smallestDist],
+      THE_BOUNDS_OF_THE_TEN_BINS.map(([smallest]) => smallest),
+    );
+    assert.deepEqual(
+      [...bins.largestDist],
+      THE_BOUNDS_OF_THE_TEN_BINS.map(([, largest]) => largest),
+    );
+    assert.deepEqual(
+      [...bins.numPairs],
+      THE_BINS_OF_EVERY_INDIVIDUAL.map(([numPairs]) => numPairs),
+    );
+    for (const [bin, [, meanR2]] of THE_BINS_OF_EVERY_INDIVIDUAL.entries()) {
+      assertTheMeanIs(
+        bins.meanR2[bin] as number,
+        meanR2,
+        `the bin ${bin} of the ten`,
+      );
+      // A bin of this table holds hundreds of pairs at least, so its
+      // standard deviation is a number and not the NaN of a bin with none.
+      // The cargo tests of the core assert its value.
+      assert.ok(
+        Number.isFinite(bins.sdR2[bin]),
+        `the bin ${bin} of the ten has a standard deviation`,
+      );
+    }
+  } finally {
+    variants.free();
+  }
+});
+
+test("two populations of one pass count their own pairs and their own variants", async () => {
+  const variants = await theLdDataset();
+  try {
+    const ofThePass = calcLdAndDistPerPop(variants, {
+      ...OF_THE_TABLES,
+      pops: THE_TWO_POPS,
+      maxAllowedMaf: 0.8,
+    });
+
+    // The populations come back in the order of the keys of `pops`.
+    assert.deepEqual(Object.keys(ofThePass.perPop), ["pop_a", "pop_b"]);
+    // At 0.95 both populations keep the same 432 variants, so 0.8 is the
+    // threshold that fails when the major allele frequency is worked out
+    // over all the individuals instead of over those of the population.
+    assert.deepEqual(ofThePass.numVarsPerPop, {
+      pop_a: VARS_OF_POP_A,
+      pop_b: VARS_OF_POP_B,
+    });
+    for (const [pop, rows] of Object.entries(THE_BINS_OF_THE_TWO_POPS)) {
+      const bins = theBinsOf(ofThePass, pop);
+      assert.deepEqual(
+        [...bins.numPairs],
+        rows.map(([numPairs]) => numPairs),
+        `the pairs of ${pop}`,
+      );
+      for (const [bin, [, meanR2]] of rows.entries()) {
+        assertTheMeanIs(
+          bins.meanR2[bin] as number,
+          meanR2,
+          `the bin ${bin} of ${pop}`,
+        );
+      }
+    }
+  } finally {
+    variants.free();
+  }
+});
+
+test("a bin that no pair reaches holds no pair and has no mean and no standard deviation", async () => {
+  // Three variants 10 base pairs apart, which no bin from 1000 to 5000
+  // reaches: "The cases" of `docs/specs/ld.md` says that every bin empty is
+  // no error, and the three variants still passed the major allele
+  // frequency, so `numVarsPerPop` counts them.
+  const variants = openVcf(
+    vcfOf([
+      "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+      "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+      "chr1\t30\t.\tA\tT\t.\tPASS\t.\tGT\t1/1\t0/1\t0/0",
+    ]),
+  );
+  try {
+    const ofThePass = calcLdAndDistPerPop(variants, {
+      minDist: 1000,
+      maxDist: 5000,
+      numBins: 4,
+    });
+
+    assert.deepEqual(ofThePass.numVarsPerPop, { pop: 3 });
+    const bins = theBinsOf(ofThePass, "pop");
+    assert.deepEqual([...bins.smallestDist], [1000, 2001, 3001, 4001]);
+    assert.deepEqual([...bins.largestDist], [2000, 3000, 4000, 5000]);
+    assert.deepEqual([...bins.numPairs], [0, 0, 0, 0]);
+    assert.ok(
+      [...bins.meanR2].every((mean) => Number.isNaN(mean)),
+      "every mean of a bin with no pair is NaN",
+    );
+    assert.ok(
+      [...bins.sdR2].every((sd) => Number.isNaN(sd)),
+      "every standard deviation of a bin with no pair is NaN",
+    );
+  } finally {
+    variants.free();
+  }
+});
+
+test("a distance, a number of bins and a frequency that are no number of their own are refused", async () => {
+  const variants = await theLdDataset();
+  try {
+    // A negative distance cannot reach the core, whose distances are
+    // unsigned, and neither can one with a fraction: the code wasm-bindgen
+    // generates would hand on another number and say nothing. The package
+    // refuses both, under the name the user wrote them in.
+    for (const minDist of [-1, 2.5, "500", null]) {
+      assert.throws(
+        () => calcLdAndDistPerPop(variants, { minDist: minDist as number }),
+        /`minDist` is a whole number of base pairs of 0 or more/,
+        `a minDist of ${String(minDist)}`,
+      );
+    }
+    for (const maxDist of [-250, 2.5, null]) {
+      assert.throws(
+        () => calcLdAndDistPerPop(variants, { maxDist: maxDist as number }),
+        /`maxDist` is a whole number of base pairs of 0 or more/,
+        `a maxDist of ${String(maxDist)}`,
+      );
+    }
+    for (const numBins of [-3, 2.5, "ten", null]) {
+      assert.throws(
+        () => calcLdAndDistPerPop(variants, { numBins: numBins as number }),
+        /`numBins` is a whole number of 0 or more/,
+        `a numBins of ${String(numBins)}`,
+      );
+    }
+    assert.throws(
+      () =>
+        calcLdAndDistPerPop(variants, {
+          maxAllowedMaf: "a half" as unknown as number,
+        }),
+      /`maxAllowedMaf` is a number/,
+    );
+  } finally {
+    variants.free();
+  }
+});
+
+test("an empty range, no bin and a frequency out of 0 to 1 are refused under the names of TypeScript", async () => {
+  const variants = await theLdDataset();
+  try {
+    // The three are the core's rules, and the message a user reads names
+    // the argument of the call they wrote and not the `min_dist` of Rust
+    // and of Python.
+    assert.throws(
+      () => calcLdAndDistPerPop(variants, { minDist: 5000, maxDist: 4000 }),
+      (error: Error) => {
+        assert.ok(
+          error.message.includes("`minDist` is 5000 and `maxDist` is 4000"),
+          `the message is ${error.message}`,
+        );
+        assert.ok(
+          !error.message.includes("min_dist"),
+          `the message is ${error.message}`,
+        );
+        return true;
+      },
+    );
+    assert.throws(
+      () => calcLdAndDistPerPop(variants, { numBins: 0 }),
+      (error: Error) => {
+        assert.ok(
+          error.message.includes("`numBins` is 0"),
+          `the message is ${error.message}`,
+        );
+        assert.ok(
+          !error.message.includes("num_bins"),
+          `the message is ${error.message}`,
+        );
+        return true;
+      },
+    );
+    assert.throws(
+      () => calcLdAndDistPerPop(variants, { maxAllowedMaf: 1.5 }),
+      (error: Error) => {
+        assert.ok(
+          error.message.includes("`maxAllowedMaf` is 1.5"),
+          `the message is ${error.message}`,
+        );
+        assert.ok(
+          !error.message.includes("max_allowed_maf"),
+          `the message is ${error.message}`,
+        );
+        return true;
+      },
+    );
+    // A population that names an individual the pass does not give, which
+    // only the pass knows: the refusal is the core's and names it.
+    assert.throws(
+      () => calcLdAndDistPerPop(variants, { pops: { pop1: ["i000", "i999"] } }),
+      /i999/,
+    );
+    // The `Variants` is as it was: no refused call left anything behind.
+    assert.equal(
+      calcLdAndDistPerPop(variants, OF_THE_TABLES).passStats.numVars,
+      NUM_VARS,
+    );
+  } finally {
+    variants.free();
+  }
+});
+
+test("the fall-off refuses what is not a Variants as the matrix does", () => {
+  assert.throws(
+    () => calcLdAndDistPerPop({} as unknown as Variants),
+    /`variants` is what openVcf or openVars gives/,
+  );
+});
+
+test("a call that names no argument counts what the defaults of the core say", async () => {
+  const variants = await theLdDataset();
+  try {
+    const ofThePass = calcLdAndDistPerPop(variants);
+
+    const bins = theBinsOf(ofThePass, "pop");
+    // The four defaults are the core's, and what they are is written in
+    // "Its Python function" of `docs/specs/ld.md`: the distances from 1 to
+    // 1000000 base pairs, cut into 50 bins of 20000, and a `maxAllowedMaf`
+    // of 0.95, which 432 of the 500 variants of this file pass.
+    assert.equal(bins.numPairs.length, 50);
+    assert.equal(bins.smallestDist[0], 1);
+    assert.equal(bins.largestDist[0], 20000);
+    assert.equal(bins.largestDist[49], 1000000);
+    assert.deepEqual(ofThePass.numVarsPerPop, {
+      pop: VARS_AT_THE_MAF_OF_THE_FIRST_TABLE,
+    });
   } finally {
     variants.free();
   }
