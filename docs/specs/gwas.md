@@ -131,9 +131,9 @@ That the two layers refuse the same things is checked and not assumed:
 message it gives, and the Python and the node suites both walk it. It was
 written during `docs/plans/gwas-linear.md` because nothing had been checking
 it, and writing it caught two messages about a covariate named `intercept`
-that differed between the languages. `trait` is `"continuous"` or `"binomial"`, the two
-values of `TraitType`. `test` is `"wald"` or `"score"`, the two values of
-`TestType`, and `None` takes the default above.
+that differed between the languages. `trait` is `"continuous"` or
+`"binomial"`, the two values of `TraitType`. `test` is `"wald"` or
+`"score"`, the two values of `TestType`, and `None` takes the default above.
 
 `GWASResult` is a frozen dataclass. `stats` is a frame with one row per
 variant, in the order the variants came: `chrom`, `pos` and `id` when the
@@ -179,13 +179,13 @@ It mirrors `calc_gwas` of `pynei/gwas.py`. The differences from pyNei, which
   that model, below.
 
 In TypeScript it is `calcGwas(variants, {phenotype, trait, covariates,
-kinship, test, useGrammarGammaApprox, transformToBiallelic})`. `phenotype` is an object of
-individual name to number, and `covariates` an object of covariate name to
-such an object. The result has `stats` with each column as its own typed
-array, `chrom` and `id` as arrays of strings, `pos` as a `Float64Array` and
-`alleleFreq`, `beta`, `se` and `pValue` as `Float64Array`s, and then
-`nullModel`, `trait`, `test`, `individuals`, `usedGrammarGammaApprox` and
-`passStats`.
+kinship, test, useGrammarGammaApprox, transformToBiallelic})`. `phenotype`
+is an object of individual name to number, and `covariates` an object of
+covariate name to such an object. The result has `stats` with each column as
+its own typed array, `chrom` and `id` as arrays of strings, `pos` as a
+`Float64Array` and `alleleFreq`, `beta`, `se` and `pValue` as
+`Float64Array`s, and then `nullModel`, `trait`, `test`, `individuals`,
+`usedGrammarGammaApprox` and `passStats`.
 
 ### Which individuals are tested, and the design
 
@@ -477,11 +477,11 @@ checks are common to all four:
   ones, and `beta`, `se` and `p_value` within a bound that is **per model**
   and set where it breaks, 1e-9 relative being the ceiling and not the
   value. Two are measured so far, on 24 September 2026. The logistic model
-  is far inside it: `beta` within 3.06e-15 of the `se`, `se` 3.22e-15 of
-  itself and `p_value` 6.0e-14 of itself, so its bound belongs near 1e-12
-  and not at 1e-9. The linear mixed model is the opposite and is the reason
-  this is per model at all: its own item says why 1e-9 sits at the noise of
-  the search there.
+  is far inside it, over both panels and both of its tests: `beta` within
+  1.105e-14 of the `se`, `se` 3.368e-15 of itself and `p_value` 4.524e-14 of
+itself, so its bound belongs near 1e-12, which is 90 times the worst. The
+linear mixed model is the opposite and is the reason this is per model at
+all: its own item says why 1e-9 sits at the noise of the search there.
 
 Two more hold for every model. That the block size changes nothing: the same
 panel read in blocks of 77 gives `stats` equal to the default within 1e-12
@@ -494,7 +494,10 @@ that the study finds what was planted: of the 10 variants with the smallest
 p-value under the `lmm`, at least 3 are among the 5 causal ones.
 
 In TypeScript, `calcGwas` is tested under node against the same six literals
-for each model, at a tolerance of its own: WebAssembly has no fused multiply
+for each model **and each of its tests**, not one set per model: the score
+test of a model runs different per variant arithmetic from its Wald test,
+the threshold of Open 2 among it, and under WebAssembly rather than on the
+native backend. A tolerance of its own: WebAssembly has no fused multiply
 and add, so it rounds a sum of products differently from a native build.
 Measured on 23 September 2026 on the worked example, node sits 2.31e-15 from
 pyNei's numbers where native faer sits 1.24e-15.
@@ -689,18 +692,18 @@ explain, so that fitting the covariates does not drag the variances down.
 Only their ratio matters to the search: with `delta` the residual variance
 over the genetic one, the kinship is eigendecomposed once, `k = e diag(l)
 e'`, the trait and the design are turned by `e'`, and then every value of
-`delta` costs one number per individual instead of a matrix. pyNei searches `log(delta)` over 101 points evenly spaced from -10 to 10,
-takes the point with the smallest value and brackets it with its two
-neighbours, and then runs 60 steps of a **golden section search**, which
-shrinks a bracket that holds a minimum by a constant ratio each step and
-costs one evaluation of the function per step. popnei reproduces that search
-step for step, because the numbers it gives are GMMAT's, and reproducing it
-needs all of: 101 points, the two neighbours of the best clamped at the ends
-of the grid, the ratio `(sqrt(5) - 1) / 2`, the two interior points taken as
-`high - ratio * (high - low)` and `low + ratio * (high - low)`, the bracket
-moved to whichever of the two has the smaller value, 60 steps whatever
-happens, and `exp((low + high) / 2)` at the end. It is `_reml_delta` of
-`pynei/gwas.py`.
+`delta` costs one number per individual instead of a matrix. pyNei searches
+`log(delta)` over 101 points evenly spaced from -10 to 10, takes the point
+with the smallest value and brackets it with its two neighbours, and then
+runs 60 steps of a **golden section search**, which shrinks a bracket that
+holds a minimum by a constant ratio each step and costs one evaluation of
+the function per step. popnei reproduces that search step for step, because
+the numbers it gives are GMMAT's, and reproducing it needs all of: 101
+points, the two neighbours of the best clamped at the ends of the grid, the
+ratio `(sqrt(5) - 1) / 2`, the two interior points taken as `high - ratio *
+(high - low)` and `low + ratio * (high - low)`, the bracket moved to
+whichever of the two has the smaller value, 60 steps whatever happens, and
+`exp((low + high) / 2)` at the end. It is `_reml_delta` of `pynei/gwas.py`.
 
 The function it minimizes, with `l` the eigenvalues of the kinship, `u` the
 design turned by the eigenvectors, `uy` the trait turned by them, and
@@ -827,9 +830,10 @@ bound of this spec is now asked to be; 1e-9 sits at the noise and is not it.
 
 The null model against GMMAT's `glmmkin`, from `gmmat.null_models.tsv`,
 which the reference script writes at full precision, within 1e-5 absolute,
-which is how far two restricted maximum likelihood searches land apart: `genetic_variance` 1.221617, `residual_variance`
-0.342359, and the three covariate effects 4.678021, 0.473361 and 1.110279.
-`heritability` is 1.221617 / (1.221617 + 0.342359).
+which is how far two restricted maximum likelihood searches land apart:
+`genetic_variance` 1.221617, `residual_variance` 0.342359, and the three
+covariate effects 4.678021, 0.473361 and 1.110279. `heritability` is
+1.221617 / (1.221617 + 0.342359).
 
 ## The logistic model
 
@@ -841,25 +845,35 @@ ratio: the change in the log odds of being a 1 for one more copy of a non
 major allele.
 
 The null model is fitted by iteratively reweighted least squares, which
-turns each step of the logistic fit into a weighted linear one: with `mu`
+turns each round of the logistic fit into a weighted linear one: with `mu`
 the fitted chance for each individual, the weight is `mu (1 - mu)`, and the
-step solves the design weighted by those against the difference between the
+round solves the design weighted by those against the difference between the
 trait and `mu`. It stops when the largest change in a coefficient is below
-1e-8, in at most 50 steps, and a fit that has not converged by then is an
+1e-8, in at most 50 rounds, and a fit that has not converged by then is an
 error, not a warning.
 
-A fit can end before those 50 steps, and it is the same error with the
+A fit can end before those 50 rounds, and it is the same error with the
 steps it ran. Once the chances it fits reach 0 and 1 the weights are 0, and
 `d' w d`, the design weighted by them and taken against itself, is no longer
-a matrix a Cholesky factorization accepts. That is the same runaway seen
-sooner: the columns of the design are independent, a design whose columns
-are not being refused before any fit, so the weights are the only thing that
-can take `d' w d` there. pyNei meets only the first of the two, since it
-solves each step with an LU factorization, which answers a matrix that a
-Cholesky refuses. Measured on 24 September 2026, on eight individuals whose
-covariate is 0 to 7 and whose four above 3 have the condition: popnei stops
-at the step 45 on both linear algebra backends, where numpy 2.5.3 runs all
-50 and is still moving, at an intercept of -299.6 and an effect of 84.0.
+a matrix a Cholesky factorization accepts. Two different things take `d' w
+d` there and the error has to name both, because they have different
+remedies. The weights do it when the fit runs away, which is the same
+runaway seen sooner. **The design does it alone**, in a band the rank check
+does not reach: that check uses numpy's tolerance and a Cholesky
+factorization's is tighter, so two covariates can be independent enough for
+the rank and not for the factorization. Measured on 24 September 2026 on 200
+individuals with two covariates and a coin flip trait: at a correlation of 1
+minus 5e-13 the fit runs three rounds and the factorization refuses the
+system; a little further out it runs all fifty; and only once the two
+covariates agree to within about 1e-14 does the rank check catch them first
+and say so. A message that names only the separation tells a user in that
+band neither their cause nor their remedy. pyNei meets only the first of the
+two, since it solves each round with an LU factorization, which answers a
+matrix that a Cholesky refuses. Measured on 24 September 2026, on eight
+individuals whose covariate is 0 to 7 and whose four above 3 have the
+condition: popnei stops at the step 45 on both linear algebra backends,
+where numpy 2.5.3 runs all 50 and is still moving, at an intercept of -299.6
+and an effect of 84.0.
 
 The **score test**, which needs only the null, tests every variant of a
 block at once. With `w` the weights, `resid` the trait minus `mu` and `d`
@@ -874,7 +888,7 @@ projection matrix of the mixed models, and nothing is inverted per variant.
 
 The **Wald test**, the default, fits one logistic regression per variant
 with the variant in the model, starting from the null's coefficients and an
-effect of 0 for the variant. Each step needs one system of `c + 1` unknowns
+effect of 0 for the variant. Each round needs one system of `c + 1` unknowns
 per variant, which is a Cholesky factorization and a solve of a matrix the
 size of the coefficients; `docs/specs/linalg.md` decided that a stack of
 those is a loop in the caller and not an operation of the crate, and
@@ -889,7 +903,7 @@ includes the system the factorization refuses as singular; the variant's
 own effect passing 30 in absolute value, which is the last coefficient of
 the fit and the only one `_wald_test` of `pynei/gwas.py` reads, so a
 covariate whose effect is larger than that does not mark anything; and a
-fit still moving after 50 steps.
+fit still moving after 50 rounds.
 
 The first of the three is tested as **not finite** and not as an infinity,
 which is what keeps the two backends of `docs/specs/linalg.md` giving the
@@ -897,8 +911,11 @@ same answer. That crate lets through a diagonal entry that is neither 0 nor
 below it but whose reciprocal overflows, and there LAPACK gives an infinity
 where faer gives a NaN, each reporting success; measured by that spec on the
 2 x 2 with 4e-309 and 1 on its diagonal. Both fail a test for a value that
-is not finite, so the variant gets its three NaNs either way, and Python
-natively, Python under pyodide and TypeScript mark the same variants. If the
+is not finite, so the variant gets its three NaNs either way. That is what
+the marks do with a value they are given; it is not a claim that the three
+builds mark the same variants, which **Open 5** below shows is false today
+and false in the direction that matters, the browser being the build that
+is right. If the
 owner ever has the crate refuse that entry instead, this module gets a
 `Singular` where it now gets an infinity, and that is already one of the
 three marks. The
@@ -917,6 +934,13 @@ reach the third of them on the collinear variant, since pyNei solves with an
 LU, which answers a matrix a Cholesky refuses, and it gives the same three
 NaNs. Both stay: they cost a comparison each, they are what pyNei marks, and
 an implementation that later factors some other way would need them.
+
+Two more marks are popnei's own and are not pyNei's, and they give the same
+three NaNs: the solve that reads the variance of the effect refused as
+singular, and a variance that is not finite or is not above 0. pyNei gives a
+finite `beta` beside a NaN `se` and `p_value` in that case, which is the
+fourth kind of NaN that Open 2 exists to rule out, so popnei marks it
+instead. Neither reference panel reaches either.
 
 plink2 does not give up on that variant. It falls back to a Firth penalized
 regression, which adds a term that pulls the estimate back from infinity and
@@ -944,11 +968,12 @@ of popnei's arithmetic, and the two fits stop at different places: on
 on the oracle as much as on popnei. 5e-4 is 3.7 times the worst, which is
 this spec's own procedure. pyNei's own test passes at 1e-4 **absolute**,
 worst 6.66e-5, which this spec rejects for holding on a panel whose values
-are small and breaking on one whose values are larger. All three are wider than plink2's printing, which rounds by 5e-6,
-because plink2 stops its logistic fit earlier than popnei does; the
-difference between the two fits is what these measure, and the printing is
-not what limits them. The six literals below are held to 1e-5 on `beta`,
-1e-4 on `se` and 5e-3 on `p`, the same as pyNei holds them.
+are small and breaking on one whose values are larger. All three are wider
+than plink2's printing, which rounds by 5e-6, because plink2 stops its
+logistic fit earlier than popnei does; the difference between the two fits
+is what these measure, and the printing is not what limits them. The six
+literals below are held to 1e-5 on `beta`, 1e-4 on `se` and 5e-3 on `p`, the
+same as pyNei holds them.
 
 | variant | beta, a log odds ratio | se | p |
 |---|---|---|---|
@@ -1003,8 +1028,9 @@ working trait of the linearization that just finished, and `pw = p w`:
     ai    = 0.5 * (k pw)' p (k pw)
     step  = score / ai
 
-and `tau` becomes `tau + step`. The whole thing then starts again. It is the model GMMAT fits, and on the panel it takes 8
-steps on `tau` and 22 linearizations.
+and `tau` becomes `tau + step`. The whole thing then starts again. It is the
+model GMMAT fits, and on the panel it takes 8 steps on `tau` and 22
+linearizations.
 
 It starts from the plain logistic null of "The logistic model", fitted with
 no kinship in it: its coefficients give the first linear predictor and the
@@ -1033,7 +1059,9 @@ of rounds. pyNei raises a `RuntimeError` there, and so does its logistic
 fit; popnei raises a `ValueError`, because under the rule of
 `docs/specs/variant.md` a `RuntimeError` is a defect of popnei and a fit
 that will not settle is the data, the same category as the kinship that is
-not a covariance below. The 50 steps of the logistic fit are the same. `tau` starts at half the variance of the first working trait. The whole
+not a covariance below. The 50 rounds of the logistic fit are the same.
+
+`tau` starts at half the variance of the first working trait. The whole
 variance is what `tau` would be if the kinship explained all of it, and
 pyNei halves it; either way the start is too large rather than too small, so
 the bracket comes down from above. A step that would
@@ -1084,15 +1112,15 @@ decision to build the module around it. The options not taken, all measured
 in that report: an
 eigendecomposition of the weighted kinship per linearization, which would
 make the search over `tau` cost one number per individual but costs 3.33 s
-at 4000 individuals against an inverse's 0.376; a conjugate gradient solve, which
-solves a system by repeated products of the matrix with vectors and never
-factors it, and which wins for a sparse kinship and loses about twofold for
-popnei's dense one; and a stochastic estimate of the trace, which could give no more than a
-further 1.7 because the 25 Cholesky factorizations are 3.1 s of the 5.3 and
-which would stop the fit being the same calculation twice. What is not known
-is where the ratio settles above 4000 individuals, where nothing was run,
-and that it has not been measured in Rust: both sides here are numpy on the
-same BLAS.
+at 4000 individuals against an inverse's 0.376; a conjugate gradient solve,
+which solves a system by repeated products of the matrix with vectors and
+never factors it, and which wins for a sparse kinship and loses about
+twofold for popnei's dense one; and a stochastic estimate of the trace,
+which could give no more than a further 1.7 because the 25 Cholesky
+factorizations are 3.1 s of the 5.3 and which would stop the fit being the
+same calculation twice. What is not known is where the ratio settles above
+4000 individuals, where nothing was run, and that it has not been measured
+in Rust: both sides here are numpy on the same BLAS.
 
 ### A kinship that is not positive semidefinite
 
@@ -1230,8 +1258,9 @@ the answer is `front * cf(a, b, x) / a` while `x` is below
 above it, which is the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used where
 the fraction converges slowly. pyNei writes both of those from `x` alone,
 `numpy.log1p(-xi)` at `src/pynei/gwas.py:329` and `1 - xi` at 337, and
-`log1p` recovers the logarithm but not the fraction's argument. `cf` is the continued fraction, with `tiny` at
-1e-300, `eps` at 1e-15 and at most 500 rounds:
+`log1p` recovers the logarithm but not the fraction's argument. `cf` is the
+continued fraction, with `tiny` at 1e-300, `eps` at 1e-15 and at most 500
+rounds:
 
     qab = a + b;  qap = a + 1;  qam = a - 1
     c = 1;  d = 1 - qab * x / qap;  if |d| < tiny then d = tiny;  d = 1 / d
@@ -1275,10 +1304,10 @@ became not finite and the worst value moved by 2.3e-13 relative. The
 fraction took at most 52 rounds of its 500, over a sweep of 116802 calls.
 
 So no test of either guard can fail on a value, and the only assertion with
-anything behind it is one on the number of rounds. A reader who finds the five lines that read
-`tiny`, and the one that reads `eps`, covered by no test should stop looking
-for the argument that reaches them: for `tiny` there is none, and the bound
-above says why.
+anything behind it is one on the number of rounds. A reader who finds the
+five lines that read `tiny`, and the one that reads `eps`, covered by no
+test should stop looking for the argument that reaches them: for `tiny`
+there is none, and the bound above says why.
 
 ### How it is verified
 
@@ -1490,7 +1519,7 @@ code exists, on the panel and on the 100000 x 1000 dataset of
 
 ## Open points
 
-The owner decides these four, and until then the implementer follows the
+The owner decides these five, and until then the implementer follows the
 "meanwhile" of each. A third, what the two layers do with a phenotype that
 is not a number, was decided on 23 September 2026 and is in "Its Python
 function, and its TypeScript one" of "What every model shares", with the
@@ -1651,6 +1680,48 @@ reaches it. And the core checks that the kinship is symmetric, which the
 `Kinship` of both packages already checks and the core did not: the
 eigendecomposition reads the lower triangle, so an asymmetric matrix was
 being read as its lower half mirrored, with no word to the caller.
+
+**Open 5: a logistic fit that stops before any mark fires.** popnei's
+default build answers `p_value` 0.9999996244683889 for a variant whose
+effect has no finite value, where pyNei gives NaN and popnei's own faer
+build gives NaN. It is the first wrong value a user reads that this spec
+has produced, and the two builds disagree with the browser in the right.
+
+Reproduced on 24 September 2026 through the Python package: eight
+individuals, trait `0 0 0 1 0 1 1 1`, one covariate `0` to `7`, dosages
+`2 1 0 1 2 0 1 0`. It gives `beta` -18.235836883901765, `se`
+38745320.69540999 and that p-value on Accelerate, and three NaNs on faer.
+
+Why none of the five marks fires. pyNei runs all 50 rounds and is still
+moving, ending at -38.64, 18.97 and -18.97, so it marks the fit by the
+round count. The 30 does not fire in either library: since the mark reads
+the variant's own effect alone, and that is -18.97, it is the intercept
+that passes 30 and neither library looks at it. And popnei never reaches
+the round count, because its system is nearly singular, so the rounds shrink
+while the coefficients are still walking and the fit declares itself
+settled. That is the opposite of what "The logistic model" considers: the
+spec says a Cholesky makes the singular mark fire sooner than an LU would,
+and here it makes the fit stop before any mark fires at all. An `se` of
+3.9e7 beside an effect of -18 is the signature, a study saying it measured
+an effect it knows nothing about.
+
+Four ways out. Refuse a Cholesky pivot that has fallen to
+`the_share_that_is_nothing` of the largest, which is the rule this module
+already applies in the four places of Open 2 and which needs no new number.
+Stop on the deviance, as R does, rather than on the largest change in a
+coefficient. Mark an `se` that is not small against the scale of the design.
+Or keep an LU where pyNei has one, which costs a second factorization of
+every system.
+
+Recommendation: the pivot rule. It is the rule the module already has, it
+introduces no number to argue about, and it makes the two builds agree by
+refusing in both rather than by answering in both. Nothing here measures
+whether the pivot does fall that far in this case, and that is what the
+meanwhile is for: the implementer builds it and measures it on both
+reference panels, and because it can only take answers away, a rule that
+takes away a variant either panel answers today stops there and is reported
+rather than moving a literal. Until it is measured, the case is recorded and
+the behaviour is unchanged.
 
 ## Not in this spec
 
