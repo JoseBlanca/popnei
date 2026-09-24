@@ -729,24 +729,45 @@ mod glm {
         0.301_718_693_520_239_3,
     );
 
-    /// How far those three may be from numpy's: 3e-14 of each.
+    /// How far the effect and the standard error of that variant may be
+    /// from numpy's: 1.5e-15 times the standard error numpy gives it,
+    /// 0.8282.
     ///
-    /// None of the three is near 0, the smallest being the `se` of 0.83,
-    /// so a share of the number and a share of the scale of what is
-    /// estimated are the same bound here.
+    /// Both are measured against that standard error and neither against
+    /// itself, which is what "How it is verified" of "What every model
+    /// shares" of `docs/specs/gwas.md` asks: an effect is what the study
+    /// measures and its standard error is the scale it measures it on, and
+    /// an effect that cancelled to near 0, which most of a study's do, is
+    /// no guide to its own error. The effect of this fixture is 0.8554 and
+    /// its standard error 0.8282, so the two bounds happen to be the same
+    /// number here; the form is the rule and the fixture is not what
+    /// decides it.
     ///
     /// Lowered until it failed on both backends on 24 September 2026: it
-    /// breaks at 1e-14, where the p-value is 1.03e-14 of itself away on
-    /// Accelerate and 1.07e-14 on faer, and this is three times that. The
-    /// p-value is the worst of the three by two orders of magnitude, the
-    /// effect being 2.6e-16 away on Accelerate and 6.5e-16 on faer and the
-    /// standard error 2.7e-16 on both, which is a bit or two of each. What
-    /// the last step costs is the distribution: popnei reads the chi square
-    /// off `erfc` of the `libm` crate and scipy 1.16.2 computes the same
-    /// function another way, and "The two distributions" of
-    /// `docs/specs/gwas.md` puts the two 1e-12 of each other apart over its
-    /// own sample.
-    const OF_NUMPY: f64 = 3e-14;
+    /// breaks at 5e-16, where the effect is 6.70e-16 of the standard error
+    /// away on faer, and this is three times that. The other two
+    /// measurements are the effect on Accelerate and the standard error on
+    /// either, both 2.68e-16, so the whole of what is measured here is a
+    /// bit or two of a value of 0.83.
+    const OF_NUMPY: f64 = 1.5e-15;
+
+    /// How far the p-value of that variant may be from numpy's, in
+    /// `log10`: 1e-14.
+    ///
+    /// A p-value runs over orders of magnitude, so it is compared in
+    /// `log10`, which is already a scale, and not as a share of itself,
+    /// which is the same rule of the same spec item.
+    ///
+    /// Lowered until it failed on both backends on 24 September 2026: it
+    /// breaks at 4e-15, where it is 4.44e-15 away on Accelerate and
+    /// 4.63e-15 on faer, and this is 2.5 times that. It is an order of
+    /// magnitude above what the effect and the standard error spend
+    /// because the last step of the test is the distribution and not the
+    /// arithmetic: popnei reads the chi square off `erfc` of the `libm`
+    /// crate and scipy 1.16.2 computes the same function another way, and
+    /// "The two distributions" of `docs/specs/gwas.md` measures the two
+    /// 1e-12 of each other apart over its own sample.
+    const OF_NUMPYS_P_VALUE: f64 = 1e-14;
 
     /// A variant that the design leaves nothing of has no answer, which is
     /// the meanwhile of **Open 2** of `docs/specs/gwas.md`.
@@ -832,19 +853,32 @@ mod glm {
             p_value = result.p_value[0]
         );
         let (beta, se, p_value) = OF_THE_ORDINARY_VARIANT;
+        // The effect and the standard error are measured against the
+        // standard error, the scale of what the study estimates, and never
+        // against the effect, which is what "How it is verified" of "What
+        // every model shares" of `docs/specs/gwas.md` asks of every
+        // comparison of the two.
         for (found, expected, what) in [
             (result.beta[1], beta, "the effect of v1"),
             (result.se[1], se, "the standard error of v1"),
-            (result.p_value[1], p_value, "the p-value of v1"),
         ] {
             let difference = (found - expected).abs();
             assert!(
-                difference <= OF_NUMPY * expected.abs(),
+                difference <= OF_NUMPY * se,
                 "{what} is {found} and numpy gives {expected}, {difference} away, which is \
-                 {share} of it against the {OF_NUMPY} allowed",
-                share = difference / expected.abs()
+                 {share} of the {se} it is uncertain by against the {OF_NUMPY} allowed",
+                share = difference / se
             );
         }
+        // A p-value runs over orders of magnitude, so it is measured in
+        // `log10`, which is already a scale.
+        let in_log10 = (result.p_value[1] / p_value).log10().abs();
+        assert!(
+            in_log10 <= OF_NUMPYS_P_VALUE,
+            "the p-value of v1 is {found} and numpy gives {p_value}, {in_log10} away in \
+             log10 against the {OF_NUMPYS_P_VALUE} allowed",
+            found = result.p_value[1]
+        );
     }
 
     /// A covariate that separates the individuals that have the condition
