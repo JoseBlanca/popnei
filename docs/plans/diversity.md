@@ -281,7 +281,7 @@ and `ExpHet::of_var` of `crates/popnei/src/stats.rs`, all public today.
   F_IS", whose rule for which variants enter it is there too. Needs 2.1.
   Serves deliverables 1, 2 and 5. A wrong number is silent: its own
   commit, guarded by deliverables 2 and 5.
-- [ ] 2.5 `crates/popnei-python/src/diversity.rs`, its entry in that
+- [x] 2.5 `crates/popnei-python/src/diversity.rs`, its entry in that
   crate's `lib.rs`, `python/popnei/diversity.py` with the result
   dataclass and the enum, its exports in `python/popnei/__init__.py`, and
   `tests/test_diversity.py`. From "Its Python function" and "The cases".
