@@ -586,8 +586,36 @@ can be seen between one base pair and the largest
 bp, and above 10² it has fallen before the second base pair. Narrowing
 the range, at the bottom to 10⁻⁹, at the top to 10⁰, or both, moves the
 fitted value of the first population of "How it is verified" by at most
-8.9·10⁻⁹ of itself, which is the tolerance the search stops at and not
+8.9·10⁻⁹ of itself, which is what the rounding of the sum leaves and not
 something the range did.
+
+How close the fit comes was measured on 24 September 2026, on tables it
+should get exactly right: r² read off the curve itself at n of 100, at
+each of eleven ρ per base pair that are not values of the grid, from
+10⁻⁸·³⁷ to 10⁻²·⁷¹, one pair at each of the distances 1000, 2000 and so
+on to 250000. It gives the ρ per base pair back to within 2.3·10⁻¹⁰ of
+it, the worst of the eleven, and the same eleven tables carried to
+1000000 give the same eleven numbers. What holds it there is the bracket:
+10⁻⁹ of a decade is 2.3·10⁻⁹ of the ρ per base pair, and the fit lands a
+tenth of that from the answer because what it keeps is the best of the
+points it evaluated and not an end of the bracket.
+
+On the pairs of a real population the rounding of the sum stops the
+search before the bracket does, and that is what the 8.9·10⁻⁹ above is.
+The sum of the first population of "How it is verified" is 23.21 at its
+smallest, an `f64` steps from 23.21 by 3.55·10⁻¹⁵, and moving the ρ per
+base pair away from the smallest does not raise the sum steadily at that
+scale: 10⁻⁹ of itself away the sum is 8 of those steps above its
+smallest, 10⁻⁸ away 15 and 3·10⁻⁸ away 41, and 9.3·10⁻⁹ away, between the
+first two, it is 21. So the bottom of the sum is a stretch of ρ some
+10⁻⁸ wide in which a step of the staircase decides, and what the fit
+returns is the first point it evaluated at the lowest step, which is
+where the grid put its points. Narrowing the range moves the grid;
+tightening the bracket moves nothing, and the fit over the whole range
+and the fit over each of the three narrowed ranges each give the same
+`f64` at brackets of 10⁻¹⁰, 10⁻¹¹, 10⁻¹² and 10⁻¹³ of a decade as at the
+10⁻⁹ the search uses. Measured on 24 September 2026 on those 46441 pairs
+at 249 distances.
 
 The grid before the search is what looks at the whole range instead of
 sliding downhill from a start value into whichever valley holds it. What
@@ -627,6 +655,18 @@ The value at 0 is the curve's own ceiling, 0.46198347107438015 at n of
 halved does not change when `min_dist`, `max_dist` or `num_bins` changes.
 `min_dist` and `max_dist` still move the half distance, through the
 fitted ρ per base pair; `num_bins` moves neither.
+
+The half distance is read off the fitted curve and not off the pairs, so
+it can fall beyond every distance the fit was given, and a user who reads
+it as a distance the data reaches to is reading more than there is. The
+three individuals `i000`, `i001` and `i002` of
+`tests/reference/ld/ld.vcf.gz`, taken as one population at the defaults,
+give a half distance of 1868334.8 bp, where `max_dist` is 1000000 and the
+furthest pair they counted falls in the bin from 240001 to 260000: the
+curve fitted to those pairs is still above half of its value at 0 where
+the pairs end, and where it crosses half is worked out from the shape of
+the curve alone. Measured on 24 September 2026, on the 24548 pairs those
+three individuals counted over the 367 variants they kept.
 
 ### Its Python function
 
@@ -1246,9 +1286,12 @@ impl LdDecay {
     /// the population fix on their own.
     pub fn r2_at_zero(&self) -> f64;
     /// The distance in base pairs at which the fitted curve has fallen
-    /// to half of `r2_at_zero`. NaN when the other two are, and NaN on
-    /// its own when the curve never falls to half, which "The curve that
-    /// is fitted" says is n of 1 and n of 2 and no other n.
+    /// to half of `r2_at_zero`. It is read off the curve and not off the
+    /// pairs, so it can be beyond every distance the fit was given, as
+    /// "The curve that is fitted" shows on three individuals of
+    /// `tests/reference/ld/ld.vcf.gz`. NaN when the other two are, and
+    /// NaN on its own when the curve never falls to half, which "The
+    /// curve that is fitted" says is n of 1 and n of 2 and no other n.
     pub fn half_dist(&self) -> f64;
 }
 ```
@@ -1271,7 +1314,12 @@ crates divide them as `docs/specs/pca.md` divides its own.
 
 Most are the wrong input of a function, and a `ValueError` in Python:
 more variants than the matrix was allowed; an argument of the bins that
-is out of range; a population with no individual, an individual that the
+is out of range; a table given to `fit_ld_decay` whose three slices are
+not of one length, whose individuals are 0, one of whose distances holds
+no pair, or one of whose sums of r² is not finite or is below 0, which a
+caller with a table of its own reaches and a pass does not, since a pass
+gives the three slices compacted together and puts a pair in each; a
+population with no individual, an individual that the
 dataset has not, or an individual asked for more than once; a variant of
 more alleles than a count of them holds, or an allele below the missing
 one; a dataset whose individuals times its ploidy are more than
@@ -1288,14 +1336,15 @@ vars file, whose `popnei` key states a ploidy that the reader takes with
 no upper bound, where the VCF reader takes 255 alleles in a genotype at
 most.
 
-Four are a `RuntimeError` instead, for the reason `docs/specs/pca.md`
+Five are a `RuntimeError` instead, for the reason `docs/specs/pca.md`
 gives for its own two: no argument of any function of this module gives
 them, so what a user reads is a defect of popnei and not something they
 wrote. They are the variants of a tile or of a window that are not
 variants of the dosages they were asked of; two sets of dosages built
 over different individuals; a buffer for the r² that does not hold one
-value for each pair; and a product the linear algebra could not work
-out.
+value for each pair; a product the linear algebra could not work
+out; and a population the pass built no dosages for, which the `# Errors`
+of `calc_ld_and_dist` above says nothing reaches.
 
 ## Speed
 
