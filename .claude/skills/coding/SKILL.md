@@ -358,11 +358,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test -p popnei --no-default-features
 cargo wasm-check
+cargo wasm-check-js
 uv run ruff format --check && uv run ruff check
 uv run maturin develop && uv run pytest
 ```
 
-The five cargo commands run for every change. The two Python ones run
+The six cargo commands run for every change. The two Python ones run
 from the moment the binding crate and the package exist, also for a change
 in the core alone, because the pytest tests are the ones that compare with
 pyNei. A layer that does not exist yet is reported as not there, not as
@@ -387,6 +388,15 @@ uncompiled by the four commands above: on 22 September 2026 the
 parallel building of the sets of bits of the `dists` module left a
 constant that only the native side uses, and the wasm build warned about
 it in a commit whose other checks were green.
+
+`cargo wasm-check-js` compiles the JavaScript binding crate for
+`wasm32-unknown-unknown`, the one target it ships to, and it is an alias
+of its own because a cargo alias is one command and one command gives
+every crate it names the same targets: that crate does not build for
+emscripten, where the other two do. Nothing else builds it until `npm run
+build` in `js/popnei`, and it calls into JavaScript through `js-sys` and
+`web-sys`, so a call that does not compile would otherwise be found work
+packages later.
 
 When the change touches what wasm builds differently, threads, the linear
 algebra backend, a dependency, the wasm wheel is built as well, with the
