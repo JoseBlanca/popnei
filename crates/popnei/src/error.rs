@@ -1817,8 +1817,8 @@ pub enum Error {
     /// called alleles and one of 400 would put their variants in bins that
     /// mean different things. In Python it is a `ValueError`.
     #[error(
-        "the folded site frequency spectrum was asked for and `num_called_alleles` was not given, and the bins of a spectrum are the counts of the rarer allele in a draw of that many alleles: a call that does not give `stats` asks for all five statistics, {the_five}, so either give `num_called_alleles` or name in `stats` the statistics you want",
-        the_five = the_five_of_a_population()
+        "the folded site frequency spectrum was asked for and `num_called_alleles` was not given, and the bins of a spectrum are the counts of the rarer allele in a draw of that many alleles: either give `num_called_alleles`, or take folded_sfs out of `stats` and keep the statistics that need no draw, {the_four}",
+        the_four = the_four_that_need_no_draw()
     )]
     DiversitySfsWithoutADraw,
 
@@ -1837,8 +1837,9 @@ pub enum Error {
     /// them, so it is refused at the call rather than after the dataset
     /// has been read. In Python it is a `ValueError`.
     #[error(
-        "`stats` names no statistic and a pass that computes none reads every variant of the source for nothing: name in `stats` the statistics you want, which are {the_five}, or leave `stats` out for the five of them",
-        the_five = the_five_of_a_population()
+        "`stats` names no statistic and a pass that computes none reads every variant of the source for nothing: name in `stats` the statistics you want, which are {the_five}, or leave `stats` out for the four that need no draw, {the_four}",
+        the_five = the_five_of_a_population(),
+        the_four = the_four_that_need_no_draw()
     )]
     DiversityWithNoStatistic,
 
@@ -2482,6 +2483,15 @@ fn the_five_statistics() -> String {
 /// user copies one of them into `stats`.
 fn the_five_of_a_population() -> String {
     crate::diversity::DiversityStats::NAMES.join(", ")
+}
+
+/// The four statistics of a population that need no draw, in the same order
+/// and written the same way, for a message that asks a user to leave the fifth
+/// out.
+fn the_four_that_need_no_draw() -> String {
+    crate::diversity::DiversityStats::WITHOUT_A_DRAW
+        .names()
+        .join(", ")
 }
 
 /// `names` in one sentence, each in backticks, the last one after an "and":
