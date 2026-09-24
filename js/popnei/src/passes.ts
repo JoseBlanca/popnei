@@ -66,9 +66,10 @@ export function numPassesOf(consumer: ConsumerName, options?: object): number {
   theWasmHasToBeLoaded();
   // The name is checked here and not in the core: what the generated code
   // hands the core for a number or an object is a pointer into the memory of
-  // wasm and a length, which the module reads the bytes of a name at, and
-  // the read traps the module for good where the package owes its user an
-  // `Error`.
+  // wasm and a length, and the read of the bytes of a name at that pointer
+  // traps. What the user then gets is `RuntimeError: memory access out of
+  // bounds`, where the package owes them an `Error` of its own. The module
+  // goes on answering after a trap: `numPassesOf("calcKinship")` gives its 1.
   const name = aString("consumer", consumer);
   return numPassesOfTheCore(name, numPrinCompsOf(consumer, options));
 }
