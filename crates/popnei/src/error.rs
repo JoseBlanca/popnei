@@ -1583,13 +1583,26 @@ pub enum Error {
     /// because it solves each round with an LU factorization, which
     /// answers a matrix that a Cholesky refuses.
     ///
+    /// The design alone reaches it too, with another remedy, which is why
+    /// the message names two causes. A study whose covariates are so
+    /// nearly a combination of each other that the factorization refuses
+    /// the system, while the rank check that `Design::of_the_study` makes
+    /// with numpy's tolerance lets them through, ends the same way with no
+    /// separation anywhere in it. "The logistic model" of
+    /// `docs/specs/gwas.md` measures that band on 200 individuals with two
+    /// covariates: at a correlation of 1 less 5e-13 the fit runs three
+    /// rounds and the factorization refuses the system, and only once the
+    /// two covariates agree to within about 1e-14 does the rank check
+    /// catch them first. The remedy there is to take one of the two
+    /// covariates out, not the one that separates the individuals.
+    ///
     /// In Python it is a `ValueError`, as "The logistic mixed model" of
     /// `docs/specs/gwas.md` decides for both fits: pyNei raises a
     /// `RuntimeError` there, and under the rule of `docs/specs/variant.md`
     /// a `RuntimeError` is a defect of popnei where a fit that will not
     /// settle is the data.
     #[error(
-        "{what}, and its null model did not settle in the {rounds} rounds it was fitted in: a covariate that separates the individuals that have the condition from the ones that have not has no finite effect for a fit to reach, and the fit walks towards an infinite one; take that covariate out",
+        "{what}, and its null model did not settle in the {rounds} rounds it was fitted in. Two things do that and they have different remedies: a covariate that separates the individuals that have the condition from the ones that have not has no finite effect for a fit to reach, and the fit walks towards an infinite one, so take that covariate out; or two covariates carry so nearly the same thing that the system of a round can no longer be factored, although they are independent enough for the study to have been accepted, so take one of the two out",
         what = model.what_it_is_of()
     )]
     GwasFitDidNotSettle {

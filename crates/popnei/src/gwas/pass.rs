@@ -61,16 +61,24 @@ impl TheFittedModel {
     /// A linear model makes the one test it has, the t test of the variant
     /// against what the design left of the trait, and a linear mixed model
     /// and a logistic model make whichever of the Wald test and the score
-    /// test the study asked for.
+    /// test the study asked for. A logistic model is not told which: it
+    /// was fitted with the test the study asked for and holds the buffers
+    /// of that one. What it is given instead is `design`, the design it
+    /// was fitted on, which its score test takes each variant through.
     ///
     /// # Errors
     ///
     /// Whatever the model's own test of a block fails with.
-    fn test_the_block(&mut self, dosages: &GwasDosages, test: TestType) -> Result<Answers<'_>> {
+    fn test_the_block(
+        &mut self,
+        dosages: &GwasDosages,
+        test: TestType,
+        design: &Design<'_>,
+    ) -> Result<Answers<'_>> {
         match self {
             TheFittedModel::Linear(fitted) => fitted.test_the_block(dosages),
             TheFittedModel::Mixed(fitted) => fitted.test_the_block(dosages, test),
-            TheFittedModel::Logistic(fitted) => fitted.test_the_block(dosages, test),
+            TheFittedModel::Logistic(fitted) => fitted.test_the_block(dosages, design),
         }
     }
 }
@@ -184,7 +192,7 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
             None => return Err(Error::GwasModelNotBuilt { model }),
         },
         GwasModel::Glm => {
-            TheFittedModel::Logistic(LogisticModel::of_the_study(input.phenotype, &design)?)
+            TheFittedModel::Logistic(LogisticModel::of_the_study(input.phenotype, &design, test)?)
         }
         GwasModel::Glmm => return Err(Error::GwasModelNotBuilt { model }),
     };
@@ -202,7 +210,7 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
     let mut first_var = 0_usize;
     while let Some(mut block) = blocks.next_block()? {
         dosages.read_the_block(&mut block, &design, BlockOfThePass { ploidy, first_var })?;
-        let answers = fitted.test_the_block(&dosages, test)?;
+        let answers = fitted.test_the_block(&dosages, test, &design)?;
         result.add_the_block(&dosages, answers)?;
         the_columns_of_the_block(&mut result, &block, first_var)?;
         first_var = first_var

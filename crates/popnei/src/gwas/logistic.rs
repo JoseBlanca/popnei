@@ -103,11 +103,14 @@ pub(crate) struct LogisticModel {
     /// How many columns the design has.
     num_coefs: usize,
     /// The dosages of a block against the weighted design, `x' w d`, the
-    /// variants that have variance x `num_coefs`.
+    /// variants that have variance x `num_coefs`, which the solve against
+    /// the factorization then overwrites with `(d' w d)⁻¹ d' w x`, the
+    /// effect each column of the design has on the variant.
     of_the_design: Vec<f64>,
-    /// Those rows solved against the factorization, which is
-    /// `(d' w d)⁻¹ d' w x` of each variant, of the same size.
-    solved: Vec<f64>,
+    /// What the design makes of each variant at those effects, the
+    /// variants that have variance x `num_individuals`, which the
+    /// denominator of the score test is formed from.
+    explained: Vec<f64>,
     /// Each variant's dosages times the trait's residuals, one per variant
     /// that has variance.
     num: Vec<f64>,
@@ -117,10 +120,14 @@ pub(crate) struct LogisticModel {
     se: Vec<f64>,
     /// The p-value of each of those tests.
     p_value: Vec<f64>,
-    /// The buffers the Wald test fits one variant in, which a study that
-    /// makes the score test never reads. They are a few values per
-    /// individual and per coefficient, made once with the model.
-    of_a_variant: TheFitOfOneVariant,
+    /// The buffers the Wald test fits one variant in, made with the model
+    /// when the study asked for that test and `None` when it asked for
+    /// the score test, which reads none of them. They are the trait and
+    /// two designs of the individuals by the coefficients with the
+    /// variant, 0.96 MB at the 10000 individuals and 5 covariates of
+    /// `docs/objectives.md`, and which of the two the model holds is what
+    /// [`LogisticModel::test_the_block`] reads to know which test to make.
+    of_a_variant: Option<TheFitOfOneVariant>,
 }
 
 impl LogisticModel {
@@ -133,6 +140,12 @@ impl LogisticModel {
     /// mean of the trait, and the fit stops when the largest change in a
     /// coefficient falls below 1e-8.
     ///
+    /// `test` is the test the study will make of every variant, which
+    /// `the_model_and_the_test` of `study` chose before the fit. The Wald
+    /// test fits one logistic regression per variant and the buffers it
+    /// does that in are made here for it; a study that makes the score
+    /// test is given none of them.
+    ///
     /// # Errors
     ///
     /// [`Error::GwasInputOfAnotherSize`] when `phenotype` does not hold
@@ -140,11 +153,17 @@ impl LogisticModel {
     /// [`Error::GwasFitDidNotSettle`] when the coefficients are still
     /// moving after 50 rounds, which is what a covariate that separates
     /// the individuals that have the condition from the ones that have not
-    /// gives. [`Error::GwasLinalg`] when one of the two products, the
-    /// factorization of the weighted design or the solve against it could
-    /// not be done, which is where a design the weights have taken to a
-    /// matrix that is no longer positive definite is refused.
-    pub(crate) fn of_the_study(phenotype: &[f64], design: &Design<'_>) -> Result<LogisticModel> {
+    /// gives; when a round gives a step that is not finite; and when
+    /// `d' w d` can no longer be factored, which the weights and the
+    /// design itself both do, as
+    /// [`LogisticModel::at_the_coefficients`] says. [`Error::GwasLinalg`]
+    /// when one of the two products, the factorization for a reason that
+    /// is not a singular matrix or the solve against it could not be done.
+    pub(crate) fn of_the_study(
+        phenotype: &[f64],
+        design: &Design<'_>,
+        test: TestType,
+    ) -> Result<LogisticModel> {
         let num_individuals = design.num_individuals();
         let num_coefs = design.num_coefs();
         if phenotype.len() != num_individuals {
@@ -179,9 +198,15 @@ impl LogisticModel {
             factored: vec![0.0_f64; of_the_coefficients],
             num_individuals,
             num_coefs,
-            of_a_variant: TheFitOfOneVariant::of_the_study(phenotype, design),
+            of_a_variant: match test {
+                // The score test reads the weights, the residuals and the
+                // factorization this fit leaves and nothing else, so a
+                // study that makes it never builds these.
+                TestType::Score => None,
+                TestType::Wald => Some(TheFitOfOneVariant::of_the_study(phenotype, design)),
+            },
             of_the_design: Vec::new(),
-            solved: Vec::new(),
+            explained: Vec::new(),
             num: Vec::new(),
             beta: Vec::new(),
             se: Vec::new(),
@@ -203,12 +228,24 @@ impl LogisticModel {
             rounds = rounds.saturating_add(1);
             fitted.at_the_coefficients(phenotype, design, rounds)?;
             fitted.the_step_of_the_fit(design, &mut step)?;
+            // A step that is not a finite number ends the fit here, where
+            // the Wald fit of a variant has the same guard. Added on 24
+            // September 2026 as insurance and not for a case that has been
+            // seen: no input of this repository reaches it, because the
+            // factorization of the round refuses the system first. Without
+            // it the step is added, the product of the next round refuses
+            // an operand that is not finite, and the user is given
+            // `GwasLinalg`, which is a `RuntimeError` in Python and so a
+            // defect of popnei, for data of their own.
+            if !step.iter().all(|step| step.is_finite()) {
+                return Err(Error::GwasFitDidNotSettle {
+                    model: GwasModel::Glm,
+                    rounds,
+                });
+            }
             for (coef, step) in fitted.coefs.iter_mut().zip(&step) {
                 *coef += *step;
             }
-            // A step that is not a number is not a step below the
-            // tolerance: the comparison is false for it, the round is not
-            // the last, and the fit ends with the error below.
             settled = step
                 .iter()
                 .all(|step| step.abs() < THE_STEP_THAT_HAS_SETTLED);
@@ -238,13 +275,18 @@ impl LogisticModel {
     /// # Errors
     ///
     /// [`Error::GwasFitDidNotSettle`] when `d' w d` can no longer be
-    /// factored, which is the fit running away: the columns of the design
-    /// are independent, `Design::of_the_study` having refused them
-    /// otherwise, so the only thing that makes `d' w d` singular is the
-    /// weights, and a weight falls to 0 when the chance the fit gives an
-    /// individual reaches 0 or 1. A covariate that separates the
+    /// factored, which two different things do. The weights do it when the
+    /// fit runs away: a weight falls to 0 when the chance the fit gives an
+    /// individual reaches 0 or 1, and a covariate that separates the
     /// individuals that have the condition from the ones that have not is
-    /// what takes it there. [`Error::GwasLinalg`] when the product of the
+    /// what takes them there. The design does it alone in the band between
+    /// the two tolerances: `Design::of_the_study` refuses columns that are
+    /// not independent at the tolerance numpy's rank uses, a Cholesky
+    /// factorization's is tighter, and two covariates can be independent
+    /// enough for the first and not for the second. "The logistic model"
+    /// of `docs/specs/gwas.md` measures that band, and the message of the
+    /// error names both causes because they have different remedies.
+    /// [`Error::GwasLinalg`] when the product of the
     /// design with the coefficients, the product that gives `d' w d`, or
     /// the factorization for any other reason, could not be done.
     fn at_the_coefficients(
@@ -387,7 +429,12 @@ impl LogisticModel {
     /// Both tests are made here, and a study makes the one it asked for:
     /// the Wald test, which is what it gets when it asks for none, fits
     /// one logistic regression per variant, and the score test reads the
-    /// null model the study was fitted with and fits nothing.
+    /// null model the study was fitted with and fits nothing. Which of the
+    /// two it is was decided before the fit, and what says it here is
+    /// whether the model holds the buffers the Wald test needs.
+    ///
+    /// `design` is the design the null model was fitted on, which the
+    /// score test takes each variant through to form its denominator.
     ///
     /// # Errors
     ///
@@ -396,11 +443,11 @@ impl LogisticModel {
     pub(crate) fn test_the_block(
         &mut self,
         dosages: &GwasDosages,
-        test: TestType,
+        design: &Design<'_>,
     ) -> Result<Answers<'_>> {
-        match test {
-            TestType::Score => self.score_test_the_block(dosages),
-            TestType::Wald => self.wald_test_the_block(dosages),
+        match self.of_a_variant.is_some() {
+            true => self.wald_test_the_block(dosages),
+            false => self.score_test_the_block(dosages, design),
         }
     }
 
@@ -413,9 +460,10 @@ impl LogisticModel {
     /// the design beside the covariates, started at the coefficients of
     /// the null and an effect of 0 for the variant.
     /// [`TheFitOfOneVariant`] is what makes each of them, in buffers that
-    /// were made with the model, so a pass over a million variants
-    /// allocates nothing for a variant. A variant whose fit runs away gets
-    /// the three NaNs of one that has no answer and the pass goes on.
+    /// were made with the model of a study that asked for this test, so
+    /// this crate allocates nothing for a variant. A variant whose fit
+    /// runs away gets the three NaNs of one that has no answer and the
+    /// pass goes on.
     ///
     /// # Errors
     ///
@@ -426,15 +474,19 @@ impl LogisticModel {
         self.beta.clear();
         self.se.clear();
         self.p_value.clear();
-        for of_the_variant in dosages.dosages().chunks_exact(self.num_individuals) {
-            self.of_a_variant.with_the_dosages_of(of_the_variant);
-            let (beta, se, p_value) = match self.of_a_variant.fit_and_test(&self.coefs)? {
-                TheAnswerOfAVariant::Answered { beta, se, p_value } => (beta, se, p_value),
-                TheAnswerOfAVariant::RanAway => (f64::NAN, f64::NAN, f64::NAN),
-            };
-            self.beta.push(beta);
-            self.se.push(se);
-            self.p_value.push(p_value);
+        // The buffers are there, [`LogisticModel::test_the_block`] having
+        // read that they are to come here at all.
+        if let Some(of_a_variant) = self.of_a_variant.as_mut() {
+            for of_the_variant in dosages.dosages().chunks_exact(self.num_individuals) {
+                of_a_variant.with_the_dosages_of(of_the_variant);
+                let (beta, se, p_value) = match of_a_variant.fit_and_test(&self.coefs)? {
+                    TheAnswerOfAVariant::Answered { beta, se, p_value } => (beta, se, p_value),
+                    TheAnswerOfAVariant::RanAway => (f64::NAN, f64::NAN, f64::NAN),
+                };
+                self.beta.push(beta);
+                self.se.push(se);
+                self.p_value.push(p_value);
+            }
         }
         Ok(self.answers())
     }
@@ -455,23 +507,44 @@ impl LogisticModel {
     /// variant: the whole block is solved against the one factorization
     /// the null model left.
     ///
+    /// `den` is formed and not subtracted, which is the second place
+    /// popnei departs from pyNei's formula, the linear model's residual
+    /// sum of squares being the first. With `b` the effects
+    /// `(d' w d)⁻¹ d' w x` the design has on the variant, which the solve
+    /// gives, the same quantity is the sum over the individuals of
+    /// `w (x - d b)²`, a sum of terms that are 0 or above where the
+    /// subtraction is two nearly equal numbers taken from each other.
+    /// Measured on 24 September 2026 over six decades on 200 individuals
+    /// with a covariate that is a variant's dosages and noise: at 1.3
+    /// times the threshold below the subtracted form is out by 4.6e-3 of
+    /// itself, and at the threshold by 29 per cent, so the guard would be
+    /// reading a quantity whose error is larger than what it tests. It
+    /// costs one product of the block per block, the effects against the
+    /// design, into a buffer of the variants by the individuals, which is
+    /// what the linear model already keeps for its residuals.
+    ///
     /// A variant of which the design leaves at most the tested individuals
     /// times 2.2e-16 of `x' w x` has no answer, and gets the three NaNs a
-    /// variant with no variance gets. `den` is 0 or above in exact
-    /// arithmetic, and for a variant that is a combination of the columns
-    /// of the design it is the rounding of a cancellation, which can fall
-    /// below 0: `beta` would be a number divided by noise, `se` the square
-    /// root of a negative number and the statistic negative. It is
-    /// **Open 2** of `docs/specs/gwas.md`.
+    /// variant with no variance gets. For a variant that is a combination
+    /// of the columns of the design what is left is the rounding of that
+    /// sum and not a quantity, and `beta` would be a number divided by
+    /// noise. It is **Open 2** of `docs/specs/gwas.md`.
+    ///
+    /// `design` is the design the null model was fitted on, the same one,
+    /// which is what a variant is taken through.
     ///
     /// # Errors
     ///
     /// [`Error::GwasVariantsTooLarge`] when the values of the block are
     /// more than a `usize` counts, and [`Error::GwasLinalg`] when one of
-    /// the two products or the solve could not be done, which is where a
+    /// the three products or the solve could not be done, which is where a
     /// block of other individuals than the null model was fitted over is
     /// refused.
-    fn score_test_the_block(&mut self, dosages: &GwasDosages) -> Result<Answers<'_>> {
+    fn score_test_the_block(
+        &mut self,
+        dosages: &GwasDosages,
+        design: &Design<'_>,
+    ) -> Result<Answers<'_>> {
         let num_vars = dosages.num_with_variance();
         self.beta.clear();
         self.se.clear();
@@ -519,29 +592,46 @@ impl LogisticModel {
             operation: "product of a block of variants with the residuals of the null model",
             source,
         })?;
-        // The solve overwrites what it is given, and both what it was
-        // given and what it gave are read below, so the rows go into a
-        // buffer of their own, which is kept from one block to the next
-        // like every other buffer here.
-        self.solved.clear();
-        self.solved.extend_from_slice(&self.of_the_design);
+        // The solve overwrites what it is given, and what it was given,
+        // `x' w d`, is not read again: what the rows hold afterwards is
+        // the effects the columns of the design have on each variant.
         popnei_linalg::solve_with_cholesky(
             &self.factored,
             self.num_coefs,
-            &mut self.solved,
+            &mut self.of_the_design,
             num_vars,
         )
         .map_err(|source| Error::GwasLinalg {
             operation: "solve of a block of variants against the weighted design",
             source,
         })?;
+        let values = num_vars
+            .checked_mul(self.num_individuals)
+            .ok_or(Error::GwasVariantsTooLarge)?;
+        self.explained.resize(values, 0.0);
+        popnei_linalg::product(
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: &self.of_the_design,
+                rows: num_vars,
+            },
+            self.num_coefs,
+            TheSecondOperand::ByTheColumnsOfTheResult {
+                values: design.values(),
+                cols: self.num_individuals,
+            },
+            &mut self.explained,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of the effects of the design on a block of variants with the \
+                        design",
+            source,
+        })?;
         // The share of what the variant weighed that the design has to
         // leave of it for the variant to be worth testing.
         let share_that_is_nothing = the_share_that_is_nothing(self.num_individuals);
-        for (((of_the_design, solved), num), of_the_variant) in self
-            .of_the_design
-            .chunks_exact(self.num_coefs)
-            .zip(self.solved.chunks_exact(self.num_coefs))
+        for ((explained, num), of_the_variant) in self
+            .explained
+            .chunks_exact(self.num_individuals)
             .zip(&self.num)
             .zip(dosages.dosages().chunks_exact(self.num_individuals))
         {
@@ -550,12 +640,19 @@ impl LogisticModel {
                 .zip(&self.weights)
                 .map(|(dosage, weight)| weight * dosage * dosage)
                 .sum::<f64>();
-            let of_the_covariates = of_the_design
+            // What the design leaves of the variant, weighed by the
+            // weights: a sum of terms that are 0 or above, formed from
+            // what the design makes of the variant and not taken from
+            // `x' w x` by subtracting the two nearly equal numbers the
+            // doc comment measures.
+            let den = explained
                 .iter()
-                .zip(solved)
-                .map(|(row, solved)| row * solved)
+                .zip(of_the_variant.iter().zip(&self.weights))
+                .map(|(explained, (dosage, weight))| {
+                    let left = dosage - explained;
+                    weight * left * left
+                })
                 .sum::<f64>();
-            let den = weighted_length - of_the_covariates;
             if den <= share_that_is_nothing * weighted_length {
                 self.beta.push(f64::NAN);
                 self.se.push(f64::NAN);
@@ -844,7 +941,8 @@ impl TheFitOfOneVariant {
     /// The fitted chance of each tested individual at the coefficients the
     /// fit holds, and what is built from it: the weights, the trait less
     /// that chance, the design weighted by the weights and the Cholesky
-    /// factorization of `d' w d`.
+    /// factorization of `d' w d`, whose pivots are then read by
+    /// [`TheFitOfOneVariant::the_system_that_is_left`].
     ///
     /// # Errors
     ///
@@ -912,10 +1010,52 @@ impl TheFitOfOneVariant {
                         logistic fit",
             source,
         })?;
-        the_system_of(
+        match the_system_of(
             popnei_linalg::cholesky_lower(&mut self.system, num_coefs),
             "factorization of the weighted design of the logistic fit of a variant",
-        )
+        )? {
+            TheSystemOfTheFit::Worked => Ok(self.the_system_that_is_left()),
+            TheSystemOfTheFit::RanAway => Ok(TheSystemOfTheFit::RanAway),
+        }
+    }
+
+    /// Whether the system the round factored still has a direction left to
+    /// move the fit in, read off the pivots of the factorization: the
+    /// smallest of them against the largest.
+    ///
+    /// A Cholesky factorization accepts a system whose smallest pivot is
+    /// above 0 by any margin, and a logistic fit whose weighted design has
+    /// collapsed can walk far past the point where its system says
+    /// anything: the steps it solves shrink because the system is nearly
+    /// singular, not because the coefficients have settled, so the fit
+    /// declares itself settled while they are still moving and answers
+    /// with an effect it knows nothing about beside a standard error of
+    /// 1e7. **Open 5** of `docs/specs/gwas.md` has the eight individuals
+    /// that gave a p-value of 0.9999996 on one backend and three NaNs on
+    /// the other, and this is the rule it chose: the same share of a scale
+    /// that **Open 2** refuses a variant at, `n` times 2.2e-16, with the
+    /// largest pivot for the scale. A fit it catches is a runaway and gets
+    /// the three NaNs.
+    ///
+    /// The pivots are the squares of the diagonal of what the
+    /// factorization wrote, since `d' w d` is `l l'`.
+    fn the_system_that_is_left(&self) -> TheSystemOfTheFit {
+        let mut smallest = f64::INFINITY;
+        let mut largest = 0.0_f64;
+        for (row, values) in self.system.chunks_exact(self.num_coefs).enumerate() {
+            let diagonal = values.get(row).copied().unwrap_or(f64::NAN);
+            let pivot = diagonal * diagonal;
+            if pivot < smallest {
+                smallest = pivot;
+            }
+            if pivot > largest {
+                largest = pivot;
+            }
+        }
+        match smallest <= the_share_that_is_nothing(self.num_individuals) * largest {
+            true => TheSystemOfTheFit::RanAway,
+            false => TheSystemOfTheFit::Worked,
+        }
     }
 
     /// What the round adds to each coefficient: the solution of `d' w d`
@@ -1152,12 +1292,12 @@ mod glm {
     /// The covariate carries the same information as the variant whatever
     /// it is multiplied by, and the fit gives it an effect ten times as
     /// large to say the same thing; what the tenth changes is the
-    /// arithmetic. At a covariate equal to the dosages the denominator of
-    /// the first variant's score test cancels to exactly 0 on both
-    /// backends, and a variant with nothing left is then caught by any
-    /// comparison with 0; at a tenth of them the cancellation leaves
-    /// 4.4e-16, a positive number, which is the case the threshold of
-    /// **Open 2** is for.
+    /// arithmetic: the denominator of the first variant's score test lands
+    /// on 1.891e-31 on Accelerate and 9.565e-31 on faer at a tenth,
+    /// against 1.199e-32 and 1.953e-31 at a covariate equal to the
+    /// dosages, all four measured on 24 September 2026 and all four
+    /// positive and far under the threshold of **Open 2**, which is what
+    /// this fixture is for.
     const THE_DESIGN_OF_THE_FIRST_VARIANT: [f64; 16] = [
         1.0, 0.1, //
         1.0, 0.0, //
@@ -1237,25 +1377,27 @@ mod glm {
     /// theirs, which is what a user gets by putting a genotype in as a
     /// covariate. The design then explains the whole of that variant and
     /// what is left of it is rounding. Measured on 24 September 2026, the
-    /// first reproduction of this rule at either score test: the
-    /// denominator of the variant's score test comes to 4.44e-16 on
-    /// Accelerate and to exactly 0 on faer, where `x' w x`, the weighted
-    /// squared length the variant had before the covariates were taken
-    /// out, is 2.3592 and the threshold that refuses it, the eight tested
-    /// individuals times 2.2e-16 of that, is 4.19e-15.
+    /// first reproduction of this rule at either score test, with the
+    /// denominator formed as the weighted squared length of what the
+    /// design leaves of the variant: it comes to 1.891e-31 on Accelerate
+    /// and to 9.565e-31 on faer, where `x' w x`, the weighted squared
+    /// length the variant had before the covariates were taken out, is
+    /// 2.3592 and the threshold that refuses it, the eight tested
+    /// individuals times 2.2e-16 of that, is 4.19e-15. Both are positive
+    /// and both are sixteen orders of magnitude below the threshold, so
+    /// this fixture is what exercises the comparison on both backends; the
+    /// subtracted denominator it had before gave 4.44e-16 on Accelerate
+    /// and exactly 0 on faer, where a comparison with 0 alone would have
+    /// passed.
     ///
     /// What the variant is answered with when the threshold is taken out,
     /// measured the same day on both backends, is why it is there. The
     /// numerator is 0 to the bit, the design being what the fit made its
-    /// residuals at right angles to, so on Accelerate the row is a `beta`
-    /// of 0, an `se` of 4.75e7 and a p-value of 1, which a user reads as a
-    /// variant that was tested and showed nothing and which no filter on a
-    /// missing effect takes out; and on faer, where the denominator is 0,
-    /// it is a `beta` of NaN, an `se` of infinity and a p-value of NaN, a
-    /// fourth kind of row that `docs/specs/gwas.md` does not describe. The
-    /// same fixture with an explicit inverse of `d' w d` in numpy 2.5.3
-    /// lands on -4.44e-16 and gives a third row, a `beta` of -0.0 beside
-    /// an `se` of NaN.
+    /// residuals at right angles to, so the row is a `beta` of 0 and a
+    /// p-value of 1 beside an `se` of 2.299e15 on Accelerate and
+    /// 1.022e15 on faer, which a user reads as a variant that was tested
+    /// and showed nothing and which no filter on a missing effect takes
+    /// out.
     ///
     /// The second variant of the fixture is ordinary and is answered: it
     /// is what says that the threshold refuses the first variant and not
@@ -1401,6 +1543,80 @@ mod glm {
             Err(error) => panic!("a covariate that separates the two groups: {error}"),
             Ok(result) => panic!("a study of {} variants was run", result.num_vars),
         }
+    }
+
+    /// A Wald fit whose system has collapsed has no answer, although its
+    /// steps have fallen below the tolerance and none of the other marks
+    /// has fired.
+    ///
+    /// It is the fixture of **Open 5** of `docs/specs/gwas.md`: eight
+    /// individuals, the trait `0 0 0 1 0 1 1 1`, one covariate 0 to 7 and
+    /// a variant of dosages `2 1 0 1 2 0 1 0`. No finite effect fits that
+    /// variant, and pyNei, which solves each round with an LU
+    /// factorization, runs its 50 rounds and is still moving at an
+    /// intercept of -38.64, a covariate of 18.97 and an effect of -18.97,
+    /// so it marks the fit by the round count and gives the three NaNs.
+    /// popnei reached none of the five marks before this rule: the effect
+    /// is -18.97, which is under the 30, and it is the intercept that
+    /// passes it, which "The logistic model" says no mark reads; and the
+    /// nearly singular system makes the steps shrink while the
+    /// coefficients are still walking, so the fit declared itself settled
+    /// at the round before the count ran out. Measured on 24 September
+    /// 2026 through the Python package, it answered `beta`
+    /// -18.235836883901765, `se` 38745320.69540999 and `p_value`
+    /// 0.9999996244683889 on Accelerate and three NaNs on faer, which is
+    /// the two builds disagreeing with the browser in the right.
+    ///
+    /// What catches it is the pivot of the factorization that has fallen
+    /// to the share of the largest that **Open 2** calls nothing. What
+    /// says that the rule refuses this fit and not every fit is the panel,
+    /// whose 1199 answered variants stay answered: measured on both
+    /// backends on 24 September 2026, the smallest pivot of a fit either
+    /// reference panel answers is 2.600e-2 of the largest on the panel
+    /// with every genotype called and 4.730e-5 on the panel with 3
+    /// genotypes missing in 100, against a threshold there of 4.44e-14,
+    /// which is nine orders of magnitude of headroom. This fixture has one
+    /// variant and no second one, because the covariate it needs nearly
+    /// separates the eight individuals on its own and every variant put
+    /// beside it runs away too, by this mark or by the marks that were
+    /// there before it.
+    #[test]
+    fn a_wald_fit_whose_system_has_collapsed_has_no_answer() {
+        let mut vcf = String::from(THE_HEADER_OF_EIGHT);
+        vcf.push_str("1\t1000\tv0\tA\tT\t.\t.\t.\tGT");
+        // the dosages 2 1 0 1 2 0 1 0, allele by allele
+        for genotype in ["1/1", "0/1", "0/0", "0/1", "1/1", "0/0", "0/1", "0/0"] {
+            vcf.push('\t');
+            vcf.push_str(genotype);
+        }
+        vcf.push('\n');
+        let phenotype = [0.0_f64, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0];
+        let design: Vec<f64> = (0..8_usize).flat_map(|row| [1.0, row as f64]).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Binomial,
+            design: &design,
+            num_coefs: 2,
+            kinship: None,
+            test: Some(TestType::Wald),
+            use_grammar_gamma_approx: false,
+            individuals: &THE_INDIVIDUALS_OF_EIGHT,
+            transform_to_biallelic: false,
+        };
+        let mut reader = reader_over(vcf.as_bytes());
+        let result = match the_study_of(&mut reader, &study) {
+            Ok(result) => result,
+            Err(error) => panic!("the study of a fit that stops before it has settled: {error}"),
+        };
+        assert_eq!(result.num_vars, 1);
+        assert!(
+            result.beta[0].is_nan() && result.se[0].is_nan() && result.p_value[0].is_nan(),
+            "the variant whose fit collapsed was answered with a beta of {beta}, an se of \
+             {se} and a p-value of {p_value}",
+            beta = result.beta[0],
+            se = result.se[0],
+            p_value = result.p_value[0]
+        );
     }
 
     /// How far the effect of one of the six variants may be from plink2's,

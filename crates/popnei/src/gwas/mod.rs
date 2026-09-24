@@ -94,9 +94,11 @@ pub use study::{GwasInput, GwasInputShape, GwasModel, TestType, TraitType};
 ///
 /// - `xx` in the linear model, the variant with the covariates taken out
 ///   of it, against the variant's own squared length;
-/// - `x' w x` less `(x' w d) (d' w d)⁻¹ (d' w x)` in the logistic model's
-///   score test, against `x' w x`, the weighted squared length the variant
-///   had before the covariates were taken out;
+/// - the weighted squared length of what the design leaves of the variant
+///   in the logistic model's score test, which is `x' w x` less
+///   `(x' w d) (d' w d)⁻¹ (d' w x)` and is formed and not subtracted,
+///   against `x' w x`, the weighted squared length the variant had before
+///   the covariates were taken out;
 /// - `x' p x` in the score test of a mixed model, against the variant's
 ///   squared length times the largest value of the diagonal of the
 ///   projection matrix;
@@ -104,6 +106,11 @@ pub use study::{GwasInput, GwasInputShape, GwasModel, TestType, TraitType};
 ///   against `y' p y` itself, which is the one of the four that is what a
 ///   variant leaves of the trait where the other three are what the design
 ///   leaves of the variant.
+///
+/// The logistic model's Wald test reads the same share a fifth time, and
+/// there it is the smallest pivot of the Cholesky factorization of one
+/// variant's fit against the largest, which is the meanwhile of **Open 5**
+/// of that spec and is why this is not named for **Open 2** alone.
 ///
 /// It is written here once because the logistic mixed model adds a second
 /// caller of the third of them, and because a threshold that differed
