@@ -990,8 +990,11 @@ the wrong input of a function and a `ValueError` in Python: the spectrum
 asked for without a draw size, a draw size below 2, a `stats` naming no
 statistic at all, a name that is no statistic of this module, a population
 with no individual, an individual the dataset has not or named twice, a
-pass with no variant, and a variant of more alleles than a count of them
-holds.
+pass with no variant, a variant of more alleles than a count of them
+holds, and a block saying it holds more variants than the variants of a
+pass are counted in. The last two are of the variants the pass read and
+not of what a user wrote, and they are here because a user meets them
+through this function; the rest are arguments.
 
 Three of those a user of the Python or the TypeScript package never meets,
 and a reader of this list should know which. A population with no
