@@ -2,12 +2,13 @@
 //! file, the arrow file popnei keeps its variants in, read as a source of
 //! variants.
 //!
-//! [`VarsSource`] holds the bytes of the file and reads its schema and its
+//! [`VarsSource`] holds the file, a copy of it in the memory of wasm or a
+//! file of the page read one range at a time, and reads its schema and its
 //! footer when it is built, so bytes that are not a vars file fail at
 //! `openVars`, and the names of the individuals and the ploidy come from the
-//! `popnei` key of that schema. Every pass over it reads the same bytes
-//! again from their start and goes through the `Blocks` of `source.rs`, the
-//! one a VCF goes through.
+//! `popnei` key of that schema. Every pass over it reads the same file again
+//! from its start and goes through the `Blocks` of `source.rs`, the one a
+//! VCF goes through.
 //!
 //! A tab has no filesystem, as section 11 of `docs/architecture.md` says, so
 //! the file a user gets is the bytes of one: `write_vars` of `source.rs`
@@ -15,10 +16,9 @@
 //! page offers as a download. That is the whole file in memory beside the
 //! source it was written from.
 
-use std::sync::Arc;
-
 use js_sys::Function;
 use wasm_bindgen::prelude::wasm_bindgen;
+use web_sys::Blob;
 
 use popnei::block::BlockReader;
 use popnei::io::vars::VarsReader;
@@ -31,9 +31,9 @@ use crate::ld::{R2Matrix, r2_matrix_of};
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
 use crate::pop_dists::{ArgumentsOfTheDists, PopDistsOfAPass, pop_dists_of};
 use crate::source::{
-    Blocks, Consumer, OpenSource, PassOverTheBytes, RunOfAConsumer, VarsFile, blocks_of,
-    bytes_of_a_vars_file, cursor_of, starts_a_run_of, tells_the_progress,
-    the_entry_of_a_new_source, the_source_was_freed,
+    Blocks, Consumer, OpenSource, RunOfAConsumer, TheFileOfASource, VarsFile, blocks_of,
+    bytes_of_a_vars_file, starts_a_run_of, tells_the_progress, the_bytes_of_a_new_source,
+    the_file_of_a_new_source, the_source_was_freed,
 };
 use crate::stats::{
     ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, per_individual_stats_of,
@@ -41,16 +41,19 @@ use crate::stats::{
 };
 use crate::steps::Steps;
 
-/// A vars file that was opened: its bytes, and the individuals and the
-/// ploidy its schema named.
+/// A vars file that was opened: where its file is, and the individuals and
+/// the ploidy its schema named.
 #[wasm_bindgen]
 pub struct VarsSource {
-    /// The bytes of the whole file, which every pass over them shares.
-    bytes: Arc<Vec<u8>>,
+    /// Where the file is, a copy of the whole of it in the memory of wasm or
+    /// a file of the page read one range at a time, which every pass over the
+    /// source reads again from its first byte.
+    file: TheFileOfASource,
     individuals: Vec<String>,
     ploidy: usize,
-    /// The number of what this source keeps in JavaScript, the function the
-    /// page is told the progress with, which `free()` gives back.
+    /// The number of what this source keeps in JavaScript, the file it reads
+    /// the ranges from and the function the page is told the progress with,
+    /// which `free()` gives back.
     in_javascript: u32,
 }
 
@@ -430,10 +433,9 @@ impl OpenSource for VarsSource {
         // The schema and the footer are read here, which is the first read of
         // the pass and the call that tells the page that it has read nothing
         // yet.
-        Ok(Box::new(VarsReader::new(PassOverTheBytes::of_a_run(
-            &self.bytes,
-            run,
-        )?)?))
+        Ok(Box::new(VarsReader::new(
+            self.file.a_pass_of(self.in_javascript, run)?,
+        )?))
     }
 }
 
@@ -452,22 +454,68 @@ impl OpenSource for VarsSource {
 /// footer whose entries are not as many as the batches.
 #[wasm_bindgen]
 pub fn open_vars(bytes: Vec<u8>) -> Result<VarsSource, JsPopneiError> {
-    // The `Vec` wasm-bindgen filled with the bytes of the `Uint8Array` is
-    // the one every pass reads: an `Arc<[u8]>` here would allocate the whole
-    // file again and copy it into the new buffer, and the memory of wasm
-    // never gives that back.
-    let bytes = Arc::new(bytes);
+    let (file, in_javascript) = the_bytes_of_a_new_source(bytes)?;
+    the_vars_of(file, in_javascript)
+}
+
+/// The vars file in `file`, the file the user picked in the page or a `Blob`
+/// an application made itself.
+///
+/// The file stays in the page. Every pass over it asks the browser for one
+/// range of a few MiB at a time through `FileReaderSync`, which a browser
+/// gives only inside a web worker, so the file is never in the memory of
+/// wasm whole and a file larger than that memory is read. The reader of a
+/// vars file seeks, to the footer and to each batch, and a seek moves where
+/// the pass reads and asks the browser for nothing.
+///
+/// It reads the schema and the footer, so the individuals, the ploidy and
+/// the batches are known when it returns and a file that is not a vars file
+/// fails here.
+///
+/// # Errors
+///
+/// When the browser has no `FileReaderSync`, which is every call outside a
+/// web worker; when `Blob.size` is not a whole number of bytes popnei reads a
+/// file by; and when the file is not a vars file that popnei can read.
+#[wasm_bindgen]
+pub fn open_vars_of_a_file(file: Blob) -> Result<VarsSource, JsPopneiError> {
+    let (file, in_javascript) = the_file_of_a_new_source(file)?;
+    the_vars_of(file, in_javascript)
+}
+
+/// The source of the vars file in `file`, which keeps the file and the
+/// function the page is told the progress with in the entry numbered
+/// `in_javascript`.
+///
+/// # Errors
+///
+/// When the file is not a vars file that popnei can read. The entry goes with
+/// an open that failed: no `Variants` was made, so no `free()` will come for
+/// it.
+fn the_vars_of(file: TheFileOfASource, in_javascript: u32) -> Result<VarsSource, JsPopneiError> {
     // The schema and the footer are read when the reader is built and no
     // batch is, so a file whose batches would need more memory than wasm
     // addresses is opened all the same and its individuals read.
-    let reader = VarsReader::new(cursor_of(&bytes))?;
+    //
+    // The read belongs to no run and is told to nobody: there is no
+    // `Variants` yet for an application to have set a function on.
+    let opened = file
+        .the_opening_pass(in_javascript)
+        .and_then(VarsReader::new);
+    let reader = match opened {
+        Ok(reader) => reader,
+        Err(error) => {
+            the_source_was_freed(in_javascript);
+            return Err(error.into());
+        }
+    };
     let metadata = reader.metadata();
     let individuals = metadata.individuals.clone();
     let ploidy = metadata.ploidy;
     Ok(VarsSource {
-        bytes,
+        file,
         individuals,
         ploidy,
-        in_javascript: the_entry_of_a_new_source()?,
+        in_javascript,
     })
 }

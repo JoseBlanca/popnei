@@ -236,20 +236,32 @@ export function aBoolean(argument: string, value: unknown): boolean {
 }
 
 /**
- * The bytes of `value` when it is a `Uint8Array` that can be read and that
- * the memory of wasm takes, and an `Error` otherwise.
+ * The file of `value`: the bytes when it is a `Uint8Array` that can be read
+ * and that the memory of wasm takes, the file of the page when it is a
+ * `Blob`, and an `Error` otherwise.
  *
- * @throws {Error} When `value` is not a `Uint8Array`, when its buffer was
- * transferred, which leaves the array with nothing to read, and when the
- * memory of wasm does not take a copy of it.
+ * A `File`, the handle a page gets when the user picks a file, is a `Blob`,
+ * and so is a `Blob` an application built itself. Nothing of it is read
+ * here: what popnei reads a range of a file with lives in a web worker, and
+ * the binding crate is where a call made outside one is refused.
+ *
+ * @throws {Error} When `value` is neither a `Uint8Array` nor a `Blob`, when
+ * the buffer of a `Uint8Array` was transferred, which leaves the array with
+ * nothing to read, and when the memory of wasm does not take a copy of it.
  */
-export function bytes(argument: string, value: unknown): Uint8Array {
+export function bytesOrFile(
+  argument: string,
+  value: unknown,
+): Uint8Array | Blob {
+  if (value instanceof Blob) {
+    return value;
+  }
   if (!(value instanceof Uint8Array)) {
     throw new Error(
-      `popnei: \`${argument}\` is a Uint8Array with the bytes of the file, and ` +
-        `${whatWasGiven(value)} was given; text is turned into bytes with ` +
-        "new TextEncoder().encode(text), and a file of node is read with " +
-        'new Uint8Array(await readFile(path))',
+      `popnei: \`${argument}\` is the file to read, a Uint8Array with its bytes ` +
+        `or the File of a page, and ${whatWasGiven(value)} was given; text is ` +
+        "turned into bytes with new TextEncoder().encode(text), and a file of " +
+        "node is read with new Uint8Array(await readFile(path))",
     );
   }
   // A page that sends bytes to a web worker transfers their buffer, which

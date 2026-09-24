@@ -34,7 +34,7 @@ export type { CalcRogersHuffR2MatrixOptions, R2Matrix } from "./ld.js";
 export { openVars, writeVars } from "./io_vars.js";
 export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
 export { openVcf } from "./io_vcf.js";
-export type { OpenVcfOptions } from "./io_vcf.js";
+export type { BytesOrFile, OpenVcfOptions } from "./io_vcf.js";
 export { doPca, doPcaFromVariants } from "./pca.js";
 export type {
   DoPcaFromVariantsOptions,

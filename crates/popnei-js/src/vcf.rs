@@ -1,17 +1,16 @@
-//! What a TypeScript user reaches through `openVcf`: the bytes of a VCF with
-//! its options, read as a source of variants.
+//! What a TypeScript user reaches through `openVcf`: a VCF with its options,
+//! read as a source of variants.
 //!
-//! [`VcfSource`] holds the bytes of a VCF and the options it is read with,
-//! and it reads the header when it is built, so bytes that are not a VCF
-//! fail at `openVcf`. Every pass over it reads the bytes again from their
-//! start and goes through the `Blocks` of `source.rs`, the one a vars file
-//! goes through, and `write_vars` there is what writes its variants into a
-//! vars file.
-
-use std::sync::Arc;
+//! [`VcfSource`] holds the file, a copy of it in the memory of wasm or a file
+//! of the page read one range at a time, and the options it is read with, and
+//! it reads the header when it is built, so bytes that are not a VCF fail at
+//! `openVcf`. Every pass over it reads the file again from its start and goes
+//! through the `Blocks` of `source.rs`, the one a vars file goes through, and
+//! `write_vars` there is what writes its variants into a vars file.
 
 use js_sys::Function;
 use wasm_bindgen::prelude::wasm_bindgen;
+use web_sys::Blob;
 
 use popnei::block::BlockReader;
 use popnei::io::vcf::{VcfOptions, VcfReader};
@@ -24,9 +23,9 @@ use crate::ld::{R2Matrix, r2_matrix_of};
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
 use crate::pop_dists::{ArgumentsOfTheDists, PopDistsOfAPass, pop_dists_of};
 use crate::source::{
-    Blocks, Consumer, OpenSource, PassOverTheBytes, RunOfAConsumer, VarsFile, blocks_of,
-    bytes_of_a_vars_file, cursor_of, starts_a_run_of, tells_the_progress,
-    the_entry_of_a_new_source, the_source_was_freed,
+    Blocks, Consumer, OpenSource, RunOfAConsumer, TheFileOfASource, VarsFile, blocks_of,
+    bytes_of_a_vars_file, starts_a_run_of, tells_the_progress, the_bytes_of_a_new_source,
+    the_file_of_a_new_source, the_source_was_freed,
 };
 use crate::stats::{
     ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, per_individual_stats_of,
@@ -34,16 +33,19 @@ use crate::stats::{
 };
 use crate::steps::Steps;
 
-/// A VCF that was opened: its bytes, the options it is read with, and the
-/// individuals its header named.
+/// A VCF that was opened: where its file is, the options it is read with,
+/// and the individuals its header named.
 #[wasm_bindgen]
 pub struct VcfSource {
-    /// The bytes of the whole file, which every pass over them shares.
-    bytes: Arc<Vec<u8>>,
+    /// Where the file is, a copy of the whole of it in the memory of wasm or
+    /// a file of the page read one range at a time, which every pass over the
+    /// source reads again from its first byte.
+    file: TheFileOfASource,
     options: VcfOptions,
     individuals: Vec<String>,
-    /// The number of what this source keeps in JavaScript, the function the
-    /// page is told the progress with, which `free()` gives back.
+    /// The number of what this source keeps in JavaScript, the file it reads
+    /// the ranges from and the function the page is told the progress with,
+    /// which `free()` gives back.
     in_javascript: u32,
 }
 
@@ -423,7 +425,7 @@ impl OpenSource for VcfSource {
         // The header is read here, which is the first read of the pass and
         // the call that tells the page that it has read nothing yet.
         Ok(Box::new(VcfReader::new(
-            PassOverTheBytes::of_a_run(&self.bytes, run)?,
+            self.file.a_pass_of(self.in_javascript, run)?,
             options,
         )?))
     }
@@ -445,28 +447,92 @@ pub fn open_vcf(
     ploidy: usize,
     only_passed: bool,
 ) -> Result<VcfSource, JsPopneiError> {
-    let options = VcfOptions {
-        ploidy,
-        only_passed,
-        num_vars_per_block: None,
-    };
-    // The `Vec` wasm-bindgen filled with the bytes of the `Uint8Array` is
-    // the one every pass reads: an `Arc<[u8]>` here would allocate the whole
-    // file again and copy it into the new buffer, and the memory of wasm
-    // never gives that back.
-    let bytes = Arc::new(bytes);
+    let (file, in_javascript) = the_bytes_of_a_new_source(bytes)?;
+    the_vcf_of(
+        file,
+        in_javascript,
+        VcfOptions {
+            ploidy,
+            only_passed,
+            num_vars_per_block: None,
+        },
+    )
+}
+
+/// The VCF in `file`, the file the user picked in the page or a `Blob` an
+/// application made itself, plain or gzipped, read with `ploidy` alleles in
+/// every genotype and, when `only_passed` is true, without the variants that
+/// failed a filter.
+///
+/// The file stays in the page. Every pass over it asks the browser for one
+/// range of a few MiB at a time through `FileReaderSync`, which a browser
+/// gives only inside a web worker, so the file is never in the memory of
+/// wasm whole and a file larger than that memory is read.
+///
+/// It reads the header, so the individuals are known when it returns.
+///
+/// # Errors
+///
+/// When the browser has no `FileReaderSync`, which is every call outside a
+/// web worker; when `Blob.size` is not a whole number of bytes popnei reads a
+/// file by; when the file is not a VCF that popnei can read; and when the
+/// ploidy is out of the range the core takes.
+#[wasm_bindgen]
+pub fn open_vcf_of_a_file(
+    file: Blob,
+    ploidy: usize,
+    only_passed: bool,
+) -> Result<VcfSource, JsPopneiError> {
+    let (file, in_javascript) = the_file_of_a_new_source(file)?;
+    the_vcf_of(
+        file,
+        in_javascript,
+        VcfOptions {
+            ploidy,
+            only_passed,
+            num_vars_per_block: None,
+        },
+    )
+}
+
+/// The source of the VCF in `file`, which keeps the file and the function the
+/// page is told the progress with in the entry numbered `in_javascript`, read
+/// with `options`.
+///
+/// # Errors
+///
+/// When the file is not a VCF that popnei can read, and when the ploidy is
+/// out of the range the core takes. The entry goes with an open that failed:
+/// no `Variants` was made, so no `free()` will come for it.
+fn the_vcf_of(
+    file: TheFileOfASource,
+    in_javascript: u32,
+    options: VcfOptions,
+) -> Result<VcfSource, JsPopneiError> {
     // The header is read when the reader is built and no variant is.
     // Nothing here asks for a block, so a file whose blocks would need more
     // memory than wasm addresses, a header of 170000 individuals read with
     // the ploidy 255, is opened all the same and its individuals read; the
     // size of its blocks is the user's to choose at `iterBlocks`.
-    let reader = VcfReader::new(cursor_of(&bytes), options)?;
+    //
+    // The read belongs to no run and is told to nobody: there is no
+    // `Variants` yet for an application to have set a function on.
+    let opened = file
+        .the_opening_pass(in_javascript)
+        .and_then(|pass| VcfReader::new(pass, options));
+    let reader = match opened {
+        Ok(reader) => reader,
+        Err(error) => {
+            the_source_was_freed(in_javascript);
+            return Err(error.into());
+        }
+    };
     let individuals = reader.individuals().to_vec();
     Ok(VcfSource {
-        bytes,
+        file,
         options,
         individuals,
-        in_javascript: the_entry_of_a_new_source()?,
+        in_javascript,
     })
 }
 

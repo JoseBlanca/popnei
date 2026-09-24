@@ -3,8 +3,12 @@
 //! JavaScript, the bytes of the vars file written from it, and how many
 //! passes each consumer of the package makes.
 //!
-//! A source is the bytes of a file with what is needed to read it, a VCF
-//! with its options in `vcf.rs` and a vars file in `vars.rs`. Each is a
+//! A source is a file with what is needed to read it, a VCF with its
+//! options in `vcf.rs` and a vars file in `vars.rs`, and the file is in one
+//! of the two places of [`TheFileOfASource`]: a copy of the whole of it in
+//! the memory of wasm, the bytes of a `Uint8Array` the application gave, or
+//! a file the user picked in the page, which is read one range at a time and
+//! is never in that memory whole. Each source is a
 //! class of wasm-bindgen that the `Variants` of the TypeScript package
 //! holds, each reads what says what the file holds when it is built, so
 //! bytes that are not of its format fail at `openVcf` or at `openVars`, and
@@ -55,9 +59,10 @@ use std::cell::RefCell;
 use std::io::{BufRead, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
-use js_sys::{Array, Function};
+use js_sys::{Array, Function, Uint8Array};
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
+use web_sys::{Blob, FileReaderSync};
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
 use popnei::filters::FilteringStats;
@@ -268,23 +273,25 @@ impl AsRef<[u8]> for SharedBytes {
 
 /// The bytes of a source read from their first one, which every pass over
 /// that source shares.
-///
-/// It is what `openVcf` and `openVars` read the header of a VCF or the schema
-/// of a vars file with. Those reads belong to no run and are told to nobody;
-/// every reading that a consumer makes goes through [`PassOverTheBytes`].
-pub(crate) fn cursor_of(bytes: &Arc<Vec<u8>>) -> Cursor<SharedBytes> {
+fn cursor_of(bytes: &Arc<Vec<u8>>) -> Cursor<SharedBytes> {
     Cursor::new(SharedBytes(Arc::clone(bytes)))
 }
 
-/// How many bytes a pass reads between two calls that tell the page how far
-/// it has got, 4 MiB.
+/// How many bytes a pass over a file of the page reads at a time, and how
+/// many bytes any pass reads between two calls that tell the page how far it
+/// has got, 4 MiB.
+///
+/// The two are one number. A pass over a file of the page is told of its
+/// progress once per range it reads, which is the only moment where it has
+/// read a known number of bytes more, and a pass over bytes that are already
+/// in the memory of wasm tells the page as often as that one does, so that a
+/// bar moves the same way over both.
 ///
 /// Nothing has been measured at this number: "Speed" of
 /// `docs/specs/js_sources.md` leaves it at 4 MiB until work package 4 of
 /// `docs/plans/js-sources.md` times one pass over a VCF of a few hundred MB
-/// in Chromium at 256 KiB, 1 MiB, 4 MiB and 16 MiB, and sets both this and
-/// the size of the range a pass over a file of the page reads at a time from
-/// what it measures.
+/// in Chromium at 256 KiB, 1 MiB, 4 MiB and 16 MiB, and sets it from what it
+/// measures.
 const NUM_BYTES_PER_RANGE: u64 = 4 * 1024 * 1024;
 
 /// The number of no entry of [`RUNS`] or of [`IN_JAVASCRIPT`], which a run
@@ -360,40 +367,312 @@ enum WhyThePassEnded {
 }
 
 /// Where the bytes of a pass come from.
-///
-/// Work package 3 of `docs/plans/js-sources.md` adds the second place, a file
-/// of the page read one range at a time through `FileReaderSync`.
 enum TheBytes {
     /// A copy of the whole file in the memory of wasm, which every pass over
     /// that source shares.
     InMemory(Cursor<SharedBytes>),
+    /// A file of the page, read one range at a time.
+    OfAFile(RangesOfAFile),
 }
 
-impl PassOverTheBytes {
-    /// One pass of `run` over `bytes`, from their first byte, which shares
-    /// them with every other pass over the same source.
+/// One pass over a file of the page: the range of bytes it holds, where that
+/// range starts in the file, and where the pass is.
+///
+/// A read gives what is left of the range, and a read that starts where the
+/// range ends asks the browser for the next one, [`NUM_BYTES_PER_RANGE`]
+/// bytes or what is left of the file, whichever is fewer. So what a pass over
+/// a file holds in the memory of wasm is one range and what the reader over
+/// it builds, and the file is never there whole.
+///
+/// A seek moves where the pass is and reads nothing: the range is read again
+/// only when the pass reads outside the one it holds, which is what lets the
+/// reader of a vars file jump to its footer and back inside one range with no
+/// second call into JavaScript.
+///
+/// The `Blob` and the `FileReaderSync` are not here. A reader of the core has
+/// to be `Send` and no handle of JavaScript is, so they live in the entry of
+/// [`IN_JAVASCRIPT`] that `source` numbers, which no thread leaves.
+struct RangesOfAFile {
+    /// Which entry of [`IN_JAVASCRIPT`] holds the file this pass reads and
+    /// the reader of its ranges.
+    source: u32,
+    /// The bytes of the range the pass holds, which are none until its first
+    /// read.
+    range: Vec<u8>,
+    /// Where that range starts in the file.
+    range_at: u64,
+    /// Where the pass reads next, which a seek moves.
+    pos: u64,
+    /// How many bytes the file holds, which `Blob.size` gave when the source
+    /// was opened.
+    ///
+    /// It is the `num_bytes` of the [`PassOverTheBytes`] this is the bytes
+    /// of, put here as well because the end of the file is what a read and a
+    /// seek from the end are against. Neither is written after the pass is
+    /// built, so the two cannot come apart.
+    num_bytes: u64,
+}
+
+impl RangesOfAFile {
+    /// The bytes of the range the pass holds from where the pass is, which
+    /// are none when the pass is outside that range.
+    fn what_it_holds(&self) -> &[u8] {
+        let Some(from) = self.pos.checked_sub(self.range_at) else {
+            return &[];
+        };
+        let Ok(from) = usize::try_from(from) else {
+            return &[];
+        };
+        self.range.get(from..).unwrap_or(&[])
+    }
+
+    /// The bytes the file has ready, which are what is left of the range the
+    /// pass holds, and the range that starts where the pass is when it holds
+    /// none of it.
+    ///
+    /// One range is read from the browser and no more: what the pass holds is
+    /// looked at with the arithmetic of `what_it_holds`, so the end of a
+    /// range costs one call into JavaScript and not two.
     ///
     /// # Errors
     ///
-    /// When the bytes are more than a `u64` counts, which no target popnei
-    /// builds for reaches: a `usize` is 32 bits in wasm and 64 natively. The
-    /// size of the file is what every call that tells the page carries, so a
-    /// conversion that could not be made is an error of this crate and not a
-    /// `numBytes` of 18446744073709551615.
-    pub(crate) fn of_a_run(
-        bytes: &Arc<Vec<u8>>,
+    /// Those of [`RangesOfAFile::reads_the_range`]: a `Blob` that gave no
+    /// range or no bytes, and a range that came back short.
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.pos >= self.num_bytes {
+            return Ok(&[]);
+        }
+        if self.what_it_holds().is_empty() {
+            self.reads_the_range()?;
+        }
+        Ok(self.what_it_holds())
+    }
+
+    /// Reads the range of the file that starts where the pass is and leaves
+    /// it as the range the pass holds.
+    ///
+    /// The `Blob` and the reader of its ranges are cloned out of
+    /// [`IN_JAVASCRIPT`], which is two handles of JavaScript copied, so that
+    /// no table of this crate is borrowed while the browser reads.
+    ///
+    /// # Errors
+    ///
+    /// When the source is not in the table of this thread, which is a pass
+    /// that was moved to another thread or a source that was freed under it;
+    /// when `Blob.slice` or `FileReaderSync` throws, a file that was moved or
+    /// changed on disk among the causes; and when the range comes back
+    /// shorter than the one that was asked for, which is not the end of the
+    /// file.
+    fn reads_the_range(&mut self) -> std::io::Result<()> {
+        let num_bytes = NUM_BYTES_PER_RANGE.min(self.num_bytes.saturating_sub(self.pos));
+        let at = self.pos;
+        let file =
+            IN_JAVASCRIPT.with_borrow(|sources| entry_of(sources, self.source)?.file.clone());
+        let Some((blob, reader)) = file else {
+            return Err(std::io::Error::other(format!(
+                "the file of this pass is not among the sources popnei has open, so the \
+                 {num_bytes} bytes from {at} of it cannot be read: a file of the page is \
+                 read from the thread its source was opened in and from no other"
+            )));
+        };
+        let Some(end) = at.checked_add(num_bytes) else {
+            return Err(std::io::Error::other(format!(
+                "the {num_bytes} bytes from {at} of this file end beyond what a count of \
+                 64 bits holds, which is a defect of popnei; please report it"
+            )));
+        };
+        // The two ends of the range cross as float64, which holds every whole
+        // number up to 2^53. The size of the file was checked against that
+        // number when the source was opened, so every position inside it is
+        // the number popnei asked for.
+        let range = blob
+            .slice_with_f64_and_f64(at as f64, end as f64)
+            .map_err(|thrown| self.the_browser_refused(at, num_bytes, &thrown))?;
+        let buffer = reader
+            .read_as_array_buffer(&range)
+            .map_err(|thrown| self.the_browser_refused(at, num_bytes, &thrown))?;
+        let bytes = Uint8Array::new(&buffer);
+        let num_given = u64::from(bytes.length());
+        if num_given != num_bytes {
+            return Err(std::io::Error::other(format!(
+                "popnei asked this file for the {num_bytes} bytes from {at} and the \
+                 browser gave {num_given} of them, in a file of {num_bytes_of_the_file} \
+                 bytes: a range that comes back short inside a file of that size is a \
+                 file that changed after the page got its handle, and popnei ends the \
+                 pass here instead of reading it as the end of the file. Pick the file \
+                 again.",
+                num_bytes_of_the_file = self.num_bytes
+            )));
+        }
+        self.range = bytes.to_vec();
+        self.range_at = at;
+        Ok(())
+    }
+
+    /// What a range the browser refused fails with: what it threw, with the
+    /// range that was asked for and the size of the file.
+    fn the_browser_refused(&self, at: u64, num_bytes: u64, thrown: &JsValue) -> std::io::Error {
+        std::io::Error::other(format!(
+            "the browser did not give popnei the {num_bytes} bytes from {at} of this \
+             file, which holds {num_bytes_of_the_file} bytes, and said: {said}",
+            num_bytes_of_the_file = self.num_bytes,
+            said = what_javascript_said(thrown)
+        ))
+    }
+
+    /// The bytes of the file from where the pass is into `buf`, at most what
+    /// is left of the range it holds.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`RangesOfAFile::fill_buf`].
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let num_read = {
+            let ready = self.fill_buf()?;
+            let num_read = ready.len().min(buf.len());
+            let (Some(into), Some(from)) = (buf.get_mut(..num_read), ready.get(..num_read)) else {
+                return Err(std::io::Error::other(
+                    "a read of a file of the page could not take the bytes of the range \
+                     it holds, which is a defect of popnei; please report it",
+                ));
+            };
+            into.copy_from_slice(from);
+            num_read
+        };
+        self.consume(num_read);
+        Ok(num_read)
+    }
+
+    /// The pass read `num_bytes` of the range it holds.
+    ///
+    /// Where the pass is moves by that many and is not held at the end of
+    /// the file, which is what a `Cursor` over bytes in memory does with the
+    /// same call: a pass that was moved beyond the end of the file keeps the
+    /// position it was moved to, and its reads give no byte.
+    fn consume(&mut self, num_bytes: usize) {
+        let num_bytes = u64::try_from(num_bytes).unwrap_or(u64::MAX);
+        self.pos = self.pos.saturating_add(num_bytes);
+    }
+
+    /// Where the pass reads next, which reads no byte: the range is read when
+    /// the pass reads outside the one it holds.
+    ///
+    /// # Errors
+    ///
+    /// When the position asked for is before the first byte of the file or
+    /// beyond what a count of 64 bits holds, which is what a `Cursor` over
+    /// bytes in memory refuses there too.
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        let pos = match to {
+            SeekFrom::Start(at) => Some(at),
+            SeekFrom::End(at) => self.num_bytes.checked_add_signed(at),
+            SeekFrom::Current(at) => self.pos.checked_add_signed(at),
+        };
+        let Some(pos) = pos else {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "the pass was moved to a position that is before the first byte of the \
+                 file or beyond what a count of 64 bits holds",
+            ));
+        };
+        self.pos = pos;
+        Ok(pos)
+    }
+}
+
+/// What JavaScript threw, for the message of a range of a file that could not
+/// be read: the text of the value when it is one, and what `Debug` writes of
+/// it otherwise, which for an `Error` of JavaScript is its message.
+///
+/// It is the browser's sentence and not popnei's, and the message that
+/// carries it says so.
+fn what_javascript_said(thrown: &JsValue) -> String {
+    thrown.as_string().unwrap_or_else(|| format!("{thrown:?}"))
+}
+
+/// Where the file of a source is, which every pass over it reads again from
+/// its first byte.
+pub(crate) enum TheFileOfASource {
+    /// A copy of the whole file in the memory of wasm, the `Vec`
+    /// wasm-bindgen filled with the bytes of a `Uint8Array`, which every pass
+    /// over the source shares.
+    InMemory(Arc<Vec<u8>>),
+    /// A file the user picked in the page, read one range at a time through
+    /// the `Blob` and the `FileReaderSync` of the entry of [`IN_JAVASCRIPT`]
+    /// that the source holds the number of, with the bytes `Blob.size` said
+    /// it holds.
+    OfThePage {
+        /// How many bytes the file holds.
+        num_bytes: u64,
+    },
+}
+
+impl TheFileOfASource {
+    /// The reader of what says what the file holds, the header of a VCF or
+    /// the schema and the footer of a vars file, which `openVcf` and
+    /// `openVars` read before they return.
+    ///
+    /// `source` is the number of the entry of [`IN_JAVASCRIPT`] the source
+    /// keeps its file in. The pass belongs to no run, because there is no
+    /// `Variants` yet to start one over, so it takes no number and is told to
+    /// nobody; every reading that a consumer makes goes through
+    /// [`TheFileOfASource::a_pass_of`] instead.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`TheFileOfASource::a_pass_of`].
+    pub(crate) fn the_opening_pass(&self, source: u32) -> Result<PassOverTheBytes, popnei::Error> {
+        self.a_pass(source, NO_ENTRY)
+    }
+
+    /// One pass of `run` over the file, from its first byte.
+    ///
+    /// # Errors
+    ///
+    /// When the bytes in memory are more than a `u64` counts, which no target
+    /// popnei builds for reaches: a `usize` is 32 bits in wasm and 64
+    /// natively. The size of the file is what every call that tells the page
+    /// carries, so a conversion that could not be made is an error of this
+    /// crate and not a `numBytes` of 18446744073709551615.
+    pub(crate) fn a_pass_of(
+        &self,
+        source: u32,
         run: &RunOfAConsumer,
     ) -> Result<PassOverTheBytes, popnei::Error> {
-        let num_bytes = u64::try_from(bytes.len()).map_err(|_| {
-            popnei::Error::Io(std::io::Error::other(format!(
-                "the source holds {num_bytes} bytes, more than the count of a \
-                 pass over it holds",
-                num_bytes = bytes.len()
-            )))
-        })?;
+        self.a_pass(source, run.0)
+    }
+
+    /// One pass of the run numbered `run` over the file, from its first byte.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`TheFileOfASource::a_pass_of`].
+    fn a_pass(&self, source: u32, run: u32) -> Result<PassOverTheBytes, popnei::Error> {
+        let (bytes, num_bytes) = match *self {
+            TheFileOfASource::InMemory(ref bytes) => {
+                let num_bytes = u64::try_from(bytes.len()).map_err(|_| {
+                    popnei::Error::Io(std::io::Error::other(format!(
+                        "the source holds {num_bytes} bytes, more than the count of a \
+                         pass over it holds",
+                        num_bytes = bytes.len()
+                    )))
+                })?;
+                (TheBytes::InMemory(cursor_of(bytes)), num_bytes)
+            }
+            TheFileOfASource::OfThePage { num_bytes } => (
+                TheBytes::OfAFile(RangesOfAFile {
+                    source,
+                    range: Vec::new(),
+                    range_at: 0,
+                    pos: 0,
+                    num_bytes,
+                }),
+                num_bytes,
+            ),
+        };
         Ok(PassOverTheBytes {
-            bytes: TheBytes::InMemory(cursor_of(bytes)),
-            run: run.0,
+            bytes,
+            run,
             pass: 0,
             took_its_number: false,
             bytes_read: 0,
@@ -402,7 +681,9 @@ impl PassOverTheBytes {
             ended: None,
         })
     }
+}
 
+impl PassOverTheBytes {
     /// What a read of the pass does before it takes bytes: the first read
     /// takes the number of the pass from its run and tells the page that it
     /// has read nothing, and a later read tells it again when the pass has
@@ -560,6 +841,7 @@ impl Read for PassOverTheBytes {
         self.before_a_read()?;
         let num_read = match &mut self.bytes {
             TheBytes::InMemory(cursor) => cursor.read(buf)?,
+            TheBytes::OfAFile(file) => file.read(buf)?,
         };
         self.has_read(num_read)?;
         Ok(num_read)
@@ -568,7 +850,9 @@ impl Read for PassOverTheBytes {
 
 impl BufRead for PassOverTheBytes {
     /// The bytes the source has ready, which for bytes in the memory of wasm
-    /// are every one of them that the pass has not read.
+    /// are every one of them that the pass has not read, and for a file of
+    /// the page what is left of the range it holds, a range being read when
+    /// the pass holds none of one.
     ///
     /// What the pass has read is counted in [`BufRead::consume`], which is
     /// what the reader of a VCF takes its lines with: looking at the bytes
@@ -577,6 +861,7 @@ impl BufRead for PassOverTheBytes {
         self.before_a_read()?;
         match &mut self.bytes {
             TheBytes::InMemory(cursor) => cursor.fill_buf(),
+            TheBytes::OfAFile(file) => file.fill_buf(),
         }
     }
 
@@ -585,6 +870,7 @@ impl BufRead for PassOverTheBytes {
     fn consume(&mut self, num_bytes: usize) {
         match &mut self.bytes {
             TheBytes::InMemory(cursor) => cursor.consume(num_bytes),
+            TheBytes::OfAFile(file) => file.consume(num_bytes),
         }
         drop(self.has_read(num_bytes));
     }
@@ -598,6 +884,7 @@ impl Seek for PassOverTheBytes {
     fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
         match &mut self.bytes {
             TheBytes::InMemory(cursor) => cursor.seek(to),
+            TheBytes::OfAFile(file) => file.seek(to),
         }
     }
 }
@@ -607,9 +894,16 @@ impl Seek for PassOverTheBytes {
 ///
 /// One entry per source, which `VcfSource` and `VarsSource` hold the number
 /// of, and which `free()` of the source takes out once no run over it is
-/// open. Work package 3 of `docs/plans/js-sources.md` adds the file of the
-/// page and the reader of its ranges here.
+/// open.
 struct InJavaScript {
+    /// The file the ranges of a pass are read from and the reader of them,
+    /// and nothing for a source whose bytes are already in the memory of
+    /// wasm.
+    ///
+    /// What the page holds for a source over a file is this pair and not the
+    /// bytes: a `Blob` is a handle, with the name and the size of a file
+    /// behind it.
+    file: Option<(Blob, FileReaderSync)>,
     /// What the application is told the progress with, the function of
     /// `Variants.onProgress`, and nothing until it sets one.
     told: Option<Function>,
@@ -698,19 +992,98 @@ fn entry_to_change<T>(table: &mut [Option<T>], at: u32) -> Option<&mut T> {
     table.get_mut(usize::try_from(at).ok()?)?.as_mut()
 }
 
-/// The number of the entry a source that was just opened keeps in
-/// JavaScript, made with no function to tell the progress to yet.
+/// Where the file of a source that was just opened over the bytes of a
+/// `Uint8Array` is, and the number of the entry it keeps in JavaScript, which
+/// holds no file and no function to tell the progress to yet.
 ///
 /// # Errors
 ///
 /// When the table holds as many sources as a `u32` counts, which no tab
 /// reaches: a source holds the bytes of its file in the memory of wasm.
-pub(crate) fn the_entry_of_a_new_source() -> Result<u32, JsPopneiError> {
+pub(crate) fn the_bytes_of_a_new_source(
+    bytes: Vec<u8>,
+) -> Result<(TheFileOfASource, u32), JsPopneiError> {
+    // The `Vec` wasm-bindgen filled with the bytes of the `Uint8Array` is the
+    // one every pass reads: an `Arc<[u8]>` here would allocate the whole file
+    // again and copy it into the new buffer, and the memory of wasm never
+    // gives that back.
+    let file = TheFileOfASource::InMemory(Arc::new(bytes));
+    let entry = the_entry_of_a_new_source(None)?;
+    Ok((file, entry))
+}
+
+/// Where the file of a source that was just opened over `file`, a file the
+/// user picked in the page, is, and the number of the entry that holds it
+/// with the reader of its ranges.
+///
+/// # Errors
+///
+/// When the browser has no `FileReaderSync`, which is every call outside a
+/// web worker; when `Blob.size` is not a whole number of bytes popnei reads a
+/// file by; and when the table holds as many sources as a `u32` counts.
+pub(crate) fn the_file_of_a_new_source(
+    file: Blob,
+) -> Result<(TheFileOfASource, u32), JsPopneiError> {
+    let reader = FileReaderSync::new().map_err(|_| {
+        JsPopneiError::Refused(
+            "popnei reads a `File` or a `Blob` through `FileReaderSync`, which a \
+             browser gives only inside a web worker, and this call was made where \
+             there is none: the main thread of a page, or node. Open the file inside \
+             a web worker, or give its bytes as a `Uint8Array`."
+                .to_owned(),
+        )
+    })?;
+    let num_bytes = the_size_of_a_file(file.size())?;
+    let entry = the_entry_of_a_new_source(Some((file, reader)))?;
+    Ok((TheFileOfASource::OfThePage { num_bytes }, entry))
+}
+
+/// How many bytes the file of a source holds, from the `size` of its `Blob`.
+///
+/// `Blob.size` is a float64, so it is looked at before it becomes a count:
+/// `f64::NAN as u64` is 0, which would be a file of no bytes, and a size
+/// above 2^53 is a number a float64 no longer counts one by one, which the
+/// two ends of every range of that file cross as.
+///
+/// # Errors
+///
+/// When the size is not a whole number of bytes from 0 to 2^53.
+fn the_size_of_a_file(size: f64) -> Result<u64, JsPopneiError> {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "2^53 is exact as a float64, which is what it is the largest of"
+    )]
+    let largest = LARGEST_POSITION as f64;
+    if !size.is_finite() || size < 0.0 || size > largest || size.fract() != 0.0 {
+        return Err(JsPopneiError::Refused(format!(
+            "this file says that it holds {size} bytes, and popnei reads a file of a \
+             whole number of bytes from 0 to {LARGEST_POSITION}: the two ends of every \
+             range it asks the browser for cross as a number of JavaScript, which \
+             counts one by one up to that number and no further"
+        )));
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked above to be a whole number between 0 and 2^53"
+    )]
+    let num_bytes = size as u64;
+    Ok(num_bytes)
+}
+
+/// The number of the entry a source that was just opened keeps in JavaScript,
+/// made with `file` and with no function to tell the progress to yet.
+///
+/// # Errors
+///
+/// When the table holds as many sources as a `u32` counts.
+fn the_entry_of_a_new_source(file: Option<(Blob, FileReaderSync)>) -> Result<u32, JsPopneiError> {
     IN_JAVASCRIPT
         .with_borrow_mut(|sources| {
             put_in(
                 sources,
                 InJavaScript {
+                    file,
                     told: None,
                     freed: false,
                 },
@@ -754,8 +1127,8 @@ pub(crate) fn the_source_was_freed(source: u32) {
 }
 
 /// Takes the entry of the source numbered `source` out of [`IN_JAVASCRIPT`],
-/// which gives back the function the page set and, from work package 3 of
-/// `docs/plans/js-sources.md`, the handle of the file.
+/// which gives back the function the page set and the handle of the file the
+/// ranges were read from, so that the page can let go of the file.
 fn the_entry_of_the_source_goes(source: u32) {
     IN_JAVASCRIPT.with_borrow_mut(|sources| {
         if let Some(entry) = usize::try_from(source)

@@ -1,9 +1,13 @@
 /** Reading and writing a vars file, the file popnei keeps its variants in. */
 
-import { open_vars as openVarsOfTheCore } from "../wasm/popnei.js";
+import {
+  open_vars as openVarsOfTheCore,
+  open_vars_of_a_file as openVarsOfAFileOfTheCore,
+} from "../wasm/popnei.js";
 
-import { bytes as bytesOf, wholeNumberOfOneOrMore } from "./arguments.js";
+import { bytesOrFile as bytesOrFileOf, wholeNumberOfOneOrMore } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
+import type { BytesOrFile } from "./io_vcf.js";
 import type { PassStats } from "./variant.js";
 import { Variants, passStatsOf, sourceOfTheVariants } from "./variant.js";
 
@@ -34,7 +38,8 @@ export interface WriteVarsOptions {
 }
 
 /**
- * The variants of the vars file in `source`, the bytes of the file.
+ * The variants of the vars file in `source`, the bytes of the file or the
+ * file the user picked in the page.
  *
  * A vars file is one arrow IPC file, also called feather v2, which
  * `writeVars` writes from any source of variants and which pandas, R and
@@ -60,19 +65,38 @@ export interface WriteVarsOptions {
  * compressed with zstd, which no build of popnei carries the code to read;
  * popnei writes lz4 and reads lz4 and no compression.
  *
- * What it returns holds memory of wasm, the bytes of the file among it,
- * until its `free()` is called.
+ * What it returns holds memory of wasm until its `free()` is called, the
+ * bytes of the file among it when the source is a `Uint8Array`.
  *
- * A `File` that a user picked in a page is read inside a web worker, which
- * section 11 of `docs/architecture.md` has and this package does not do yet:
- * the source here is the bytes of the file.
+ * With a `File` or a `Blob`, popnei reads the ranges of bytes it needs
+ * through `FileReaderSync`, a few MiB at a time, so the file is never in
+ * the memory of wasm whole: what a pass holds of it is one range and the
+ * batch it is reading, which at the size popnei writes is about 10 MB of
+ * genotypes for 1000 individuals. A browser has `FileReaderSync` only
+ * inside a web worker, so `openVars` of a `File` or a `Blob` on the main
+ * thread of a page, or under node, is an `Error` here, at the call. What is
+ * held for such a source until its `free()` is called is the handle of the
+ * file, its name and its size, and not its bytes.
  *
- * @throws {Error} When `source` is not a `Uint8Array`, when the bytes are
- * not a vars file popnei can read, and when `init` has not been awaited.
+ * A range that comes back shorter than the one popnei asked for, inside a
+ * file of that size, is an `Error` in the middle of a pass and not the end
+ * of the file: a browser gives a short range when the file changed on disk
+ * after the page got its handle.
+ *
+ * @throws {Error} When `source` is neither a `Uint8Array` nor a `File` or
+ * `Blob`, when a `File` or a `Blob` is given where there is no
+ * `FileReaderSync`, which is everywhere but a web worker, when the bytes
+ * are not a vars file popnei can read, and when `init` has not been
+ * awaited.
  */
-export function openVars(source: Uint8Array): Variants {
+export function openVars(source: BytesOrFile): Variants {
   theWasmHasToBeLoaded();
-  return new Variants(openVarsOfTheCore(bytesOf("source", source)));
+  const file = bytesOrFileOf("source", source);
+  return new Variants(
+    file instanceof Uint8Array
+      ? openVarsOfTheCore(file)
+      : openVarsOfAFileOfTheCore(file),
+  );
 }
 
 /**
