@@ -1341,15 +1341,16 @@ pub enum Error {
     LdNoBins,
 
     /// The three arrays the curve of the fall-off is fitted to are not of
-    /// one length. They are the distances that hold a pair, how many pairs
-    /// each of them holds and the sum of the r² of those pairs, and the
-    /// three are read together, one entry at a time, so arrays of
-    /// different lengths would put the pairs of one distance against the
-    /// sum of another. A pass gives the three compacted together and does
-    /// not reach this; a caller of `fit_ld_decay` with a table of its own
-    /// does. In Python it is a `ValueError` that names no file.
+    /// one length. They are the `dists` that hold a pair, the `num_pairs`
+    /// each of them holds and the `sum_r2` of those pairs, the three
+    /// arguments of `fit_ld_decay` of that name, and they are read
+    /// together, one entry at a time, so arrays of different lengths would
+    /// put the pairs of one distance against the sum of another. A pass
+    /// gives the three compacted together and does not reach this; a
+    /// caller of `fit_ld_decay` with a table of its own does. In Python it
+    /// is a `ValueError` that names no file.
     #[error(
-        "the curve of the fall-off was given {num_dists} distances, {num_pairs} counts of pairs and {num_sums} sums of r², and the three are one value for each distance that holds a pair"
+        "the curve of the fall-off was given a `dists` of {num_dists} values, a `num_pairs` of {num_pairs} and a `sum_r2` of {num_sums}, and the three hold one value for each distance that holds a pair"
     )]
     LdDecayArraysOfDifferentLengths {
         /// How many distances were given.

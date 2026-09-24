@@ -481,6 +481,17 @@ mod tests {
     /// 2.1·10⁻⁹ apart, does not enter it.
     const THE_TOLERANCE_OF_THE_R2_AT_ZERO: f64 = 1e-12;
 
+    /// Asserts that each of `said` is in the message of the error, which
+    /// is what a caller of [`fit_ld_decay`] with a table of its own reads:
+    /// the argument that was refused and the value it was given.
+    #[track_caller]
+    fn assert_the_message_says(error: &Error, said: &[&str]) {
+        let message = error.to_string();
+        for what in said {
+            assert!(message.contains(what), "`{what}` is not in `{message}`");
+        }
+    }
+
     /// Asserts that `found` is within `tolerance` of `expected`, relative
     /// to `expected`.
     #[track_caller]
@@ -859,6 +870,10 @@ mod tests {
             ),
             "the error of three arrays that are not of one length is {error:?}"
         );
+        assert_the_message_says(
+            &error,
+            &["`dists` of 2", "`num_pairs` of 1", "`sum_r2` of 2"],
+        );
     }
 
     #[test]
@@ -868,6 +883,7 @@ mod tests {
             matches!(error, Error::LdDecayNoIndividuals),
             "the error of a population of no individual is {error:?}"
         );
+        assert_the_message_says(&error, &["population of no individual"]);
     }
 
     #[test]
@@ -877,6 +893,7 @@ mod tests {
             matches!(error, Error::LdDecayDistWithNoPair { dist: 2000 }),
             "the error of a distance that holds no pair is {error:?}"
         );
+        assert_the_message_says(&error, &["the distance 2000", "no pair"]);
     }
 
     #[test]
@@ -887,12 +904,14 @@ mod tests {
             matches!(error, Error::LdDecaySumOfR2OutOfRange { dist: 2000, sum_r2 } if sum_r2.is_nan()),
             "the error of a sum of r² that is NaN is {error:?}"
         );
+        assert_the_message_says(&error, &["the distance 2000", "is NaN"]);
         let error = fit_ld_decay(&[1000, 2000], &[1, 1], &[f64::INFINITY, 0.25], 100)
             .expect_err("the error");
         assert!(
             matches!(error, Error::LdDecaySumOfR2OutOfRange { dist: 1000, sum_r2 } if sum_r2.is_infinite()),
             "the error of a sum of r² that is an infinity is {error:?}"
         );
+        assert_the_message_says(&error, &["the distance 1000", "is inf"]);
     }
 
     #[test]
@@ -903,5 +922,6 @@ mod tests {
             matches!(error, Error::LdDecaySumOfR2OutOfRange { dist: 2000, sum_r2 } if sum_r2 < 0.0),
             "the error of a sum of r² below 0 is {error:?}"
         );
+        assert_the_message_says(&error, &["the distance 2000", "is -0.25"]);
     }
 }
