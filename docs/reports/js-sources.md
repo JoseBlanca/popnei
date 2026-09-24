@@ -129,3 +129,26 @@ the tests each mutation failed, which is the check that the suite can fail.
 It found two tests that could not: the stop in the middle of a VCF would
 pass with a stop at its end, and nothing pinned that a stopped pass is not
 told again.
+
+### Work package 1 is done
+
+The fixes are at 2dae2d9, 03fcc91, 9c67db5, dd40285 and db4ff2c, and the
+spec follows them at 7606b76. The deliverables, each run by the
+orchestrator after the fixes:
+
+| deliverable | command | what it gave |
+|---|---|---|
+| 1 | `node --test test/num_passes.test.ts` | 15 tests, 0 failed, where 6 were asked |
+| 2 | `node --test test/progress.test.ts` | 11 tests, 0 failed, where 6 were asked |
+| 3 | `node --test test/stop.test.ts` | 12 tests, 0 failed, where 4 were asked |
+| 4 | the checks of the `coding` skill | fmt and clippy clean, 787 and 149 cargo tests, 787 with no default features, `wasm-check` clean, ruff clean, 499 pytest |
+| 4 | `npm test` in `js/popnei` | 364 tests, 0 failed, the 325 of the starting commit among them |
+
+Freeing a `Variants` from inside the progress function now costs 0 bytes of
+the memory of wasm for 100 sources, where it cost 11993088 before.
+
+What the owner should know for what comes next: `js-sys` is in the binding
+crate and `cargo wasm-check` does not build that crate for wasm, so nothing
+of the five commands would catch a call into JavaScript that does not
+compile for the target the package ships. Work package 3 is where that is
+put right, since it is the work that adds `web-sys`.
