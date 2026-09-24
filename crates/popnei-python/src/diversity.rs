@@ -360,20 +360,34 @@ fn no_count_of_alleles(value: &Bound<'_, PyAny>) -> String {
 /// What the pass failed with, with the file it was reading where that file
 /// is part of what went wrong.
 ///
-/// The refusals of "The Rust interface" of `docs/specs/diversity.md`, and
-/// the `stats` that names no statistic, are of what a user wrote and are
-/// wrong whatever file is read, so they name none, which is what "Errors,
-/// and no panics" of `.claude/skills/coding/SKILL.md` asks of an argument
-/// that is refused. Every other error of the pass is of the variants it
-/// read: which file they came from is what a user needs in order to see
-/// whether it is the file or the steps that left the calculation with
-/// nothing.
+/// Seven of the nine refusals that "The Rust interface" of
+/// `docs/specs/diversity.md` lists are of what a user wrote and are wrong
+/// whatever file is read, so they name none, which is what "Errors, and no
+/// panics" of `.claude/skills/coding/SKILL.md` asks of an argument that is
+/// refused. The list below is those seven and nothing else, in the order that
+/// item gives them, so that a reader can count the two against each other.
+///
+/// A name that is of no statistic is among them although it cannot arrive
+/// here today: [`the_stats`] reads a user's `stats` before the pass is built,
+/// so that refusal travels back through `?` and never through this function. A
+/// list of the reachable cases alone would have to be read together with every
+/// call site of this module, and the case is one of the seven whichever call
+/// site raises it.
+///
+/// The two refusals of the item that are not here are of the variants the pass
+/// read, and so are the errors of the reader: `PassGaveNoVariant`, where which
+/// file it was is what tells a user whether the source held none or the steps
+/// kept none, and `MoreAllelesThanACountHolds`, which is a variant of the
+/// file. `DiversityMoreVarsThanACountHolds`, a block that says it holds more
+/// variants than a count of them holds, is of the file for the same reason and
+/// is the one case of the module that item does not carry.
 fn with_its_file(error: popnei::Error, path: &Path) -> PyPopneiError {
     if matches!(
         error,
-        popnei::Error::DiversityWithNoStatistic
-            | popnei::Error::DiversitySfsWithoutADraw
+        popnei::Error::DiversitySfsWithoutADraw
             | popnei::Error::DiversityDrawTooSmall { .. }
+            | popnei::Error::DiversityWithNoStatistic
+            | popnei::Error::DiversityStatOfAnUnknownName { .. }
             | popnei::Error::DiversityPopWithNoIndividual { .. }
             | popnei::Error::DiversityIndividualNotInTheDataset { .. }
             | popnei::Error::DiversityIndividualAskedForTwice { .. }

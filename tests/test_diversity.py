@@ -35,6 +35,7 @@ from popnei import (
     PerVarStat,
     PopDiversity,
     PopDiversityStat,
+    _core,
     calc_per_var_distribs,
     calc_pop_diversity,
     open_vcf,
@@ -575,6 +576,29 @@ def test_stats_takes_the_members_of_the_enumeration_alone() -> None:
     with pytest.raises(ValueError, match="`stats` names no statistic") as refusal:
         _of_the_panel(stats=())
     assert "reads every variant of the source for nothing" in str(refusal.value)
+
+
+def test_a_name_that_is_of_no_statistic_is_refused_and_names_no_file() -> None:
+    """What a user who calls `popnei._core` themselves reads.
+
+    The package takes the members of `PopDiversityStat` and nothing else, so a
+    name reaches the Rust core only from a caller that went round the package.
+    The core lists the five names a user can write, and the message names no
+    file: what a user wrote is wrong whatever variants are read.
+    """
+    variants = _panel()
+
+    with pytest.raises(ValueError, match="`num_allelez` is not one of the") as refusal:
+        _core.calc_pop_diversity(
+            variants._source, variants._steps, None, ["num_allelez"], None, 20
+        )
+
+    message = str(refusal.value)
+    assert "num_alleles, private_alleles, variable_vars_ratio, folded_sfs, fis" in (
+        message
+    )
+    assert PANEL.name not in message
+    assert getattr(refusal.value, "filename", None) is None
 
 
 def test_one_statistic_written_on_its_own_is_that_one_statistic() -> None:
