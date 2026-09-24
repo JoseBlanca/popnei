@@ -45,3 +45,32 @@ Two things the plan states that the commands corrected:
   the file has 10 `test(` at the top level. Deliverable 6 of work package 1
   and deliverable 7 of work package 2 ask that the file then run more ld
   tests than it runs today, so the number to beat is 10.
+
+## Work package 1: the bins of r² against distance
+
+### The tasks as they were done
+
+**1.1, the window over the blocks.** Commit `a0a8181`. It put
+`TheWindowOfTheBlocks` in a new `crates/popnei/src/ld/dist.rs`, declared
+by one `mod dist;` line added to `crates/popnei/src/ld.rs`. The window
+takes a block, holds the blocks whose variants are within `max_dist` of
+the newest variant read and on its chromosome, and gives back how many of
+the oldest blocks fell out on that call, which is what lets the next task
+drop what it keeps beside each block in step.
+
+The plan puts this code in `crates/popnei/src/ld.rs`. It went in
+`crates/popnei/src/ld/dist.rs` instead, which the plan's own check asks
+for: the task's tests have to be printed by `cargo test -p popnei --lib
+ld::dist -- --list`, and that needs a module `ld::dist`. The crate is
+edition 2024, so a file beside `ld.rs` is a submodule of it, and the 3859
+lines already in `ld.rs` were left alone.
+
+`cargo test -p popnei --lib ld::dist -- --list` prints `14 tests`, where
+it printed `0 tests`. `cargo test --workspace` gives 801 passed with 2
+ignored, which is the 787 of the starting state plus those 14, and 149 in
+the linear algebra crate. `cargo test -p popnei --no-default-features`
+gives the same 801 on the faer backend. `cargo fmt --all --check`, `cargo
+clippy --workspace --all-targets -- -D warnings`, `cargo wasm-check`,
+`uv run ruff format --check` and `uv run ruff check` are clean, and `uv
+run pytest` gives 499 passed. Every one of these was run by the
+orchestrator and not taken from the task's report.

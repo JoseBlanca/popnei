@@ -145,7 +145,7 @@ are.
 
 ### Its tasks
 
-- [ ] 1.1 The window over the blocks, in `crates/popnei/src/ld.rs`, from
+- [x] 1.1 The window over the blocks, in `crates/popnei/src/ld.rs`, from
   "How it runs" of the item: hold the blocks whose variants are within
   `max_dist` of the newest variant read and on its chromosome, and drop a
   block when every variant of it is further back or on another
