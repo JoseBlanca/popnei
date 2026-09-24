@@ -35,8 +35,10 @@ else, and none of private, rarefaction, spectrum, folded or inbreeding
 appears in `src/` or in `test/` except one comment of `pynei/gwas.py`. So
 no item below has a pyNei function to mirror, none has a difference from
 pyNei to write down, and no test runs the two libraries on the same input.
-Every number of this spec comes from a program outside the project, and
-the one quantity no outside program computes is marked where it appears.
+Every number of this spec but one comes from a program outside the
+project; the standardized private alleles, which no program here computes,
+are checked by enumerating every draw, under "How it is verified" of that
+item.
 
 The five programs those numbers come from are `vegan` 2.7.6 and
 `adegenet` 2.1.11, which were on the owner's machine already, `poppr`
@@ -207,6 +209,21 @@ the spec says so rather than refusing the call: a user asking for the
 diversity of one population has no reason to be stopped, and
 `private_alleles` equal to `num_alleles` is what the arithmetic gives.
 
+Two populations that share an individual make the standardized private
+alleles a number to read with care. The formula multiplies the chance that
+an allele is in one population's draw by the chance that it is in no
+other's, which is right when the draws are of different copies and not
+when they are partly of the same ones. Two populations holding the one
+diploid individual `0/1`, at a draw of one allele, get 0.5 private alleles
+each from the formula, where the two draws, being draws of the same
+genotype, can never give an allele to one and not the other. popnei
+computes the formula and does not refuse the overlap: `pops` allows an
+individual in more than one population, as `docs/specs/stats.md` has it,
+and every other statistic here reads such a population without trouble.
+The totals, which ask which alleles were called and not which were drawn,
+are right whatever the overlap. This was found on 24 September 2026 by the
+enumeration under "How it is verified" below.
+
 ### How it runs
 
 One pass over the blocks of the reader. For each block, rayon over its
@@ -351,19 +368,41 @@ every population kept are 0, 0 and 0.0008333333. The check is a pytest
 test at `calc_pop_diversity`, where the totals and their divisor are read
 off the result.
 
-The standardized values have no program on this machine that computes
-them. ADZE is the one that does and it is not installed (**Open 1**). They
-are checked by the worked example alone, whose numbers are worked out by
-hand below, and by two properties that a cargo test asserts on the panel:
-with `num_called_alleles` equal to the smallest `c` of the dataset the
-value is at most the standardized number of alleles of the same
-population, since a private allele is an allele; and a population compared
-against a copy of itself has 0 private alleles at every draw size, since
-every allele it draws the copy can draw too. On the panel at a draw of 20
-the values are 0.0112196177, 0.0099715392 and 0.0089014974, computed by
-the reference script of this module and stored beside it; they are cargo
-test literals at `calc_pop_diversity` of "The Rust interface", where the
-two properties are asserted too.
+The standardized values are checked by enumerating every draw, which no
+program outside popnei does and which tests more than one would. ADZE,
+the only program that computes them, evaluates the same closed form from
+the same paper, so agreeing with it would say that popnei transcribed
+Kalinowski correctly and nothing about whether the formula computes what
+the sentence above claims. The enumeration says exactly that: for a small
+case it lists every draw of `g` each population can make, weights each by
+the ways it can be taken, runs over every combination of one draw per
+population, counts the alleles of the population that are in its own draw
+and in no other, and averages. It assumes nothing, and in particular not
+that the draws of two populations are independent, which the closed form
+does assume.
+
+Run in exact rational arithmetic on 24 September 2026 over 18 pairs of a
+case and a population, the two agree with a difference of 0, not merely
+within a tolerance: the three variants of the worked example that have a
+draw of 4; two populations of two alleles at a draw of 2, giving
+0.25 and 0.4166666667; two populations of three alleles, 0.75 and
+0.4166666667; three populations of two alleles, 0, 0.0833333333 and
+0.0833333333; three populations of four alleles, 0.5694444444,
+0.6805555556 and 0.4027777778; and a population holding one allele
+against one holding two at a draw of 3, 0 and 1. The script is
+`docs/reports/diversity-method/check_by_enumeration.py`, and the cases
+become cargo tests at `calc_pop_diversity` of "The Rust interface" with
+those numbers as literals.
+
+Two properties are asserted on the panel beside them: with
+`num_called_alleles` equal to the smallest `c` of the dataset the value is
+at most the standardized number of alleles of the same population, since a
+private allele is an allele; and a population compared against a copy of
+itself has 0 private alleles at every draw size, since every allele it
+draws the copy can draw too. On the panel at a draw of 20 the values are
+0.0112196177, 0.0099715392 and 0.0089014974, computed by the reference
+script of this module and stored beside it, and they are literals of the
+same cargo test.
 
 The worked example, the same six variants and two populations as above at
 `num_called_alleles` 4. Three variants have both populations at 4 called
@@ -532,8 +571,11 @@ popnei that is not a program run by a shell script or a library of the one
 environment, and it is worth that because the projection is the arithmetic
 here most easily got wrong, being a distribution over bins and not a
 single value. Decided on 24 September 2026; the option not taken was to
-drop `dadi` and check the projection against the worked example alone, as
-the standardized private alleles are checked (**Open 1**).
+drop `dadi` and check the projection inside popnei, as the standardized
+private alleles are checked. Enumerating every draw, which is what settled
+those, would not settle this one: the projection is already an
+enumeration, one term per count of the rarer allele, so listing the draws
+would restate it rather than test it.
 
 The worked example, at `num_called_alleles` 4. `pop2` keeps variants 1, 3
 and 5. Variant 1 has 5 copies of allele 0 and nothing else, so every draw
@@ -784,32 +826,18 @@ pass and the same allele counts and does far less arithmetic on them.
 
 ## Open points
 
-One is left, and the owner decides it. Until then the implementer follows
-its "meanwhile". The three this spec had while it was written the owner
-decided on 24 September 2026, and each is under the item it belongs to
-with the option that was not taken: that `num_called_alleles` takes one
-number and not a sequence, under "Its Python function"; that these five
-are a module of their own and not items of `docs/specs/stats.md`, in the
-opening; and that the five reference programs become development
-dependencies of popnei, also in the opening. A fourth, whether `dadi` is
-worth an environment of its own, the writer decided, under "How it is
-verified" of the folded spectrum, because it changes no value a user sees
-and no public API.
-
-**Open 1: no program checks the rarefied private alleles.** Every other
-value of this spec is checked against a program outside the project, which
-the objectives ask for. The standardized private alleles are checked by
-the worked example and by two properties of the panel, all three of them
-arithmetic of popnei's own. The options are to build ADZE, named under
-"The private alleles" above, from its source, which is C and in no package
-manager on this machine, and add it to the reference script; or to leave
-the value checked by hand. What building ADZE costs is a source build in the
-repository's reference tooling, which no other reference needs, and a
-program that has had no release since 2014. What leaving it costs is one
-value of five whose formula nothing outside popnei confirms.
-Recommendation: leave it checked by hand for the first version, and build
-ADZE if a user reports a number they doubt. Meanwhile the worked example
-and the two properties stand.
+None. The four this spec had while it was written the owner decided on 24
+September 2026, and each is under the item it belongs to with the option
+that was not taken: that `num_called_alleles` takes one number and not a
+sequence, under "Its Python function"; that these five are a module of
+their own and not items of `docs/specs/stats.md`, in the opening; that the
+five reference programs become development dependencies of popnei, also in
+the opening; and that the standardized private alleles are checked by
+enumerating every draw rather than by building ADZE, under "How it is
+verified" of that item, where the 18 pairs the two agree on are listed.
+A fifth, whether `dadi` is worth an environment of its own, the writer
+decided, under "How it is verified" of the folded spectrum, because it
+changes no value a user sees and no public API.
 
 ## Not in this spec
 

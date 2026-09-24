@@ -65,6 +65,16 @@ into `panel.py` and `check_allel.py`.
   and expected heterozygosities, in the plain form, which is the form the
   spec checks against it, and writes `panel_genotypes.tsv`. Run it with
   `PYTHON_GIL=0` to keep the warning quiet.
+- `check_by_enumeration.py` checks the standardized private alleles, the
+  one quantity no program here computes, by listing every draw each
+  population can make, running over every combination of them and counting
+  the private alleles of each. It assumes nothing the closed form assumes,
+  the independence of two populations' draws in particular, and it runs in
+  exact rational arithmetic, so it either agrees exactly or does not. Over
+  18 pairs of a case and a population it agreed exactly. It also shows what
+  the closed form cannot do: two populations that share an individual, for
+  which it gives 0.5 where the shared genotype can only ever give both
+  populations the same allele.
 - `fis_sim.py` is the measurement that chose between the two ways of
   summarizing F_IS over the variants. It draws genotypes at a known F,
   with the allele frequencies from the neutral spectrum, and reports the
