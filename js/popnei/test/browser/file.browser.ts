@@ -1,11 +1,12 @@
 /**
  * That popnei reads a file the user picked in the page one range of bytes
  * at a time: a VCF, the same VCF gzipped and a vars file give the variants
- * the tests under node give, and a range that comes back short ends the
- * pass with popnei's error.
+ * the tests under node give, a file of more than one range gives the
+ * variants of every range of it, and a range that comes back short ends
+ * the pass with popnei's error.
  *
  * A range of a `File` is read with `FileReaderSync`, which a browser has
- * only inside a web worker, so none of these four can run under node.
+ * only inside a web worker, so none of these five can run under node.
  * Playwright starts Chromium and the server of `server.ts`, opens
  * `harness.html` and asks it for a case of `cases/`, which asserts the
  * numbers inside the worker and whose message is what a failure here shows.
@@ -31,6 +32,13 @@ test("a File of a vars file written from many.vcf gives those same variants", as
 }) => {
   await page.goto(HARNESS);
   await page.evaluate((name) => window.runInTheWorker(name), "vars_file");
+});
+
+test("a File of more than one range gives the variants of every range", async ({
+  page,
+}) => {
+  await page.goto(HARNESS);
+  await page.evaluate((name) => window.runInTheWorker(name), "many_ranges");
 });
 
 test("a range that comes back one byte short ends the pass and names the range", async ({
