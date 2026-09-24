@@ -10,6 +10,7 @@
 use pyo3::prelude::*;
 
 mod dists;
+mod diversity;
 mod errors;
 mod gwas;
 mod kinship;
@@ -106,6 +107,8 @@ mod _core {
 
     #[pymodule_export]
     use super::dists::calc_pairwise_kosman_dists;
+    #[pymodule_export]
+    use super::diversity::calc_pop_diversity;
     #[pymodule_export]
     use super::gwas::calc_gwas;
     #[pymodule_export]

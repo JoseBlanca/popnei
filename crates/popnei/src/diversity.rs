@@ -68,6 +68,47 @@ impl DiversityStats {
         .union(DiversityStats::FOLDED_SFS)
         .union(DiversityStats::FIS);
 
+    /// The name of each of the five statistics, in the order of the
+    /// constants above, which is the order of the fields of a result.
+    ///
+    /// The names are what a Python and a TypeScript user writes in `stats`,
+    /// and each one is the field of the result that holds that statistic.
+    /// They are here and not in the binding crates so that a rename is one
+    /// change and not three.
+    pub const NAMES: [&'static str; 5] = [
+        "num_alleles",
+        "private_alleles",
+        "variable_vars_ratio",
+        "folded_sfs",
+        "fis",
+    ];
+
+    /// The one statistic a user named, and `None` for a name that is of
+    /// none of the five.
+    ///
+    /// A binding crate reads the names a user wrote with this and says
+    /// itself what a name of no statistic is told, because that is an
+    /// exception of its own language: the Python and the TypeScript
+    /// packages take the members of an enumeration and nothing else, so a
+    /// name of no statistic arrives only from a caller that went round the
+    /// package.
+    #[must_use]
+    pub fn of_name(name: &str) -> Option<DiversityStats> {
+        // The names are in [`DiversityStats::NAMES`] alone, in the order of
+        // the constants, so a name that is renamed is renamed in one place.
+        match DiversityStats::NAMES
+            .iter()
+            .position(|known| *known == name)
+        {
+            Some(0) => Some(DiversityStats::NUM_ALLELES),
+            Some(1) => Some(DiversityStats::PRIVATE_ALLELES),
+            Some(2) => Some(DiversityStats::VARIABLE_VARS_RATIO),
+            Some(3) => Some(DiversityStats::FOLDED_SFS),
+            Some(4) => Some(DiversityStats::FIS),
+            Some(_) | None => None,
+        }
+    }
+
     /// No statistic at all, which a caller that builds a set one name at a
     /// time starts from.
     #[must_use]
@@ -193,6 +234,9 @@ pub struct PopDiversity {
     pops: Vec<OfAPop>,
     /// The variants that counted for every population at once.
     num_vars_every_pop: u64,
+    /// The variants the reader gave, whether any population counted them or
+    /// not.
+    num_vars_of_the_pass: u64,
     /// The statistics the pass was asked for, which are the ones that have
     /// a value here.
     stats: DiversityStats,
@@ -212,6 +256,19 @@ impl PopDiversity {
     #[must_use]
     pub fn num_vars(&self, pop: usize) -> Option<u64> {
         self.pops.get(pop).map(|pop| pop.num_vars)
+    }
+
+    /// The variants the reader gave the pass, whether any population counted
+    /// them or not.
+    ///
+    /// It is what a caller reports as the variants of the pass beside what
+    /// each filter of the chain was given and kept, and it is not the
+    /// divisor of anything here: a variant a population has too little
+    /// called at is one of these and is out of every count of that
+    /// population, which [`PopDiversity::num_vars`] gives.
+    #[must_use]
+    pub fn num_vars_of_the_pass(&self) -> u64 {
+        self.num_vars_of_the_pass
     }
 
     /// The variants that counted for every population. It is the divisor of
@@ -588,6 +645,7 @@ pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
     Ok(PopDiversity {
         pops: totals.pops,
         num_vars_every_pop: totals.num_vars_every_pop,
+        num_vars_of_the_pass: num_vars,
         stats: options.stats,
     })
 }
@@ -1946,5 +2004,87 @@ mod the_pass {
         );
         assert_eq!(of_the_fis.num_alleles(0), None);
         assert_eq!(of_the_alleles.fis(0), None);
+    }
+
+    /// The variants of the pass are the ones the reader gave, which a caller
+    /// reports beside what each filter was given and kept. They are not the
+    /// variants that counted for a population: the worked example has six,
+    /// and four of them count for each of its two populations at a threshold
+    /// of one called genotype, variant 4 having nothing called and variant 6
+    /// too little in `pop1`.
+    #[test]
+    fn the_variants_of_the_pass_are_the_ones_the_reader_gave() {
+        let diversity = of_the_worked_example(1, 6);
+
+        assert_eq!(diversity.num_vars_of_the_pass(), 6);
+        assert_eq!(diversity.num_vars(0), Some(4));
+        assert_eq!(diversity.num_vars(1), Some(4));
+        assert_eq!(
+            of_the_worked_example(1, 2).num_vars_of_the_pass(),
+            6,
+            "the variants of the pass do not depend on the size of a block"
+        );
+    }
+}
+
+#[cfg(test)]
+mod the_names_of_the_statistics {
+    use super::DiversityStats;
+
+    /// The name of each statistic is what a user writes in `stats` and the
+    /// field of the result that holds it, and `of_name` gives back the
+    /// statistic of each name. The names live in `NAMES` alone, so a rename
+    /// is one change; the literals here are the names of the fields of
+    /// `PopDiversity` in Python and in TypeScript.
+    #[test]
+    fn each_name_gives_back_the_statistic_it_names() {
+        assert_eq!(
+            DiversityStats::NAMES,
+            [
+                "num_alleles",
+                "private_alleles",
+                "variable_vars_ratio",
+                "folded_sfs",
+                "fis",
+            ]
+        );
+        assert_eq!(
+            DiversityStats::of_name("num_alleles"),
+            Some(DiversityStats::NUM_ALLELES)
+        );
+        assert_eq!(
+            DiversityStats::of_name("private_alleles"),
+            Some(DiversityStats::PRIVATE_ALLELES)
+        );
+        assert_eq!(
+            DiversityStats::of_name("variable_vars_ratio"),
+            Some(DiversityStats::VARIABLE_VARS_RATIO)
+        );
+        assert_eq!(
+            DiversityStats::of_name("folded_sfs"),
+            Some(DiversityStats::FOLDED_SFS)
+        );
+        assert_eq!(DiversityStats::of_name("fis"), Some(DiversityStats::FIS));
+    }
+
+    /// The five names together are every statistic, so a caller that names
+    /// them all asks for what `ALL` asks for.
+    #[test]
+    fn the_five_names_together_are_every_statistic() {
+        let mut asked_for = DiversityStats::empty();
+        for name in DiversityStats::NAMES {
+            asked_for |= DiversityStats::of_name(name).expect("a name of NAMES");
+        }
+
+        assert_eq!(asked_for, DiversityStats::ALL);
+    }
+
+    /// A name of no statistic has no statistic, which is what lets a
+    /// binding crate refuse it in the words of its own language.
+    #[test]
+    fn a_name_of_no_statistic_gives_nothing() {
+        assert_eq!(DiversityStats::of_name("poly_vars_ratio"), None);
+        assert_eq!(DiversityStats::of_name("NUM_ALLELES"), None);
+        assert_eq!(DiversityStats::of_name(""), None);
     }
 }
