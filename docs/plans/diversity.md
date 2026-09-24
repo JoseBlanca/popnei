@@ -370,7 +370,7 @@ module is what the spec describes.
 - [x] 3.2 The standardized alleles called and variable variants, and the
   second count of variants, from "What it gives" of those two items.
   Needs 3.1. Serves deliverables 2 and 6.
-- [ ] 3.3 The standardized private alleles, from "What it gives" of "The
+- [x] 3.3 The standardized private alleles, from "What it gives" of "The
   private alleles". Needs 3.1. Serves deliverables 3 and 6. Its own
   commit for the same reason as 2.3.
 - [ ] 3.4 The folded spectrum, from "What it gives" of "The folded site
