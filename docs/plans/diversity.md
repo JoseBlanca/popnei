@@ -367,7 +367,7 @@ module is what the spec describes.
   table of "How it is verified" of "The number of alleles". Serves
   deliverable 1. Every standardized value rests on it and a wrong value
   is silent: its own commit, guarded by deliverables 1, 2, 3 and 4.
-- [ ] 3.2 The standardized alleles called and variable variants, and the
+- [x] 3.2 The standardized alleles called and variable variants, and the
   second count of variants, from "What it gives" of those two items.
   Needs 3.1. Serves deliverables 2 and 6.
 - [ ] 3.3 The standardized private alleles, from "What it gives" of "The
