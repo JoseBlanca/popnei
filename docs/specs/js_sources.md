@@ -301,7 +301,10 @@ those reads are told to nobody: what the function is set on is the
 
 A function that throws is called no more in that pass, and the call that
 ends that pass is not made either: what the application stopped it is not
-told how far it had got.
+told how far it had got. The other passes of that run are told, with what
+they had read: a PCA stopped at the first call of its second pass tells the
+page of pass 1 at the 617 bytes of the header of `many.vcf`, which is all
+it had read when both readers were built.
 
 A pass whose reader is never built is never told of, and a pass whose
 reader is built always is: a reader reads when it is built. So the PCA of
@@ -335,12 +338,18 @@ package already has for the memory of wasm, which
 The function is called with no table of the binding crate borrowed, so an
 application that calls popnei from inside it does not trap, and a consumer
 started there runs as any other call does. `free()` from inside it is the
-one call that does not go through: while a consumer runs, wasm-bindgen
-holds the source for the length of that call, and freeing a value it holds
-throws. The throw is the application's own, so it stops the pass as any
-other throw of that function does. Inside an iteration of `iterBlocks` no
-call holds the source, the free is taken, and the pass reads on to its end,
-as the paragraph on `free()` of the item above says.
+one call that does not go through: a `Variants` counts the consumer calls
+over it that are running, and while one is, `free()` throws popnei's
+`Error` naming that a run is reading it and frees nothing. That throw is
+the application's own, since the application made the call, so it stops the
+pass as any other throw of that function does. What it prevents is the
+memory of the file being lost: wasm-bindgen gives up the pointer of a
+source and unregisters it before it calls into wasm, and that call throws
+while a consumer holds the source, so the file would be unreachable and
+never freed for as long as the page lives, 100 sources of 117346 bytes
+costing 11993088 bytes of the memory of wasm. Inside an iteration of
+`iterBlocks` no call holds the source, the free is taken, and the pass
+reads on to its end, as the paragraph on `free()` of the item above says.
 
 ### How it is verified
 
@@ -506,6 +515,10 @@ struct Run {
     source: u32,
     num_passes: u32,
     passes_begun: u32,
+    /// What each pass that has ended read, in the order of their numbers,
+    /// which the end of the run tells the page: a pass writes it here when
+    /// it is dropped, and the run is what is left to tell it.
+    passes_that_ended: Vec<(u32, u64)>,
     /// What `told` threw, which ended a pass of this run and is what the
     /// consumer throws in place of the error the core gave. It is nothing
     /// when the run starts, so no run throws what another one was stopped
@@ -554,12 +567,12 @@ impl Drop for RunOfAConsumer {}
 ```
 
 The read that a thrown value ends fails with `std::io::Error::other`. The
-kind matters: `ErrorKind::Interrupted` is read again by three loops of the
-core, `read_line_of` of `io::vcf`, `take_from` of `io::bgzf` and the
-`read_exact` of `bytes_at` of `io::vars`, so a stop written with it would
-never end the pass; and `ErrorKind::UnexpectedEof` is what `bytes_at` turns
-into the error of a vars file that was cut short, so a stop written with it
-would reach the user as a damaged file.
+kind matters: `ErrorKind::Interrupted` is read again by four loops of the
+core, `read_line_of` of `io::vcf`, `take_from` and `take_from_into` of
+`io::bgzf` and the `read_exact` of `bytes_at` of `io::vars`, so a stop
+written with it would never end the pass; and `ErrorKind::UnexpectedEof` is
+what `bytes_at` turns into the error of a vars file that was cut short, so
+a stop written with it would reach the user as a damaged file.
 
 What the consumer throws is not the error the core gives back for that read:
 `JsPopneiError` has a case that carries a `JsValue` through untouched, and
