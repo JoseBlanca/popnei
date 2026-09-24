@@ -818,6 +818,41 @@ mod tests {
         assert_no_curve(&decay, "an r² of 0 at every distance");
     }
 
+    /// Three individuals are the fewest whose curve falls to half, which
+    /// "The curve that is fitted" of `docs/specs/ld.md` says: what the
+    /// curve falls towards as ρ grows is 1 divided by the individuals, and
+    /// half of its value at ρ of 0 is above that from n of 3 upwards.
+    ///
+    /// It is the boundary of the case below and it is also what says that
+    /// the bisection of the half distance brackets the whole of the ρ it
+    /// can reach. That ρ grows as n falls, to 37.459360381862439 at n of 3
+    /// and 9.4314567761357786 at n of 4, where it is 2.1608135872529166 at
+    /// n of 100; no other test of the module fits fewer than 50
+    /// individuals, so shrinking `THE_LARGEST_RHO_OF_THE_HALF` from 10⁶ to
+    /// 10 left the 119 tests of the module passing and turned the half
+    /// distance here into NaN.
+    ///
+    /// The ρ at half and the curve at ρ of 0 are what R 4.6.1's `uniroot`
+    /// gives at n of 3 on 24 September 2026, and the half distance is the
+    /// first divided by the ρ per base pair the table was made with.
+    #[test]
+    fn a_population_of_three_individuals_has_a_half_distance() {
+        let dists = the_dists_from(1000, 250_000);
+        let (num_pairs, sum_r2) = the_table_of_the_curve(&dists, 0.0001, 3);
+        let decay = fit_ld_decay(&dists, &num_pairs, &sum_r2, 3).expect("the fit");
+        assert_close(decay.rho_per_bp(), 0.0001, "the fitted rho per base pair");
+        assert_close(
+            decay.r2_at_zero(),
+            0.7024793388429752,
+            "the r² at a distance of 0 of three individuals",
+        );
+        assert_close(
+            decay.half_dist(),
+            37.459_360_381_862_44 / 0.0001,
+            "the half distance of three individuals",
+        );
+    }
+
     #[test]
     fn a_population_of_two_individuals_has_no_half_distance_and_keeps_the_other_two() {
         let dists = the_dists_from(1000, 250_000);
