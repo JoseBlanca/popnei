@@ -16,8 +16,6 @@
  * in `.test.ts`, and Playwright the ones whose name ends in `.browser.ts`.
  */
 
-import { init } from "../../dist/web.js";
-
 /** What this worker is, of the global object a module worker runs in. */
 interface WorkerScope {
   postMessage(message: unknown): void;
@@ -35,14 +33,26 @@ interface Ask {
 
 const worker = globalThis as unknown as WorkerScope;
 
-/** The WebAssembly, fetched once for every case this worker runs. */
-const loading = init();
+/**
+ * The WebAssembly, fetched once for every case this worker runs.
+ *
+ * The package is imported here and not at the head of the file so that a
+ * `dist/` that was not built reaches the developer by name: a module a
+ * worker cannot load stops the worker before it has told the page
+ * anything, and Chromium gives no message for it, while this import fails
+ * inside a case and is answered with an `Error` that names the address.
+ */
+const loading = (async () => {
+  const { init } = await import("../../dist/web.js");
+  await init();
+})();
 
 /**
  * Runs the case `name` of `cases/`.
  *
  * @throws {Error} When the name is not one a file of `cases/` could be
- * called, when that file exports no `run`, or when the case itself throws,
+ * called, when the package of `dist/` or its WebAssembly could not be
+ * loaded, when that file exports no `run`, or when the case itself throws,
  * which is what an assertion of a case that failed does.
  */
 async function runTheCase(name: string): Promise<void> {

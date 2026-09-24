@@ -35,9 +35,17 @@
       // A worker that cannot be loaded at all, or that throws where no case
       // of it catches, answers nothing, so every case that is waiting is
       // told, and the test reads the message instead of timing out.
+      // Chromium gives no message for a module a worker could not load, so
+      // the address it did not load is named here: what the package of
+      // `dist/` imports is loaded inside a case instead, and names itself.
       worker.addEventListener("error", (event) => {
+        const failure =
+          event.message ||
+          "the worker `./worker.ts` did not load, and the browser gave no " +
+            "message: ask the server for that address and for whatever that " +
+            "file imports at its head";
         for (const settle of waiting.values()) {
-          settle.failed(new Error(event.message ?? "the worker failed"));
+          settle.failed(new Error(failure));
         }
         waiting.clear();
       });
