@@ -122,6 +122,19 @@ const WORKED_EXAMPLE = vcfOf(
   ],
 );
 
+/**
+ * A VCF of the six individuals of the worked example with one variant,
+ * heterozygous in every one of them.
+ *
+ * The factor of the GRAMMAR-Gamma approximation is the mean over the
+ * variants of the first block of the second pass that vary, and this file
+ * leaves that block with none of them.
+ */
+const ONE_VARIANT_THAT_DOES_NOT_VARY = vcfOf(
+  ["i0", "i1", "i2", "i3", "i4", "i5"],
+  [{ id: "v0", genotypes: "0/1\t0/1\t0/1\t0/1\t0/1\t0/1" }],
+);
+
 /** The trait of the worked example, one measurement for each individual. */
 const THE_TRAIT: Record<string, number> = {
   i0: 2,
@@ -1662,6 +1675,28 @@ function theCallsThatAreRefused(): Record<string, () => GwasResult> {
   return {
     "a kinship that is not a kinship": theStudyWith({ kinship: "a matrix" }),
     "the grammar gamma approximation with no kinship": theStudyWith({
+      useGrammarGammaApprox: true,
+    }),
+    "a first block in which no variant varies": () =>
+      gwasOf(ONE_VARIANT_THAT_DOES_NOT_VARY, {
+        phenotype: THE_TRAIT,
+        trait: "continuous",
+        covariates: THE_COVARIATE,
+        kinship: theKinshipOfTheWorkedExample(),
+        useGrammarGammaApprox: true,
+      }),
+    // The two variants of the worked example that vary, written as the
+    // covariates beside the intercept: the design then explains both of
+    // them, what the projection leaves of each is the rounding of a
+    // cancellation, and the mean of the ratios that are kept is the mean of
+    // none, which is NaN. The `./.` of `i3` at `v1` takes the mean dosage of
+    // the called genotypes of its variant, which is 0.8.
+    "a factor of the approximation that is not above 0": theStudyWith({
+      covariates: {
+        of_v0: { i0: 0, i1: 1, i2: 2, i3: 0, i4: 1, i5: 2 },
+        of_v1: { i0: 0, i1: 1, i2: 2, i3: 0.8, i4: 1, i5: 0 },
+      },
+      kinship: theKinshipOfTheWorkedExample(),
       useGrammarGammaApprox: true,
     }),
     "a tested individual the kinship has not": theStudyWith({

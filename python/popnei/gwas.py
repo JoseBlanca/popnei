@@ -361,8 +361,10 @@ def calc_gwas(
     second pass over the same variants, which the call opens itself. What it
     gives up is accuracy, and how much grows with how strongly the panel is
     structured, since one factor stands in for a quantity that differs from
-    variant to variant: on the panel of ``docs/specs/gwas.md`` a p-value is
-    out by a factor of 30 at worst while the middle of them barely moves.
+    variant to variant: on the panel of ``docs/specs/gwas.md``, 200
+    individuals and 1200 variants, a p-value is out by a factor of 3.3 at
+    worst while the middle of them barely moves, where what that spec allows
+    the approximation is a factor of 32.
     Only a mixed model has such a denominator, so asking for it without a
     `kinship` is a ``ValueError``, and so is a first block in which no
     variant varies among the tested individuals or whose variants the design

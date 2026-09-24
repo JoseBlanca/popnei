@@ -686,9 +686,18 @@ def test_every_variant_of_a_logistic_panel_is_pyneis(
         )
 
 
-def _worked_example_vcf(path: pathlib.Path, individuals=WORKED_EXAMPLE_INDIVIDUALS):
+def _worked_example_vcf(
+    path: pathlib.Path,
+    individuals=WORKED_EXAMPLE_INDIVIDUALS,
+    genotypes_of_the_variants=WORKED_EXAMPLE_GENOTYPES,
+):
     """The worked example of the spec as a VCF at `path`: three variants of
-    six diploid individuals, each variant with its own id and position."""
+    six diploid individuals, each variant with its own id and position.
+
+    `genotypes_of_the_variants` is one row of genotypes for each variant,
+    which the VCF of the approximation with no variant that varies gives one
+    of its own.
+    """
     lines = [
         "##fileformat=VCFv4.4",
         '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
@@ -697,7 +706,7 @@ def _worked_example_vcf(path: pathlib.Path, individuals=WORKED_EXAMPLE_INDIVIDUA
             + list(individuals)
         ),
     ]
-    for at, genotypes in enumerate(WORKED_EXAMPLE_GENOTYPES):
+    for at, genotypes in enumerate(genotypes_of_the_variants):
         lines.append(
             "\t".join(
                 [
@@ -716,6 +725,17 @@ def _worked_example_vcf(path: pathlib.Path, individuals=WORKED_EXAMPLE_INDIVIDUA
         )
     path.write_text("\n".join(lines) + "\n")
     return path
+
+
+def _a_vcf_of_one_variant_that_does_not_vary(path: pathlib.Path) -> pathlib.Path:
+    """A VCF at `path` of the six individuals of the worked example and one
+    variant, heterozygous in every one of them.
+
+    The factor of the approximation is the mean over the variants of the
+    first block of the second pass that vary, and this file leaves that block
+    with none of them.
+    """
+    return _worked_example_vcf(path, genotypes_of_the_variants=(("0/1",) * 6,))
 
 
 @pytest.fixture
@@ -2565,12 +2585,46 @@ def _the_calls_that_are_refused(
     binomial_that_is_not_separated = pandas.Series(
         [0.0, 0.0, 1.0, 1.0, 0.0, 1.0], index=list(WORKED_EXAMPLE_INDIVIDUALS)
     )
+    # The dosages of `v0` and of `v1`, the two variants of the worked example
+    # that vary: the `./.` of `i3` at `v1` takes the mean dosage of the
+    # called genotypes of its variant, which is 0.8.
+    the_dosages_of_the_two_that_vary = pandas.DataFrame(
+        {
+            "of_v0": [0.0, 1.0, 2.0, 0.0, 1.0, 2.0],
+            "of_v1": [0.0, 1.0, 2.0, 0.8, 1.0, 0.0],
+        },
+        index=list(WORKED_EXAMPLE_INDIVIDUALS),
+    )
     return {
         "a kinship that is not a kinship": lambda: _the_worked_example(
             worked_example, kinship="a matrix"
         ),
         "the grammar gamma approximation with no kinship": lambda: _the_worked_example(
             worked_example, use_grammar_gamma_approx=True
+        ),
+        # The factor of the approximation is the mean over the variants of
+        # the first block of the second pass that vary, and this file has
+        # one variant, heterozygous in everybody, so that block gives it no
+        # ratio at all.
+        "a first block in which no variant varies": lambda: _the_worked_example(
+            _a_vcf_of_one_variant_that_does_not_vary(
+                worked_example.parent / "one_variant_that_does_not_vary.vcf"
+            ),
+            kinship=_the_kinship_of_the_worked_example(),
+            use_grammar_gamma_approx=True,
+        ),
+        # The two variants of the worked example that vary, written as the
+        # covariates beside the intercept: the design then explains both of
+        # them, what the projection leaves of each is the rounding of a
+        # cancellation, and the mean of the ratios that are kept is the mean
+        # of none, which is NaN.
+        "a factor of the approximation that is not above 0": lambda: (
+            _the_worked_example(
+                worked_example,
+                covariates=the_dosages_of_the_two_that_vary,
+                kinship=_the_kinship_of_the_worked_example(),
+                use_grammar_gamma_approx=True,
+            )
         ),
         "a tested individual the kinship has not": lambda: _the_worked_example(
             worked_example,
@@ -2765,14 +2819,23 @@ def _the_calls_that_typescript_alone_refuses(worked_example: pathlib.Path) -> di
     }
 
 
-# The one case of the `refusals` of that file whose message names the file
-# the variants were read from, and the only one the test below lets name it.
+# The cases of the `refusals` of that file whose message names the file the
+# variants were read from, which are the only ones the test below lets name
+# it and of which it asks that they do.
+#
 # How many individuals a study tests is the individuals of the source that
 # have a phenotype, so that count is of the dataset and not of the arguments
-# alone, and its error goes through the wildcard arm of
+# alone; the two of the GRAMMAR-Gamma approximation are of the variants the
+# second pass gave, and which file was read is what tells a user whether it
+# is that file or the steps of their pass that left them with those variants.
+# All three go through the wildcard arm of
 # `crates/popnei-python/src/errors.rs`, which puts the path in front of the
-# message. Whether it belongs there is the owner's to say.
-_TOO_FEW_INDIVIDUALS = "fewer individuals than the design has columns plus two"
+# message. Whether the first belongs there is the owner's to say.
+_THE_CASES_THAT_NAME_THE_FILE = (
+    "fewer individuals than the design has columns plus two",
+    "a first block in which no variant varies",
+    "a factor of the approximation that is not above 0",
+)
 
 
 def _the_calls_of(which: str, calls: dict) -> list[tuple[dict, object]]:
@@ -2813,17 +2876,18 @@ def test_both_layers_refuse_the_same_calls(worked_example: pathlib.Path) -> None
     for and which JavaScript has not: it is the class that differs and not
     the message, and the message is what the file binds.
 
-    All but one of these calls are refused for what the user wrote, which is
-    wrong whatever file the study is given, so their messages name no file.
-    That is what puts each of their errors in the arm of
+    All but three of these calls are refused for what the user wrote, which
+    is wrong whatever file the study is given, so their messages name no
+    file. That is what puts each of their errors in the arm of
     `crates/popnei-python/src/errors.rs` that raises them bare, and not in
     the wildcard arm at the end, which glues the path of the source to the
     front of the message. `match` alone would not notice the difference,
     since `pytest.raises` searches the message rather than anchoring at its
     start, which is how `GwasFitDidNotSettle` spent a day in the wrong arm.
-    The one that does name the file is the study of fewer individuals than
-    its design has columns plus two, and the comment on
-    `_TOO_FEW_INDIVIDUALS` above says why.
+    The three that do name the file are the ones the comment on
+    `_THE_CASES_THAT_NAME_THE_FILE` above gives, and their messages are
+    asserted to start with the path of the file the call read, which is the
+    worked example for two of them and a VCF of its own for the third.
     """
     for case, call in _the_calls_of(
         "refusals", _the_calls_that_are_refused(worked_example)
@@ -2833,8 +2897,11 @@ def test_both_layers_refuse_the_same_calls(worked_example: pathlib.Path) -> None
         with pytest.raises(raises, match=match) as refusal:
             call()
 
-        if case["case"] != _TOO_FEW_INDIVIDUALS:
-            assert str(worked_example) not in str(refusal.value), case["case"]
+        message = str(refusal.value)
+        if case["case"] in _THE_CASES_THAT_NAME_THE_FILE:
+            assert message.startswith(str(worked_example.parent)), case["case"]
+        else:
+            assert str(worked_example) not in message, case["case"]
 
 
 def test_both_layers_read_a_value_that_is_not_a_number_as_the_number_it_holds(

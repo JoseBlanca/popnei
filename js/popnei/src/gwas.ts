@@ -337,7 +337,10 @@ export interface CalcGwasOptions {
    * which the call opens itself. What it gives up is accuracy, and how much
    * grows with how strongly the panel is structured. Only a mixed model has
    * such a denominator, so asking for it without a `kinship` is an `Error`,
-   * and the result says in `usedGrammarGammaApprox` whether it was used.
+   * and so is a first block in which no variant varies among the tested
+   * individuals or whose variants the design explains, which leaves no
+   * factor above 0 to multiply by. The result says in
+   * `usedGrammarGammaApprox` whether it was used.
    */
   useGrammarGammaApprox?: boolean;
 }
@@ -377,8 +380,10 @@ export interface CalcGwasOptions {
  * when a covariate is named `intercept`, which is the name the effect of the
  * column of ones comes back under; when `kinship` is not a `Kinship` or has
  * not an individual that is tested; when `useGrammarGammaApprox` is asked
- * for by a study with no kinship, which has no denominator to approximate,
- * or the first block its factor is estimated from leaves no factor above 0;
+ * for by a study with no kinship, which has no denominator to approximate;
+ * when no variant of the first block its factor is estimated from varies
+ * among the tested individuals, or the design explains the variants of that
+ * block, which leaves no factor above 0 to multiply by;
  * when the score test is asked of a linear
  * model, which has it not; when no individual is tested or they are fewer
  * than the columns of the design plus two; when a phenotype or a covariate

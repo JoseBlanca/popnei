@@ -58,6 +58,14 @@
       "match": "a study with no kinship has no such denominator"
     },
     {
+      "case": "a first block in which no variant varies",
+      "match": "no variant of that block varies among the 6 tested individuals"
+    },
+    {
+      "case": "a factor of the approximation that is not above 0",
+      "match": "the 2 variants of the first block that vary gave and which is not a number above 0"
+    },
+    {
       "case": "a tested individual the kinship has not",
       "match": "`?.i2.`? is tested and is not one of the 5 individuals of the"
     },
