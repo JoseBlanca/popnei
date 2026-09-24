@@ -105,6 +105,12 @@ guard it.
 
 ## Work package 1: the reference numbers and the programs that give them
 
+**Done on 24 September 2026**, reviewed in the categories `spec`, `tests`,
+`numbers` and `errors`, with every finding fixed. Deliverable 3's check
+changed as the review asked: the file holds 23 pairs, 22 with a difference
+of 0 and one, the shared individual, with exactly 1/2, which is the pair
+the closed form gets wrong. `docs/reports/diversity.md` has the rest.
+
 **What it gives.** Work packages 2 and 3 get every number of the spec's
 "How it is verified" as a file in the repository, with the script that
 made it, so that each of their checks compares against something stored

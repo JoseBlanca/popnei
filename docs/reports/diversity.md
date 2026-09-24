@@ -46,3 +46,238 @@ The checks the plan says fail today do fail: `cargo test -p popnei --lib
 -- diversity:: --list` prints `0 tests`, and `tests/test_diversity.py`,
 `js/popnei/test/diversity.test.ts` and `tests/reference/diversity/` do
 not exist.
+
+## Work package 1: the reference numbers and the programs that give them
+
+It finished as planned. `tests/reference/diversity/` now holds three
+scripts and the six files they write, and every number of the spec's "How
+it is verified" that a program outside popnei can give is in the
+repository. The four tasks are five commits: `a527da8`, `48b5f5d`,
+`42430ee`, `6eae424` and `bc8b7e2`.
+
+### The deliverables, each with the command the orchestrator ran
+
+| deliverable | command | what it gave |
+|---|---|---|
+| 1, the R script | `Rscript tests/reference/diversity/make_reference.R` | exit 0; `git status --short tests/reference/diversity` empty after a second run |
+| 2, the Python script | `uv run python tests/reference/diversity/make_reference.py` | `done`, exit 0; the same emptiness after a second run |
+| 3, the enumeration | `uv run python tests/reference/diversity/enumerate_private.py` | exit 0; of its 23 lines, 22 have a difference of `0` and the shared individual has `1/2`, which is the pair the closed form gets wrong |
+| 4, the page | `grep` for each program and version in `README.md` | all five named, `vegan` 2.7.6, `adegenet` 2.1.11, `poppr` 2.9.8, `scikit-allel` 1.3.13 and `dadi` 2.4.4, with both Python 3.12 environments |
+
+The stored numbers are the spec's. `panel_num_alleles.tsv` holds 2373,
+2377 and 2384 alleles called with the standardized 1.9283948650,
+1.9219209943 and 1.9197370844; `panel_private_alleles.tsv` holds 0, 0 and
+1; `panel_variable_vars.tsv` holds 1173, 1177 and 1184 with the three
+standardized ratios one less than the standardized allele counts, which is
+the identity the spec's "How it is verified" of that item gives;
+`panel_folded_sfs_dadi.tsv` holds 11 bins by 3 populations, the three
+columns summing to 1200 short by 1.3e-11, 7.0e-11 and 4.0e-11, which is
+eleven roundings of `dadi`'s own values and 5.8e-14 of 1200 at worst, so
+the test of deliverable 4 of work package 3 compares that sum within a
+tolerance and not exactly; `panel_fis_plain_allel.tsv` holds
+-0.0237536998, -0.0258924700 and -0.0247472838.
+
+The plan's own final check was run for this work package's data: both
+`make_reference` scripts again from a clean tree, and `git status --short
+tests/reference/diversity` showed nothing. Moving the two Python 3.12
+environments aside and re-running rebuilt them in 5.5 s and reproduced
+both stored files byte for byte; with both present the script takes 0.7 s.
+
+### What was changed in the plan, and why
+
+**The standardized private alleles of the panel get no file.** The work
+package said that every number of the spec's "How it is verified" becomes
+a file. Three cannot: 0.0112196177, 0.0099715392 and 0.0089014974, the
+standardized private alleles of the three populations at a draw of 20. No
+program outside popnei computes any standardized value, which is what the
+plan's own final check already said in another way. They stay literals of
+a pytest test, which is what deliverable 3 of work package 3 asks for
+anyway, so no check got weaker. Task 1.1 found this.
+
+**Two sentences about the project's Python were false**, one in the plan
+and one in the spec, and task 1.4 found them. They are in "What the owner
+should know" below, because the choice they leave open is the owner's.
+
+### What the review found
+
+Four reviewers were sent over `bc8b7e2`, the categories `spec`, `tests`,
+`numbers` and `errors`. `api`, `architecture` and `binding` were not sent:
+this work package adds no type, no signature, no reader, no thread, no
+dependency of a crate and nothing in either binding crate.
+
+**Every stored number survived.** Two reviewers recomputed all of them
+from `panel.vcf.gz` in exact rational arithmetic, independently of the
+scripts: `vegan`'s standardized allele counts agree within 1.7e-16
+relative, the standardized ratios within 3.2e-16, `scikit-allel`'s F_IS
+within 7.3e-15 and `dadi`'s 33 spectrum entries within 6.7e-14, and the
+counts 2373/2377/2384, 1173/1177/1184 and 0/0/1 were reproduced exactly.
+All 18 enumerated rationals were reproduced twice more, once by a brute
+force over labelled gene copies. One reviewer ran 25 mutations across the
+three scripts and every one stopped the script it belonged to.
+
+**The enumeration of the private alleles assumes the independence it said
+it did not.** Three of the four reviewers found this separately, with the
+same evidence. `by_enumeration` lists each population's draws from that
+population's own allele counts and weights a combination by the product
+across populations, which is the independence the closed form assumes. On
+the spec's own overlap case, two populations that are the one diploid
+individual `0/1` at a draw of one allele, it gives 1/2, the same as the
+closed form, where "The cases" says the truth is 0. So the spec's "It
+assumes nothing" was wrong, and so was the sentence crediting the
+enumeration with having found the overlap, which was worked out from the
+formula.
+
+The check keeps its value, and the spec now says what that value is: the
+enumeration never writes the closed form down, so it catches any error in
+the algebra, and changing one factor of the closed form made 16 of the 18
+pairs differ then and makes 19 of the 22 differ now that four pairs have
+been added. For those pairs the product measure is sound rather than
+circular, because their populations share no individual and draws from
+disjoint sets of gene copies are independent as a fact of the sampling.
+The spec was corrected in `e1ff8e9` and a pair enumerated over labelled
+gene copies was added, which gives 0 against the closed form's 0.5 and is
+the one pair of the file whose difference is not 0.
+
+**Four guards were weaker than they read**, none of them able to store a
+wrong number today, all of them able to let one through on the next
+dataset or to report the wrong cause:
+
+- Reusing a reference environment is decided on the installed package
+  version alone. A reviewer asked for Python 3.13 with the 3.12
+  environments present: the script ran on 3.12, printed nothing and
+  exited 0, so the interpreter that these numbers' provenance rests on can
+  go stale with no message.
+- The check that each spectrum column sums to 1200 cannot fire, because
+  the eleven per bin comparisons above it already pin the sum to 6e-10 of
+  1200 against its threshold of 1e-6. Dropping bin 0 was caught only once
+  the bin check was disabled.
+- The Python panel reader accepts three inputs the R one refuses: no
+  `#CHROM` line, a `FORMAT` column that is not `GT`, and a populations
+  file that does not name the VCF's individuals. Dropping one line of the
+  populations file silently drops that individual from its population, and
+  only a spec literal catches it, naming a spectrum bin and not the cause.
+- The 18 pairs are a thin fixture for what they become, the literals of
+  cargo tests in work package 3: seven of the eighteen values are exactly
+  0 and two exactly 1, and fourteen of the eighteen population slots have
+  exactly 4 called alleles, so only two slots could catch an
+  implementation that confused one population's called alleles for
+  another's. Two cases were added, one of a single population and one of
+  three populations with three different counts.
+
+**Everything above was fixed**, in four commits, one per file: `0b5c614`
+for the R script, `dfc8872` for the Python one, `9babbd0` for the
+enumeration and `87a9b7b` for the page. The refusals were provoked to see
+them fire, and the orchestrator provoked one of them itself: a populations
+file one line short now exits 1 naming the file, the count and the missing
+individual, where before it produced a wrong spectrum bin. After the fixes
+every deliverable's check was run again and all four pass, the plan's final
+check leaves `git status --short tests/reference/diversity` empty, and the
+seven commands of the `coding` skill give what they gave before the work
+package, no Rust having been written: 787 and 149 cargo tests, 787 on
+faer, 499 pytest, clippy and both wasm targets clean, ruff clean.
+
+**Not taken, one finding.** That a failure between two `write` calls could
+leave one new file and one old. It exits non zero and `git status` shows
+it. The Python script took the fix, a temporary name and a rename, in four
+lines of a shared writer. The R script did not: making it safe there needs
+the temporary files cleaned up on every exit path, which its writer judged
+more than a few lines, and the orchestrator agreed rather than spend a
+second round on a case that cannot arise without a full disk or a
+permission change.
+
+**One thing the fixes turned up that the review had not.** Closing the
+enumeration finding meant writing a guard, and testing that guard found
+that it could pass for the wrong reason: a mutation that drops one gene
+copy of a diploid individual leaves the shared individual's pair reading 0
+against 0.5, which is the right answer arrived at wrongly, because both
+populations then hold a single copy of the same allele. The guard now also
+checks that the labelled copies of each population hold the called alleles
+the closed form was given.
+
+**One number was wrong in the work's own account of itself**, and it is
+recorded because it was repeated to the owner before it was checked.
+Writing 1/12 to 16 decimal places was said to make a cargo test that could
+only fail. It is two units in the last place from the nearest float64, not
+one, and that is 3.3e-16 relative, far inside the 1e-12 the spec compares
+these values within, so such a test would pass. The rule of 17 places
+stays, for the reason the page beside the scripts already gave: the file
+then holds each value at the float64 nearest its exact rational.
+
+### What the owner should know
+
+**`dadi` builds on the project's Python, and both the spec and the plan
+said it does not.** The spec's "How it is verified" of the folded spectrum
+said `dadi` does not build on the project's Python, "3.14 with the free
+threading build". Measured in this worktree on 24 September 2026:
+`.python-version` holds 3.14.5, that interpreter reports
+`Py_GIL_DISABLED` 0 and `sys._is_gil_enabled()` `True`, and
+`pyproject.toml` says the patch version is written out precisely because
+`uv` reads a bare `3.14` as the newest interpreter of that minor version,
+which on this machine is the free threaded 3.14.7. `dadi` 2.4.4 installed
+into a 3.14.5 environment folds a projected spectrum, giving the same four
+values as on 3.12. `scikit-allel` 1.3.13 installs there too, and the lock
+it re-enables was never off on that interpreter. What does fail is 3.14.7,
+where `nlopt` compiles from source and stops for want of `cmake`, which is
+not installed on this machine; the same missing `cmake` is why `hierfstat`
+does not install, through `RcppParallel` and then `gaston`. The spec was
+corrected in `f6fe8f9` and the plan in `766c9ee`.
+
+**So one choice is open, and it is the owner's.** The spec's opening
+records their decision of 24 September 2026 that the five reference
+programs become development dependencies of popnei. The plan departed from
+that for the two Python ones, on the two premises above, both false. The
+environments the reference script makes were kept, on the one reason that
+survives: the stored numbers then come from `scikit-allel` 1.3.13 and
+`dadi` 2.4.4 whatever popnei's development dependencies later hold, and no
+test of popnei imports either package. The alternative is to put both in
+`pyproject.toml` and take about 60 lines of environment building out of
+`make_reference.py`, which costs a `scikit-allel` import in the project's
+environment that no test needs. Keeping the environments is the
+recommendation, and nothing later in the plan turns on it, so the plan went
+on to work package 2 without waiting.
+
+### How the work went
+
+Not for the owner, who can stop here. It is for whoever next revises a
+skill or writes a plan.
+
+**What the review cost against what the work cost.** The four tasks took
+494000 tokens of subagent context to write. The four reviewers took 413000
+and the four rounds of fixes 197000, so checking and repairing the work
+cost 610000, 1.24 times what writing it cost. That ratio is the number to
+size the tasks of the next plan with, and it is high because this work
+package is reference data: almost every finding was about a guard that
+could not fire or a claim that was not true, which is what a reviewer is
+good at and what a writer cannot see in its own work.
+
+**Four reviewers were the right number and three of them found the same
+thing.** The independence of the enumeration was found by `spec`, `tests`
+and `numbers` separately, each with its own evidence, and the `code-review`
+skill is right that this is evidence rather than repetition. But it also
+means that a work package of three scripts could have been reviewed with
+two categories and lost little: `errors` was the only one whose findings no
+other reviewer reached, and `spec` and `tests` between them found
+everything else.
+
+**The plan sent 1.1, 1.2 and 1.3 side by side and that worked, at one
+cost.** The three scripts had to be made self contained for it, since the
+throwaway scripts they grew from read each other's output. That was worth
+saying in the prompts and it was: each script derives what it needs from
+the panel. The cost was that `git status --short tests/reference/diversity`
+is not a usable check while three agents write in one directory, and each
+writer had to be told to look only at its own files. A plan that wants
+three tasks in one directory should give the check per file.
+
+**A premise of the plan was false and the work found it, not the review.**
+The plan and the spec both said the project's Python is a free threading
+build. Task 1.4 checked it while writing a page about it, which is what
+checking every claim of a document by running it is for. The `writing`
+skill's rule that a number goes on the page only if it was seen printed is
+what caught a wrong sentence in two other documents.
+
+**Three sentences of the spec described checks that were stronger than the
+checks were.** The enumeration's independence, the 14 pair identity that no
+script ran, and the panel's standardized private alleles that no file held.
+All three were written while the spec was being written, from work done in
+a session, and none survived somebody trying to run it. A spec that says "X
+is checked by Y" is worth a task of its own that runs Y.
