@@ -278,7 +278,7 @@ is not possible: nothing of work package 1 needs anything of this one.
   in "The curve that is fitted" of the item. It serves deliverables 2 and
   3, and its first test is the one whose r² comes from the curve. It
   touches no reader, so it can run beside 2.1.
-- [ ] 2.3 The three rows of the table of "How it is verified" as a
+- [x] 2.3 The three rows of the table of "How it is verified" as a
   cargo test, `calc_ld_and_dist` calling
   `fit_ld_decay` for each population when its pass ends, and
   `ld.decay.txt` stored and compared by `run_plink2.sh`. It serves

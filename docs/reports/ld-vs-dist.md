@@ -515,3 +515,40 @@ wasm-check and ruff clean. Every one was run by the orchestrator.
 **One number for the performance review, not acted on.** One fit over 249
 distances takes 45.8 µs in the test profile on this machine, measured on
 24 September 2026 with a throwaway test that was not committed.
+
+**2.3, the curve on the reference dataset, against R.** Commit
+`cd43a42`. `calc_ld_and_dist` now fits the curve of each population when
+its pass ends, over that population's own individuals, and
+`LdBins::decay()` gives it, which is the method of "The Rust interface"
+that work package 1 left out on purpose.
+`tests/reference/ld/ld.decay.txt` is stored, and `run_plink2.sh` runs
+`decay.py` and then `decay.R` and compares a tenth file, naming R among
+what it needs.
+
+**popnei and R agree far inside what the spec asks.** `decay.R` printed
+the spec's table digit for digit, and popnei sits 3.5e-8 relative from it
+for the population of every individual, 5.3e-8 for `pop_a` and 5.5e-9 for
+`pop_b`, on both the ρ per base pair and the half distance, where 1e-6 is
+asked. The r² at distance 0 is bit-identical, 0 apart, where 1e-12 is
+asked. So the half distance the waiting web application needs comes out
+of popnei at 6810.571 base pairs for the first population, against R's
+6810.5712522189806.
+
+The stored file carries more than the table: what the two optimisers of R
+disagree by, how badly the curve describes this dataset bin by bin, what
+Sved's curve would have given, what fitting the bins instead of the pairs
+would have cost, and what the other answers to the sample size would have
+given. All of it is what the spec already states, written where a later
+session can check it again.
+
+Both thread pools genuinely ran: `rayon::current_num_threads()` is
+asserted inside the pool, and building the pools with seven threads too
+many makes that assertion fail. The two tests take 0.04 s together.
+
+`cargo test -p popnei --lib ld::decay -- --list` prints `15 tests`, where
+it printed 13. `cargo test --workspace` gives 857 passed with 2 ignored,
+the same 857 on faer, 149 linear algebra, 506 pytest, 332 node, fmt,
+clippy, wasm-check and ruff clean, and `run_plink2.sh` into an empty
+directory exits 0 naming no differing file, with the stored
+`ld.decay.txt` identical to the one R wrote. Every one was run by the
+orchestrator.
