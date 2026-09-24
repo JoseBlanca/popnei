@@ -616,12 +616,35 @@ mod tests {
         );
     }
 
+    /// The grid is the one "The curve that is fitted" of
+    /// `docs/specs/ld.md` gives: 141 values of the ρ per base pair from
+    /// 10⁻¹² to 10², spaced by a tenth of a decade.
+    ///
+    /// The three constants are asserted as the numbers of the spec and not
+    /// against each other: the first value of the grid is
+    /// [`THE_SMALLEST_EXPONENT_OF_THE_GRID`] however that constant is
+    /// written, so reading it back out of [`the_exponent_of`] says nothing
+    /// about where the searched range begins.
     #[test]
-    fn the_last_value_of_the_grid_is_the_top_of_the_searched_range() {
+    fn the_grid_is_the_141_values_of_the_spec_and_a_tenth_of_a_decade_apart() {
+        assert_eq!(
+            THE_POINTS_OF_THE_GRID, 141,
+            "the values of the grid, which the spec gives as 141"
+        );
         assert_close(
-            the_exponent_of(0),
             THE_SMALLEST_EXPONENT_OF_THE_GRID,
-            "the exponent of the first value of the grid",
+            -12.0,
+            "the exponent of the bottom of the searched range, 10⁻¹²",
+        );
+        assert_close(
+            THE_STEP_OF_THE_GRID,
+            0.1,
+            "the exponents of two neighbouring values apart, a tenth of a decade",
+        );
+        assert_close(
+            the_exponent_of(1),
+            -11.9,
+            "the exponent of the second value of the grid",
         );
         let last = THE_POINTS_OF_THE_GRID
             .checked_sub(1)
@@ -629,7 +652,7 @@ mod tests {
         assert_close(
             the_exponent_of(last),
             2.0,
-            "the exponent of the last value of the grid",
+            "the exponent of the last value of the grid, the top of the range",
         );
     }
 
