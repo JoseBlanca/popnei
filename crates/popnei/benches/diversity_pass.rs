@@ -72,8 +72,8 @@
 //!
 //! `--individuals` is 1000, `--blocks` 20, `--runs` 5, `--threads` 1,
 //! `--stats` all five, `--pops` 0 and `--draw` none when they are not
-//! given, and `--vars` is then the block popnei chooses for that many
-//! individuals, 5000 rows for 1000 of them. Twenty such blocks are the
+//! given, and `--vars` is then `block::default_num_vars_per_block` of that
+//! many individuals, 5000 rows for 1000 of them. Twenty such blocks are the
 //! 100000 variants of 1000 diploid individuals of
 //! `/Users/jose/devel/popnei-bench/big.vars`. `--pops 0` is the one
 //! population of every individual of the reader, which the pass reads as a
@@ -93,11 +93,34 @@
 //! what it is doing can only make a run longer, and the worst says how much
 //! it was doing something else.
 //!
-//! The run fails, and prints what it expected and what it got, in two cases,
-//! so that a fixture or a command line built wrong cannot pass in silence:
-//! when the pass does not give `--vars` x `--blocks` variants, and when a
-//! statistic that `--stats` named has no value in the result, which is what
-//! a pass asked for the wrong statistic gives.
+//! The run fails, and prints what it expected and what it got, in three
+//! cases, so that a fixture or a command line built wrong cannot pass in
+//! silence: when the pass does not give `--vars` x `--blocks` variants; when
+//! a statistic that `--stats` named has no value in the result, which is
+//! what a pass asked for the wrong statistic gives; and when `--stats` named
+//! a statistic of `DiversityStats::NAMES_AND_STATS` that this file has no
+//! line reading off the result, so that it could say nothing about it.
+//!
+//! ## The two runs in which the pass calculates nothing per population
+//!
+//! A variant counts for a population when that population called
+//! `stats::DEFAULT_MIN_NUM_INDIVIDUALS` genotypes at it, 20, which is the
+//! `min_num_individuals` of every run of this benchmark and is not a
+//! command line argument. So `--individuals 500 --pops 50` gives 10
+//! individuals a population, no variant counts for any of them, and the pass
+//! calculates no statistic for any population while it reads every row and
+//! allocates its bins. A `--draw` above what any population calls is the
+//! same thing one step later: every variant counts, no variant reaches the
+//! draw, and every standardized value is NaN and every bin of the spectrum
+//! 0.
+//!
+//! Neither fails, and neither should: three of the four shapes of the memory
+//! table of "The memory" of `docs/specs/diversity.md` are one of the two,
+//! and what that table measures is the bins the pass allocates, which it
+//! allocates whatever the genotypes come to. What a run like that is not is
+//! a timing of the arithmetic it skipped. So the run says which of the two
+//! it is, in a line of its own after the untimed pass and again in the line
+//! of every timed run, and a time from it is read with that line beside it.
 
 #![expect(
     unsafe_code,
@@ -125,9 +148,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use popnei::block::{
-    Block, BlockReader, GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK,
-};
+use popnei::block::{Block, BlockReader, default_num_vars_per_block};
 use popnei::diversity::{DiversityOptions, DiversityStats, PopDiversity, calc_pop_diversity};
 use popnei::filters::FilteringStats;
 use popnei::stats::DEFAULT_MIN_NUM_INDIVIDUALS;
@@ -261,22 +282,6 @@ const WITHOUT_A_DRAW: &str = "without_a_draw";
 /// memory figure of this benchmark is printed in.
 const BYTES_OF_A_MEGABYTE: f64 = 1_000_000.0;
 
-/// How many variants a block holds when the command line names no `--vars`:
-/// the block popnei chooses for a dataset of `num_individuals` individuals
-/// at the ploidy of this benchmark, which is what a reader that was asked
-/// for no size gives.
-///
-/// It is [`GENOTYPES_PER_BLOCK`] genotypes, kept between
-/// [`MIN_NUM_VARS_PER_BLOCK`] and [`MAX_NUM_VARS_PER_BLOCK`] rows: 10000
-/// rows for 200 individuals, 10000 for 500, 5000 for 1000 and 500 for
-/// 10000.
-fn default_vars(num_individuals: usize) -> usize {
-    GENOTYPES_PER_BLOCK
-        .checked_div(num_individuals)
-        .unwrap_or(MAX_NUM_VARS_PER_BLOCK)
-        .clamp(MIN_NUM_VARS_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK)
-}
-
 /// What the command line asked for.
 struct Arguments {
     num_vars: usize,
@@ -307,8 +312,9 @@ built before the clock starts and a reader gives that same block --blocks
 times, so no file is read and what is timed is the loop over the rows.
 
   --vars n          how many variants one block holds; the block popnei
-                    chooses for --individuals individuals by default, which
-                    is 5000 rows for 1000 of them
+                    chooses for --individuals individuals by default, from
+                    block::default_num_vars_per_block, which is 5000 rows
+                    for 1000 of them
   --individuals n   how many individuals the dataset has, 1000 by default
   --blocks n        how many times the reader gives its block, 20 by default
   --runs n          how many times the pass is timed, 5 by default
@@ -338,15 +344,28 @@ works in. It prints the wall time of each run, with the variants the pass
 gave and what each statistic came to in the first population, the bytes the
 pass held live at once beside its block, and then the best, the median and
 the worst of the times. The run fails when the pass does not give --vars x
---blocks variants, and when a statistic --stats named has no value.";
+--blocks variants, when a statistic --stats named has no value, and when
+--stats named a statistic this benchmark has no line reading.
+
+Every run asks for a min_num_individuals of 20, the called genotypes a
+population needs at a variant for the variant to count for it, which is not
+an argument here. So --individuals 500 --pops 50 leaves 10 individuals a
+population and no variant counts for any of them, and a --draw above what
+any population calls leaves no variant in the draw. Neither is refused, and
+three shapes of the memory table of docs/specs/diversity.md are one of them,
+but in neither does the pass do the arithmetic a time would be read as: the
+run says which of the two it is, after the untimed pass and in the line of
+every timed run.";
 
 /// The number that comes after `name` on the command line, or the message
 /// that says what should have come after it.
 fn number_after(name: &str, args: &mut impl Iterator<Item = String>) -> Result<usize, String> {
-    args.next()
-        .ok_or_else(|| format!("{name} takes a number and none came after it"))?
+    let written = args
+        .next()
+        .ok_or_else(|| format!("{name} takes a number and none came after it"))?;
+    written
         .parse::<usize>()
-        .map_err(|_| format!("{name} takes a number"))
+        .map_err(|_| format!("{name} takes a number of 0 or more, and {written:?} came after it"))
 }
 
 /// The statistics `--stats` named: the five for `all`, the four that need no
@@ -415,7 +434,11 @@ fn arguments() -> Result<Arguments, String> {
             }
         }
     }
-    let num_vars = num_vars.unwrap_or_else(|| default_vars(num_individuals));
+    // The block the reader of a file would give for that many individuals,
+    // asked of the library and not worked out again here: a change to the
+    // rule would otherwise leave the benchmark measuring a block that no
+    // reader gives.
+    let num_vars = num_vars.unwrap_or_else(|| default_num_vars_per_block(num_individuals));
     if num_vars == 0 || num_individuals == 0 || num_blocks == 0 || runs == 0 || threads == 0 {
         return Err(
             "--vars, --individuals, --blocks, --runs and --threads are 1 or more".to_owned(),
@@ -686,17 +709,152 @@ fn pops_of(num_pops: usize, num_individuals: usize) -> Result<Vec<Vec<usize>>, S
     Ok(pops)
 }
 
-/// One run: how long the pass took, the line that says what it gave, and
-/// the bytes it held live at once beside its block.
+/// One run: how long the pass took, the line that says what it gave, the
+/// bytes it held live at once beside its block, and what the genotypes left
+/// the pass with nothing to do.
 struct Run {
     took: Duration,
     did: String,
     /// The most bytes the process held live at once across the pass, less
     /// what was live before it started and less the genotypes of one block.
     bytes_beside_the_block: usize,
-    /// The name of a statistic that `--stats` named and the result has no
-    /// value for, which is what the run fails on.
-    statistic_with_no_value: Option<&'static str>,
+    /// A statistic that `--stats` named and the result gave no value for,
+    /// which is what the run fails on.
+    statistic_that_fails: Option<AStatisticThatFails>,
+    /// The per population arithmetic the genotypes left the pass with
+    /// nothing to do, which the run says and does not fail on.
+    left_out: WhatTheDataLeftOut,
+}
+
+/// Why the run fails on a statistic that `--stats` named.
+enum AStatisticThatFails {
+    /// The result has no value for it, which is what a pass asked for the
+    /// wrong statistic gives.
+    WithNoValue(&'static str),
+    /// [`has_a_value`] does not read it, so the run can say nothing about
+    /// whether the pass gave it. A statistic added to
+    /// [`DiversityStats::NAMES_AND_STATS`] lands here until the line that
+    /// reads it is written here.
+    ThisBenchmarkDoesNotRead(&'static str),
+}
+
+/// Whether the result holds a value of `stat` for the first population, and
+/// `None` for a statistic of [`DiversityStats::NAMES_AND_STATS`] that this
+/// file does not read.
+///
+/// The value of a statistic that was asked for is `Some`, whatever the
+/// genotypes came to: a population that no variant counted for has 0 or NaN
+/// there and not `None`.
+///
+/// Each statistic is looked up by itself and not by its place in that
+/// table, because the table is public and its order is nobody's contract:
+/// a check that zipped it against a list written here in the same order
+/// would match nothing the moment the table was reordered, and would then
+/// answer that no statistic is missing whatever the result holds.
+fn has_a_value(diversity: &PopDiversity, stat: DiversityStats) -> Option<bool> {
+    if stat == DiversityStats::NUM_ALLELES {
+        Some(diversity.num_alleles(0).is_some())
+    } else if stat == DiversityStats::PRIVATE_ALLELES {
+        Some(diversity.private_alleles(0).is_some())
+    } else if stat == DiversityStats::VARIABLE_VARS_RATIO {
+        Some(diversity.num_variable_vars(0).is_some())
+    } else if stat == DiversityStats::FOLDED_SFS {
+        Some(diversity.folded_sfs(0).is_some())
+    } else if stat == DiversityStats::FIS {
+        Some(diversity.fis(0).is_some())
+    } else {
+        None
+    }
+}
+
+/// The first statistic that `stats` named and the run fails on: one the
+/// result has no value for, or one this file cannot read.
+fn a_statistic_that_fails(
+    diversity: &PopDiversity,
+    stats: DiversityStats,
+) -> Option<AStatisticThatFails> {
+    DiversityStats::NAMES_AND_STATS
+        .iter()
+        .filter(|(_, stat)| stats.contains(*stat))
+        .find_map(|(name, stat)| match has_a_value(diversity, *stat) {
+            Some(true) => None,
+            Some(false) => Some(AStatisticThatFails::WithNoValue(name)),
+            None => Some(AStatisticThatFails::ThisBenchmarkDoesNotRead(name)),
+        })
+}
+
+/// The per population arithmetic that the genotypes of a pass left with
+/// nothing to do, although the pass finished and was timed.
+///
+/// Both are legal runs and neither fails: three of the four shapes of the
+/// memory table of `docs/specs/diversity.md` are one of them, and the bins
+/// they measure are allocated whatever the data. What they are not is a
+/// timing of the arithmetic they skipped, and a time read without them says
+/// that it is.
+struct WhatTheDataLeftOut {
+    /// How many populations the pass had, which is 1 for the one population
+    /// of every individual.
+    num_pops: usize,
+    /// No variant counted for any population, so no statistic was
+    /// calculated for one: a variant counts for a population when the
+    /// population called `min_num_individuals` genotypes at it, and this
+    /// benchmark asks for [`DEFAULT_MIN_NUM_INDIVIDUALS`] of them.
+    no_variant_counted: bool,
+    /// A draw was asked for and no variant reached it in any population, so
+    /// every standardized value is NaN and every bin of the spectrum is 0.
+    no_variant_in_the_draw: bool,
+}
+
+impl WhatTheDataLeftOut {
+    /// What the pass did not do over these genotypes, as the sentences the
+    /// run prints on their own lines, and nothing when it did all of it.
+    fn said(&self, num_called_alleles: Option<u32>) -> Vec<String> {
+        let num_pops = self.num_pops;
+        let mut said = Vec::new();
+        if self.no_variant_counted {
+            said.push(format!(
+                "no variant counted for any of the {num_pops} populations, a variant counting \
+                 for a population that called {DEFAULT_MIN_NUM_INDIVIDUALS} genotypes at it: \
+                 the pass read every row and allocated its bins, and calculated no statistic \
+                 for any population, so these times are not times of that arithmetic"
+            ));
+        }
+        if let (true, Some(drawn)) = (self.no_variant_in_the_draw, num_called_alleles) {
+            said.push(format!(
+                "no variant reached the draw of {drawn} called alleles in any of the \
+                 {num_pops} populations: every standardized value is NaN and every bin of the \
+                 spectrum is 0, so these times are not times of the draw"
+            ));
+        }
+        said
+    }
+
+    /// The same for the line of one run, which has no room for the reason.
+    fn in_the_line_of_a_run(&self) -> String {
+        let mut marks = String::new();
+        if self.no_variant_counted {
+            marks.push_str(", no variant counted for any population");
+        }
+        if self.no_variant_in_the_draw {
+            marks.push_str(", no variant in the draw for any population");
+        }
+        marks
+    }
+}
+
+/// What the genotypes left the pass with nothing to do, read off the
+/// result: `drew` says whether a draw was asked for, since a pass with none
+/// has no variant in a draw and that is not a thing to report.
+fn what_the_data_left_out(diversity: &PopDiversity, drew: bool) -> WhatTheDataLeftOut {
+    let num_pops = diversity.num_pops();
+    let of_every_pop = |counted: &dyn Fn(usize) -> Option<u64>| {
+        num_pops > 0 && (0..num_pops).all(|pop| counted(pop) == Some(0))
+    };
+    WhatTheDataLeftOut {
+        num_pops,
+        no_variant_counted: of_every_pop(&|pop| diversity.num_vars(pop)),
+        no_variant_in_the_draw: drew && of_every_pop(&|pop| diversity.num_vars_in_draw(pop)),
+    }
 }
 
 /// What the pass gave, for the line the run prints: the variants of the
@@ -749,44 +907,6 @@ fn what_it_gave(diversity: &PopDiversity, stats: DiversityStats) -> String {
     did
 }
 
-/// The statistic that `stats` named and the result has no value for, which
-/// is what a pass asked for the wrong statistic gives.
-///
-/// The value of a statistic that was asked for is `Some`, whatever the
-/// genotypes came to: a population that no variant counted for has 0 or NaN
-/// there and not `None`.
-fn a_statistic_with_no_value(
-    diversity: &PopDiversity,
-    stats: DiversityStats,
-) -> Option<&'static str> {
-    let asked_for = [
-        (
-            DiversityStats::NUM_ALLELES,
-            diversity.num_alleles(0).is_some(),
-        ),
-        (
-            DiversityStats::PRIVATE_ALLELES,
-            diversity.private_alleles(0).is_some(),
-        ),
-        (
-            DiversityStats::VARIABLE_VARS_RATIO,
-            diversity.num_variable_vars(0).is_some(),
-        ),
-        (
-            DiversityStats::FOLDED_SFS,
-            diversity.folded_sfs(0).is_some(),
-        ),
-        (DiversityStats::FIS, diversity.fis(0).is_some()),
-    ];
-    DiversityStats::NAMES_AND_STATS
-        .iter()
-        .zip(asked_for)
-        .find(|((_, of_the_table), (of_the_check, has_a_value))| {
-            *of_the_table == *of_the_check && stats.contains(*of_the_check) && !*has_a_value
-        })
-        .map(|((name, _), _)| *name)
-}
-
 /// One whole pass over the blocks of `fixture`, timed from the first block
 /// to the result, with what it gave and the bytes it held.
 ///
@@ -813,7 +933,8 @@ fn one_pass(
         bytes_beside_the_block: peak
             .saturating_sub(live_before)
             .saturating_sub(bytes_of_a_block),
-        statistic_with_no_value: a_statistic_with_no_value(&diversity, options.stats),
+        statistic_that_fails: a_statistic_that_fails(&diversity, options.stats),
+        left_out: what_the_data_left_out(&diversity, options.num_called_alleles.is_some()),
     })
 }
 
@@ -950,13 +1071,25 @@ fn main() -> ExitCode {
             );
             return ExitCode::FAILURE;
         }
-        if let Some(name) = done.statistic_with_no_value {
-            eprintln!(
-                "the pass was asked for {stats} and gave no value for {name}: {did}",
-                stats = arguments.stats.names().join(", "),
-                did = done.did,
-            );
-            return ExitCode::FAILURE;
+        match done.statistic_that_fails {
+            Some(AStatisticThatFails::WithNoValue(name)) => {
+                eprintln!(
+                    "the pass was asked for {stats} and gave no value for {name}: {did}",
+                    stats = arguments.stats.names().join(", "),
+                    did = done.did,
+                );
+                return ExitCode::FAILURE;
+            }
+            Some(AStatisticThatFails::ThisBenchmarkDoesNotRead(name)) => {
+                eprintln!(
+                    "the pass was asked for {stats}, and this benchmark has no line that reads \
+                     {name} off the result, so it cannot say whether the pass gave it: {did}",
+                    stats = arguments.stats.names().join(", "),
+                    did = done.did,
+                );
+                return ExitCode::FAILURE;
+            }
+            None => {}
         }
         if run == 0 {
             println!(
@@ -966,13 +1099,17 @@ fn main() -> ExitCode {
                 took = seconds(done.took),
                 held = megabytes(done.bytes_beside_the_block),
             );
+            for said in done.left_out.said(arguments.num_called_alleles) {
+                println!("{said}");
+            }
             continue;
         }
         println!(
-            "run {run}: {took}, {held} beside its block, {did}",
+            "run {run}: {took}, {held} beside its block, {did}{left_out}",
             took = seconds(done.took),
             held = megabytes(done.bytes_beside_the_block),
             did = done.did,
+            left_out = done.left_out.in_the_line_of_a_run(),
         );
         times.push(done.took);
     }
