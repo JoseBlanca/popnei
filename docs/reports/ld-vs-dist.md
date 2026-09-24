@@ -221,7 +221,10 @@ The test that compares with pyNei does ask pyNei: it asserts that
 pyNei gives when `filter_samples` is put around the individuals of each
 population and `filter_by_maf` over what is left. The ten rows of the
 first table are asserted within 1e-12 relative, and the widest gap
-measured against the spec is 9.2e-16 relative.
+measured against the spec is 1.25e-15 relative, at the standard deviation
+of the eighth bin. The task that wrote the test, and its commit message
+`1b414c3`, gave 9.2e-16, which is the gap at the first bin and not the
+widest; the review measured the rest.
 
 `uv run pytest tests/test_ld.py -k ld_and_dist` gives `5 passed, 16
 deselected`, where it exited 5 with nothing matched at the start of the
