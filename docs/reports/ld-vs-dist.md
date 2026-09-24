@@ -552,3 +552,36 @@ clippy, wasm-check and ruff clean, and `run_plink2.sh` into an empty
 directory exits 0 naming no differing file, with the stored
 `ld.decay.txt` identical to the one R wrote. Every one was run by the
 orchestrator.
+
+**2.4, the fitted curve in Python.** Commit `4bdbac2`. `LdDecay`, a
+frozen dataclass with `rho_per_bp`, `r2_at_zero` and `half_dist`, and
+`decay_per_pop` on `LdAndDistPerPop`, in `python/popnei/ld.py`. The pyo3
+crate reads the three numbers straight off the core's result and works
+out nothing of its own.
+
+The orchestrator read the three numbers through the whole chain rather
+than trusting the test:
+
+| | popnei | the spec, from R | the gap |
+|---|---|---|---|
+| ρ per base pair | 0.00031727348310939046 | 0.00031727347196446889 | 3.51e-8 |
+| r² at distance 0 | 0.46198347107438015 | 0.46198347107438015 | 0 |
+| the half distance, bp | 6810.571012984072 | 6810.5712522189806 | 3.51e-8 |
+
+The spec asks 1e-6 on the first and the third and 1e-12 on the second.
+
+The task asserted the other two rows as well as the first, which the
+deliverable did not ask for, because with one population nothing at the
+Python layer would catch a binding that handed every population the
+first one's curve. It also built both of the spec's ways of having no
+curve: three variants at 10, 20 and 30 bp with a `max_dist` of 15, which
+leaves pairs at one distance; and a population of one individual, which
+keeps two variants but has one dosage at each and so counts no pair at
+all.
+
+`uv run pytest tests/test_ld.py -k ld_and_dist` gives `9 passed, 16
+deselected`, where it gave 7 and where at the start of the plan it exited
+5 with nothing matched. The whole pytest suite is 508 where it was 506,
+the core crate stays at 857 with 2 ignored and the same on faer, 149
+linear algebra, 332 node, and fmt, clippy, wasm-check and ruff clean.
+Every one was run by the orchestrator.

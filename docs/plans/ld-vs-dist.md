@@ -285,7 +285,7 @@ is not possible: nothing of work package 1 needs anything of this one.
   deliverables 1 and 4. The numbers are in the spec; what this task runs
   is `decay.py` and `decay.R`, to store what they print. Needs 2.1 and
   2.2.
-- [ ] 2.4 The Python layer, from "Its Python function":
+- [x] 2.4 The Python layer, from "Its Python function":
   `decay_per_pop` on `LdAndDistPerPop` and the
   `LdDecay` dataclass, with the NaN of a population with no curve, and
   the pytest tests of deliverable 6. It serves deliverable 6. Needs 2.3.
