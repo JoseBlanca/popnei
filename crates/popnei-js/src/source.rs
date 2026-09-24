@@ -14,9 +14,12 @@
 //!
 //! [`PassOverTheBytes`] is where the bytes of a pass come from, and it is the
 //! one part of a pass that comes back out to JavaScript: it counts what the
-//! pass has read and tells the page once per range of bytes, so that a page
-//! can draw a bar over a run. A run is one call of one consumer with the
-//! passes it makes, [`Run`] in [`RUNS`], and what a source keeps in
+//! pass has read and tells the page at its first read and once per range of
+//! bytes after that, so that a page can draw a bar over a run. The end of a
+//! run tells the page once more for each of its passes, which is what says
+//! that a pass is over, because no read does. A run is one call of one
+//! consumer with the passes it makes, [`Run`] in [`RUNS`], and what a source
+//! keeps in
 //! JavaScript, the function it tells, is [`InJavaScript`] in
 //! [`IN_JAVASCRIPT`]: no handle of JavaScript is `Send`, and a reader of the
 //! core has to be, so what a pass holds of those two tables is the number of
@@ -498,9 +501,10 @@ impl Drop for PassOverTheBytes {
     /// pass being dropped is what says it, and the run makes the call when
     /// it is dropped in its turn, after every reader of it.
     ///
-    /// A pass that never read is not among them, which is a reader that was
-    /// built and never asked for a block; and neither is a pass the
-    /// application stopped, which is not told how far it had got.
+    /// A pass that never read is not among them, which is a pass whose
+    /// reader was never built, since a reader reads when it is built; and
+    /// neither is a pass the application stopped, which is not told how far
+    /// it had got.
     fn drop(&mut self) {
         if !self.took_its_number || self.ended.is_some() {
             return;
