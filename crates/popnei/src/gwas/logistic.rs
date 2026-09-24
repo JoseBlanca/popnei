@@ -1160,6 +1160,7 @@ fn the_system_of(
 /// is not written yet.
 #[cfg(test)]
 mod glm {
+    use super::TheFitOfOneVariant;
     use crate::block::BlockReader;
     use crate::error::Error;
     use crate::gwas::linear::lm::{
@@ -1619,6 +1620,143 @@ mod glm {
         );
     }
 
+    /// The fixture of a fit that settles at an effect past 30: eight
+    /// individuals whose trait is `1 0 0 0 0 1 1 1`, whose covariate is
+    /// `1 4 2 4 4 2 3 0` and whose variant has the dosages
+    /// `1 2 0 1 1 1 1 0`, allele by allele.
+    ///
+    /// The trait, the covariate and the genotypes were found by running
+    /// 200000 fixtures of eight individuals drawn at random through this
+    /// model on 24 September 2026 with the mark taken out, and keeping the
+    /// ones the fit then answered with an effect past 30. Two of the
+    /// 200000 do it.
+    const THE_TRAIT_OF_A_FIT_THAT_PASSES_THIRTY: [f64; 8] =
+        [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+
+    /// The design of that fixture: the intercept and that covariate, row
+    /// after row.
+    const THE_DESIGN_OF_A_FIT_THAT_PASSES_THIRTY: [f64; 16] = [
+        1.0, 1.0, //
+        1.0, 4.0, //
+        1.0, 2.0, //
+        1.0, 4.0, //
+        1.0, 4.0, //
+        1.0, 2.0, //
+        1.0, 3.0, //
+        1.0, 0.0,
+    ];
+
+    /// A variant whose fit settles at an effect past 30 has no answer,
+    /// which is the only thing in the suite that holds the 30 from above.
+    ///
+    /// The mark is `|effect| > 30` and every fixture of the panel and of
+    /// this module leaves it room on one side only: the largest effect
+    /// either panel answers is 2.50, so a mark of 1e9, or of infinity,
+    /// would mark the same variants there, the ones that separate the two
+    /// groups being caught by the singular factorization a few rounds
+    /// later instead. This fixture is on the other side of it. Measured on
+    /// 24 September 2026 with the mark taken out: the fit settles at an
+    /// effect of 36.4485 on Accelerate and 36.4557 on faer, with a
+    /// standard error of 2.0234e7 and a p-value of 0.9999986 on both,
+    /// which is an effect a study knows nothing about beside an error of
+    /// twenty million, and is what the 30 is there to keep out of a
+    /// result. With the mark in, the variant gets the three NaNs at the
+    /// round its effect passes 30.
+    ///
+    /// It is a fit that settles and not one that walks away, so the
+    /// factorization never refuses it and the pivot rule of **Open 5** of
+    /// `docs/specs/gwas.md` does not catch it either: the 30 is the only
+    /// mark of the five that fires here.
+    #[test]
+    fn a_variant_whose_fit_settles_past_thirty_has_no_answer() {
+        let mut vcf = String::from(THE_HEADER_OF_EIGHT);
+        vcf.push_str("1\t1000\tv0\tA\tT\t.\t.\t.\tGT");
+        for genotype in ["0/1", "1/1", "0/0", "0/1", "0/1", "0/1", "0/1", "0/0"] {
+            vcf.push('\t');
+            vcf.push_str(genotype);
+        }
+        vcf.push('\n');
+        let study = GwasInput {
+            phenotype: &THE_TRAIT_OF_A_FIT_THAT_PASSES_THIRTY,
+            trait_type: TraitType::Binomial,
+            design: &THE_DESIGN_OF_A_FIT_THAT_PASSES_THIRTY,
+            num_coefs: 2,
+            kinship: None,
+            test: Some(TestType::Wald),
+            use_grammar_gamma_approx: false,
+            individuals: &THE_INDIVIDUALS_OF_EIGHT,
+            transform_to_biallelic: false,
+        };
+        let mut reader = reader_over(vcf.as_bytes());
+        let result = match the_study_of(&mut reader, &study) {
+            Ok(result) => result,
+            Err(error) => panic!("the study of a fit that settles past 30: {error}"),
+        };
+        assert_eq!(result.num_vars, 1);
+        assert!(
+            result.beta[0].is_nan() && result.se[0].is_nan() && result.p_value[0].is_nan(),
+            "the variant whose effect passed 30 was answered with a beta of {beta}, an se \
+             of {se} and a p-value of {p_value}",
+            beta = result.beta[0],
+            se = result.se[0],
+            p_value = result.p_value[0]
+        );
+    }
+
+    /// The variance of an effect that is not a finite number above 0 has
+    /// no answer, which the standard error is refused at.
+    ///
+    /// It is the one mark of the five that no data of this repository
+    /// reaches, and the pivot rule of **Open 5** of `docs/specs/gwas.md`
+    /// puts it further out of reach, since a factorization whose smallest
+    /// pivot has fallen that far is already a runaway. So the fit is built
+    /// here with the factorization written into it by hand, two
+    /// coefficients and a diagonal that a Cholesky would have accepted,
+    /// and the standard error is read off it:
+    ///
+    /// - a diagonal of 1 and 1e-200, where the variance is 1e400, which
+    ///   both backends answer as an infinity while reporting success;
+    ///   `docs/specs/linalg.md` has the entry they part company on, where
+    ///   one gives an infinity and the other a NaN, and the mark is read
+    ///   as a value that is not finite so that both are caught;
+    /// - a diagonal of 1 and 1e200, where the variance underflows to 0 and
+    ///   the standard error would be 0, which would make the statistic
+    ///   infinite and the p-value 0, a variant reported as the surest
+    ///   finding of the study.
+    ///
+    /// Both give `None`, which the Wald test answers with the three NaNs
+    /// of a variant that has none.
+    #[test]
+    fn a_variance_that_is_not_a_finite_number_above_zero_has_no_answer() {
+        for (diagonal, what) in [
+            (1e-200_f64, "a variance that overflows"),
+            (1e200_f64, "a variance that underflows to 0"),
+        ] {
+            let mut fitted = TheFitOfOneVariant {
+                phenotype: vec![0.0, 1.0, 0.0, 1.0],
+                design: vec![1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0],
+                weighted_design: vec![0.0; 8],
+                coefs: vec![0.0, 0.0],
+                step: vec![0.0, 0.0],
+                linear_predictor: vec![0.0; 4],
+                weights: vec![0.0; 4],
+                residuals: vec![0.0; 4],
+                // The lower half of the factorization of a system of two
+                // coefficients, row after row, which every solve of this
+                // crate reads and no factorization of this fixture wrote.
+                system: vec![1.0, 0.0, 0.0, diagonal],
+                of_the_effect: vec![0.0, 0.0],
+                num_individuals: 4,
+                num_coefs: 2,
+            };
+            match fitted.the_error_of_the_effect() {
+                Ok(None) => {}
+                Ok(Some(se)) => panic!("{what} was answered with a standard error of {se}"),
+                Err(error) => panic!("{what}: {error}"),
+            }
+        }
+    }
+
     /// How far the effect of one of the six variants may be from plink2's,
     /// as a share of the standard error plink2 printed for that variant:
     /// 1e-5.
@@ -2049,6 +2187,313 @@ mod glm {
                 beta = result.beta[2],
                 se = result.se[2],
                 p_value = result.p_value[2]
+            );
+        }
+    }
+
+    /// The header of a VCF of six individuals, which the fixture of a fit
+    /// that runs all its rounds needs and which the eight of the others
+    /// cannot give: the fits of eight individuals this module has all end
+    /// at the factorization before the rounds run out.
+    const THE_HEADER_OF_SIX: &str = "##fileformat=VCFv4.2\n\
+        ##contig=<ID=1>\n\
+        ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+        #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti0\ti1\ti2\ti3\ti4\ti5\n";
+
+    /// A null fit still moving after the 50 rounds it is given is refused
+    /// by the round count, which is the other of the two ways such a fit
+    /// ends and the one pyNei meets.
+    ///
+    /// The covariate is `0 1 2 3 4 7` and the one individual with the
+    /// condition is the one at 7, so the covariate separates the two
+    /// groups and no finite effect fits it. What makes this fixture end at
+    /// the rounds and not at the factorization is the gap: the individual
+    /// with the condition is 3 above the next, so the fit reaches a
+    /// predictor that separates them with a small slope and the weights
+    /// are still above 0 when the last round runs out. Measured on 24
+    /// September 2026 on both backends, it is refused at 50 rounds, where
+    /// the eight individuals of
+    /// `a_null_fit_that_has_not_settled_is_refused`, whose covariate is 0
+    /// to 7, are refused at 45 on Accelerate and 43 on faer by the
+    /// factorization. The rounds are asserted and not bounded, because the
+    /// count is what says which of the two ways this fixture took: over
+    /// the 254 traits of eight individuals with a covariate of 0 to 7, and
+    /// over that covariate scaled by 39 factors from an eighth to 5, no
+    /// fixture reaches the rounds at all.
+    #[test]
+    fn a_null_fit_still_moving_after_its_rounds_is_refused_by_their_count() {
+        let mut vcf = String::from(THE_HEADER_OF_SIX);
+        vcf.push_str("1\t1000\tv0\tA\tT\t.\t.\t.\tGT");
+        for genotype in ["0/0", "0/1", "1/1", "0/0", "0/1", "1/1"] {
+            vcf.push('\t');
+            vcf.push_str(genotype);
+        }
+        vcf.push('\n');
+        let separating = [0.0_f64, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let design: [f64; 12] = [
+            1.0, 0.0, //
+            1.0, 1.0, //
+            1.0, 2.0, //
+            1.0, 3.0, //
+            1.0, 4.0, //
+            1.0, 7.0,
+        ];
+        let individuals: [usize; 6] = [0, 1, 2, 3, 4, 5];
+        let study = GwasInput {
+            phenotype: &separating,
+            trait_type: TraitType::Binomial,
+            design: &design,
+            num_coefs: 2,
+            kinship: None,
+            test: Some(TestType::Score),
+            use_grammar_gamma_approx: false,
+            individuals: &individuals,
+            transform_to_biallelic: false,
+        };
+        let mut reader = reader_over(vcf.as_bytes());
+        match the_study_of(&mut reader, &study) {
+            Err(Error::GwasFitDidNotSettle { model, rounds }) => {
+                assert_eq!(model, GwasModel::Glm, "the model that was being fitted");
+                assert_eq!(
+                    rounds, 50,
+                    "the fit is refused by the count of its rounds and not by its \
+                     factorization"
+                );
+            }
+            Err(error) => panic!("a covariate that separates the two groups: {error}"),
+            Ok(result) => panic!("a study of {} variants was run", result.num_vars),
+        }
+    }
+
+    /// How many variants a study reads in one block, which is
+    /// [`crate::block::MAX_NUM_VARS_PER_BLOCK`]: the pass puts a `Reblock`
+    /// before it, so a source has to pass it for the pass to read a second
+    /// block.
+    const VARS_OF_ONE_BLOCK: usize = 10_000;
+
+    /// A logistic study over more variants than one block holds gives the
+    /// same answers in its second block as in its first, with both of its
+    /// tests.
+    ///
+    /// The variants are three patterns over and over, and each is one of
+    /// the three answers this model gives: the dosages of the covariate,
+    /// which neither test has an answer for, by the threshold of
+    /// **Open 2** in the score test and by the singular factorization in
+    /// the Wald test; the dosages `0 0 0 0 2 2 2 2`, which both tests
+    /// answer and which numpy 2.5.3 gives the numbers of the two fixtures
+    /// above for; and a variant every individual is heterozygous at, which
+    /// has no variance and so no answer wherever it is. Every variant is
+    /// held to the literal of its pattern and not to what the first block
+    /// answered, so a study that answered the same wrong thing in every
+    /// block would fail this as well.
+    ///
+    /// What it covers that the fixtures of two and three variants do not
+    /// is the buffers of the model and of the dosages being reused from
+    /// one block to the next, the answers of the second block being added
+    /// after the first's and not over them, and the Wald test's one fit
+    /// per variant starting from the null's coefficients again at every
+    /// variant of every block. It is the twin of
+    /// `a_study_of_more_variants_than_one_block_answers_the_same_in_every_block`
+    /// of `linear` and of the one of `linear_mixed`.
+    #[test]
+    fn a_logistic_study_of_more_variants_than_one_block_answers_the_same_in_every_block() {
+        let patterns = [
+            // the dosages of the covariate, allele by allele
+            ["0/1", "0/0", "1/1", "0/0", "0/1", "1/1", "0/0", "0/1"],
+            ["0/0", "0/0", "0/0", "0/0", "1/1", "1/1", "1/1", "1/1"],
+            ["0/1", "0/1", "0/1", "0/1", "0/1", "0/1", "0/1", "0/1"],
+        ];
+        let num_vars = VARS_OF_ONE_BLOCK.saturating_add(101);
+        let mut vcf = String::from(THE_HEADER_OF_EIGHT);
+        for var in 0..num_vars {
+            let pos = var.saturating_add(1).saturating_mul(10);
+            // The variants of the second block are on the second
+            // chromosome, and the first block fills a whole block.
+            let chrom = match var < VARS_OF_ONE_BLOCK {
+                true => 1,
+                false => 2,
+            };
+            vcf.push_str(&format!("{chrom}\t{pos}\tv{var}\tA\tT\t.\t.\t.\tGT"));
+            for genotype in patterns[var % patterns.len()] {
+                vcf.push('\t');
+                vcf.push_str(genotype);
+            }
+            vcf.push('\n');
+        }
+        for (test, answered) in [
+            (TestType::Score, OF_THE_ORDINARY_VARIANT),
+            (TestType::Wald, OF_NUMPYS_WALD_FIT),
+        ] {
+            let study = GwasInput {
+                phenotype: &THE_TRAIT_OF_EIGHT,
+                trait_type: TraitType::Binomial,
+                design: &THE_DESIGN_OF_THE_FIRST_VARIANT,
+                num_coefs: 2,
+                kinship: None,
+                test: Some(test),
+                use_grammar_gamma_approx: false,
+                individuals: &THE_INDIVIDUALS_OF_EIGHT,
+                transform_to_biallelic: false,
+            };
+            let mut reader = reader_over(vcf.as_bytes());
+            let result = match the_study_of(&mut reader, &study) {
+                Ok(result) => result,
+                Err(error) => panic!("the {test:?} test of {num_vars} variants: {error}"),
+            };
+            assert_eq!(result.num_vars, num_vars, "the variants of the study");
+            assert!(
+                num_vars > VARS_OF_ONE_BLOCK,
+                "the study has to read more than one block"
+            );
+            let ids = result.ids.as_deref().expect("the ids of the variants");
+            assert_eq!(ids.len(), num_vars, "one id for each variant");
+            for var in [0, VARS_OF_ONE_BLOCK, num_vars.saturating_sub(1)] {
+                assert_eq!(ids[var], format!("v{var}"), "the id of the variant {var}");
+            }
+            // The bound of the fixture of two variants for the score test
+            // and of the one of three for the Wald test, which are where
+            // these three literals come from.
+            let allowed = match test {
+                TestType::Score => OF_NUMPY,
+                TestType::Wald => OF_NUMPYS_WALD_FIT_BOUND,
+            };
+            let (beta, se, p_value) = answered;
+            for var in 0..num_vars {
+                match var % patterns.len() {
+                    1 => {
+                        for (found, expected, what) in [
+                            (result.beta[var], beta, "the effect"),
+                            (result.se[var], se, "the standard error"),
+                        ] {
+                            let difference = (found - expected).abs();
+                            assert!(
+                                difference <= allowed * se,
+                                "{what} of the variant {var} of the {test:?} test is \
+                                 {found} and numpy gives {expected}, {difference} away, \
+                                 which is {share} of the {se} it is uncertain by against \
+                                 the {allowed} allowed",
+                                share = difference / se
+                            );
+                        }
+                        let in_log10 = (result.p_value[var] / p_value).log10().abs();
+                        assert!(
+                            in_log10 <= OF_NUMPYS_P_VALUE,
+                            "the p-value of the variant {var} of the {test:?} test is \
+                             {found} and numpy gives {p_value}, {in_log10} away in log10 \
+                             against the {OF_NUMPYS_P_VALUE} allowed",
+                            found = result.p_value[var]
+                        );
+                    }
+                    _ => assert!(
+                        result.beta[var].is_nan()
+                            && result.se[var].is_nan()
+                            && result.p_value[var].is_nan(),
+                        "the variant {var} of the {test:?} test, which has no answer, was \
+                         answered with a beta of {found}, an se of {se} and a p-value of \
+                         {p_value}",
+                        found = result.beta[var],
+                        se = result.se[var],
+                        p_value = result.p_value[var]
+                    ),
+                }
+            }
+        }
+    }
+
+    /// A covariate whose own effect is far past 30 marks no variant, which
+    /// is what says the mark is read on the effect of the variant alone.
+    ///
+    /// `_wald_test` of `pynei/gwas.py` reads the last coefficient of the
+    /// fit, which is the variant's, and "The logistic model" of
+    /// `docs/specs/gwas.md` says that a covariate whose effect is larger
+    /// than 30 marks nothing. Nothing held that: no fixture of this module
+    /// and no covariate of either panel has an effect anywhere near it, so
+    /// a fit that read the largest coefficient instead of the last would
+    /// have passed every test.
+    ///
+    /// The first covariate of the panel is given here in units a ten
+    /// thousandth of its own, which leaves the fit and every answer of the
+    /// study where they were and multiplies that covariate's effect by
+    /// 1e4. Measured on 24 September 2026 on both backends: its effect in
+    /// the null model goes from 0.595018 to 5950.18, and the variants with
+    /// no answer are `var0006` and no other, as they are unscaled, with
+    /// every effect of the 1199 within 9.437e-16 of the unscaled run.
+    #[test]
+    fn a_covariate_whose_effect_passes_thirty_marks_no_variant() {
+        let path = the_panel_path();
+        let options = VcfOptions {
+            ploidy: 2,
+            ..VcfOptions::default()
+        };
+        let mut reader = match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        let individuals = reader.individuals().to_vec();
+        let (phenotype, design) =
+            the_trait_and_the_design_of_the_panel(&individuals, TraitType::Binomial);
+        // The intercept, the first covariate in units a ten thousandth of
+        // its own, and the second as it is.
+        let scaled: Vec<f64> = design
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|row| [row[0], row[1] * 1e-4, row[2]])
+            .collect();
+        let tested: Vec<usize> = (0..individuals.len()).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Binomial,
+            design: &scaled,
+            num_coefs: 3,
+            kinship: None,
+            test: Some(TestType::Wald),
+            use_grammar_gamma_approx: false,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        let result = match the_study_of(&mut reader, &study) {
+            Ok(result) => result,
+            Err(error) => {
+                panic!("the logistic study of the panel with a scaled covariate: {error}")
+            }
+        };
+        let effect_of_the_covariate = result.null_model.covariate_effects[1];
+        assert!(
+            (effect_of_the_covariate - 5950.18).abs() <= 1e-2,
+            "the effect of the scaled covariate in the null model is \
+             {effect_of_the_covariate} and it has to be the 5950.18 that puts it far past \
+             the 30 of a variant that has run away"
+        );
+        let ids = result.ids.as_deref().expect("the ids of the variants");
+        let with_no_answer: Vec<&str> = ids
+            .iter()
+            .zip(&result.p_value)
+            .filter(|(_, p_value)| p_value.is_nan())
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(
+            with_no_answer,
+            ["var0006"],
+            "the variants with no answer when a covariate's effect is 5950.18"
+        );
+        // The effects of the study are where they were, which is what
+        // says that the scaling moved the covariate's coefficient and
+        // nothing else. The bound is the one of the six variants against
+        // plink2, read as a share of the standard error of the variant.
+        let unscaled = the_logistic_study_of_the_panel(Some(TestType::Wald));
+        for (var, (found, expected)) in result.beta.iter().zip(&unscaled.beta).enumerate() {
+            if expected.is_nan() {
+                continue;
+            }
+            let difference = (found - expected).abs();
+            assert!(
+                difference <= OF_PLINK2 * unscaled.se[var],
+                "the effect of {id} is {found} where the study with the covariate in its \
+                 own units gives {expected}, {difference} away against the {OF_PLINK2} of \
+                 its {se} allowed",
+                id = ids[var],
+                se = unscaled.se[var]
             );
         }
     }
