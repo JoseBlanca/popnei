@@ -319,6 +319,92 @@ model's bound near 1e-12 from the core's Wald test alone, which sits at
 1.105e-14, so 1e-12 is 90 times the worst and not 300 times. The bound is
 right and the sentence that explains it is now out by that much.
 
+### What the review of work package 1 found
+
+Seven reviewers read the work package, one per category, each with a fresh
+context and none of them the writer. Between them they raised twenty-two
+things. None was a wrong number that either reference panel exercises, and
+one was a wrong number a user can reach.
+
+**The wrong number, which is now Open 5 of the spec.** popnei's default
+build answered `p_value` 0.9999996244683889, with `beta` -18.24 and `se`
+3.9e7, for a variant whose effect has no finite value, where pyNei gives
+NaN and popnei's own faer build gives NaN. Eight individuals, trait
+`0 0 0 1 0 1 1 1`, a covariate of 0 to 7 and dosages `2 1 0 1 2 0 1 0`. None
+of the marks fires: pyNei catches it by running out of rounds, and popnei
+does not reach that because its system is nearly singular, so the steps
+shrink while the coefficients are still walking and the fit declares itself
+settled. The 30 is not it either — the variant's own effect is -18.97 and it
+is the intercept that passes 30, which neither library reads.
+
+The meanwhile, built and measured: a Cholesky pivot that has fallen to the
+tested individuals times 2.2e-16 of the largest pivot marks the fit a
+runaway, which is the rule this module already applies in the four places of
+Open 2. On both panels and both backends no variant that was answered lost
+its answer and none gained one; the smallest pivot of an answered fit is
+2.600e-2 of the largest on `panel_called` and 4.730e-5 on the panel with 3
+genotypes missing in 100, against a threshold of 4.44e-14, which is nine
+orders of headroom. The case above now gives three NaNs, which I ran myself.
+
+**The meanwhile narrows Open 5 and does not close it.** One of the new tests
+has a fixture that settles at an effect of 36.45 with a standard error of
+2.0e7, and the pivot does not catch it; the 30 does. A fit can still stop
+with a collapsed system the pivot does not see, and an `se` of 2.0e7 beside
+an effect of 36 is the same signature as the case above.
+
+**The score test's denominator is formed and no longer subtracted.** It was
+`x' w x` minus what the covariates explain, two nearly equal numbers
+cancelling exactly where Open 2's threshold acts. Measured over six decades,
+the subtracted form is out by 4.6e-3 of itself at 1.3 times the threshold
+and by 29 per cent at the threshold, while the formed one falls as the
+square of the collinearity throughout, which is what says which of the two
+is the accurate one. So the guard had been reading a quantity whose error
+was larger than the thing it was testing. Forming it costs one more product
+per block, into a buffer `linear.rs` already keeps, and it is the second
+place popnei departs from pyNei's formula rather than the first.
+
+**That change is invisible to every check in the plan.** The smallest
+denominator `panel_called` reaches is 0.297 of its scale, so no literal
+moves: no panel value changed by more than 3.5e-14 of itself, and all four
+deliverables give the same numbers to four digits. Its evidence is the
+measurement and not the suite.
+
+**Four tests could not fail, and each is now pinned by the mutation that
+found it.** The runaway threshold of 30 could be replaced by infinity; the
+guard on the variance could be made to accept a NaN; the null fit's fifty
+round branch could be switched off; and the Open 2 threshold could be
+replaced by a comparison against 0 and still pass on faer, where the
+subtracted denominator was exactly 0. That last one closed itself: a sum of
+terms that are not negative cannot fall below 0, so with the denominator
+formed the mutation now fails on both backends.
+
+**A refusal named the wrong cause.** A design whose covariates are nearly
+the same was refused with a message about a covariate that separates the
+cases from the controls, telling the user to take it out. popnei's rank
+check uses numpy's tolerance and the Cholesky's is tighter, so between them
+there is a band: at a correlation of 1 − 5e-13 the fit runs three rounds and
+the factorization refuses, and only once the covariates agree to within
+about 1e-14 does the rank check catch them. The message now names both
+causes and their different remedies.
+
+**The null fit had no guard for a step that is not finite** where the per
+variant fit has one, and its comment said it had one. A user would have met
+a `RuntimeError`, which this project reserves for its own defects, for what
+is their data. Neither of the two reviewers that found it could build the
+input that reaches it, so the guard is insurance and the comment says so.
+
+Three findings were reached independently by two reviewers each: that
+missing guard, the sentence in both packages about which rows are NaN, and a
+doc comment claiming 3.2e-15 where the quantity measures 3.368e-15.
+
+**The bound against pyNei was 90 times the noise and is now 2.7 times it.**
+`OF_PYNEI_LOGISTIC` was 1e-12 against a worst of 1.105e-14. Two defects a
+reviewer planted, dropping either of the fit's final reweightings, move the
+columns by 1.1e-9 and 3.0e-9, so both are caught at either bound; what 1e-12
+cost is the 1e-13 class of error, which is the only class this bound can
+catch at all, the larger ones being caught by plink2 and R. It is 3e-14 in
+the spec, in deliverable 4 and in the test.
+
 ## How the work went
 
 This last section is not written for the owner, who can stop here. It is for
