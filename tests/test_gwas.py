@@ -2412,6 +2412,19 @@ def _the_calls_that_are_refused(
                 worked_example, phenotype=binomial, trait="binomial"
             )
         ),
+        # The same trait and the same covariate with a kinship, which makes
+        # it a logistic mixed model. That model starts from the plain
+        # logistic null above, so it is that null that runs away, and the
+        # message names the model the user asked for and not the one the
+        # starting fit is.
+        "a binomial null model with a kinship that runs away": (
+            lambda: _the_worked_example(
+                worked_example,
+                phenotype=binomial,
+                trait="binomial",
+                kinship=_the_kinship_of_the_worked_example(),
+            )
+        ),
         "a covariate named intercept": lambda: _the_worked_example(
             worked_example, covariates=covariates.rename(columns={"cov": "intercept"})
         ),

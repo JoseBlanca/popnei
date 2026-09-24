@@ -607,6 +607,32 @@ fn the_covariance_that_was_factored(what_it_gave: popnei_linalg::Result<()>) -> 
     }
 }
 
+/// A refusal of the plain logistic null this fit starts from, under the
+/// model the user asked for.
+///
+/// That null is fitted by [`LogisticModel`], which has no kinship and says
+/// so in the one refusal of it that names a model: a fit that did not
+/// settle carries which model was being fitted, and its message gives that
+/// model's name and that model's remedies. A user who brought a kinship
+/// asked for the logistic mixed model, so a null of theirs that walks
+/// towards an infinite coefficient is named as that model, with the
+/// kinship among the three things to look at. Every other refusal of the
+/// null says the same thing for both models and is carried through as it
+/// is.
+fn the_refusal_of_this_model(of_the_null: Error) -> Error {
+    if let Error::GwasFitDidNotSettle {
+        model: GwasModel::Glm,
+        rounds,
+    } = of_the_null
+    {
+        return Error::GwasFitDidNotSettle {
+            model: GwasModel::Glmm,
+            rounds,
+        };
+    }
+    of_the_null
+}
+
 /// The two values of the variance of the kinship effect the search
 /// remembers: one whose derivative asks for a larger variance and one
 /// whose derivative asks for a smaller one.
@@ -867,7 +893,8 @@ impl LogisticMixedModel {
     ) -> Result<LogisticMixedModel> {
         let num_individuals = design.num_individuals();
         let num_coefs = design.num_coefs();
-        let null = LogisticModel::of_the_study(phenotype, design, TestType::Score)?;
+        let null = LogisticModel::of_the_study(phenotype, design, TestType::Score)
+            .map_err(the_refusal_of_this_model)?;
         let mut fitted = TheLinearization::of_the_logistic_null(phenotype, design, kinship, &null)?;
         drop(null);
         let mut step = TheStepOnTheVariance::of(num_individuals, num_coefs);
@@ -2715,6 +2742,70 @@ mod glmm {
             Err(error) => panic!("the fit of the six individuals gave {error}"),
             Ok(model) => panic!(
                 "the fit of the six individuals gave a variance of {}",
+                model.genetic_variance
+            ),
+        }
+    }
+
+    /// A study that brought a kinship, and whose plain logistic null runs
+    /// away before the first linearization, is refused naming the logistic
+    /// mixed model, which is the model the user asked for.
+    ///
+    /// The fit starts from that null, which is the same trait and the same
+    /// design with no kinship in it, and a fit that does not settle names
+    /// the model it was fitting: the user was told that a binomial trait
+    /// with no kinship is a logistic regression, which is not the study
+    /// they made, and was given the two remedies of a fit that has no
+    /// kinship instead of the three of this one.
+    ///
+    /// Six individuals reach it, with a covariate that is the trait
+    /// itself: it separates the individuals that have the condition from
+    /// the ones that have not, there is no finite effect of it for a fit
+    /// to reach, and the plain null walks towards an infinite one. It is
+    /// the fixture of `a binomial null model that walks towards an
+    /// infinite coefficient` of
+    /// `tests/reference/gwas/refusals_of_both_layers.json`, with the
+    /// kinship a user brings to mean no relatedness added to it.
+    #[test]
+    fn a_logistic_null_that_runs_away_names_the_mixed_model() {
+        let phenotype = [0.0_f64, 1.0, 0.0, 1.0, 0.0, 1.0];
+        let values: Vec<f64> = phenotype.iter().flat_map(|value| [1.0, *value]).collect();
+        let num_individuals = phenotype.len();
+        let mut kinship = vec![0.0_f64; num_individuals * num_individuals];
+        for (at, row) in kinship.chunks_exact_mut(num_individuals).enumerate() {
+            row[at] = 1.0;
+        }
+        let tested: Vec<usize> = (0..num_individuals).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Binomial,
+            design: &values,
+            num_coefs: 2,
+            kinship: Some(&kinship),
+            test: Some(TestType::Score),
+            use_grammar_gamma_approx: false,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        let design = match Design::of_the_study(&study, num_individuals) {
+            Ok(design) => design,
+            Err(error) => panic!("the design of the six individuals: {error}"),
+        };
+        match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
+            Err(error @ Error::GwasFitDidNotSettle { .. }) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains("a binomial trait with a kinship is a logistic mixed model"),
+                    "the fit of the separated six was refused with {message}"
+                );
+                assert!(
+                    message.contains("it is the kinship to look at"),
+                    "the fit of the separated six was refused with {message}"
+                );
+            }
+            Err(error) => panic!("the fit of the separated six gave {error}"),
+            Ok(model) => panic!(
+                "the fit of the separated six gave a variance of {}",
                 model.genetic_variance
             ),
         }

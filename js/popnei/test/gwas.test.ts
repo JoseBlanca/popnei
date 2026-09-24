@@ -414,15 +414,17 @@ const OF_GMMAT_P_VALUE = 1e-4;
  * one of the linear mixed model and the penalized quasi-likelihood one of
  * the logistic mixed model.
  *
- * Four numbers of the two models are held to it, all of them fitted over
+ * Seven numbers of the two models are held to it, all of them fitted over
  * the panel with every genotype called, which is the only panel this suite
  * studies. Measured under node on 24 September 2026, the worst is the
  * logistic mixed model's variance of the kinship effect, 6.033e-6 from
  * GMMAT's and 60 per cent of what is allowed, which pytest measures at the
- * same 6.033e-6 natively on both backends. The linear mixed model's three
- * are nearer: its genetic variance is 1.273e-6 away, 13 per cent of what is
- * allowed, where the cargo test measures 1.218e-6 on faer natively, its
- * residual variance 1.073e-6 and its heritability 7.138e-7.
+ * same 6.033e-6 natively on both backends; its three covariate effects are
+ * far nearer, the intercept 1.045e-6 away, `cov2` 1.119e-6 and `cov1`
+ * 3.390e-7. The linear mixed model's three are nearer as well: its genetic
+ * variance is 1.273e-6 away, 13 per cent of what is allowed, where the
+ * cargo test measures 1.218e-6 on faer natively, its residual variance
+ * 1.073e-6 and its heritability 7.138e-7.
  *
  * The two models are that far away for different reasons. The logistic
  * model's 6.0e-6 is the two programs and not the route popnei takes:
@@ -475,15 +477,22 @@ const OF_GMMAT_GLMM_SIX: { id: string; variance: number; pValue: number }[] = [
 ];
 
 /**
- * The variance of the random effect of the kinship that GMMAT's `glmmkin`
- * fitted for the logistic mixed model of the panel, from the `glmm` row of
- * `tests/reference/gwas/gmmat.null_models.tsv`, at full precision.
+ * The four numbers GMMAT's `glmmkin` fitted for the logistic mixed model of
+ * the panel, from the `glmm` row of
+ * `tests/reference/gwas/gmmat.null_models.tsv`, at full precision: the
+ * variance of the random effect of the kinship, which GMMAT calls `tau`,
+ * and the effects of the intercept, of `cov1` and of `cov2`.
  *
  * Its `sigma2` is 1 and is not read: a logistic model has no free residual
  * variance, so popnei gives `undefined` for it and for the heritability
  * built from the two, which this suite asserts instead.
  */
-const OF_GMMAT_GLMM_VARIANCE_OF_THE_KINSHIP = 1.508_056_730_382_11;
+const OF_GMMAT_GLMM_NULL = {
+  geneticVariance: 1.508_056_730_382_11,
+  intercept: -1.416_463_894_533_21,
+  cov1: 0.753_476_451_040_228,
+  cov2: 1.583_209_937_850_49,
+};
 
 /**
  * The two variances GMMAT's `glmmkin` fitted for the panel, from
@@ -1187,14 +1196,20 @@ test("the six variants of the panel are gmmat's logistic mixed score test", () =
   assert.equal(result.test, "score");
   assert.equal(result.nullModel.numIndividuals, PANEL_NUM_INDIVIDUALS);
   assert.equal(result.stats.beta.length, PANEL_NUM_VARS);
-  assert.ok(
-    Math.abs(
-      (result.nullModel.geneticVariance as number) -
-        OF_GMMAT_GLMM_VARIANCE_OF_THE_KINSHIP,
-    ) <= OF_GMMAT_NULL_MODEL,
-    `the variance of the kinship effect is ${result.nullModel.geneticVariance}` +
-      ` and GMMAT gives ${OF_GMMAT_GLMM_VARIANCE_OF_THE_KINSHIP}`,
-  );
+  const fitted: typeof OF_GMMAT_GLMM_NULL = {
+    geneticVariance: result.nullModel.geneticVariance as number,
+    intercept: result.nullModel.covariateEffects["intercept"] as number,
+    cov1: result.nullModel.covariateEffects["cov1"] as number,
+    cov2: result.nullModel.covariateEffects["cov2"] as number,
+  };
+  for (const [name, expected] of Object.entries(OF_GMMAT_GLMM_NULL)) {
+    const found = fitted[name as keyof typeof OF_GMMAT_GLMM_NULL];
+    assert.ok(
+      Math.abs(found - expected) <= OF_GMMAT_NULL_MODEL,
+      `the ${name} of the null model is ${found} and GMMAT gives ` +
+        `${expected}, against the ${OF_GMMAT_NULL_MODEL} allowed`,
+    );
+  }
   // A logistic model has no free residual variance, its trait's variance
   // being decided by its mean, so neither it nor the heritability built from
   // the two is there.
@@ -1482,6 +1497,15 @@ function theCallsThatAreRefused(): Record<string, () => GwasResult> {
         phenotype: { i0: 0, i1: 1, i2: 0, i3: 1, i4: 0, i5: 1 },
         trait: "binomial",
       }),
+    // The same trait and the same covariate with a kinship, which makes it a
+    // logistic mixed model. That model starts from the plain logistic null
+    // above, so it is that null that runs away, and the message names the
+    // model the user asked for and not the one the starting fit is.
+    "a binomial null model with a kinship that runs away": theStudyWith({
+      phenotype: { i0: 0, i1: 1, i2: 0, i3: 1, i4: 0, i5: 1 },
+      trait: "binomial",
+      kinship: theKinshipOfTheWorkedExample(),
+    }),
     "a covariate named intercept": theStudyWith({
       covariates: { intercept: cov },
     }),

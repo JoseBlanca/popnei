@@ -94,6 +94,10 @@
       "match": "did not settle in the \\d+ rounds it was fitted in"
     },
     {
+      "case": "a binomial null model with a kinship that runs away",
+      "match": "a binomial trait with a kinship is a logistic mixed model, and its null model did not settle"
+    },
+    {
       "case": "a covariate named intercept",
       "match": "a covariate is named .intercept."
     },
