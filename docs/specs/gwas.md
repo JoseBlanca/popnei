@@ -1226,20 +1226,71 @@ refused, each a `ValueError` in Python.
   nothing to say why. It names the file too, and carries the `gamma` the
   block gave.
 
-**Open 2's threshold under the approximation.** A variant of which the
-projection leaves at most the tested individuals times 2.2e-16 of what
-there was has no answer, and the third row of Open 2's table is the `x' p x`
-of both mixed models' score tests. The approximation does not change that
-rule: the comparison is made against whichever of the two denominators the
-study formed, with the same scale, the variant's squared length times the
-largest value of the diagonal of the projection matrix. What changes is
-that it stops firing. The approximate denominator is a positive `gamma`
-times a sum of squares, so it holds no cancellation and it is above 0 for
-every variant that varies, whatever the projection would have left of that
-variant. A variant the design explains is then answered, with an effect
-near 0 and a p-value near 1 instead of the three NaNs, which is one more
-place where the approximation gives up accuracy for the product it does not
-make.
+**Open 2's threshold under the approximation.** Two rows of Open 2's table
+are about a mixed model, and the approximation does something different to
+each. The third row is `x' p x`, the denominator of both mixed models'
+score tests, judged against the variant's squared length times the largest
+value of the diagonal of the projection matrix. The fourth is `y' p y` less
+`num² / den`, what the linear mixed model's Wald test finds the variant
+leaves of the trait, judged against `y' p y`. In both, the comparison is
+made against whichever of the two denominators the study formed, and the
+scale is the one Open 2 gives.
+
+**The third row stops firing.** The approximate denominator is a positive
+`gamma` times a sum of squares, so it holds no cancellation and it is above
+0 for every variant that varies, whatever the projection would have left of
+that variant. A variant the design explains is then answered, with an
+effect near 0 and a p-value near 1 instead of the three NaNs, which is one
+more place where the approximation gives up accuracy for the individuals by
+individuals product it does not make.
+
+**The fourth row is skipped under the approximation**, which the owner
+decided on 24 September 2026, because left in place it refuses variants the
+exact test answers. The rule was derived from a bound the approximation
+does not give:
+with the exact `x' p x` for `den`, `num² / den` cannot pass `y' p y`, so a
+remainder at or below the threshold can only be a cancellation. The
+approximate `den` is `gamma` times the squared length of the variant's
+centered dosages, and a variant whose own ratio of those two quantities is
+above `gamma` gets a denominator smaller than the exact one. `num² / den`
+then passes `y' p y` honestly, the remainder is below 0 by far more than
+rounding, and the rule refuses a variant the exact test answers. Applying
+it there reads a promise the arithmetic no longer makes.
+
+What such a variant gets in place of the three NaNs is the effect and not
+the whole row. `se` is the square root of that remainder over the degrees
+of freedom times `den`, so a remainder below 0 leaves `se` and `p_value`
+NaN with a finite `beta` beside them. That is what pyNei gives on the same
+inputs, agreeing with popnei to fifteen digits, with a numpy warning that a
+square root met an invalid value; so pyNei fails here too, and differently,
+in that it is the square root and not a rule that produces the NaN.
+
+Reproduced on 24 September 2026, by two reviewers on different fixtures and
+then on this one: twelve individuals, an identity kinship, one covariate
+marking two groups of six, three variants, and the trait
+`2 + 3*cov + 5*dosage(v0) + noise * e` with `e` a fixed vector of twelve
+values that sum to 0. `v0` is the variant tested; the other two are there so
+that `gamma`, the mean of the three ratios, comes out 1.00787 below `v0`'s
+own ratio.
+
+| `noise` | exact `beta` | exact `p_value` | what is left, of `y' p y` | approximated |
+|---|---|---|---|---|
+| 0.4 | 4.99500 | 1.0518e-14 | -0.0068 | `beta` 5.03433, `se` and `p_value` NaN |
+| 0.8 | 4.99000 | 5.3636e-12 | -0.0036 | `beta` 5.02929, `se` and `p_value` NaN |
+| 1.6 | 4.98000 | 2.6550e-09 | +0.0090 | `beta` 5.01921, `se` 0.15954, `p_value` 1.6250e-10 |
+
+With the rule still applied, the first two rows were three NaNs. The score
+test answers all three, because it forms no such subtraction: `beta`
+5.03433, 5.02929 and 5.01921 with an `se` of about 1.59.
+
+It takes both of two things, which is why no third fixture of a reviewer
+reached it: the variant's own ratio above `gamma`, and the variant
+explaining nearly all of what the null model left. The two options the owner
+did not take were to leave the rule where it is and write the regime down,
+and to refuse the Wald test whenever the approximation is asked for.
+
+On neither panel does a variant reach this, so the three numbers of "How it
+is verified" below are what they were.
 
 What it costs in accuracy grows with how strongly the panel is structured,
 because one `gamma` stands in for a quantity that really differs from
@@ -1686,6 +1737,13 @@ there are numbers. Meanwhile the implementer refuses at that threshold in
 all four places, because a meanwhile that returns NaN where the score test
 returns 0.0455 is not a safe thing to build on; no literal moves, since no
 variant of either panel comes near.
+
+The fourth place has one exception, which the owner decided on 24 September
+2026 and which "Open 2's threshold under the approximation" of the
+GRAMMAR-Gamma section carries: the comparison is skipped when the study
+approximates the denominator. What it was derived from, that `num² / den`
+cannot pass `y' p y`, is a guarantee the approximate denominator does not
+give, and applying the rule there refuses variants the exact test answers.
 
 **Open 3: a kinship that does not identify the two variances.** For a
 kinship close to a multiple of the identity, the model is the ordinary
