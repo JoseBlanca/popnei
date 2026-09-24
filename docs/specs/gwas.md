@@ -437,7 +437,11 @@ checks are common to all four:
   value. Two are measured so far, on 24 September 2026. The logistic model
   is far inside it, over both panels and both of its tests: `beta` within
   1.105e-14 of the `se`, `se` 3.368e-15 of itself and `p_value` 4.524e-14 of
-itself, so its bound belongs near 1e-12, which is 90 times the worst. The
+itself. Its bound is 3e-14, 2.7 times the worst, which is where this spec
+  asks a bound to sit: at 1e-12 it was 90 times the worst and would have let
+  through an error of the 1e-13 class, while the two real defects a reviewer
+  planted, dropping either of the fit's final reweightings, move the columns
+  by 1.1e-9 and 3.0e-9 and are caught either way. The
 linear mixed model is the opposite and is the reason this is per model at
 all: its own item says why 1e-9 sits at the noise of the search there.
 
@@ -1542,11 +1546,19 @@ that was tested and showed nothing. plink2 gives `NA`, `NA`, `NA` with
 
 The logistic model's score test: a covariate that is the first variant's
 dosages in units a tenth of theirs, which is what a user gets by putting a
-genotype in as a covariate. The denominator comes to 4.44e-16 on Accelerate
-and to exactly 0 on faer, against a threshold of 4.19e-15. Unguarded, that
-row is `beta` 0 with `se` 4.75e7 and `p` 1 on one backend and a NaN or an
-infinity on the other, which is the argument about the two builds arriving
-on data rather than in prose.
+genotype in as a covariate. With the denominator subtracted, as pyNei
+writes it, it came to 4.44e-16 on Accelerate and to exactly 0 on faer
+against a threshold of 4.19e-15, and unguarded that row was `beta` 0 with
+`se` 4.75e7 and `p` 1 on one backend and a NaN or an infinity on the other,
+which is the argument about the two builds arriving on data rather than in
+prose. Formed, as "The logistic model" now asks, it is 1.891e-31 on
+Accelerate and 9.565e-31 on faer, measured on 24 September 2026: still far
+below the threshold, so the variant is still one there is nothing left to
+test, and no longer of either sign. The formed denominator is a sum of
+terms that are not negative, so it cannot go below 0, and the threshold is
+what guards it rather than a comparison against 0 — which is not the same
+test, as a reviewer showed by replacing one with the other and watching it
+pass on faer alone, where the subtracted denominator was exactly 0.
 
 The linear mixed model's Wald test: six individuals, one covariate, an
 identity kinship and a trait built as `2 + 3*cov + 1*dosage`. It gives
@@ -1685,8 +1697,23 @@ whether the pivot does fall that far in this case, and that is what the
 meanwhile is for: the implementer builds it and measures it on both
 reference panels, and because it can only take answers away, a rule that
 takes away a variant either panel answers today stops there and is reported
-rather than moving a literal. Until it is measured, the case is recorded and
-the behaviour is unchanged.
+rather than moving a literal. It has since been built and measured, on 24 September 2026, and its
+condition held: on both panels and both backends no variant that was
+answered loses its answer and none gains one, the smallest pivot of an
+answered fit being 2.600e-2 of the largest on `panel_called` and 4.730e-5 on
+the panel with genotypes missing, against a threshold of 4.44e-14. That is
+nine orders below anything either panel reaches. The case above now gives
+three NaNs on the default build, and gives the three numbers again when the
+rule is switched off.
+
+**The meanwhile narrows this point and does not close it**, which is what
+the owner is deciding about. A fit can still settle with a collapsed system
+that the pivot does not see: one fixture stops at an effect of 36.45 with a
+standard error of 2.0e7, and it is the 30 that catches that one and not the
+pivot. An `se` of 2.0e7 beside an effect of 36 is the same signature as the
+case above, and reading it is the third option here, marking an `se` that is
+not small against the scale of the design. So the pivot rule is worth
+keeping whatever is chosen, and it is not on its own an answer.
 
 ## Not in this spec
 
