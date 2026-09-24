@@ -98,6 +98,20 @@ testpaths = ["tests"]
 # the skills under `.claude/` are prose that the `writing` skill governs.
 # `tests/reference` holds the VCFs and the script from pyNei that writes
 # them again, which stays as it came.
+#
+# The 13 Python files of `crates/popnei/benches/` are not here, and so no
+# check of the project reads them: a duplicate `import os` and a bare `x=1`
+# appended to `time_diversity.py` left both `ruff format --check` and `ruff
+# check` passing. Adding `crates/popnei/benches/*.py` on 24 September 2026
+# was tried and taken out again, because it is not formatting alone.
+# `ruff format --check` would reformat `make_big_vcf.py` in four places and
+# `make_pops.py` in one, and `ruff check` finds two errors in
+# `make_big_vcf.py`: FURB122, a `fhand.write` in a `for` loop that
+# `fhand.writelines` replaces, and UP012, a `"...".encode()` that is a bytes
+# literal. Both are in a file that writes a fixture and neither is a defect
+# of it, and fixing eleven harnesses nobody was reading is a change of its
+# own. The owner decides whether those files come under the checks and who
+# fixes what the checks then find.
 include = ["pyproject.toml", "python/**/*.py", "tests/*.py"]
 extend-exclude = ["tests/reference"]
 
