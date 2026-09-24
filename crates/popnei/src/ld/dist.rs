@@ -1225,9 +1225,17 @@ impl LdBins {
         self.at_each_dist.the_pair_is_counted(dist, r2);
         let bin = self.the_bin_of(dist);
         if let Some(num_pairs) = self.num_pairs.get_mut(bin) {
-            // The pairs of a pass are at most its variants times the
-            // variants of one window, and a u64 counts 1.8e19 of them.
-            *num_pairs = num_pairs.saturating_add(1);
+            // The pairs of a bin are counted as the pairs of a distance
+            // above are, and are bounded the same way: at most the variants
+            // of the pass times the variants of one window, where a `u64`
+            // ends at 1.8e19.
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "at most the variants of the pass times the variants of one window, which no pass brings near the 1.8e19 of a u64"
+            )]
+            {
+                *num_pairs += 1;
+            }
         }
         if let Some(sum) = self.sum_r2.get_mut(bin) {
             *sum += r2;
@@ -1476,13 +1484,32 @@ impl ThePairsAtEachDist {
     /// `max_dist` and the r² to be a number.
     fn the_pair_is_counted(&mut self, dist: u64, r2: f64) {
         // The distance of a pair the caller counts is one of the range, so
-        // it is one of the values held; a distance that is not lands past
-        // them and is counted nowhere.
-        let at = usize::try_from(dist.abs_diff(self.min_dist)).unwrap_or(usize::MAX);
+        // it is one of the values held. A distance below `min_dist` is one
+        // of no value and is counted nowhere: how far it is from `min_dist`
+        // is the same number below and above, so a distance of 100 with a
+        // `min_dist` of 150 would land where the distance 200 lands, and
+        // that is a value of the range whenever `max_dist` is 200 or more.
+        let Some(past_the_first) = dist.checked_sub(self.min_dist) else {
+            return;
+        };
+        let at = usize::try_from(past_the_first).unwrap_or(usize::MAX);
         if let Some(counted) = self.of_the_range.get_mut(at) {
-            // The pairs of a pass are at most its variants times the
-            // variants of one window, and a u64 counts 1.8e19 of them.
-            counted.num_pairs = counted.num_pairs.saturating_add(1);
+            // The pairs counted at one distance are at most the variants of
+            // the pass times the variants of one window, and a `u64` counts
+            // 1.8e19 of them, which needs about 4·10⁹ variants: a reader
+            // that gave that many would have moved 34 GB of positions
+            // alone, eight bytes for each variant. The test profile keeps
+            // the overflow checks on, and they are what would say so if a
+            // count ever did reach the end; a `saturating_add` here would
+            // stop counting and say nothing, which is what the coding skill
+            // refuses a count with.
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "at most the variants of the pass times the variants of one window, which no pass brings near the 1.8e19 of a u64"
+            )]
+            {
+                counted.num_pairs += 1;
+            }
             counted.sum_r2 += r2;
         }
     }
@@ -4110,6 +4137,31 @@ pub(super) mod tests {
                 .collect::<Vec<(u64, u64)>>(),
             vec![(200, 1), (300, 1)],
             "the distances that hold a pair"
+        );
+    }
+
+    /// A distance below `min_dist` holds a value of the range at the same
+    /// remove above it, so counting a pair by how far its distance is from
+    /// `min_dist` would count the distance 100 of a range that starts at
+    /// 150 at the distance 200, which is a distance of the range whenever
+    /// `max_dist` is 200 or more.
+    ///
+    /// The pass never asks for one, the step that counts the pairs of a
+    /// tile leaving out a distance below `min_dist` and one above
+    /// `max_dist` before it counts anything, so this is asked of the
+    /// distances themselves.
+    #[test]
+    fn a_pair_below_min_dist_is_counted_at_no_distance() {
+        let mut at_each_dist =
+            ThePairsAtEachDist::of(150, 300).expect("the pairs counted at every distance");
+        at_each_dist.the_pair_is_counted(100, 0.5);
+        at_each_dist
+            .the_distances_that_hold_a_pair_are_kept()
+            .expect("the distances that hold a pair");
+        assert_eq!(
+            at_each_dist.dists(),
+            &[] as &[u64],
+            "the distances that hold a pair after one at 100, below the min_dist of 150"
         );
     }
 
