@@ -1,6 +1,10 @@
 # Plan: how much variety each population holds
 
-24 September 2026. Approved by the owner on 24 September 2026. It builds
+24 September 2026. Approved by the owner on 24 September 2026. State:
+under way since 24 September 2026, on the branch `plan/diversity` in the
+worktree `.claude/worktrees/diversity`, which branches from
+`spec/diversity` because neither the spec nor this plan is on `main`;
+its report is `docs/reports/diversity.md`. It builds
 the `diversity` module of
 `docs/specs/diversity.md`: one pass over the variants that gives, for each
 population, the alleles it called and the private ones among them, the
