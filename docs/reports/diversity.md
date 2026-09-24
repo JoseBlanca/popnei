@@ -27,7 +27,8 @@ made them, and against exact rational arithmetic. The suites went from 787
 cargo tests, 499 pytest and 325 node to 868, 530 and 345.
 
 **What the work found that changes what the spec said.** The folded
-spectrum, which "Speed" called the one part that could dominate the pass,
+spectrum, which the "Speed" section of `docs/specs/diversity.md` called
+the one part that could dominate the pass,
 is 20 to 23 in 100 of it at a draw of 200 called alleles. "Speed" now holds
 a measurement and a speed target where it held a sentence saying no
 measurement had been made.
@@ -50,8 +51,10 @@ products over and over on a variant of two alleles, 0.208 s of a 0.505 s
 pass.
 
 This page was written while the work went, so what follows is one work
-package at a time, and the last section of each is for whoever next
-revises a skill or writes a plan and not for the owner.
+package at a time. Two of the four, the first and the fourth, end in a
+section headed "How the work went", which is for whoever next revises a
+skill or writes an implementation plan and not for the owner; each says so
+in its first line. Everything before those two sections is for the owner.
 
 ## Before the first task
 
@@ -146,9 +149,16 @@ should know" below, because the choice they leave open is the owner's.
 ### What the review found
 
 Four reviewers were sent over `bc8b7e2`, the categories `spec`, `tests`,
-`numbers` and `errors`. `api`, `architecture` and `binding` were not sent:
-this work package adds no type, no signature, no reader, no thread, no
-dependency of a crate and nothing in either binding crate.
+`numbers` and `errors`. A review here is one subagent for each of the seven
+categories of `.claude/skills/code-review/SKILL.md`, each starting with
+nothing but the code and the spec, and each named after what it checks: that
+the code does what the spec says, that each test can fail, the arithmetic,
+what a user sees when something fails, the types and the signatures
+(`api`), the readers and the threads and the dependencies
+(`architecture`), and the two binding crates and the two packages
+(`binding`). The last three were not sent here: this work package adds no
+type, no signature, no reader, no thread, no dependency of a crate and
+nothing in either binding crate.
 
 **Every stored number survived.** Two reviewers recomputed all of them
 from `panel.vcf.gz` in exact rational arithmetic, independently of the
@@ -797,9 +807,12 @@ backend, with 2 ignored.
 same thread count, which the plan asked for: that pass makes the same read
 and the same counts of how often each population called each allele, and
 then does far less arithmetic on them. With the four statistics that need
-no draw, and with all five at a draw of 20, at most 1.1 times it; with all
-five at a draw of 200, at most 2 times it. Today it is 0.78 to 1.02 times
-and 1.16 to 1.61 times, so the target has headroom at every thread count.
+no draw it takes at most 1.1 times that pass, and today it takes 0.78 to
+0.81 times on one thread and 0.98 to 0.99 on 18 cores. With all five at a
+draw of 20 called alleles the bound is the same 1.1, and today it is 0.88
+to 0.91 on one thread and 1.01 to 1.02 on 18. With all five at a draw of
+200 the bound is 2, and today it is 1.55 to 1.61 on one thread and 1.16 to
+1.18 on 18. So every one of the three has headroom at both thread counts.
 
 It is a ratio and not a number of seconds because both sides are timed on
 one machine on one day, and a ratio does not go stale when the machine
