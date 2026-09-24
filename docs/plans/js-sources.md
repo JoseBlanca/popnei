@@ -202,7 +202,7 @@ gives.
 
 Tasks:
 
-- [ ] 3.1 The ranges: `js-sys` and `web-sys` in the manifest of the binding
+- [x] 3.1 The ranges: `js-sys` and `web-sys` in the manifest of the binding
       crate, `TheBytes::OfAFile` over `FileReaderSync` and `Blob.slice`, the
       short range as an error, the refusal outside a worker, and `openVcf`
       and `openVars` taking a `Blob` in the binding crate and in the
@@ -210,10 +210,10 @@ Tasks:
       "The source over a file of the page", all four of its parts, and from
       "The Rust interface". Needs 1.2 and 1.3. Serves deliverables 1, 2, 3
       and 5.
-- [ ] 3.2 The browser tests of deliverables 1 and 2, in
+- [x] 3.2 The browser tests of deliverables 1 and 2, in
       `js/popnei/test/browser/`. Needs 2.1 and 3.1. Serves deliverables 1
       and 2.
-- [ ] 3.3 The node test of deliverable 3, and the README and the doc
+- [x] 3.3 The node test of deliverable 3, and the README and the doc
       comments of deliverable 4. Runs side by side with 3.2: it writes
       `js/popnei/test/blob_outside_a_worker.test.ts` and
       `js/popnei/README.md` and no file that 3.2 writes. Needs 3.1. Serves
