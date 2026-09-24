@@ -228,3 +228,36 @@ deselected`, where it exited 5 with nothing matched at the start of the
 plan, which is deliverable 5's check. The whole pytest suite is 504 where
 it was 499; the core crate stays at 831 with 2 ignored, the same on faer,
 149 linear algebra, and fmt, clippy, wasm-check and ruff clean.
+
+**1.6, the TypeScript layer of the bins.** Commit `6fb3343`. It put
+`calcLdAndDistPerPop` in `js/popnei/src/ld.ts`, exported from both
+`node.ts` and `web.ts`, over a wasm-bindgen function in
+`crates/popnei-js/`. The five arrays of a population cross the boundary
+flat and the package cuts them. The package refuses a `minDist` or a
+`maxDist` that is not a whole base pair of 0 or more, a `numBins` that is
+not a whole number of 0 or more, and a `maxAllowedMaf` that is no number.
+
+`node --test js/popnei/test/ld.test.ts` runs 17 tests, where it ran 10,
+and the whole node suite is 332 where it was 325.
+
+### The six deliverables of work package 1, each checked by the orchestrator
+
+| the deliverable | the command | what it gave |
+|---|---|---|
+| 1, `ld.bins.txt` written again and compared | `tests/reference/ld/run_plink2.sh` into an empty directory | exit 0, no file named as differing, and `cmp` finds the stored copy identical to the written one |
+| 2, the worked example | `cargo test -p popnei --lib ld::dist -- --list` | `44 tests`, where it printed `0 tests` before the plan |
+| 3, the three tables at three block sizes and two thread counts | `cargo test --workspace` | `831 passed; 0 failed; 2 ignored`, and `149 passed` in the linear algebra crate |
+| 4, the eight errors and the two empty cases | the same list and run | seven errors as cargo tests, the eighth in the two packages that can see it |
+| 5, the Python layer | `uv run pytest tests/test_ld.py -k ld_and_dist` | `5 passed, 16 deselected`, where it exited 5 with nothing matched |
+| 6, the TypeScript layer | `npm run build && npm test` in `js/popnei` | `tests 332, pass 332, fail 0`, and 17 in the ld file where there were 10 |
+
+`cargo test -p popnei --no-default-features` gives the same 831 on the
+faer backend, and `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo wasm-check`, `uv run ruff format
+--check` and `uv run ruff check` are clean.
+
+**One thing found on the way that is nobody's task here.**
+`js/popnei/README.md` lists five calculations and leaves out
+`calcPopDists`, `calcKinship` and `calcGwas`, so it was already stale
+before this plan and this calculation was not added to it either. It is
+worth a commit of its own, outside this plan.

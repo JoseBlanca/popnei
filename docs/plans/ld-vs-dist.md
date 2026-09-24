@@ -184,7 +184,7 @@ are.
   stats, and `calc_ld_and_dist_per_pop` with `LdAndDistPerPop` in
   `python/popnei/ld.py`, with the pytest tests of deliverable 5. It
   serves deliverable 5. Needs 1.3.
-- [ ] 1.6 The TypeScript layer, from the last paragraph of "Its Python
+- [x] 1.6 The TypeScript layer, from the last paragraph of "Its Python
   function": the wasm-bindgen function in `crates/popnei-js/` and
   `calcLdAndDistPerPop` in `js/popnei/src/ld.ts` with its result object,
   and the node test of deliverable 6. It serves deliverable 6. Needs 1.3.
