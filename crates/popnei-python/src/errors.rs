@@ -650,9 +650,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // or a constant, and covariates that explain the whole of the
         // trait; the score test asked of a linear model and the Wald test
         // of a logistic mixed one, which are the two pairs no model has;
-        // the four of the GRAMMAR-Gamma approximation: asked for by a study
+        // the five of the GRAMMAR-Gamma approximation: asked for by a study
         // with no kinship, asked of the core with no second pass to
-        // estimate its factor from, and the two the first block of that
+        // estimate its factor from, asked of it with a second pass over
+        // other individuals or another ploidy than the pass that tests the
+        // variants, and the two the first block of that
         // pass is refused for, no variant that varies in it and a factor
         // its variants gave that is not above 0; a null model that walked
         // towards an infinite coefficient
@@ -677,6 +679,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasWaldTestOfALogisticMixedModel
         | popnei::Error::GwasGrammarGammaWithoutAKinship
         | popnei::Error::GwasGrammarGammaWithoutASecondPass
+        | popnei::Error::GwasGrammarGammaSecondPassOfAnotherSource { .. }
         | popnei::Error::GwasGrammarGammaWithoutAVariantThatVaries { .. }
         | popnei::Error::GwasGrammarGammaFactorNotAboveZero { .. }
         | popnei::Error::GwasFitDidNotSettle { .. }

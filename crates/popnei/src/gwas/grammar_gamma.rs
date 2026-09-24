@@ -379,7 +379,7 @@ mod tests {
         assert!(
             (found - expected).abs() <= OF_A_FACTOR * expected,
             "the factor of the panel of eight against the identity is {found} and the \
-             three ratios give {expected}"
+             four ratios give {expected}"
         );
         let of_v1 = [0.0_f64, 0.0, 1.0, 0.0, 2.0, 0.0, 1.0, 0.0];
         let den = GrammarGamma::of_the_first_block(&the_identity_of_eight(), 8, 1.0, &dosages)
@@ -399,8 +399,9 @@ mod tests {
     /// the study would then be divided by.
     ///
     /// It is pyNei's refusal in `estimate_gamma` of `pynei/gwas.py`. The
-    /// fixture is the fourth variant of the panel of eight, which no tested
-    /// individual has a genotype of, twice.
+    /// fixture is the first variant of the panel of eight twice, which has
+    /// variance over all eight and none over the four that are tested here,
+    /// where every one of them is heterozygous.
     #[test]
     fn a_first_block_in_which_nothing_varies_is_refused() {
         // `v0` of the panel of eight has variance over all eight and none
@@ -536,7 +537,7 @@ mod tests {
     /// over the block, and a block of fewer than 100 that vary gives it
     /// from those.
     ///
-    /// The panel of eight has three, so the second half is what its factor
+    /// The panel of eight has four, so the second half is what its factor
     /// above shows. What this asserts is the count itself, which no fixture
     /// of this module is large enough to reach: a block of 100 variants
     /// that vary and one of 101 give the same factor when the 101st is

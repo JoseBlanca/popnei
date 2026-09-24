@@ -1664,6 +1664,30 @@ pub enum Error {
     )]
     GwasGrammarGammaWithoutASecondPass,
 
+    /// The second pass the GRAMMAR-Gamma approximation was given reads
+    /// another dataset than the pass that tests the variants. The factor is
+    /// estimated from its first block, and the trait, the design and the
+    /// kinship are read positionally, by the place of each individual among
+    /// the individuals of the pass that tests them, so a second pass over
+    /// other individuals, or over the same ones in another order, would
+    /// give a factor from the genotypes of the wrong individuals and say
+    /// nothing. Both binding crates open the second pass over the source
+    /// the first one reads, so it is a caller of `calc_gwas` that meets
+    /// this, and in Python it is a `ValueError` naming no file.
+    #[error(
+        "the GRAMMAR-Gamma approximation estimates its factor from a second pass over the same variants, and the pass given reads {found_num_individuals} individuals at a ploidy of {found_ploidy} where the pass that tests the variants reads {num_individuals} at a ploidy of {ploidy}, or names those individuals in another order; open both passes over the same source"
+    )]
+    GwasGrammarGammaSecondPassOfAnotherSource {
+        /// How many individuals the pass that tests the variants reads.
+        num_individuals: usize,
+        /// The ploidy that pass reads them at.
+        ploidy: usize,
+        /// How many individuals the second pass reads.
+        found_num_individuals: usize,
+        /// The ploidy the second pass reads them at.
+        found_ploidy: usize,
+    },
+
     /// The factor of the GRAMMAR-Gamma approximation was to be estimated
     /// and the model that was fitted has no projection matrix to estimate
     /// it against.
@@ -1709,7 +1733,7 @@ pub enum Error {
     /// answer, so the study is refused instead. In Python it is a
     /// `ValueError` naming the file the pass read.
     #[error(
-        "the GRAMMAR-Gamma approximation multiplies the squared length of a variant's centered dosages by {factor}, which the {num_vars} variants of the first block that vary gave and which is not a number above 0; the design explains those variants, and a study of other variants or with no approximation is tested against the exact denominator"
+        "the GRAMMAR-Gamma approximation multiplies the squared length of a variant's centered dosages by {factor:e}, which the {num_vars} variants of the first block that vary gave and which is not a number above 0; the design explains those variants, and a study of other variants or with no approximation is tested against the exact denominator"
     )]
     GwasGrammarGammaFactorNotAboveZero {
         /// The factor those variants gave: 0, a number below it, or one
@@ -2490,9 +2514,10 @@ impl Error {
             // that explain the whole of the trait; the two pairs of a test
             // and a model that no model has, and a trait or a test under a
             // name that is of neither of the two; the GRAMMAR-Gamma
-            // approximation, asked for by a study with no kinship and asked
-            // of the core with no second pass to estimate its factor from,
-            // both of which are arguments of the call; a null model that
+            // approximation, asked for by a study with no kinship, asked
+            // of the core with no second pass to estimate its factor from
+            // and asked of it with a second pass over another dataset, all
+            // three of which are arguments of the call; a null model that
             // walked towards an infinite
             // coefficient instead of settling, which is a covariate the
             // user takes out; a kinship that the covariance of the working
@@ -2517,6 +2542,7 @@ impl Error {
             | Self::GwasWaldTestOfALogisticMixedModel
             | Self::GwasGrammarGammaWithoutAKinship
             | Self::GwasGrammarGammaWithoutASecondPass
+            | Self::GwasGrammarGammaSecondPassOfAnotherSource { .. }
             | Self::GwasFitDidNotSettle { .. }
             | Self::GwasKinshipNotACovariance { .. }
             | Self::GwasModelNotBuilt { .. }

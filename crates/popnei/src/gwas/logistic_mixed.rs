@@ -3254,10 +3254,18 @@ mod glmm {
         (fitted, dosages)
     }
 
-    /// How far the middle of `log10(p_approx / p_exact)` may be from 0 over
-    /// a whole panel, how far the worst variant of it may be, and how far
-    /// an effect may be from the exact one as a share of it: 0.1, 1.5 and
-    /// 0.5.
+    /// How far the middle of the absolute `log10(p_approx / p_exact)` may
+    /// be from 0 over a whole panel, how far the worst variant of it may
+    /// be, and how far an effect may be from the exact one as a share of
+    /// it: 0.1, 1.5 and 0.5.
+    ///
+    /// The statistic the first of them bounds is the value at index 600 of
+    /// the 1200 absolute log ratios of a panel sorted, which is the middle
+    /// one of an even count read at the upper of the two, and it is the
+    /// reading the linear mixed model's own `OF_THE_APPROXIMATION` takes
+    /// and explains: the spec's number is the median of the **signed** log
+    /// ratios, which the pytest and node suites take, and taking the
+    /// absolute values first is the stricter of the two.
     ///
     /// They are the three numbers of "What it gives" and "How it is
     /// verified" of the approximation in `docs/specs/gwas.md`, which has

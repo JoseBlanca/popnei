@@ -2133,9 +2133,21 @@ pub(crate) mod lmm {
         );
     }
 
-    /// How far the middle of `log10(p_approx / p_exact)` may be from 0 over
-    /// a whole panel, and how far the worst variant of it may be: 0.1 and
-    /// 1.5.
+    /// How far the middle of the absolute `log10(p_approx / p_exact)` may
+    /// be from 0 over a whole panel, and how far the worst variant of it
+    /// may be: 0.1 and 1.5.
+    ///
+    /// The statistic the first of them bounds is the value at index 600 of
+    /// the 1200 absolute log ratios of a panel sorted, which is the middle
+    /// one of an even count read at the upper of the two. The spec's own
+    /// number is the median of the **signed** log ratios, which is what the
+    /// pytest suite takes and what the node suite takes as the mean of the
+    /// two middle ones: on the panel with every genotype called under the
+    /// Wald test it is -5.1885e-4, measured on 24 September 2026, against
+    /// the 0.0129 of the absolute ones below. Taking the absolute values
+    /// first is the stricter of the two readings: a panel whose p-values
+    /// moved as far up as down would pass the signed median and not this
+    /// one.
     ///
     /// They are the two numbers of "What it gives" of the approximation in
     /// `docs/specs/gwas.md`, which has them from
@@ -2350,6 +2362,75 @@ pub(crate) mod lmm {
             Err(Error::GwasGrammarGammaWithoutASecondPass) => {}
             Err(error) => panic!("the study was refused with {error}"),
             Ok(_) => panic!("the approximation was made"),
+        }
+    }
+
+    /// A second pass that names the same individuals in another order is
+    /// refused.
+    ///
+    /// The trait, the design and the kinship belong to the individuals by
+    /// their place among the individuals of the pass that tests them, and
+    /// the first block of the second pass is read into that same shape. So
+    /// a second pass over the same six individuals written in the opposite
+    /// order holds the same dataset and would be read as another one: the
+    /// genotype of `i5` would be taken for `i0`'s, the factor would come
+    /// from the wrong genotypes and nothing would say so. Both binding
+    /// crates open the second pass over the source the first reads, so it
+    /// is a caller of `calc_gwas` that meets this.
+    ///
+    /// The ploidy is checked with the individuals and for the same reason,
+    /// and the two counts and the two ploidies in the message are what
+    /// tells a caller which of the two it is: they agree here, and what
+    /// differs is the order.
+    #[test]
+    fn a_second_pass_that_names_the_individuals_in_another_order_is_refused() {
+        const OF_SIX_REVERSED: &str = "##fileformat=VCFv4.2\n\
+            ##contig=<ID=1>\n\
+            ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+            #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti5\ti4\ti3\ti2\ti1\ti0\n";
+        let genotypes = ["0/0", "0/1", "1/1", "0/0", "0/1", "1/1"];
+        let mut vcf = String::from(THE_HEADER_OF_SIX);
+        vcf.push_str("1\t1000\tv0\tA\tT\t.\t.\t.\tGT");
+        for genotype in genotypes {
+            vcf.push('\t');
+            vcf.push_str(genotype);
+        }
+        vcf.push('\n');
+        let mut reversed = String::from(OF_SIX_REVERSED);
+        reversed.push_str("1\t1000\tv0\tA\tT\t.\t.\t.\tGT");
+        for genotype in genotypes.iter().rev() {
+            reversed.push('\t');
+            reversed.push_str(genotype);
+        }
+        reversed.push('\n');
+        let study = GwasInput {
+            phenotype: &THE_WORKED_TRAIT_OF_SIX,
+            trait_type: TraitType::Continuous,
+            design: &THE_DESIGN_OF_SIX,
+            num_coefs: 2,
+            kinship: Some(&THE_KINSHIP_OF_TWO_FAMILIES),
+            test: Some(TestType::Score),
+            use_grammar_gamma_approx: true,
+            individuals: &THE_INDIVIDUALS_OF_SIX,
+            transform_to_biallelic: false,
+        };
+        let mut reader = reader_over(vcf.as_bytes());
+        let mut gamma_pass = reader_over(reversed.as_bytes());
+
+        match crate::gwas::calc_gwas(&mut reader, Some(&mut gamma_pass), &study) {
+            Err(Error::GwasGrammarGammaSecondPassOfAnotherSource {
+                num_individuals,
+                ploidy,
+                found_num_individuals,
+                found_ploidy,
+            }) => {
+                assert_eq!(num_individuals, 6, "the individuals of the pass tested");
+                assert_eq!(found_num_individuals, 6, "the ones of the second pass");
+                assert_eq!(ploidy, 2, "the ploidy of the pass tested");
+                assert_eq!(found_ploidy, 2, "the ploidy of the second pass");
+            }
+            Err(error) => panic!("the study was refused with {error}"),
+            Ok(_) => panic!("a second pass over the individuals reversed was read"),
         }
     }
 

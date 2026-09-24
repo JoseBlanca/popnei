@@ -162,7 +162,11 @@ impl TheFittedModel {
 /// pass that tests the variants, and it asks its reader for the genotypes
 /// alone. A study that asks for the approximation with no kinship is
 /// refused, since there is no such denominator to approximate, and so is
-/// one that asks for it and gives no second pass.
+/// one that asks for it and gives no second pass. The two readers are over
+/// the same source, which is checked: `gamma_pass` has to name the same
+/// individuals in the same order and read them at the same ploidy as
+/// `reader`, since its block is read into the shape of `reader`'s and its
+/// genotypes would otherwise be taken for the wrong individuals'.
 ///
 /// # Errors
 ///
@@ -175,6 +179,8 @@ impl TheFittedModel {
 /// asked for by a study with no kinship,
 /// [`Error::GwasGrammarGammaWithoutASecondPass`] when it was asked for and
 /// `gamma_pass` is `None`,
+/// [`Error::GwasGrammarGammaSecondPassOfAnotherSource`] when `gamma_pass`
+/// reads other individuals or another ploidy than `reader`,
 /// [`Error::GwasGrammarGammaWithoutAVariantThatVaries`] when no variant of
 /// the first block of that pass varies among the tested individuals, and
 /// [`Error::GwasGrammarGammaFactorNotAboveZero`] when the factor those
@@ -249,6 +255,7 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
                 &mut fitted,
                 gamma_pass,
                 &design,
+                reader.individuals(),
                 ploidy,
                 &mut dosages,
             )?;
@@ -300,8 +307,14 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
 /// the position and the id, and [`Reblock`] goes in front of it for the
 /// same reason: a filter leaves blocks of uneven size, and which variants
 /// the factor comes from would otherwise depend on what the source gave.
-/// `ploidy` is the ploidy of that other pass, so a second pass over
-/// another dataset is refused rather than read at a width of its own.
+///
+/// `individuals` and `ploidy` are the individuals and the ploidy of the
+/// pass that tests the variants, and the second pass is refused when it
+/// does not read the same. Its block is read into the shape of that other
+/// pass: the trait, the design and the kinship belong to the individuals by
+/// their place among them, so a second pass that named the same individuals
+/// in another order would give a factor from the genotypes of the wrong
+/// ones and say nothing.
 ///
 /// `dosages` is the buffer the pass that follows reads its blocks into,
 /// which is used here so that the second pass asks the machine for nothing
@@ -310,22 +323,32 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
 /// # Errors
 ///
 /// [`Error::GwasGrammarGammaWithoutASecondPass`] when `gamma_pass` is
-/// `None`, and [`Error::PassGaveNoVariant`] when it gives no block, with
+/// `None`, [`Error::GwasGrammarGammaSecondPassOfAnotherSource`] when it
+/// reads other individuals or another ploidy than the pass that tests the
+/// variants, and [`Error::PassGaveNoVariant`] when it gives no block, with
 /// what each of its filters was given and kept. What
-/// [`GwasDosages::read_the_block`] refuses of that block, which is where a
-/// second pass over other individuals or another ploidy is refused, and
+/// [`GwasDosages::read_the_block`] refuses of that block, and
 /// what the model's own estimate of the factor refuses of the variants
 /// that vary in it.
 fn the_factor_of_the_approximation<R: BlockReader>(
     fitted: &mut TheFittedModel,
     gamma_pass: Option<&mut R>,
     design: &Design<'_>,
+    individuals: &[String],
     ploidy: usize,
     dosages: &mut GwasDosages,
 ) -> Result<()> {
     let Some(gamma_pass) = gamma_pass else {
         return Err(Error::GwasGrammarGammaWithoutASecondPass);
     };
+    if gamma_pass.ploidy() != ploidy || gamma_pass.individuals() != individuals {
+        return Err(Error::GwasGrammarGammaSecondPassOfAnotherSource {
+            num_individuals: individuals.len(),
+            ploidy,
+            found_num_individuals: gamma_pass.individuals().len(),
+            found_ploidy: gamma_pass.ploidy(),
+        });
+    }
     gamma_pass.set_needs(Needs::GTS);
     let mut blocks = Reblock::new(gamma_pass, None)?;
     let Some(mut block) = blocks.next_block()? else {
