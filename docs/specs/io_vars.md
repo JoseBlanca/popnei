@@ -578,16 +578,37 @@ holds it: every column of the batch holds its rows, the alleles of the
 genotypes that number, and the alleles of a variant, which are the values of a
 list, as many as the offsets of that list say, at most the 2147483647 that 32
 bit offsets address, the same number as the bytes above and from the same
-offsets. A column that comes after one whose type popnei does not know is not
-bounded, as its buffers are not.
+offsets. The values of a large list are the one thing the schema does not
+bound at all, since its offsets are 64 bits.
 
-Until 24 September 2026 that bound was the bits of the batch as it lies on
-disk, on the ground that a value takes a bit at the very least. The batch on
-disk is compressed and the values are counted once it is decompressed, so
-popnei refused the file it had just written when its genotypes repeated: 5000
-variants of 200 diploid individuals whose every genotype is `0/1` are 2000000
-alleles in a batch of 110080 bytes, 0.44 bits for each allele, and the reader
-gave the error of a damaged file. That is issue 2 of the repository.
+A second bound holds every column, and it is the smaller of the two that a node
+is held to: the body of the batch. A value takes a bit at the very least once
+the batch is decompressed, and an lz4 frame gives at most 255 bytes for each
+byte it holds, so a body of 110080 bytes holds 224563200 values and no more.
+For every column of a file popnei writes it is looser than the schema's by a
+factor of eight or more, and it is the only bound a column whose type popnei
+does not walk has, and every column after it: popnei cannot say how many field
+nodes such a column takes, so it cannot say which column the nodes after it
+belong to.
+
+The schema alone is not enough, because the rows a column is bounded by are
+what the batch and its entry of the footer say, and no byte of the file bounds
+those. A file whose first column is a dictionary, which pyarrow writes for any
+categorical of pandas, and whose alleles of the genotypes say
+3074457345618258603 values, reaches `integer overflow computing expected number
+of expected values in FixedListSize` inside arrow-rs, an `expect` that panics
+in a release build too. The code review of 24 September 2026 found that with
+such a file after the bits of the batch had been replaced by the schema instead
+of joined to it.
+
+Until 24 September 2026 the body was the only bound, and it counted the bits of
+the batch as it lies on disk, where it is compressed, against values that are
+counted once it is decompressed. So popnei refused the file it had just written
+when its genotypes repeated: 5000 variants of 200 diploid individuals whose
+every genotype is `0/1` are 2000000 alleles in a batch of 110080 bytes, 0.44
+bits for each allele. That is issue 2 of the repository. What the 255 bytes an
+lz4 frame gives for a byte do is put the two sides of that comparison in the
+same state.
 
 Two individuals with the same name are an error, as they are for the VCF
 reader.
@@ -661,7 +682,10 @@ quality that is a NaN and one that is an infinity, both with the variant; a
 file with two batches and one entry in `popnei_batches`; a message whose
 column of the alleles of the genotypes says 25 values where the 4 variants of
 3 diploid individuals of the batch hold 24, which is the bound on the values a
-column says it holds at its edge;
+column says it holds at its edge; a file whose first column is a dictionary,
+which stops the walk of the schema, and whose alleles of the genotypes say
+3074457345618258603 values, which the body of the batch refuses and which
+never reaches arrow-rs;
 bytes that are not an arrow file; and
 `tests/reference/vars/zstd.vars`, a vars file of the four variants of
 `cases.vcf` compressed with zstd, which `tests/reference/vars/make_reference.py`
@@ -682,11 +706,22 @@ to each of the 255 other values is a test that is run by hand, as
 `docs/specs/io_vcf.md` has one for `cases.vcf.gz`. A file that is read with no
 error and holds other variants is counted and is not a failure: a byte of a
 compressed buffer that decompresses into other genotypes is what a checksum of
-the format would catch, and the format has none. On 21 September 2026, with
-arrow-rs 60, the sweep over the 255 values made 1299990 files, of which 550055
-gave an error, 726033 were read as the whole file, 23902 were read as another
-file with no error, 2783 reached a panic inside arrow-rs that `catch_unwind`
-held, and none ended the process.
+the format would catch, and the format has none. On 24 September 2026, with
+arrow-rs 60, the sweep over the 255 values made 1299990 files, of which 553104
+gave an error, 726033 were read as the whole file, 20853 were read as another
+file with no error, 1939 reached a panic inside arrow-rs that `catch_unwind`
+held, and none ended the process. The panics were 2783 while a column of a
+batch was bounded by the bits of that batch: a column holds its rows, which is
+far below that, so 844 more of these files are refused before arrow-rs reads
+them.
+
+A cargo test walks a schema of the types popnei's writer never makes and its
+own tests otherwise never reach, a struct, a large list, a map and a
+dictionary, and asserts one bound for each field node the IPC format lays out,
+in its order: the columns of a struct hold the rows of the struct, the values
+of a large list are not bounded, those of a map are bounded by its 32 bit
+offsets, and the list ends at the dictionary, which is what leaves the columns
+after it to the body of the batch.
 
 The TypeScript test is the round trip under node of "The writer".
 
