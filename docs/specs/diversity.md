@@ -736,7 +736,13 @@ defines them, over the variants that counted for the population and at
 which both exist: `H_o` needs one called genotype at least, since it
 divides by the called genotypes, and `H_u` needs more than one called
 allele, since it divides by `c` times `c - 1`. Both means are over that
-one set of variants, so the two divisors are the same number. A population
+one set of variants, so the two divisors are the same number. The `c`
+times `c - 1` is the diploid form of that divisor, and what `H_u` needs in
+general is as many called alleles as the ploidy, which is what
+`docs/specs/stats.md` gives it and what governs here, this item having said
+that both heterozygosities are as that spec defines them. At ploidy 2 the
+two readings are the same, and every number of this spec is at ploidy 2.
+A population
 whose mean `H_u` is 0, every variant it counted having one allele, has no
 F_IS and gets NaN. It is
 Nei's F_IS, the one built from the two mean heterozygosities of a
