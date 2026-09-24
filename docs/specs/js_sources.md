@@ -325,9 +325,14 @@ package already has for the memory of wasm, which
 `docs/specs/block.md` states: what a user does not free is freed late.
 
 The function is called with no table of the binding crate borrowed, so an
-application that calls popnei from inside it does not trap: `free()` there
-leaves the entry until the pass that is reading is done with it, and a
-consumer started there runs as any other call does.
+application that calls popnei from inside it does not trap, and a consumer
+started there runs as any other call does. `free()` from inside it is the
+one call that does not go through: while a consumer runs, wasm-bindgen
+holds the source for the length of that call, and freeing a value it holds
+throws. The throw is the application's own, so it stops the pass as any
+other throw of that function does. Inside an iteration of `iterBlocks` no
+call holds the source, the free is taken, and the pass reads on to its end,
+as the paragraph on `free()` of the item above says.
 
 ### How it is verified
 
@@ -353,13 +358,16 @@ from it, with ranges of the size popnei chose:
   another, give calls of `pass` 1 and `numPasses` 1 for each of the twelve.
 - A function that throws on its first call: the consumer throws that same
   value, checked with `===` and not by its message, and the same `Variants`
-  then gives its 500 variants through `iterBlocks`.
+  then gives its variants through `iterBlocks`, the 500 of `many.vcf` when
+  it was opened with `onlyPassed` false and the 475 that passed a filter
+  with the default.
 - A function that throws on the first call of the second pass: the PCA
   throws it, and what it threw is not popnei's error for a source that ended
   early.
-- A function that calls `variants.free()` and one that runs
-  `calcPerIndividualStats` over the same `Variants`: neither traps, and the
-  pass that was reading gives its variants.
+- A function that frees the `Variants` while an iteration of `iterBlocks`
+  reads them, and one that runs `calcPerIndividualStats` over the same
+  `Variants`: neither traps, and the pass that was reading gives its
+  variants.
 - For each of the ten consumers, the largest `pass` of the calls of one run
   equals `numPassesOf` of it with the same options.
 
