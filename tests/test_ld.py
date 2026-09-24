@@ -646,6 +646,32 @@ def test_ld_and_dist_gives_the_ten_bins_of_the_spec_that_plink2_gives() -> None:
         assert frame["sd_r2"].iloc[row] == pytest.approx(sd_r2, rel=TOLERANCE)
 
 
+def test_ld_and_dist_gives_every_count_and_every_distance_as_a_signed_number() -> None:
+    """The counts and the distances of the bins are signed 64 bit integers,
+    as pyNei's counts are, so that the difference of two of them is a
+    negative number and not 1.8e19.
+
+    Over the one population of `ld.vcf.gz` at the settings of the first
+    table of "How it is verified" of `docs/specs/ld.md`, the second bin
+    holds 929 pairs fewer than the first, which an unsigned subtraction
+    gives as 18446744073709550687.
+    """
+    of_the_pass = calc_ld_and_dist_per_pop(
+        _the_ld_dataset(),
+        min_dist=1,
+        max_dist=250_000,
+        num_bins=10,
+        max_allowed_maf=0.95,
+    )
+
+    frame = of_the_pass.per_pop["pop"]
+    num_pairs = frame["num_pairs"]
+    assert int(num_pairs.iloc[1] - num_pairs.iloc[0]) == -929
+    assert num_pairs.dtype == numpy.int64
+    assert frame["largest_dist"].dtype == numpy.int64
+    assert frame.index.dtype == numpy.int64
+
+
 def test_ld_and_dist_keeps_in_each_pop_the_variants_pynei_keeps_there() -> None:
     """The variants `pop_a` and `pop_b` keep at a major allele frequency of
     0.8, counted by both libraries.

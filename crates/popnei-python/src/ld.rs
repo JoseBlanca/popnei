@@ -36,7 +36,7 @@ use crate::source::{
     ChromColumn, OpenSource, PassCounts, chrom_column, count_of, distance_of, read_only, source_of,
     threshold_of,
 };
-use crate::stats::the_pops;
+use crate::stats::{of_a_result, the_pops};
 use crate::steps::{Step, Steps, chain_of};
 
 /// What each filter of a pass was given and kept, under the kind of the
@@ -230,10 +230,16 @@ fn filtering_of(chain: &dyn BlockReader) -> Vec<(&'static str, u64, u64)> {
 ///
 /// The five arrays hold one value for each bin, in the order of the
 /// distances, and the package makes the rows of a pandas frame out of them.
+///
+/// The three counts are signed 64 bit integers, which
+/// [`crate::stats::of_a_result`] says why: a user subtracts the pairs of
+/// one bin from the pairs of another, or the smallest distance of a bin
+/// from the largest, and of unsigned counts they read 1.8e19 where the
+/// answer is negative.
 type BinsOfAPop<'py> = (
-    Bound<'py, PyArray1<u64>>,
-    Bound<'py, PyArray1<u64>>,
-    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
     Bound<'py, PyArray1<f64>>,
     Bound<'py, PyArray1<f64>>,
     u64,
@@ -360,7 +366,9 @@ pub(crate) fn calc_ld_and_dist_per_pop<'py>(
 ///
 /// [`PyPopneiError::Broken`] when the core gives no bounds and no count of
 /// pairs for a bin it says it has, which is a defect of popnei: a user
-/// reports it instead of looking for what they typed wrong.
+/// reports it instead of looking for what they typed wrong; and when a
+/// distance or a count of pairs is above what a signed 64 bit integer
+/// holds.
 fn the_bins_for_python<'py>(
     py: Python<'py>,
     bins: &LdBins,
@@ -379,9 +387,9 @@ fn the_bins_for_python<'py>(
         let pairs = bins
             .num_pairs(bin)
             .ok_or_else(|| not_a_bin("the pairs", bin, num_bins, path))?;
-        smallest_dist.push(smallest);
-        largest_dist.push(largest);
-        num_pairs.push(pairs);
+        smallest_dist.push(of_a_result(smallest)?);
+        largest_dist.push(of_a_result(largest)?);
+        num_pairs.push(of_a_result(pairs)?);
         mean_r2.push(bins.mean_r2(bin).unwrap_or(f64::NAN));
         sd_r2.push(bins.sd_r2(bin).unwrap_or(f64::NAN));
     }
