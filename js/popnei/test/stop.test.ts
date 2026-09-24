@@ -441,3 +441,47 @@ test("the error of a free that was refused stops the run that was reading", () =
     variants.free();
   }
 });
+
+test("the counts of a pass read from inside the function while it reads a block are refused", () => {
+  // The VCF of 150000 variants, 6188977 bytes, whose pass is told at its
+  // first read, in the middle of the file and at the end of the run. The
+  // call in the middle is made from inside the read of a block, where
+  // wasm-bindgen holds the pass for the length of that read: a read of the
+  // counts there fails that borrow and leaves behind a reference to the
+  // pass that nothing drops, so the pass and the bytes of the file it holds
+  // stay in the memory of wasm for as long as the page lives.
+  const variants = openVcf(manyVariantsVcf(150000));
+  const blocks = variants.iterBlocks({ numVarsPerBlock: 1000 });
+  // The function is set after the pass was built, because the call at its
+  // first read is made inside `iterBlocks`, where there is no pass yet to
+  // read the counts of.
+  const whatTheCountsGave: unknown[] = [];
+  variants.onProgress(() => {
+    try {
+      whatTheCountsGave.push(blocks.passStats.numVars);
+    } catch (thrown: unknown) {
+      whatTheCountsGave.push(thrown);
+    }
+  });
+  let numVars = 0;
+  try {
+    for (const block of blocks) {
+      numVars += block.numVars;
+    }
+  } finally {
+    variants.free();
+  }
+  // The pass gave every variant of the file: the refusal is the counts', and
+  // it changed nothing of the reading.
+  assert.equal(numVars, 150000);
+  assert.equal(whatTheCountsGave.length, 2);
+  const [whileItRead, whenItEnded] = whatTheCountsGave;
+  assert.ok(
+    whileItRead instanceof Error,
+    `the counts gave ${String(whileItRead)} while the pass read a block`,
+  );
+  assert.match(whileItRead.message, /while it is reading a block/);
+  // The call that ends the run is made when the pass is over, and there the
+  // counts are the ones it was freed with.
+  assert.equal(whenItEnded, 150000);
+});

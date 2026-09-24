@@ -723,6 +723,16 @@ export class Variants {
    * the header of a VCF and the schema of a vars file, are told to nobody:
    * they are made before there is a `Variants` to set a function on.
    *
+   * What it may call is every function of the package, a consumer of these
+   * same variants among them, which runs there as it runs anywhere else.
+   * The two calls it may not make are the `free()` of the variants the run
+   * is reading and the `passStats` of an iteration of `iterBlocks` that is
+   * reading a block: each of the two is held by the call that is reading,
+   * each throws an `Error` of popnei that says so, and that error, thrown
+   * inside the function, ends the pass as any other value it throws does.
+   * Between two blocks of an iteration nothing is held, so a function
+   * called from there may make both.
+   *
    * It has no counterpart in the Python API, which `docs/objectives.md` asks
    * every difference between the two to be written down: what it is for is a
    * page that draws a bar and a user who presses a button, and Python reads
@@ -905,6 +915,11 @@ class BlocksOfOnePass implements Blocks {
    * answers from then on, and `null` while it still answers itself.
    */
   #countsWhenItEnded: PassStats | null = null;
+  /**
+   * Whether the pass is inside the read of a block, which is where a call
+   * of the function of `onProgress` is made from.
+   */
+  #isReadingABlock = false;
   #blocks: Generator<Block, void, undefined>;
 
   constructor(pass: PassOfTheCore) {
@@ -930,6 +945,17 @@ class BlocksOfOnePass implements Blocks {
   }
 
   get passStats(): PassStats {
+    if (this.#isReadingABlock) {
+      throw new Error(
+        "popnei: the counts of this pass cannot be read while it is reading " +
+          "a block, which is what a read of them from inside the function of " +
+          "`onProgress` is: the pass is held by the call that is reading, the " +
+          "counts would fail that hold, and what the failure leaves behind " +
+          "keeps the pass and the bytes it read in the memory of wasm with " +
+          "nothing left to free them. What reads them is a call made between " +
+          "two blocks or once the pass is over.",
+      );
+    }
     if (this.#pass !== null) {
       return passStatsOf(this.#pass.pass_stats());
     }
@@ -957,7 +983,17 @@ class BlocksOfOnePass implements Blocks {
     try {
       for (;;) {
         const pass = this.#passThatIsRunning();
-        const columns = pass.next_block();
+        // The pass is held by this call for as long as it lasts, and the
+        // function of `onProgress` is called from inside it: what says so
+        // to `passStats` is the flag, which is what stops a read of the
+        // counts there from leaving the pass unfreeable.
+        this.#isReadingABlock = true;
+        let columns;
+        try {
+          columns = pass.next_block();
+        } finally {
+          this.#isReadingABlock = false;
+        }
         if (columns === undefined) {
           return;
         }
