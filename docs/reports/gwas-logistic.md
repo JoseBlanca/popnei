@@ -12,9 +12,10 @@ work packages were reviewed, and the plan's own final check passes.
 `calc_gwas` in Python and `calcGwas` in TypeScript test every variant of a
 dataset against a **binomial** trait, which is the half of
 `docs/specs/gwas.md` that was left. With covariates and no kinship that is
-the logistic model, whose effect is a log odds ratio, with the Wald test by
-default, checked against plink2's `--glm`, or the score test, checked
-against R's `anova(glm, test = "Rao")`. With a kinship it is the logistic
+the logistic model, whose effect is a log odds ratio. It takes either of two
+tests: the Wald test, which is what it does when the user asks for none, and
+which is checked against plink2's `--glm`; or the score test on request,
+checked against R's own score test of the same model, which R calls Rao's. With a kinship it is the logistic
 mixed model, fitted by penalized quasi-likelihood with its covariance
 factored rather than inverted, whose score test is checked against GMMAT.
 And both mixed models can now take the GRAMMAR-Gamma approximation, which
@@ -37,15 +38,28 @@ plan's to settle.
 
 1. **A wrong value users can reach, fixed here by the owner's order, in a
    crate this plan does not own.** Accelerate's `dpotri` returns a wrong
-   inverse — 1 in about 1500 inversions on one thread, 1 in 7 when other
-   work runs in the process — which reached both mixed models. The inverse
+   inverse. Measured on this machine: about 1 inversion in 1500 is wrong
+   when nothing else of popnei is running, because the routine starts
+   threads of its own, and about 1 in 7 when another thread of the same
+   process is doing any other work of that library. It reached both mixed
+   models, which are the two that form an inverse. The inverse
    is now built from a triangular solve and a product instead. The crate's
    other LAPACK calls were tested and are clean. What is not known is
    whether faer's own inverse has the same fault, and which macOS versions
    besides this one do.
-2. **A skill was changed**, `.claude/skills/following-plans/SKILL.md`, which
-   now tells a task prompt to carry today's date. It is one commit and one
-   revert. The evidence is in "How the work went".
+2. **A skill was changed and it is in force**,
+   `.claude/skills/following-plans/SKILL.md`, which now tells a task prompt
+   to carry today's date. The evidence: on 24 September 2026 two sessions
+   carrying out two plans wrote 28 dates that were a day in the future,
+   every one ahead and none behind, and 14 of those came from a single
+   subagent working through one list of fixes, which worked the date out
+   once and was wrong 14 times. Nine of the 28 dated a measurement, where it
+   costs most, because a reader checking whether a bound still holds meets a
+   date that has not happened and doubts the number rather than the date. A
+   subagent has no clock and infers the date from the files it reads, so one
+   file a day ahead makes the next writer a day ahead. The writing skill was
+   given the other half of the fix, where a date comes from, by the session
+   that owned it. Reverting this is one commit and nothing depends on it.
 3. **Five things `docs/specs/gwas.md` needs**, listed under "What the spec
    needs and no session owns", including that its stated agreement with
    pyNei is a numpy prototype's figure and not this code's.
@@ -53,6 +67,42 @@ plan's to settle.
    found and not fixed here", of which the largest is that three
    calculations never raise a `KeyboardInterrupt` at all.
 
+
+## The names this report uses
+
+An association study tests each variant on its own and reports the effect of
+one more copy of an allele, the uncertainty of that effect, and the chance
+of seeing an effect at least that large if the variant had none.
+
+**The two tests.** A *Wald test* fits the variant, divides its effect by its
+own standard error and asks how extreme that ratio is, so it needs a fit for
+every variant. A *score test* asks instead how steeply the likelihood would
+rise if the effect moved away from zero, measured at the fit with no variant
+in it, so it needs no fit per variant and is the cheaper of the two. They
+agree closely where the effect is small.
+
+**A binomial trait.** The trait is 0 or 1, so the effect is a *log odds
+ratio*: the change in the log odds of being a 1 for one more copy. The model
+is fitted by *iteratively reweighted least squares*, which turns each step
+into a weighted linear fit. With a kinship it is fitted by *penalized
+quasi-likelihood*, which does the same but with the relatedness carried as a
+second source of variance, and the search for how large that variance is
+uses two things this report names: a *trace taken from an identity*, which
+gets a quantity that would otherwise need every entry of an inverse, and the
+*average information*, which is the step rule of that search.
+
+**The programs it is checked against.** *plink2* and *GMMAT* are the two
+programs that compute these models outside popnei: plink2 for the two with
+no kinship, GMMAT for the two with one. *rrBLUP* is a third, used by the
+previous plan for the continuous trait, and it appears here only because the
+script that makes the reference data runs all of them at once. *pyNei* is
+the Python library popnei reimplements, and is the oracle for everything the
+other three do not compute.
+
+**The two linear algebra backends.** popnei's arithmetic runs either on the
+system's own library — on this machine Apple's *Accelerate* — or on *faer*, a
+library written in Rust, which is what a browser runs. Every tolerance in
+this report was chosen against both.
 
 ## Where the branch starts
 
@@ -157,7 +207,8 @@ give the study with `genetic_variance`, `residual_variance` and
 reach the logistic mixed model at all: the other half of that model's
 covariance is the reciprocals of the weights, which differ from individual
 to individual, so an identity kinship still tells the two variances apart
-and the fit lands at 0.1274 in 6 steps. Whatever the owner answers, no test
+and the fit lands at a variance of the kinship effect of 0.1274 in 6
+steps. Whatever the owner answers, no test
 of this plan moves.
 
 **Open 4, how negative an eigenvalue is still rounding.** Meanwhile: refuse
@@ -175,8 +226,8 @@ user can read a heritability off a matrix that is not a kinship.
 
 The claim came into this report from the plan's own reading of what
 `gwas-linear` had built, and was never run. It is the same failure this
-review has found in others' numbers, in my own report, one hop from the
-thing it describes.
+review has found in other people's numbers, here in my own: a claim
+repeated from the document that made it, without running it.
 
 ## What changed in the plan
 
@@ -240,8 +291,8 @@ row reads `beta` 0, `se` 4.75e7 and `p_value` 1 on one backend and a NaN or
 an infinity on the other. Two of the four places of that rule were reached
 on fixtures built to break them, a collinear design and an identity kinship;
 this one is reached by a mistake a user makes. That is a different claim
-about the risk than "it is reachable", and it is the third case this week
-where the two turned out not to be the same claim.
+about the risk than "it is reachable": the first says a user will meet it,
+the second only that a fixture can be built for it.
 
 **Thirteen lines went into the spec before the code, as f7aa25c.** The
 logistic fit can end before its 50 steps: once the chances it fits reach 0
@@ -604,8 +655,8 @@ not identify the two variances was written for the linear mixed model, where
 the criterion goes flat, and whether the logistic one had the same
 degeneracy was not known. It does not: the other half of the covariance is
 the reciprocals of the weights, which differ from individual to individual,
-so an identity kinship leaves the two apart and the fit lands at 0.1274 in 6
-steps. A test says so, and no meanwhile was needed here.
+so an identity kinship leaves the two apart and the fit lands at a variance
+of the kinship effect of 0.1274 in 6 steps. A test says so, and no meanwhile was needed here.
 
 ### Task 2.3, the score test and the model through every layer
 
