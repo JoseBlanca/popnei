@@ -28,6 +28,7 @@ assert.
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import ClassVar
 
 import numpy
 import pandas
@@ -42,7 +43,16 @@ class PopDiversityStat(StrEnum):
 
     The value of each member is the name of the field of
     :class:`PopDiversity` that holds its result.
+
+    :attr:`WITHOUT_A_DRAW` holds the four of them that need no
+    `num_called_alleles`, which is what a call that names no statistic asks
+    for.
     """
+
+    # The four that need no draw. It is annotated here and set below the
+    # class because anything given a value in the body of an enumeration is a
+    # member of it, and the members are the five statistics.
+    WITHOUT_A_DRAW: ClassVar[tuple[PopDiversityStat, ...]]
 
     NUM_ALLELES = "num_alleles"
     """How many alleles a population called, as a total over its variants, as
@@ -63,6 +73,18 @@ class PopDiversityStat(StrEnum):
     FIS = "fis"
     """How far the genotypes of the population are from the proportions its
     allele frequencies would give if its individuals paired at random."""
+
+
+# The four statistics that need no draw, which is the default `stats` of
+# `calc_pop_diversity`: the folded spectrum is left out because its bins are
+# the counts of the rarer allele in a draw of `num_called_alleles`, and a
+# spectrum asked for without one is a `ValueError`. The names come from the
+# set the Rust core holds, so a statistic that needs no draw is added there
+# and is in the default of this package and of the TypeScript one with
+# nothing written in either.
+PopDiversityStat.WITHOUT_A_DRAW = tuple(
+    PopDiversityStat(name) for name in _core.diversity_stats_without_a_draw()
+)
 
 
 @dataclass(frozen=True)
@@ -187,7 +209,8 @@ class PopDiversity:
 def calc_pop_diversity(
     variants: Variants,
     pops: dict[str, Sequence[str]] | None = None,
-    stats: Iterable[PopDiversityStat] = tuple(PopDiversityStat),
+    *,
+    stats: Iterable[PopDiversityStat] = PopDiversityStat.WITHOUT_A_DRAW,
     num_called_alleles: int | None = None,
     min_num_individuals: int = _core.DEFAULT_MIN_NUM_INDIVIDUALS,
 ) -> PopDiversity:
@@ -205,6 +228,14 @@ def calc_pop_diversity(
     through the steps the ``Variants`` has when it is called, and the
     ``Variants`` is as it was afterwards.
 
+    `stats` and the arguments after it are given by name; `variants` and
+    `pops` are positional. Three calculations of popnei take both a set of
+    populations and a choice of what to compute, and they order the two
+    differently: the argument after the variants is `stats` in
+    :func:`popnei.calc_per_var_distribs` and `pops` in
+    :func:`popnei.calc_pop_dists` and here, so one position meant two things
+    and a reader of a call could not tell which. The name says which.
+
     `pops` is a dict of population name to the names of its individuals,
     which are looked up among :attr:`popnei.Variants.individuals`, the ones
     the pass gives. With no `pops` there is one population, ``pop``, of every
@@ -215,10 +246,15 @@ def calc_pop_diversity(
     counted in each of them.
 
     `stats` says which of the five to calculate, as members of
-    :class:`popnei.PopDiversityStat`, all five by default. One that is not
-    asked for is ``None`` in the result. Anything that is not a member, a
-    name written as a string among them, is a ``TypeError``, so that a name
-    with a typo in it cannot pass; no statistic at all is a ``ValueError``.
+    :class:`popnei.PopDiversityStat`. One that is not asked for is ``None``
+    in the result. The default is the four that need no draw, which
+    :attr:`popnei.PopDiversityStat.WITHOUT_A_DRAW` holds: the alleles each
+    population called, the private ones among them, the variants that vary
+    in it and F_IS. The spectrum is not one of them, its bins being counts of
+    the rarer allele in a draw, so a user who wants it names it in `stats`
+    and gives a `num_called_alleles`. Anything that is not a member, a name written as a
+    string among them, is a ``TypeError``, so that a name with a typo in it
+    cannot pass; no statistic at all is a ``ValueError``.
 
     `num_called_alleles` is how many called alleles every population is
     brought down to, so that a population of 20 individuals and one of 200
@@ -353,9 +389,9 @@ def _refuse_what_is_not_built_yet(
         raise NotImplementedError(
             f"popnei does not compute the folded site frequency spectrum yet: it "
             f"is work package 3 of `docs/plans/diversity.md`, and `stats` names "
-            f"it, a call that gives no `stats` asking for all five statistics. "
-            f"Write stats=({_THE_FOUR_THAT_ARE_COMPUTED},) for the four that "
-            f"are computed."
+            f"it. Leave `stats` out, or write "
+            f"stats=({_THE_FOUR_THAT_ARE_COMPUTED},), for the four that are "
+            f"computed."
         )
     if _is_a_draw_the_pass_would_take(num_called_alleles):
         raise NotImplementedError(

@@ -325,6 +325,38 @@ test("one population holds every allele it called as a private one", () => {
   assert.equal(diversity.numVarsEveryPop, PANEL_NUM_VARS);
 });
 
+test("a call that names no statistic gives the four that need no draw", () => {
+  // `calcPopDiversity(variants)` with no options at all: the four statistics
+  // that need no draw and no spectrum, over one population of every
+  // individual. The bins of the spectrum are counts of the rarer allele in a
+  // draw of `numCalledAlleles`, so while the default was all five this call
+  // refused itself and named an option the user had not written.
+  const variants = panel();
+  let diversity: PopDiversity;
+  try {
+    diversity = calcPopDiversity(variants);
+  } finally {
+    variants.free();
+  }
+
+  assert.deepEqual(diversity.pops, ["pop"]);
+  const alleles = counted(diversity.numAlleles, "count of alleles");
+  assert.ok((alleles.total[0] as number) > 0);
+  assert.ok(
+    (counted(diversity.privateAlleles, "count of private alleles")
+      .total[0] as number) > 0,
+  );
+  assert.ok(
+    (counted(diversity.variableVarsRatio, "ratio of variable variants")
+      .total[0] as number) > 0,
+  );
+  assert.ok(!Number.isNaN((diversity.fis as Float64Array)[0] as number));
+  // The one statistic that needs a draw is not in the default, and naming it
+  // without a draw is refused as it was.
+  assert.equal(diversity.foldedSfs, null);
+  assert.deepEqual(diversity.numVars.withData, Uint32Array.of(PANEL_NUM_VARS));
+});
+
 test("a draw of a common number of called alleles is refused until it is calculated", () => {
   // THE DAY THE DRAW ARRIVES THIS TEST FAILS, AND THAT IS WHAT IT IS FOR.
   // Nothing of the draw is calculated: the three `inDraw` columns are NaN,
@@ -347,8 +379,7 @@ test("a draw of a common number of called alleles is refused until it is calcula
   assert.throws(() => ofThePanel({ stats: ["folded_sfs"] }), {
     message: /folded site frequency spectrum/,
   });
-  // A call that gives no `stats` asks for all five, the spectrum among them.
-  assert.throws(() => ofThePanel(), {
+  assert.throws(() => ofThePanel({ stats: ["fis", "folded_sfs"] }), {
     message: /folded site frequency spectrum/,
   });
 });

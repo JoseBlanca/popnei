@@ -74,6 +74,20 @@ impl DiversityStats {
         .union(DiversityStats::FOLDED_SFS)
         .union(DiversityStats::FIS);
 
+    /// The four statistics that need no draw, built from their four
+    /// constants: every one but the folded spectrum, whose bins are the
+    /// counts of the rarer allele in a draw of `num_called_alleles`.
+    ///
+    /// It is what a Python or a TypeScript user who names no statistic asks
+    /// for, so that a call with the variants and nothing else runs.
+    /// [`DiversityStats::ALL`] is these four and the spectrum, so a
+    /// statistic added to the module belongs to one of the two sets, and the
+    /// test of this one fails when it is in neither.
+    pub const WITHOUT_A_DRAW: DiversityStats = DiversityStats::NUM_ALLELES
+        .union(DiversityStats::PRIVATE_ALLELES)
+        .union(DiversityStats::VARIABLE_VARS_RATIO)
+        .union(DiversityStats::FIS);
+
     /// The name of each of the five statistics beside the statistic it
     /// names, in the order of the constants above, which is the order of
     /// the fields of a result.
@@ -161,6 +175,23 @@ impl DiversityStats {
     #[must_use]
     pub const fn union(self, other: DiversityStats) -> DiversityStats {
         DiversityStats(self.0 | other.0)
+    }
+
+    /// The name of each statistic of this set, in the order of
+    /// [`DiversityStats::NAMES_AND_STATS`].
+    ///
+    /// A binding crate gives its package the names of
+    /// [`DiversityStats::WITHOUT_A_DRAW`] with this, which is the `stats` a
+    /// user who names none asks for: the four are named here and not in
+    /// each package, so a statistic that needs no draw is added to one set
+    /// and reaches both languages.
+    #[must_use]
+    pub fn names(self) -> Vec<&'static str> {
+        DiversityStats::NAMES_AND_STATS
+            .iter()
+            .filter(|(_, stat)| self.contains(*stat))
+            .map(|(name, _)| *name)
+            .collect()
     }
 }
 
@@ -1598,6 +1629,42 @@ mod the_pass {
         assert!(DiversityStats::ALL.contains(two));
         assert!(DiversityStats::ALL.contains(DiversityStats::FOLDED_SFS));
         assert!(!DiversityStats::empty().contains(DiversityStats::NUM_ALLELES));
+    }
+
+    /// `WITHOUT_A_DRAW` holds the four statistics that need no draw and
+    /// not the folded spectrum, and it holds the rest of `ALL`, so that a
+    /// statistic added to the module is in one of the two sets.
+    #[test]
+    fn without_a_draw_holds_the_four_statistics_that_need_no_draw() {
+        for stat in [
+            DiversityStats::NUM_ALLELES,
+            DiversityStats::PRIVATE_ALLELES,
+            DiversityStats::VARIABLE_VARS_RATIO,
+            DiversityStats::FIS,
+        ] {
+            assert!(
+                DiversityStats::WITHOUT_A_DRAW.contains(stat),
+                "the statistics that need no draw hold {:?}",
+                stat.names()
+            );
+        }
+        assert!(!DiversityStats::WITHOUT_A_DRAW.contains(DiversityStats::FOLDED_SFS));
+        // The two sets are the whole module between them. A sixth statistic
+        // left out of either, and a `WITHOUT_A_DRAW` written as a number
+        // that the four constants moved away from, fail here.
+        assert_eq!(
+            DiversityStats::WITHOUT_A_DRAW | DiversityStats::FOLDED_SFS,
+            DiversityStats::ALL
+        );
+        assert_eq!(
+            DiversityStats::WITHOUT_A_DRAW.names(),
+            [
+                "num_alleles",
+                "private_alleles",
+                "variable_vars_ratio",
+                "fis"
+            ]
+        );
     }
 
     /// Four of the six variants count for each population of the worked

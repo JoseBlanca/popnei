@@ -183,6 +183,23 @@ fn of_every_pop<T>(num_pops: usize, of_the_pop: impl Fn(usize) -> Option<T>) -> 
     (0..num_pops).map(of_the_pop).collect()
 }
 
+/// The names of the statistics that need no draw, which is what a user who
+/// names no statistic in `stats` asks for: the alleles a population called,
+/// the private ones among them, the variants that vary in it and F_IS.
+///
+/// The TypeScript package asks for these when a call gives no `stats`. The
+/// four are named in the core alone, and not there as well as in the Python
+/// package, so a statistic that needs no draw is added in one place.
+#[wasm_bindgen]
+#[must_use]
+pub fn diversity_stats_without_a_draw() -> Vec<String> {
+    DiversityStats::WITHOUT_A_DRAW
+        .names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The statistics a user asked for, out of the names the TypeScript package
 /// gives them, which are the core's.
 ///

@@ -295,6 +295,19 @@ fn of_a_result_each(counts: Vec<u64>) -> Result<Vec<i64>, PyPopneiError> {
     counts.into_iter().map(of_a_result).collect()
 }
 
+/// The names of the statistics that need no draw, which is what a user who
+/// names no statistic in `stats` asks for: the alleles a population called,
+/// the private ones among them, the variants that vary in it and F_IS.
+///
+/// The Python package builds the default of its `stats` from this list. The
+/// four are named in the core alone, and not there as well as in the
+/// TypeScript package, so a statistic that needs no draw is added in one
+/// place.
+#[pyfunction]
+pub fn diversity_stats_without_a_draw() -> Vec<&'static str> {
+    DiversityStats::WITHOUT_A_DRAW.names()
+}
+
 /// The statistics a user asked for, out of the names the Python package
 /// gives them, which are the core's.
 ///

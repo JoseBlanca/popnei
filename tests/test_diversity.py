@@ -308,6 +308,59 @@ def test_a_statistic_that_was_not_asked_for_has_no_value() -> None:
     assert diversity.num_vars.loc["p0", "with_data"] == PANEL_NUM_VARS
 
 
+def test_a_call_that_names_no_statistic_gives_the_four_that_need_no_draw() -> None:
+    """`calc_pop_diversity(variants)`, with no other argument, gives the four
+    statistics that need no draw and no spectrum.
+
+    Those four are what `PopDiversityStat.WITHOUT_A_DRAW` holds. The bins of
+    the spectrum are counts of the rarer allele in a draw of
+    `num_called_alleles`, so while the default was all five the plainest call
+    of the module refused itself and its message named an argument the user
+    had not written.
+    """
+    assert PopDiversityStat.WITHOUT_A_DRAW == (
+        PopDiversityStat.NUM_ALLELES,
+        PopDiversityStat.PRIVATE_ALLELES,
+        PopDiversityStat.VARIABLE_VARS_RATIO,
+        PopDiversityStat.FIS,
+    )
+
+    diversity = calc_pop_diversity(_panel())
+
+    assert diversity.pops == ("pop",)
+    assert diversity.num_alleles.loc["pop", "total"] > 0
+    assert diversity.private_alleles.loc["pop", "total"] > 0
+    assert diversity.variable_vars_ratio.loc["pop", "total"] > 0
+    assert not math.isnan(diversity.fis["pop"])
+    # The one statistic that needs a draw is not in the default, and naming
+    # it without a draw is refused as it was.
+    assert diversity.folded_sfs is None
+    assert diversity.num_vars.loc["pop", "with_data"] == PANEL_NUM_VARS
+
+
+def test_the_default_stats_are_the_ones_of_the_core() -> None:
+    """The four statistics that need no draw are named in the Rust core, and
+    the package reads them from it, so that one added there is in the default
+    of both packages with nothing written in either."""
+    assert PopDiversityStat.WITHOUT_A_DRAW == tuple(
+        PopDiversityStat(name) for name in _core.diversity_stats_without_a_draw()
+    )
+    assert PopDiversityStat.FOLDED_SFS not in PopDiversityStat.WITHOUT_A_DRAW
+
+
+def test_the_statistics_are_given_by_name_and_not_after_the_populations() -> None:
+    """`stats` and the two arguments after it are keyword only, so that the
+    argument after the variants cannot mean the populations in one function of
+    popnei and the statistics in another. `variants` and `pops` stay
+    positional."""
+    with pytest.raises(TypeError, match="positional"):
+        calc_pop_diversity(_panel(), PANEL_POPS, WITH_NO_SPECTRUM)
+
+    diversity = calc_pop_diversity(_panel(), PANEL_POPS, stats=WITH_NO_SPECTRUM)
+
+    assert diversity.pops == PANEL_POP_NAMES
+
+
 def test_the_draw_and_the_spectrum_are_not_built_yet() -> None:
     """A `num_called_alleles` and a `stats` that names the spectrum are
     refused while the pass computes neither, and the message names the work
@@ -322,10 +375,8 @@ def test_the_draw_and_the_spectrum_are_not_built_yet() -> None:
         _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=20)
     with pytest.raises(NotImplementedError, match="work package 3"):
         _of_the_panel(stats=(PopDiversityStat.FOLDED_SFS,))
-    # The call with no `stats` at all asks for the five, the spectrum among
-    # them, which is how a user meets this first.
     with pytest.raises(NotImplementedError, match="folded site frequency spectrum"):
-        _of_the_panel()
+        _of_the_panel(stats=(PopDiversityStat.FIS, PopDiversityStat.FOLDED_SFS))
 
 
 def test_a_num_called_alleles_that_is_no_draw_is_refused_as_a_wrong_argument() -> None:
@@ -433,13 +484,12 @@ def test_the_folded_spectrum_of_the_panel_is_dadis() -> None:
 )
 def test_the_spectrum_asked_for_with_no_draw_is_refused() -> None:
     """The bins of a folded spectrum are the counts of the rarer allele in a
-    draw, so the spectrum needs `num_called_alleles`. It is the default
-    `stats`, so a call that asks for everything and gives no draw is refused
-    too."""
+    draw, so the spectrum needs `num_called_alleles`. A user who names no
+    statistic asks for the four that need no draw and does not reach this."""
     with pytest.raises(ValueError, match="num_called_alleles"):
         _of_the_panel(stats=(PopDiversityStat.FOLDED_SFS,))
     with pytest.raises(ValueError, match="folded site frequency spectrum"):
-        _of_the_panel()
+        _of_the_panel(stats=(PopDiversityStat.FIS, PopDiversityStat.FOLDED_SFS))
 
 
 def test_a_draw_of_fewer_than_two_alleles_is_refused() -> None:

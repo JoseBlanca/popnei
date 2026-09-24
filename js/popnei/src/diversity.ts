@@ -26,7 +26,10 @@
  * assert.
  */
 
-import { default_min_num_individuals as defaultMinNumIndividuals } from "../wasm/popnei.js";
+import {
+  default_min_num_individuals as defaultMinNumIndividuals,
+  diversity_stats_without_a_draw as statsWithoutADraw,
+} from "../wasm/popnei.js";
 
 import {
   LARGEST_WHOLE_NUMBER,
@@ -88,14 +91,16 @@ const THE_FOUR_THERE_ARE = THE_STATISTICS.filter(
 /** What `calcPopDiversity` calculates, for which populations and how. */
 export interface CalcPopDiversityOptions {
   /**
-   * Which of the five statistics to calculate, all of them when it is not
-   * given. Asking for fewer is a saving of work and changes no value, and a
-   * result holds `null` for one nobody asked for.
+   * Which of the five statistics to calculate. The default is the four that
+   * need no draw: the alleles a population called, the private ones among
+   * them, the variants that vary in it and F_IS. Asking for fewer is a
+   * saving of work and changes no value, and a result holds `null` for one
+   * nobody asked for.
    *
-   * `folded_sfs` is refused today, and so is a call that gives no `stats`,
-   * since that asks for all five: the spectrum is over a draw of
-   * `numCalledAlleles`, and neither is calculated yet. Ask for the other
-   * four.
+   * `folded_sfs` is the fifth and is not in the default, its bins being
+   * counts of the rarer allele in a draw of `numCalledAlleles`. It is
+   * refused today, since neither the draw nor the spectrum is calculated
+   * yet.
    */
   stats?: readonly PopDiversityStat[];
 
@@ -347,10 +352,11 @@ export interface PopDiversity {
  * Four of the five are calculated. The draw of a common number of called
  * alleles is not, so a call that gives `numCalledAlleles` is refused, and so
  * is one that asks for the folded spectrum, whose bins are counts of the
- * rarer allele in such a draw; a call that gives no `stats` asks for all
- * five and is refused with it. What a result holds today is the alleles each
- * population called, the private ones among them, the variants that vary in
- * it and F_IS, each over the called alleles the population has.
+ * rarer allele in such a draw. Those four are the default `stats`, the ones
+ * that need no draw, so a call that gives no options runs: what a result
+ * holds today is the alleles each population called, the private ones among
+ * them, the variants that vary in it and F_IS, each over the called alleles
+ * the population has.
  *
  * pyNei has none of the five, so no result here is compared with it.
  *
@@ -452,7 +458,11 @@ export function calcPopDiversity(
 
 /**
  * The names of the statistics a user asked for, each once and in the order
- * they named them, and the five of them when they named none.
+ * they named them, and the four that need no draw when they named none.
+ *
+ * Those four are the set the core holds, so a statistic that needs no draw is
+ * added there and is in the default of this package and of the Python one
+ * with nothing written in either.
  *
  * What is refused here is what is no array of names at all. Which names there
  * are is the core's rule, and so is a `stats` that names none, which the core
@@ -462,7 +472,7 @@ export function calcPopDiversity(
  */
 function theStats(stats: readonly PopDiversityStat[] | undefined): string[] {
   if (stats === undefined) {
-    return [...THE_STATISTICS];
+    return statsWithoutADraw();
   }
   const asked = namesOf("stats", stats, {
     oneOfThem: "statistic",
@@ -555,8 +565,8 @@ function theNumCalledAlleles(
  * rule, so a number that is no draw at all is refused as the wrong argument
  * it is before this is reached.
  *
- * @throws {Error} When `stats` holds `folded_sfs`, which a call that gives no
- * `stats` does, and when `numCalledAlleles` was given.
+ * @throws {Error} When `stats` holds `folded_sfs`, and when
+ * `numCalledAlleles` was given.
  */
 function refuseTheDraw(
   numCalledAlleles: number | undefined,
@@ -566,9 +576,9 @@ function refuseTheDraw(
     throw new Error(
       "popnei: the folded site frequency spectrum is counted in a draw of " +
         "`numCalledAlleles`, and neither the draw nor the spectrum is " +
-        `calculated yet: both are ${WHERE_THE_DRAW_IS_BUILT}. A call that ` +
-        "gives no `stats` asks for all five statistics, so name in `stats` " +
-        `the four there are, ${THE_FOUR_THERE_ARE}`,
+        `calculated yet: both are ${WHERE_THE_DRAW_IS_BUILT}. Leave \`stats\` ` +
+        "out, or name in it the four statistics there are, " +
+        `${THE_FOUR_THERE_ARE}`,
     );
   }
   if (numCalledAlleles !== undefined) {
