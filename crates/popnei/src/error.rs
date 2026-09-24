@@ -1433,7 +1433,7 @@ pub enum Error {
     /// its inverse is infinities. It is reached by giving the trait as one
     /// of its own covariates and by covariates that together predict it
     /// exactly, which is a design a user built wrong and not a defect of
-    /// popnei: what it gave until 25 September 2026 was the linear
+    /// popnei: what it gave until 24 September 2026 was the linear
     /// algebra's refusal of a matrix that is not finite, naming an operand
     /// of a product and the file the variants came from, neither of which
     /// is at fault. In Python it is a `ValueError`, as the trait of one

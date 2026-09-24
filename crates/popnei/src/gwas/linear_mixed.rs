@@ -476,7 +476,7 @@ pub(crate) struct LinearMixedModel {
     /// quadratic form, so no value of its diagonal is below 0 and the
     /// largest of them is at most that eigenvalue, which makes this an
     /// under-estimate of the scale the threshold is meant to measure. By
-    /// how much was measured on 25 September 2026: the largest eigenvalue
+    /// how much was measured on 24 September 2026: the largest eigenvalue
     /// is 1.697 times the largest diagonal entry on `panel_called` and
     /// 1.725 times it on `panel`, so the threshold sits about 1.7 times
     /// below the scale. It is the diagonal that is taken because it costs
@@ -524,7 +524,7 @@ impl LinearMixedModel {
     /// The eigenvalues of the kinship are clamped at 0 before use. A
     /// kinship of genotypes with nothing missing has none below 0 but for
     /// rounding, -3.4416913763379853e-15 on the panel of
-    /// `docs/specs/gwas.md`, measured with numpy on 25 September 2026; the per
+    /// `docs/specs/gwas.md`, measured with numpy on 24 September 2026; the per
     /// pair denominators of `docs/specs/kinship.md` put them there,
     /// -0.0321 on the panel with 3 in 100 genotypes missing, and a
     /// negative eigenvalue would make the covariance of the trait not a
@@ -1360,7 +1360,7 @@ pub(crate) mod lmm {
     ///
     /// **What it does not check is that the search reached its optimum**,
     /// which this comment and deliverable 2 of work package 4 of
-    /// `docs/plans/gwas-linear.md` both said until 25 September 2026. The
+    /// `docs/plans/gwas-linear.md` both said until 24 September 2026. The
     /// genetic variance is that same generalized residual sum of squares
     /// divided by the same degrees of freedom, so `y' p y` comes to `n - c`
     /// for any `delta` whatever: it is an algebraic identity and not
@@ -1823,7 +1823,7 @@ pub(crate) mod lmm {
     /// whatever the split between the genetic variance and the residual
     /// one, so the restricted maximum likelihood has nothing to choose
     /// between them and its criterion is flat over the whole grid. What the
-    /// study gave before this, measured on 25 September 2026 on this
+    /// study gave before this, measured on 24 September 2026 on this
     /// fixture: a `genetic_variance` of 0.00022769126788113066 and a
     /// `heritability` of 6.830738036433921e-05, which reads as a small
     /// number and is an arbitrary one. Perturbing such a kinship by 1e-15
@@ -1923,7 +1923,7 @@ pub(crate) mod lmm {
     /// no fixture can check it on both backends. What is left is 0 in exact
     /// arithmetic, so its sign is whatever the rounding chose, and there is
     /// no regime between the rounding and a threshold that is the rounding
-    /// scale. Measured with the threshold set to 0 on 25 September 2026:
+    /// scale. Measured with the threshold set to 0 on 24 September 2026:
     /// faer answers this variant with an `se` of 1.2167e-8, so faer is
     /// where the size is guarded, while Accelerate leaves a value at or
     /// below 0 and the sign alone refuses it. The evidence that the size is
@@ -2024,7 +2024,7 @@ pub(crate) mod lmm {
     /// implementations of this search land apart, and it is wide because
     /// the criterion is flat at its minimum: an eigenvalue moving in its
     /// last bits moves `delta` by about the square root of that. Measured
-    /// on 25 September 2026, popnei sits 7.72e-8 from pyNei on Accelerate
+    /// on 24 September 2026, popnei sits 7.72e-8 from pyNei on Accelerate
     /// and 6.94e-8 on faer, and the two backends sit 7.8e-9 from each
     /// other. This is 3.2 times the worse of the two.
     ///
@@ -2062,7 +2062,7 @@ pub(crate) mod lmm {
     /// distance popnei and pyNei legitimately sit apart, which the comment
     /// on [`OF_PYNEI_THE_SEARCH`] measures.
     ///
-    /// The literals are numpy's own, printed on 25 September 2026, and they
+    /// The literals are numpy's own, printed on 24 September 2026, and they
     /// are asserted with `total_cmp` and not within a tolerance: the
     /// points come out of `start + at * step` in both libraries, so they
     /// agree to the bit or the grid is another grid. The 45th of them is
@@ -2159,7 +2159,7 @@ pub(crate) mod lmm {
     /// The clamping of the best point's neighbours at the ends of the grid
     /// is one of the six things "The linear mixed model" of
     /// `docs/specs/gwas.md` asks to be reproduced, and nothing reached it:
-    /// measured on 25 September 2026 over every fixture of both suites, the
+    /// measured on 24 September 2026 over every fixture of both suites, the
     /// best index is 44, 46, 47 or 85 and never 0 or 100. A trait of pure
     /// noise does reach it, and it is not a contrived input: it is what a
     /// study of a trait the panel's relatedness has nothing to do with
@@ -2370,7 +2370,7 @@ pub(crate) mod lmm {
     ///
     /// The size of the threshold is guarded here on faer alone, and the
     /// test above says why no fixture can guard it on both: with the
-    /// threshold set to 0, measured on 25 September 2026, faer answers this
+    /// threshold set to 0, measured on 24 September 2026, faer answers this
     /// variant with a `beta` of 2.13 and an `se` of 2.7e7 and Accelerate
     /// refuses it on the sign of its -4.44e-16.
     #[test]
