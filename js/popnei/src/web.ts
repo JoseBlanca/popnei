@@ -31,8 +31,15 @@ export type {
 } from "./gwas.js";
 export { calcKinship, Kinship } from "./kinship.js";
 export type { CalcKinshipOptions, KinshipPcsResult } from "./kinship.js";
-export { calcRogersHuffR2Matrix } from "./ld.js";
-export type { CalcRogersHuffR2MatrixOptions, R2Matrix } from "./ld.js";
+export { calcLdAndDistPerPop, calcRogersHuffR2Matrix } from "./ld.js";
+export type {
+  CalcLdAndDistPerPopOptions,
+  CalcRogersHuffR2MatrixOptions,
+  LdAndDistPerPop,
+  LdBins,
+  LdDecay,
+  R2Matrix,
+} from "./ld.js";
 export { openVars, writeVars } from "./io_vars.js";
 export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
 export { openVcf } from "./io_vcf.js";

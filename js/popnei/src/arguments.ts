@@ -82,13 +82,13 @@ export function wholeNumberOfOneOrMore(
  * bin or more and a ploidy of 1 to 255, is a rule of the core, which holds
  * for every pass and not for this call alone.
  *
- * The arguments that come through here all take 0: `numPrinComps`, how many
- * components the weights are asked for, where 0 asks for none;
- * `minNumSnps`, how many variants a pair of individuals needs before it
- * gets a distance, where 0 is every pair that was called at all and where
- * pyNei takes a negative number and does with it what it does with 0; and
- * `minNumIndividuals`, `ploidy` and `histKwargs.numBins` of the per variant
- * statistics, whose own rules the core holds.
+ * Which numbers the argument itself takes is in the doc comment of the
+ * function that takes it: 0 asks for no component at all in
+ * `numPrinComps`, how many components the weights are asked for, and for
+ * every pair that was called at all in `minNumSnps`, how many variants a
+ * pair of individuals needs before it gets a distance, where pyNei takes a
+ * negative number and does with it what it does with 0. The callers are
+ * not listed here; the list that was here had gone three of them behind.
  *
  * @throws {Error} When `value` is not such a number.
  */
@@ -150,28 +150,44 @@ export function varsOfTheMatrixOfEveryPair(
 }
 
 /**
- * `value` when it is a whole number of base pairs of 1 or more that a
- * number of JavaScript counts to one by one, and an `Error` that names
- * `argument` and what was given otherwise.
+ * `value` when it is a whole number of base pairs of `smallest` or more
+ * that a number of JavaScript counts to one by one, and an `Error` that
+ * names `argument` and what was given otherwise.
  *
  * The window of `filterByLd` comes through here, how many base pairs behind
- * a variant the variants it is compared with reach. The core takes it as a
+ * a variant the variants it is compared with reach, and so do the `minDist`
+ * and the `maxDist` of `calcLdAndDistPerPop`, the distances a pair of
+ * variants is counted at. The core takes each of them as a
  * 64 bit whole number, which a Python user can fill to 1.8e19, and
  * JavaScript is what cuts it at 2^53 - 1: the numbers above that one no
- * longer run one by one, so a window written there would reach the core as
+ * longer run one by one, so a distance written there would reach the core as
  * another number than the one that was written. No genome comes near
  * either of the two: the largest known, over 1e11 base pairs in all of its
  * chromosomes together, is smaller by more than four orders of magnitude.
  *
+ * `smallest` is the smallest number the argument takes: 1 for a window,
+ * which is no stretch of a chromosome at 0, and 0 for the two distances of
+ * the fall-off of r², where a `minDist` of 0 counts the pairs of two
+ * variants at one position and a `maxDist` of 0 is left to the core, which
+ * has its own word for a range that counts no pair.
+ *
  * @throws {Error} When `value` is not such a number.
  */
-export function distanceInBasePairs(argument: string, value: unknown): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+export function distanceInBasePairs(
+  argument: string,
+  value: unknown,
+  smallest: 0 | 1 = 1,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < smallest
+  ) {
     throw new Error(
-      `popnei: \`${argument}\` is a whole number of base pairs of 1 or more ` +
-        `and at most ${LARGEST_EXACT_WHOLE_NUMBER}, the largest whole number ` +
-        `a number of JavaScript counts to one by one, and ` +
-        `${whatWasGiven(value)} was given`,
+      `popnei: \`${argument}\` is a whole number of base pairs of ` +
+        `${smallest} or more and at most ${LARGEST_EXACT_WHOLE_NUMBER}, the ` +
+        `largest whole number a number of JavaScript counts to one by one, ` +
+        `and ${whatWasGiven(value)} was given`,
     );
   }
   return value;

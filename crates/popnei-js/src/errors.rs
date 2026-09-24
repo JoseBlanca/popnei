@@ -182,7 +182,13 @@ impl From<JsPopneiError> for JsValue {
 /// `poly_threshold` and `bin_type`, which `stats.rs` writes as
 /// `polyThreshold` and `binType` before the error gets here.
 ///
-/// Three of the eight names the core writes are left as they are.
+/// The three of the fall-off of r² with distance, `min_dist`, `max_dist`
+/// and `max_allowed_maf`, are rewritten here as well, in three errors: the
+/// range of distances, the frequency a variant is counted below, and the
+/// bins of no bin, whose message names the two distances the bins are cut
+/// across beside `num_bins`.
+///
+/// Three of the eleven names the core writes are left as they are.
 /// `num_prin_comps` is in the error of a second pass that was not made,
 /// which `pca.rs` of this crate opens a reader for whenever the weights are
 /// asked for, so no call of TypeScript reaches it. The `max_num_vars` of a
@@ -200,6 +206,22 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
     }
     if matches!(error, popnei::Error::HistWithNoBin) {
         return message.replace("num_bins", "numBins");
+    }
+    // The bins of the fall-off are cut across the distances from `min_dist`
+    // to `max_dist`, which the message names beside `num_bins`.
+    if matches!(error, popnei::Error::LdNoBins) {
+        return message
+            .replace("num_bins", "numBins")
+            .replace("min_dist", "minDist")
+            .replace("max_dist", "maxDist");
+    }
+    if matches!(error, popnei::Error::LdMinDistAboveMaxDist { .. }) {
+        return message
+            .replace("min_dist", "minDist")
+            .replace("max_dist", "maxDist");
+    }
+    if matches!(error, popnei::Error::LdMaxAllowedMafOutOfRange { .. }) {
+        return message.replace("max_allowed_maf", "maxAllowedMaf");
     }
     if matches!(
         error,

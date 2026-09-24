@@ -319,7 +319,7 @@ fn the_stats(names: &[String]) -> Result<Vec<PerVarStat>, PyPopneiError> {
 /// A name that is not an individual of the pass, a name twice in one
 /// population, a population that names no individual, and `pops` with no
 /// population at all.
-fn the_pops(
+pub(crate) fn the_pops(
     pops: Option<&[(String, Vec<String>)]>,
     individuals: &[String],
 ) -> Result<Pops, popnei::Error> {

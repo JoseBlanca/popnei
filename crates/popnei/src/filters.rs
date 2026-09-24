@@ -746,6 +746,7 @@ impl LdFilter {
             return Err(Error::LdNoMemory {
                 what: "the chromosomes read",
                 values: chroms,
+                bytes_per_value: size_of::<bool>(),
             });
         };
         if !*read {
@@ -1001,9 +1002,11 @@ fn the_dosages_of(
 /// `push` or an `extend` would end the process, as `docs/specs/filters.md`
 /// asks for a window this machine has not the memory of.
 fn the_room_for<T>(vector: &mut Vec<T>, more: usize, what: &'static str) -> Result<()> {
-    vector
-        .try_reserve(more)
-        .map_err(|_| Error::LdNoMemory { what, values: more })
+    vector.try_reserve(more).map_err(|_| Error::LdNoMemory {
+        what,
+        values: more,
+        bytes_per_value: size_of::<T>(),
+    })
 }
 
 /// A copy of `values`, which `what` names, with its memory asked of this
@@ -1018,6 +1021,7 @@ fn the_copy_of<T: Copy>(values: &[T], what: &'static str) -> Result<Vec<T>> {
         .map_err(|_| Error::LdNoMemory {
             what,
             values: values.len(),
+            bytes_per_value: size_of::<T>(),
         })?;
     copy.extend_from_slice(values);
     Ok(copy)
@@ -1033,7 +1037,11 @@ fn the_buffer_of<T: Clone>(value: T, values: usize, what: &'static str) -> Resul
     let mut buffer: Vec<T> = Vec::new();
     buffer
         .try_reserve_exact(values)
-        .map_err(|_| Error::LdNoMemory { what, values })?;
+        .map_err(|_| Error::LdNoMemory {
+            what,
+            values,
+            bytes_per_value: size_of::<T>(),
+        })?;
     buffer.resize(values, value);
     Ok(buffer)
 }

@@ -1148,10 +1148,13 @@ pub enum Error {
         ploidy: usize,
     },
 
-    /// One of the matrices the r² of a set of variants is worked out
-    /// through, and that this machine did not give the memory for: one of
-    /// the three matrices of the dosages, or one of the six sums of the
-    /// pairs of two sets. The memory is asked for
+    /// Something the r² of a set of variants is worked out with, and that
+    /// this machine did not give the memory for: one of the three matrices
+    /// of the dosages, one of the six sums of the pairs of two sets, the r²
+    /// of a pair of tiles, and, in the pass of the fall-off of r² with
+    /// distance, the populations it counts, the bins of each of them, the
+    /// genotypes of the variants of the window of a population and where
+    /// each of those variants lies. The memory is asked for
     /// with `try_reserve_exact`, which gives it back as this error where
     /// `vec![0.0; n]` would end the process, and which also refuses a
     /// matrix whose bytes a `usize` does not count, as one of more than
@@ -1159,13 +1162,20 @@ pub enum Error {
     /// Python it is a `ValueError` that names no file, since what it
     /// refuses is the size of the calculation and not what any file holds:
     /// calculate over fewer variants or over fewer individuals.
-    #[error("this machine has not the memory for {what} of the r², {values} values of 8 bytes")]
+    #[error(
+        "this machine has not the memory for {what}, {values} values of {bytes_per_value} bytes"
+    )]
     LdNoMemory {
-        /// Which matrix could not be allocated, as "How it runs" of
+        /// What could not be allocated, as "How it runs" of
         /// `docs/specs/ld.md` names them.
         what: &'static str,
         /// How many values it holds.
         values: usize,
+        /// How many bytes one of those values holds, which is 8 for the
+        /// matrices and not for everything the pass of the fall-off keeps:
+        /// a genotype is one byte, and a variant of the window is a
+        /// chromosome and a position.
+        bytes_per_value: usize,
     },
 
     /// An individual was asked for more than once when a set of dosages
@@ -1257,6 +1267,162 @@ pub enum Error {
         /// How many variants the calculation was allowed to take.
         max_num_vars: usize,
     },
+
+    /// The `max_allowed_maf` of the fall-off of r² with distance is not a
+    /// number from 0 to 1, both included: it is NaN, it is below 0 or it
+    /// is above 1. A variant is counted in a population when its major
+    /// allele frequency there is at most that number, and a major allele
+    /// frequency is one count of the variant divided by another, so it
+    /// lies between 0 and 1: a threshold outside the range leaves every
+    /// variant of every population in or takes every one out, and a NaN
+    /// one takes every one out, since no comparison with NaN holds. In
+    /// Python it is a `ValueError` that names no file: it is the number a
+    /// user writes at the call.
+    #[error(
+        "`max_allowed_maf` is {value:?}, and it is a number from 0 to 1, both included: a variant is counted in a population when its major allele frequency there is at most that number, and a frequency is one count of the variant divided by another"
+    )]
+    LdMaxAllowedMafOutOfRange {
+        /// The number that was given for it.
+        value: f64,
+    },
+
+    /// A population of the fall-off of r² with distance names no
+    /// individual. The r² of a population is taken over its individuals,
+    /// so one with none holds no pair and no variant of its own; and a
+    /// population that names no individual is how a caller of the core
+    /// asks for every individual of the dataset, so one left empty by
+    /// mistake would be counted over all of them and not over its own. A
+    /// caller that wants one population of every individual gives no
+    /// population at all. In Python it is a `ValueError` that names no
+    /// file: it is the individuals a user wrote for that population.
+    ///
+    /// The message gives the position of the population and not its name,
+    /// which is what a caller of the core has, since it gives the
+    /// populations as the indices of their individuals. Neither binding
+    /// crate reaches this case: both look the individuals of each
+    /// population up by name before the pass and refuse an empty one with
+    /// [`Error::PopWithNoIndividual`], whose message names the
+    /// population.
+    #[error(
+        "the population at the position {pop} names no individual, and the r² of a population is taken over its individuals; a caller that wants one population of every individual gives no population at all"
+    )]
+    LdPopWithNoIndividual {
+        /// Where the population is among the ones given, from 0.
+        pop: usize,
+    },
+
+    /// The `min_dist` of the fall-off of r² with distance is above its
+    /// `max_dist`. A pair is counted when the distance of its two variants
+    /// is from `min_dist` to `max_dist`, both included, so a `min_dist`
+    /// above `max_dist` names an empty range and counts no pair at all,
+    /// which is a call written wrong and not a dataset with nothing in it.
+    /// In Python it is a `ValueError` that names no file: the two numbers
+    /// are what a user writes at the call.
+    #[error(
+        "`min_dist` is {min_dist} and `max_dist` is {max_dist}: a pair is counted when the distance of its two variants is from `min_dist` to `max_dist`, both included, so a `min_dist` above `max_dist` counts no pair at all"
+    )]
+    LdMinDistAboveMaxDist {
+        /// The smallest distance a pair is counted at, which was given
+        /// above `max_dist`.
+        min_dist: u64,
+        /// The largest distance a pair is counted at.
+        max_dist: u64,
+    },
+
+    /// The `num_bins` of the fall-off of r² with distance is 0. The pairs
+    /// are put into that many bins of equal width across the distances
+    /// from `min_dist` to `max_dist`, and no bin at all is a result with
+    /// no row: a caller that wants the pairs and not the curve of them
+    /// asks for one bin. In Python it is a `ValueError` that names no
+    /// file: it is the number a user writes at the call.
+    #[error(
+        "`num_bins` is 0, and the pairs are put into that many bins of equal width across the distances from `min_dist` to `max_dist`: a result of no bin holds nothing, and one bin holds every pair of that range"
+    )]
+    LdNoBins,
+
+    /// A population of a pass of the fall-off has no dosages when the pass
+    /// ends. The n of the curve fitted to a population is the individuals
+    /// its dosages were built over, and a population that has none has
+    /// taken no block. It is a defect of popnei and not anything a user
+    /// wrote: a pass that gave no variant is refused before any curve is
+    /// fitted, and a pass that gave one took its block into every
+    /// population. In Python it is a `RuntimeError`, as the other defects
+    /// of popnei are.
+    #[error(
+        "the population {pop} of the fall-off has no dosages when the pass has ended, and the individuals they were built over are the n of the curve fitted to it; the pass counted {num_vars} variants, so every population took a block, which is a defect of popnei; please report it"
+    )]
+    LdPopWithNoDosages {
+        /// Which population of the call it is, from 0, in the order they
+        /// were given.
+        pop: usize,
+        /// How many variants the pass gave, before the major allele
+        /// frequency of any population.
+        num_vars: u64,
+    },
+
+    /// The three arrays the curve of the fall-off is fitted to are not of
+    /// one length. They are the `dists` that hold a pair, the `num_pairs`
+    /// each of them holds and the `sum_r2` of those pairs, the three
+    /// arguments of `fit_ld_decay` of that name, and they are read
+    /// together, one entry at a time, so arrays of different lengths would
+    /// put the pairs of one distance against the sum of another. A pass
+    /// gives the three compacted together and does not reach this; a
+    /// caller of `fit_ld_decay` with a table of its own does. In Python it
+    /// is a `ValueError` that names no file.
+    #[error(
+        "the curve of the fall-off was given a `dists` of {num_dists} values, a `num_pairs` of {num_pairs} and a `sum_r2` of {num_sums}, and the three hold one value for each distance that holds a pair"
+    )]
+    LdDecayArraysOfDifferentLengths {
+        /// How many distances were given.
+        num_dists: usize,
+        /// How many counts of pairs were given.
+        num_pairs: usize,
+        /// How many sums of r² were given.
+        num_sums: usize,
+    },
+
+    /// The population the curve of the fall-off is fitted for has no
+    /// individual. The curve is the r² a population of n individuals is
+    /// expected to be in, and n divides the correction that holds it up at
+    /// long distances, so a population of none has no curve to fit rather
+    /// than a curve with nothing in it. In Python it is a `ValueError`
+    /// that names no file.
+    #[error(
+        "the curve of the fall-off was asked for a population of no individual, and the r² it expects is that of a sample of n individuals, which divides the correction for the sample being finite"
+    )]
+    LdDecayNoIndividuals,
+
+    /// A distance the curve of the fall-off was given holds no pair. The
+    /// distances given are the ones that hold a pair, and what each of
+    /// them weighs in the sum that is made smallest is how many pairs it
+    /// holds, so a distance of no pair weighs nothing and says that the
+    /// three arrays are not the ones a pass compacted. In Python it is a
+    /// `ValueError` that names no file.
+    #[error(
+        "the distance {dist} was given to the curve of the fall-off with no pair, and the distances it is fitted over are the ones that hold a pair"
+    )]
+    LdDecayDistWithNoPair {
+        /// The distance, in base pairs, that was given with no pair.
+        dist: u64,
+    },
+
+    /// A sum of r² the curve of the fall-off was given is not finite or is
+    /// below 0. It is the sum of the r² of the pairs at one distance, each
+    /// of them a square of a correlation and so a number from 0 to 1, and
+    /// the sum that is made smallest is linear in it, so an infinity or a
+    /// NaN there makes every ρ the same and a negative sum pulls the curve
+    /// up where no pair does. In Python it is a `ValueError` that names no
+    /// file.
+    #[error(
+        "the sum of the r² of the pairs at the distance {dist} is {sum_r2}, and it is a sum of squares of correlations: a finite number, 0 or above"
+    )]
+    LdDecaySumOfR2OutOfRange {
+        /// The distance, in base pairs, whose sum of r² was refused.
+        dist: u64,
+        /// The sum that was given for it.
+        sum_r2: f64,
+    },
+
     /// An individual a study was asked to test is not one the source has.
     /// The individuals of a study are given by their position among those
     /// the reader gives, from 0, and this one is at or beyond their count.
@@ -2503,6 +2669,24 @@ impl Error {
             | Self::LdTooManyAllelesInAVariant { .. }
             | Self::LdNoMemory { .. }
             | Self::LdMaxNumVarsTooLarge { .. }
+            // The four arguments of the fall-off of r² with distance, a
+            // largest major allele frequency that is not a frequency, a
+            // population that names no individual, a smallest distance
+            // above the largest one and a count of bins of 0; and the four
+            // of the curve fitted to it, which are the arguments of
+            // `fit_ld_decay`: three arrays that are not one value for each
+            // distance that holds a pair, a population of no individual, a
+            // distance given with no pair, and a sum of r² that is not a
+            // sum of squares of correlations. A pass reaches none of the
+            // last four, since it hands the fit what it counted itself.
+            | Self::LdMaxAllowedMafOutOfRange { .. }
+            | Self::LdPopWithNoIndividual { .. }
+            | Self::LdMinDistAboveMaxDist { .. }
+            | Self::LdNoBins
+            | Self::LdDecayArraysOfDifferentLengths { .. }
+            | Self::LdDecayNoIndividuals
+            | Self::LdDecayDistWithNoPair { .. }
+            | Self::LdDecaySumOfR2OutOfRange { .. }
             // The eighteen of the association study, which "The Rust
             // interface" of `docs/specs/gwas.md` lists: a phenotype or a
             // covariate that is not a finite number, a phenotype that is
@@ -2624,6 +2808,7 @@ impl Error {
             | Self::KinshipLinalg { .. }
             | Self::LdRowsNotInTheDosages { .. }
             | Self::LdDosagesOfOtherIndividuals { .. }
+            | Self::LdPopWithNoDosages { .. }
             | Self::LdR2OfAnotherSize { .. }
             | Self::LdLinalg { .. }
             | Self::PopDistSumsOfAnotherSize { .. }

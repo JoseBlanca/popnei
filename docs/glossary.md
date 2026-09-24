@@ -101,6 +101,42 @@ allele of the variant, from 0 to the ploidy, every allele other than the
 major one counting the same. The dosage matrix is the variants x
 individuals array of them. pyNei: `to_012` and "the 012 matrix".
 
+**fall-off curve.** The r² that two variants of a population are expected
+to be in, against the recombination between them: Hill and Weir (1988)
+with the correction of Weir and Hill (1986) for r² being measured on a
+sample of individuals and not on the whole population. popnei fits it to
+the pairs of each population, and the one number it fits is the ρ per
+base pair below, the individuals of the population entering it as they
+are. `decay` in identifiers, as in `fit_ld_decay` and `decay_per_pop`,
+and "the fall-off curve" or "the fitted curve" in prose.
+`docs/specs/ld.md`. Not used: the LD decay curve, the decay model.
+
+**ρ per base pair.** The one number popnei fits to the fall-off of r²
+with distance: 4Nr, four times the effective size of the population times
+the recombination per base pair, so that two variants d base pairs apart
+are separated by a scaled recombination ρ of d times it. `rho_per_bp` in
+identifiers, and "the ρ per base pair" in prose. popnei cannot tell the
+effective size and the recombination apart and gives their product.
+`docs/specs/ld.md`. Not used: C, which is the letter the papers give it,
+and decay rate.
+
+**r² at distance 0.** The value of the fall-off curve where the two
+variants are 0 base pairs apart, its own ceiling: two variants that never
+recombine still do not reach an r² of 1, because their allele frequencies
+drift apart. How many individuals the population has fixes it on its own,
+0.46198347107438015 at 100 of them, and no pair of the dataset moves it.
+It is what the half distance below is half of. `r2_at_zero` in
+identifiers. `docs/specs/ld.md`. Not used: intercept, plateau, which is
+what a reader may call the 1 over the individuals the curve falls towards
+instead.
+
+**half distance.** The distance at which the fall-off curve above has
+fallen to half of its r² at distance 0. It is the fall-off of linkage
+disequilibrium of a population as one number, and the one a web
+application plots. It is read off the curve, so it can be beyond every
+distance the fit was given. `half_dist` in identifiers.
+`docs/specs/ld.md`. Not used: half life, LD decay distance.
+
 **component.** A principal component: one of the directions, at right
 angles to each other, along which the individuals of a standardized table
 vary most, the first the one with the largest variance. "PC" in the names

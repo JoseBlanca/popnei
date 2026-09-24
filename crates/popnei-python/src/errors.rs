@@ -100,6 +100,27 @@ pub(crate) enum PyPopneiError {
         /// fit in one of Rust.
         value: String,
     },
+    /// An argument that is a distance along a chromosome in base pairs, the
+    /// window of `filter_by_ld` or the `min_dist` and the `max_dist` of the
+    /// fall-off of r² with distance, and holds a number that is no
+    /// distance: a negative one, or one above what 64 bits hold. The core
+    /// takes a distance as a `u64` and not as a `usize`, so what a user may
+    /// write for it is the same number in WebAssembly as it is natively,
+    /// which is why this is not [`PyPopneiError::Count`].
+    Distance {
+        /// The name of the argument, as a Python user writes it.
+        name: &'static str,
+        /// The smallest distance the argument takes: 1 for the window of
+        /// `filter_by_ld`, which is no stretch of a chromosome at 0, and 0
+        /// for the two distances of the fall-off of r² with distance, where
+        /// a `min_dist` of 0 counts the pairs of two variants at one
+        /// position.
+        smallest: u64,
+        /// What was given for it, as Python prints it: an integer of Python
+        /// is of any size, so the number that was refused does not always
+        /// fit in one of Rust.
+        value: String,
+    },
     /// A threshold of a filter that is not a number from 0 to 1, under the
     /// name of the argument a user wrote it in: the core refuses it and
     /// names the filter by its kind, `maf`, and what a user has to look at
@@ -247,6 +268,17 @@ impl From<PyPopneiError> for PyErr {
             } => PyValueError::new_err(format!(
                 "`{name}` is {value}, and it says how many of something there are: a \
                  whole number of {smallest} or more that this machine can count"
+            )),
+            // A distance is held in 64 bits wherever popnei runs, so what
+            // the message states as the largest is that and not what this
+            // machine counts, which in WebAssembly is 4295 million.
+            PyPopneiError::Distance {
+                name,
+                smallest,
+                value,
+            } => PyValueError::new_err(format!(
+                "`{name}` is {value}, and it says a distance along a chromosome in base \
+                 pairs: a whole number of {smallest} or more that 64 bits hold"
             )),
             // The threshold of a filter, which is the number a user wrote
             // in the call that adds it: the message names the argument, and
@@ -430,6 +462,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VarsBlockDoesNotFit { .. }
         | popnei::Error::VarsBlockColumns { .. }
         | popnei::Error::VarsChromNameMissing { .. }
+        // A population of the fall-off of r² with distance that has no
+        // dosages when the pass has ended, which is one more of that kind:
+        // the pass refuses a reader that gave no variant before it fits any
+        // curve, and a pass that gave one took its block into every
+        // population, so a population with none is a defect of the pass and
+        // not the population of no individual that a user can write.
+        | popnei::Error::LdPopWithNoDosages { .. }
         // The two of the principal component analysis that no argument of
         // `do_pca` gives, which is what "Errors and the cases pyNei asserts"
         // of `docs/specs/pca.md` says of them: a buffer that does not hold
@@ -461,18 +500,20 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // work, and a user reports it.
         | popnei::Error::KinshipLinalg { .. }
         // The four of the r² of two sets of variants that no argument of
-        // `calc_rogers_huff_r2_matrix` gives, for the same reason as the
-        // two of the principal component analysis above: a range of
-        // variants that is not in the dosages, which the tiles of the
-        // products and the window of the filter by linkage disequilibrium
-        // ask for; two sets of dosages built over different individuals of
-        // the block, which one call of this crate builds both of; a buffer
-        // for the r² that does not hold one value for each pair, which
-        // this crate holds and a user never sees; and a product of the
-        // linear algebra that did not run, which is left with a result of
-        // more values than the routines of BLAS and LAPACK count in, a
-        // size the cap of `calc_r2_matrix` refuses before a user reaches
-        // it.
+        // `calc_rogers_huff_r2_matrix` or of `calc_ld_and_dist_per_pop`
+        // gives, for the same reason as the two of the principal component
+        // analysis above: a range of variants that is not in the dosages,
+        // which the tiles of the products, the tiles of the pairs of the
+        // fall-off of r² with distance and the window of the filter by
+        // linkage disequilibrium ask for; two sets of dosages built over
+        // different individuals of the block, which one call of this crate
+        // builds both of; a buffer for the r² that does not hold one value
+        // for each pair, which this crate holds and a user never sees; and
+        // a product of the linear algebra that did not run, which is left
+        // with a result of more values than the routines of BLAS and
+        // LAPACK count in, a size the cap of `calc_r2_matrix` refuses
+        // before a user reaches it and the dosages of a window refuse
+        // where they are built.
         | popnei::Error::LdRowsNotInTheDosages { .. }
         | popnei::Error::LdDosagesOfOtherIndividuals { .. }
         | popnei::Error::LdR2OfAnotherSize { .. }
@@ -638,6 +679,27 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // number a user writes at that call: it is looked at before the
         // pass, so the same number is refused whatever the source holds.
         | popnei::Error::LdMaxNumVarsTooLarge { .. }
+        // The four arguments of the fall-off of r² with distance that a
+        // user writes at the call and that are wrong whatever file is
+        // read: a largest major allele frequency that is not a frequency,
+        // a population that names no individual, a smallest distance above
+        // the largest one, and a count of bins of 0.
+        | popnei::Error::LdMaxAllowedMafOutOfRange { .. }
+        | popnei::Error::LdPopWithNoIndividual { .. }
+        | popnei::Error::LdMinDistAboveMaxDist { .. }
+        | popnei::Error::LdNoBins
+        // The four of the curve fitted to the fall-off, which are the
+        // arguments of `fit_ld_decay`: three arrays that are not one value
+        // for each distance that holds a pair, a population of no
+        // individual, a distance given with no pair, and a sum of the r² of
+        // a distance that is not a sum of squares of correlations. A pass
+        // of this package reaches none of them, since it hands the fit what
+        // it counted itself; a caller of the core with a table of its own
+        // does.
+        | popnei::Error::LdDecayArraysOfDifferentLengths { .. }
+        | popnei::Error::LdDecayNoIndividuals
+        | popnei::Error::LdDecayDistWithNoPair { .. }
+        | popnei::Error::LdDecaySumOfR2OutOfRange { .. }
         // The fifteen of the association study that are of what a user
         // wrote: a phenotype or a covariate that is not a finite number, which the package lets
         // through as a value that came out of the user's own arithmetic as
