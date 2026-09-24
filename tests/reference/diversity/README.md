@@ -16,7 +16,8 @@ computes them at all.
 Two terms are used throughout and both are arguments of the module.
 `min_num_individuals`, 20 everywhere here, is how many called genotypes a
 population needs at a variant for the variant to count for it.
-`num_called_alleles`, 20 everywhere here, is the number of called alleles
+`num_called_alleles`, 20 in the two scripts that read the panel and
+smaller in the made up cases of the third, is the number of called alleles
 every population is brought down to: draw that many of the called alleles
 a population has at a variant, without replacement, and take the
 expectation over every such draw, which makes a population of 48
@@ -76,13 +77,16 @@ genotype object that the script builds out of the VCF, which is 0, 0 and
 
 `panel_variable_vars.tsv`, one row per population: `total_adegenet`, the
 variants that vary in it, 1173, 1177 and 1184 of 1200, `ratio`, that total
-over the variants, and `in_draw_vegan`, the chance that a draw of 20
-varies, averaged over the variants. The last column is the
-`in_draw_vegan` of `panel_num_alleles.tsv` minus 1: on a variant of two
-alleles a draw shows one allele or two, so the alleles it is expected to
-show are one plus the chance that it varies. The script stops if any
-variant of the panel has more than two alleles, which is what that
-identity needs.
+over the variants, and `in_draw_vegan_minus_one`, the chance that a draw
+of 20 varies, averaged over the variants. That column is named as it is
+because it is not a second measurement: it is the `in_draw_vegan` of
+`panel_num_alleles.tsv` minus 1. On a variant of two alleles a draw shows
+one allele or two, so the alleles it is expected to show are one plus the
+chance that it varies. `vegan` measures one of the two numbers and the
+other follows. The script stops if any variant of the panel has more than
+two alleles, which is what that identity needs, and on every run it checks
+the identity itself on the 14 pairs of allele counts and draw size that
+"How it is verified" of the variable variants of the spec gives.
 
 Every float in the three files is written to 17 significant digits and not
 to the ten the spec prints, because the tests compare with `vegan` within
@@ -154,41 +158,81 @@ question.
     uv run python tests/reference/diversity/enumerate_private.py
 
 The standardized private alleles of a population are, at one variant, the
-alleles expected to be in its draw of 20 and in no other population's draw
-of 20. They are the one number of the spec that no program outside popnei
-computes. popnei computes them with a closed form, the formula of
-Kalinowski (2004), which for each allele multiplies the chance that the
-population's own draw shows it by the chance that no other population's
-draw shows it. ADZE, the program of Szpiech, Jakobsson and Rosenberg
-(2008) and the only one that gives these values, evaluates that same
-formula from that same paper, so agreeing with ADZE would say that popnei
-copied the formula correctly and nothing about whether the formula
+alleles expected to be in its own draw and in no other population's draw
+of the same size. They are the one number of the spec that no program
+outside popnei computes. popnei computes them with a closed form, the
+formula of Kalinowski (2004), which for each allele multiplies the chance
+that the population's own draw shows it by the chance that no other
+population's draw shows it. ADZE, the program of Szpiech, Jakobsson and
+Rosenberg (2008) and the only one that gives these values, evaluates that
+same formula from that same paper, so agreeing with ADZE would say that
+popnei copied the formula correctly and nothing about whether the formula
 computes the sentence above.
 
 So this script computes each value twice and compares the two. Once by
-that closed form, which by multiplying the chances of the populations
-together assumes that their draws are independent. Once by listing
-every draw each population can make, weighting each draw by the number of
-ways it can be taken, running over every combination of one draw per
-population, counting the alleles that are in the population's own draw and
-in no other, and averaging, which assumes nothing of the kind. Both run in
-`fractions.Fraction`, so they agree exactly or not at all.
+that closed form. Once by listing every draw each population can make,
+weighting each draw by the number of ways it can be taken, running over
+every combination of one draw per population, counting the alleles that
+are in the population's own draw and in no other, and averaging. Both run
+in `fractions.Fraction`, so they agree exactly or not at all.
 
-`enumerate_private.tsv` holds the 18 pairs of a case and a population of
-"How it is verified" of "The private alleles" of the spec: the three
-variants of the worked example that have a draw of 4, and five cases made
-up for the check, of two and three populations at draws of 2 and 3. A case
-is one variant and not a dataset. The eight fields of a line are `case`,
-the name the spec gives it; `allele_counts`, the copies of each allele
-that each population called, the populations separated by ` | `;
-`num_called_alleles`, the size of the draw; `population`, `pop1` for the
-first population of `allele_counts` and so on; `closed_form` and
-`enumerated`, the two values to 17 decimal places, which the cargo tests
-of the module assert and each of which reads back as the float64 nearest
-the exact value, checked by the script and not assumed; `difference`,
-`closed_form` minus `enumerated` as an exact rational, which is `0` on all
-18 lines; and `exact`, the exact rational itself, `14/15` and not
-`0.9333333333`, for a reader checking a line by hand.
+What that comparison is worth, and what it is not. The enumeration never
+writes the closed form down, so it catches any error in the algebra: the
+decomposition into one term per allele, the chance that an allele shows in
+a draw, and the product over the other populations. Dropping the factor
+that asks for the allele to be in no other population's draw makes 19 of
+the 22 pairs that agree differ, measured on 24 September 2026. What it
+does not check is the one assumption the closed form makes, that the draws
+of two populations are independent: the enumeration runs over the
+combinations of one draw per population as a product measure, which is
+that same assumption. For those 22 pairs, whose populations share no
+individual, it is sound rather than circular, because draws from disjoint
+sets of gene copies are independent as a fact of the sampling and not as
+an assumption. Where two populations do share an individual the assumption is
+false and an enumeration over allele counts is as wrong as the formula.
+
+`enumerate_private.tsv` holds 23 pairs of a case and a population, one
+line each, over ten cases. A case is one variant and not a dataset: it
+gives what every population called at that variant, and the value of a
+pair is the per variant value that popnei averages over the variants of a
+population. Eighteen of the pairs are the ones "How it is verified" of
+"The private alleles" of the spec lists: the three variants of the worked
+example that have a draw of 4, and five cases made up for the check, of
+two and three populations at draws of 2 and 3. Two cases are there because
+those 18 leave parts of an implementation untested, nine of their values
+being 0 or 1 and 14 of their 18 population slots having exactly 4 called
+alleles: a single population, which gets every allele it called, and three
+populations of 3, 5 and 6 called alleles, no two alike. The tenth case is
+the shared individual below.
+
+The ten fields of a line are `case`, its name, which for the eighteen is
+the name the spec gives them; `enumerated_over`, which of the two
+enumerations gave the line;
+`allele_counts`, the copies of each allele that each population called,
+the populations separated by ` | `; `num_called_alleles`, the size of the
+draw; `population`, `pop1` for the first population of `allele_counts` and
+so on; `closed_form` and `enumerated`, the two values to 17 decimal
+places, which the cargo tests of the module assert and each of which reads
+back as the float64 nearest the exact value, checked by the script and not
+assumed; `closed_form_exact` and `enumerated_exact`, those same two as
+exact rationals, `14/15` and not `0.9333333333`, for a reader checking a
+line by hand; and `difference`, `closed_form` minus `enumerated` as an
+exact rational.
+
+One line of the file has a difference that is not 0, and it is there on
+purpose. It is the case named "the shared individual, the one pair the
+closed form gets wrong": two populations that are both the one diploid
+individual `0/1`, at a draw of one allele. The closed form gives 1/2. The
+two draws are draws of the same genotype and can never give an allele to
+one population and not the other, so the truth is 0, and the line holds a
+difference of 1/2. That pair is enumerated over the labelled gene copies
+of the individuals rather than over allele counts, so that a copy two
+populations share is drawn by both or by neither, which is what lets it
+show the error; `enumerated_over` reads `labelled gene copies` there and
+`allele counts` on the other 22. The script refuses to write the file
+unless those 22 agree exactly and this one disagrees by exactly 1/2, so a
+difference of 1/2 on this line is the file being right and any other
+difference anywhere is the file not being written at all.
 
 ## What the spec checks and this directory does not hold
 
@@ -200,8 +244,10 @@ standardized private allele value. They come from
 `docs/reports/diversity-method/panel.py`, which computes the five
 quantities in Python as the spec defines them, and they are literals of a
 pytest test, which therefore checks that popnei's Rust agrees with that
-Python and nothing more. What checks the formula is the enumeration above,
-over the 18 pairs.
+Python and nothing more. What checks the algebra of the formula is the
+enumeration above, over the 22 pairs whose populations share no
+individual, and what shows where the formula stops being right is the
+23rd.
 
 ## hierfstat, which would have replaced two of the programs
 
