@@ -706,6 +706,16 @@ test("an empty range, no bin and a frequency out of 0 to 1 are refused under the
           !error.message.includes("num_bins"),
           `the message is ${error.message}`,
         );
+        // The message of `numBins` names the two distances the bins are
+        // cut across, and they are the names of this package as well.
+        assert.ok(
+          !error.message.includes("min_dist"),
+          `the message is ${error.message}`,
+        );
+        assert.ok(
+          !error.message.includes("max_dist"),
+          `the message is ${error.message}`,
+        );
         return true;
       },
     );
