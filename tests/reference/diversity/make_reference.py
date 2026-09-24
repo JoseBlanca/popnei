@@ -45,10 +45,9 @@ the global interpreter lock, which .python-version pins by its patch
 version. What dadi 2.4.4 does not build on is 3.14.7, the free threading
 build that `uv venv --python 3.14` picks by itself on the owner's machine:
 its nlopt dependency compiles from source and stops for want of cmake,
-which is not installed there. Both were measured on 24 September 2026 and
-are recorded in "How it is verified" of the folded spectrum of the spec,
-with the draw of 6 on which dadi gives the same four values on 3.14.5 as on
-3.12.
+which is not installed there. Both were measured on 24 September 2026, and
+docs/reports/diversity.md holds them, with the draw of 6 on which dadi
+gives the same four values on 3.14.5 as on 3.12.
 
 The environment directory also holds the program each process runs, the
 allele counts dadi projects and the genotypes scikit-allel reads, all
@@ -184,43 +183,116 @@ def read_panel():
 
     The genotypes are an array of the variants by the individuals by the
     ploidy, with -1 for an allele that was not called, and the populations a
-    dict of name to the indices of its individuals, in the order of the file.
+    dict of name to the indices of its individuals, in the order of the
+    populations file. What this script cannot read as the reference programs
+    need it is refused with what was wrong: a file with no header line, a line
+    of the wrong number of fields, a FORMAT that is not GT alone, a call of
+    another ploidy, a half called genotype, a variant of more than two alleles
+    and a populations file that does not name the individuals of the VCF.
     """
+    individuals = None
+    rows = []
     with gzip.open(PANEL_VCF, "rt") as handle:
-        rows = []
-        for line in handle:
+        for number, line in enumerate(handle, start=1):
             if line.startswith("##"):
                 continue
             fields = line.rstrip("\n").split("\t")
             if line.startswith("#CHROM"):
                 individuals = fields[9:]
                 continue
-            calls = []
-            for call in fields[9:]:
-                alleles = call.split(":")[0].replace("|", "/").split("/")
-                if len(alleles) != PLOIDY:
-                    raise SystemExit(f"{PANEL_VCF} has a call of {call}")
-                calls.append([-1 if a == "." else int(a) for a in alleles])
-            rows.append(calls)
+            if individuals is None:
+                raise SystemExit(f"{PANEL_VCF} holds a variant before its #CHROM line")
+            if len(fields) != len(individuals) + 9:
+                raise SystemExit(
+                    f"line {number} of {PANEL_VCF} has {len(fields)} fields and the "
+                    f"{len(individuals)} individuals of the header ask for "
+                    f"{len(individuals) + 9}"
+                )
+            if fields[8] != "GT":
+                raise SystemExit(
+                    f"line {number} of {PANEL_VCF} has the FORMAT {fields[8]} and "
+                    "this script reads GT alone"
+                )
+            rows.append(read_calls(fields[9:], individuals, number))
+    if individuals is None:
+        raise SystemExit(f"{PANEL_VCF} has no #CHROM line")
     gts = numpy.array(rows, dtype=numpy.int16)
-    pops = {}
+    if gts.max() > 1:
+        of_more_alleles = numpy.flatnonzero(gts.max(axis=(1, 2)) > 1)
+        raise SystemExit(
+            f"{PANEL_VCF} holds a variant of more than two alleles, the first of "
+            f"them the variant {of_more_alleles[0]} and {len(of_more_alleles)} in "
+            "all, and the two programs here are given two counts per variant"
+        )
+    return gts, read_pops(individuals)
+
+
+def read_calls(calls, individuals, number):
+    """The alleles of every individual at one variant, -1 where not called."""
+    alleles_of_all = []
+    for individual, call in zip(individuals, calls, strict=True):
+        alleles = call.replace("|", "/").split("/")
+        not_called = [allele == "." for allele in alleles]
+        if len(alleles) != PLOIDY:
+            raise SystemExit(
+                f"{individual} has the call {call} at line {number} of {PANEL_VCF}, "
+                f"of {len(alleles)} alleles where the ploidy is {PLOIDY}"
+            )
+        if any(not_called) and not all(not_called):
+            raise SystemExit(
+                f"{individual} has the half called genotype {call} at line {number} "
+                f"of {PANEL_VCF}: a half call gives its one called allele to the "
+                "counts of its population, and this script does not"
+            )
+        alleles_of_all.append(
+            [-1 if allele == "." else int(allele) for allele in alleles]
+        )
+    return alleles_of_all
+
+
+def read_pops(individuals):
+    """The indices of the individuals of each population, by population name.
+
+    A populations file that does not name every individual of the VCF exactly
+    once is refused: a line missing from it would leave that individual out of
+    its population and change every number here without a word.
+    """
+    of_the_pop = {}
+    named = []
     with open(PANEL_POPS) as handle:
-        for line in handle:
-            individual, pop = line.split()
-            pops.setdefault(pop, []).append(individuals.index(individual))
-    return gts, {pop: pops[pop] for pop in sorted(pops)}
+        for number, line in enumerate(handle, start=1):
+            fields = line.split()
+            if len(fields) != 2:
+                raise SystemExit(
+                    f"line {number} of {PANEL_POPS} has {len(fields)} fields and an "
+                    "individual with its population was expected"
+                )
+            individual, pop = fields
+            named.append(individual)
+            of_the_pop.setdefault(pop, []).append(individual)
+    if sorted(named) != sorted(individuals):
+        not_named = sorted(set(individuals) - set(named))
+        not_of_the_vcf = sorted(set(named) - set(individuals))
+        raise SystemExit(
+            f"{PANEL_POPS} names {len(named)} individuals for the "
+            f"{len(individuals)} of {PANEL_VCF}: it leaves out {len(not_named)} of "
+            f"them, among them {not_named[:3]}, and names {len(not_of_the_vcf)} "
+            f"that the VCF does not hold, among them {not_of_the_vcf[:3]}"
+        )
+    index_of = {name: index for index, name in enumerate(individuals)}
+    return {
+        pop: [index_of[name] for name in of_the_pop[pop]] for pop in sorted(of_the_pop)
+    }
 
 
 def count_alleles(gts, individuals):
     """The counts of allele 0 and allele 1 at each variant of one population.
 
-    It returns an array of the variants by two, and refuses a variant of more
-    than two alleles: the panel is biallelic and the reference programs here
-    are given two counts per variant.
+    It returns an array of the variants by two. read_panel has refused a
+    variant of more than two alleles over the whole dataset, so the two counts
+    hold every allele the population called.
     """
     of_the_pop = gts[:, individuals, :]
-    if of_the_pop.max() > 1:
-        raise SystemExit(f"{PANEL_VCF} holds a variant of more than two alleles")
     counts = numpy.empty((of_the_pop.shape[0], 2), dtype=numpy.int64)
     for allele in (0, 1):
         counts[:, allele] = (of_the_pop == allele).sum(axis=(1, 2))
@@ -228,51 +300,92 @@ def count_alleles(gts, individuals):
 
 
 def make_environment(name, requirement):
-    """A Python 3.12 environment holding one pinned package, and its python.
+    """An environment of one pinned package, and the python that runs in it.
 
-    It is made with `uv venv` under WORK_DIR when it is not there already, and
-    a directory left by a run that failed half way through is made again.
+    It is made with `uv venv` under WORK_DIR, in a directory named after the
+    package and REFERENCE_PYTHON, and it is made again when the interpreter
+    there is of another version, when the package is of another version or is
+    not there at all, and when a run that failed half way through left the
+    directory broken. The interpreter is asked for its own version rather than
+    read off the name of the directory: it is part of where the numbers stored
+    here come from, as the head of this file says, so a stale one would make
+    that false without a word.
     """
-    directory = WORK_DIR / name
+    directory = WORK_DIR / f"{name}-{REFERENCE_PYTHON}"
     package, version = requirement.split("==")
     python = directory / "bin" / "python"
-    if python.exists() and installed_version(python, package) == version:
+    wanted = (REFERENCE_PYTHON, version)
+    if what_is_installed(python, package) == wanted:
         return python
     if directory.exists():
         shutil.rmtree(directory)
-    run(["uv", "venv", "--no-project", "--python", REFERENCE_PYTHON, str(directory)])
-    run(["uv", "pip", "install", requirement], VIRTUAL_ENV=str(directory))
-    got = installed_version(python, package)
-    if got != version:
-        raise SystemExit(f"{requirement} was asked for and {package} {got} is there")
+    run(
+        ["uv", "venv", "--no-project", "--python", REFERENCE_PYTHON, str(directory)],
+        f"the Python {REFERENCE_PYTHON} environment of {requirement}",
+    )
+    run(
+        ["uv", "pip", "install", requirement],
+        f"the install of {requirement}",
+        VIRTUAL_ENV=str(directory),
+    )
+    got = what_is_installed(python, package)
+    if got is None:
+        raise SystemExit(f"{directory} was built and {package} is not there")
+    if got != wanted:
+        raise SystemExit(
+            f"{directory} was asked for Python {REFERENCE_PYTHON} with {requirement} "
+            f"and holds Python {got[0]} with {package} {got[1]}"
+        )
     print(f"{requirement} is in {directory}", file=sys.stderr)
     return python
 
 
-def installed_version(python, package):
-    """The version of a package in an environment, or None when it is not there."""
-    ask = f"import importlib.metadata as m; print(m.version({package!r}))"
+def what_is_installed(python, package):
+    """The version of an interpreter and of one package in it, as two strings.
+
+    ("3.12", "2.4.4") for the environment of dadi, and None when the
+    interpreter is not there or the package cannot be imported by it.
+    """
+    if not python.exists():
+        return None
+    ask = (
+        "import sys, importlib.metadata as metadata; "
+        "print('.'.join(str(part) for part in sys.version_info[:2]), "
+        f"metadata.version({package!r}))"
+    )
     found = subprocess.run(
         [str(python), "-c", ask],
         capture_output=True,
         text=True,
         check=False,
     )
-    return found.stdout.strip() if found.returncode == 0 else None
+    if found.returncode != 0:
+        return None
+    printed = found.stdout.split()
+    return (printed[0], printed[1]) if len(printed) == 2 else None
 
 
-def run(command, **environment):
-    """One command, with its output shown only when it fails."""
-    done = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        env={**os.environ, **environment} if environment else None,
-        check=False,
-    )
+def run(command, doing, **environment):
+    """One command, with its output shown only when it fails.
+
+    `doing` is what the command is for, and it is what a failure and a command
+    that is not installed are reported as.
+    """
+    try:
+        done = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **environment} if environment else None,
+            check=False,
+        )
+    except FileNotFoundError as not_found:
+        raise SystemExit(
+            f"{command[0]} was not found in the PATH, and {doing} needs it"
+        ) from not_found
     if done.returncode != 0:
         raise SystemExit(
-            f"{' '.join(command)} exited with {done.returncode}\n"
+            f"{doing} failed: {' '.join(command)} exited with {done.returncode}\n"
             f"{done.stdout}\n{done.stderr}"
         )
     return done.stdout
@@ -299,17 +412,41 @@ def spectrum_from_dadi(counted):
             lines.append(f"{var}\t{pop}\t{n0}\t{n1}\t{n0 + n1}")
     counts_path = WORK_DIR / "panel_counts.tsv"
     counts_path.write_text("\n".join(lines) + "\n")
-    python = make_environment("dadi-3.12", DADI)
+    python = make_environment("dadi", DADI)
     program = write_program("dadi_spectrum.py", DADI_PROGRAM)
     printed = run(
-        [str(python), str(program), str(counts_path), str(NUM_CALLED_ALLELES)]
+        [str(python), str(program), str(counts_path), str(NUM_CALLED_ALLELES)],
+        f"the spectrum of {DADI}",
     )
     spectrum = {pop: [] for pop in counted}
     for line in printed.splitlines():
-        pop, rarer, value = line.split()
+        printed_fields = line.split()
+        if len(printed_fields) != 3 or printed_fields[0] not in spectrum:
+            raise SystemExit(f"{DADI} printed {line!r}, which is not a bin")
+        pop, rarer, value = printed_fields
         if int(rarer) != len(spectrum[pop]):
-            raise SystemExit(f"dadi printed the bins of {pop} out of order")
+            raise SystemExit(
+                f"{DADI} printed the bin {rarer} of {pop} where the bin "
+                f"{len(spectrum[pop])} was expected"
+            )
         spectrum[pop].append(float(value))
+    num_bins = NUM_CALLED_ALLELES // 2 + 1
+    for pop, bins in spectrum.items():
+        if len(bins) != num_bins:
+            raise SystemExit(
+                f"{DADI} printed {len(bins)} bins of {pop} and a draw of "
+                f"{NUM_CALLED_ALLELES} has {num_bins}"
+            )
+        # Each variant that counted gives one whole variant to the bins of its
+        # population, whatever the draw makes of it, so the column sums to the
+        # number of them. The error of dadi's own arithmetic over the 1200
+        # variants of the panel is 7.0e-11.
+        num_vars = len(counted[pop])
+        if abs(sum(bins) - num_vars) > 1e-6:
+            raise SystemExit(
+                f"the spectrum of {pop} sums to {sum(bins)} and {num_vars} variants "
+                "counted for it"
+            )
     return spectrum
 
 
@@ -326,52 +463,91 @@ def fis_from_allel(gts, pops, counted):
         variants = sorted(counted[pop])
         numpy.save(path, gts[variants][:, individuals, :])
         arguments.append(f"{pop}={path}")
-    python = make_environment("allel-3.12", ALLEL)
+    python = make_environment("allel", ALLEL)
     program = write_program("allel_fis.py", ALLEL_PROGRAM)
-    printed = run([str(python), str(program), *arguments])
+    printed = run([str(python), str(program), *arguments], f"F_IS of {ALLEL}")
     fis = {}
     for line in printed.splitlines():
-        pop, value = line.split()
-        fis[pop] = float(value)
+        printed_fields = line.split()
+        if (
+            len(printed_fields) != 2
+            or printed_fields[0] not in pops
+            or printed_fields[0] in fis
+        ):
+            raise SystemExit(f"{ALLEL} printed {line!r}, which is not one value")
+        fis[printed_fields[0]] = float(printed_fields[1])
+    if set(fis) != set(pops):
+        raise SystemExit(
+            f"{ALLEL} gave F_IS for {sorted(fis)} and the panel holds {sorted(pops)}"
+        )
     return fis
+
+
+def write_table(name, lines):
+    """One of the two stored files, written whole and then put in its place.
+
+    The lines go to a file beside it which is renamed over it, so that a
+    failure here leaves what was stored as it was and not half written.
+    """
+    path = HERE / name
+    written = path.with_name(path.name + ".new")
+    written.write_text("".join(lines))
+    written.replace(path)
 
 
 def write_spectrum(spectrum, pops):
     """The spectrum beside this script, one row per count of the rarer allele."""
-    with open(HERE / "panel_folded_sfs_dadi.tsv", "w") as handle:
-        handle.write("rarer_allele\t" + "\t".join(pops) + "\n")
-        for rarer in range(NUM_CALLED_ALLELES // 2 + 1):
-            values = "\t".join(repr(spectrum[pop][rarer]) for pop in pops)
-            handle.write(f"{rarer}\t{values}\n")
+    lines = ["rarer_allele\t" + "\t".join(pops) + "\n"]
+    for rarer in range(NUM_CALLED_ALLELES // 2 + 1):
+        values = "\t".join(repr(spectrum[pop][rarer]) for pop in pops)
+        lines.append(f"{rarer}\t{values}\n")
+    write_table("panel_folded_sfs_dadi.tsv", lines)
 
 
 def write_fis(fis, pops):
     """The three values beside this script, one row per population."""
-    with open(HERE / "panel_fis_plain_allel.tsv", "w") as handle:
-        handle.write("pop\tfis_plain\n")
-        for pop in pops:
-            handle.write(f"{pop}\t{fis[pop]!r}\n")
+    lines = ["pop\tfis_plain\n"]
+    lines.extend(f"{pop}\t{fis[pop]!r}\n" for pop in pops)
+    write_table("panel_fis_plain_allel.tsv", lines)
 
 
-def check(spectrum, fis, counted):
-    """What was got against the literals of docs/specs/diversity.md."""
-    for pop, of_the_spec in SPECTRUM_OF_THE_SPEC.items():
+def check(spectrum, fis, counted, pops):
+    """What was got against the literals of docs/specs/diversity.md.
+
+    The populations of the panel are the ones run over, and a panel whose
+    populations are not those the spec has numbers for is refused: one the
+    spec does not name would be written to the stored files and compared with
+    nothing.
+    """
+    of_the_spec = sorted(SPECTRUM_OF_THE_SPEC)
+    if sorted(pops) != of_the_spec or sorted(FIS_OF_THE_SPEC) != of_the_spec:
+        raise SystemExit(
+            f"the panel holds the populations {sorted(pops)} and the spec has a "
+            f"spectrum for {of_the_spec} and F_IS for {sorted(FIS_OF_THE_SPEC)}"
+        )
+    for pop in pops:
         num_vars = len(counted[pop])
         if num_vars != NUM_VARS_OF_THE_SPEC:
-            raise SystemExit(f"{num_vars} variants count for {pop}, not 1200")
-        for rarer, expected in enumerate(of_the_spec):
+            raise SystemExit(
+                f"{num_vars} variants count for {pop} and the spec has "
+                f"{NUM_VARS_OF_THE_SPEC}"
+            )
+        if len(SPECTRUM_OF_THE_SPEC[pop]) != len(spectrum[pop]):
+            raise SystemExit(
+                f"the spec has {len(SPECTRUM_OF_THE_SPEC[pop])} bins of {pop} and "
+                f"dadi gave {len(spectrum[pop])}"
+            )
+        for rarer, expected in enumerate(SPECTRUM_OF_THE_SPEC[pop]):
             got = f"{spectrum[pop][rarer]:.10f}"
             if got != expected:
                 raise SystemExit(
                     f"bin {rarer} of {pop} is {got} and the spec has {expected}"
                 )
-        total = sum(spectrum[pop])
-        if abs(total - num_vars) > 1e-6:
-            raise SystemExit(f"the spectrum of {pop} sums to {total}, not {num_vars}")
-    for pop, expected in FIS_OF_THE_SPEC.items():
         got = f"{fis[pop]:.10f}"
-        if got != expected:
-            raise SystemExit(f"F_IS of {pop} is {got} and the spec has {expected}")
+        if got != FIS_OF_THE_SPEC[pop]:
+            raise SystemExit(
+                f"F_IS of {pop} is {got} and the spec has {FIS_OF_THE_SPEC[pop]}"
+            )
 
 
 if __name__ == "__main__":
@@ -391,7 +567,7 @@ if __name__ == "__main__":
         }
     spectrum = spectrum_from_dadi(counted)
     fis = fis_from_allel(gts, pops, counted)
-    check(spectrum, fis, counted)
+    check(spectrum, fis, counted, list(pops))
     write_spectrum(spectrum, list(pops))
     write_fis(fis, list(pops))
     print("done", file=sys.stderr)
