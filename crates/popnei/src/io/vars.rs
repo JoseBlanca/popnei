@@ -1077,6 +1077,11 @@ const LZ4_BYTES_FOR_A_BYTE: u64 = 255;
 /// and for the smallest buffers, where the ratio alone is too tight.
 const LZ4_FRAME_SLACK: u64 = 1024;
 
+/// How many values a column of a list holds at most, which is `i32::MAX`:
+/// arrow keeps where the values of each row of such a column end in a 32
+/// bit number, and the last of those numbers is how many values there are.
+const MAX_VALUES_OF_A_LIST: u64 = 2_147_483_647;
+
 /// The number the system gives for a directory where a file was asked for,
 /// `EISDIR`, which is 21 on macOS, on Linux and in emscripten, the systems
 /// popnei runs on. Opening a directory succeeds on those systems and only
@@ -1743,7 +1748,8 @@ impl VarsReader<BufReader<File>> {
 /// which for the genotypes is the rows times the individuals times the
 /// ploidy, and, where the schema does not give that number, one that lz4
 /// can give from the bytes it holds; and no field node says more values
-/// than the body holds bits.
+/// than its column can hold, which for the genotypes is the rows times the
+/// individuals times the ploidy.
 ///
 /// # Errors
 ///
@@ -1794,13 +1800,16 @@ fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPl
                 .map(|whole| whole.saturating_sub(message_len))
         })
         .unwrap_or(0);
-    let holds = what_the_buffers_hold(schema.fields(), u64::try_from(found).unwrap_or(u64::MAX));
+    let rows = u64::try_from(found).unwrap_or(u64::MAX);
+    let holds = what_the_buffers_hold(schema.fields(), rows);
     buffers_fit(&batch, bytes, metadata_len, body, &holds, &damaged)?;
     // A field node says how many values a column holds, which arrow-rs
-    // turns into the length of an array: a value takes a bit at the very
-    // least, so one that says more than the body holds bits is damaged.
-    let values_at_most = body.saturating_mul(8);
-    for node in batch.nodes().into_iter().flatten() {
+    // turns into the length of an array. The bytes of the batch do not
+    // bound it: they are compressed and the values are counted once they
+    // are decompressed, so a file whose genotypes repeat holds more values
+    // than the batch holds bits. What bounds it is the column itself.
+    let values = what_the_nodes_hold(schema.fields(), rows);
+    for (place, node) in batch.nodes().into_iter().flatten().enumerate() {
         let length = node.length();
         let null_count = node.null_count();
         if length < 0 || null_count < 0 || null_count > length {
@@ -1808,9 +1817,10 @@ fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPl
                 "a column of its message says it holds {length} values, {null_count} of them not there"
             )));
         }
-        if u64::try_from(length).unwrap_or(u64::MAX) > values_at_most {
+        let at_most = values.get(place).copied().unwrap_or(u64::MAX);
+        if u64::try_from(length).unwrap_or(u64::MAX) > at_most {
             return Err(damaged(format!(
-                "a column of its message says it holds {length} values and the batch is {body} bytes"
+                "a column of its message says it holds {length} values and that column holds {at_most}"
             )));
         }
     }
@@ -1953,6 +1963,74 @@ fn buffers_of_the_field(field: &Field, rows: Option<u64>, holds: &mut Vec<Buffer
 /// How many bytes that many bits take.
 fn bits_in_bytes(bits: u64) -> u64 {
     bits.saturating_add(7).saturating_div(8)
+}
+
+/// How many values each column of a batch of `fields` of `rows` rows holds
+/// at most, in the order the IPC format lays its field nodes out: one node
+/// for each column, and the nodes of the columns inside a column after its
+/// own, in a depth first walk.
+///
+/// A node with no entry in the list is not bounded, which is every node
+/// after a column whose type popnei does not know: popnei cannot say how
+/// many nodes such a column takes, so it cannot say which column the nodes
+/// after it belong to.
+fn what_the_nodes_hold(fields: &Fields, rows: u64) -> Vec<u64> {
+    let mut holds = Vec::new();
+    for field in fields {
+        if !nodes_of_the_field(field, rows, &mut holds) {
+            break;
+        }
+    }
+    holds
+}
+
+/// The node of one column, which holds `values` values at most, and the
+/// nodes of the columns inside it, after the ones already in `holds`;
+/// `false` when popnei does not know how many nodes its type takes, which
+/// leaves the columns after it out of `holds`.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "arrow has forty types and a version of arrow-rs adds more; what popnei walks is               the handful named here and the ones of a fixed width, and every other one stops               the walk"
+)]
+fn nodes_of_the_field(field: &Field, values: u64, holds: &mut Vec<u64>) -> bool {
+    holds.push(values);
+    match field.data_type() {
+        DataType::Null
+        | DataType::Boolean
+        | DataType::Utf8
+        | DataType::Binary
+        | DataType::LargeUtf8
+        | DataType::LargeBinary
+        | DataType::FixedSizeBinary(_) => true,
+        // The values of a list are as many as its offsets say, which the
+        // reader has not decompressed: what bounds them is the largest
+        // number those offsets hold.
+        DataType::List(inside) | DataType::Map(inside, _) => {
+            nodes_of_the_field(inside, MAX_VALUES_OF_A_LIST, holds)
+        }
+        DataType::LargeList(inside) => nodes_of_the_field(inside, u64::MAX, holds),
+        // The genotypes are one of these: every row holds the same number
+        // of values, the individuals times the ploidy.
+        DataType::FixedSizeList(inside, width) => {
+            let inside_values = values.saturating_mul(u64::try_from(*width).unwrap_or(u64::MAX));
+            nodes_of_the_field(inside, inside_values, holds)
+        }
+        // Every column of a struct holds the rows of the struct itself.
+        DataType::Struct(inside) => {
+            for field in inside {
+                if !nodes_of_the_field(field, values, holds) {
+                    return false;
+                }
+            }
+            true
+        }
+        // Every type of arrow that holds a value of a fixed width, as in
+        // `buffers_of_the_field`: one node and nothing inside it. A
+        // dictionary, a union, a view or a type arrow adds later takes a
+        // number of nodes popnei does not know, so the columns after it are
+        // not bounded.
+        other => other.primitive_width().is_some(),
+    }
 }
 
 /// That every buffer of the message lies inside the body of the batch, and
@@ -5468,6 +5546,68 @@ mod tests {
         assert_eq!(chroms.name(1), Some("chr2"));
     }
 
+    /// Genotypes that repeat compress below one bit each, and a file of
+    /// them is read back: 200 diploid individuals whose every genotype is
+    /// `0/1` give, for 5000 variants, 2000000 alleles in a file that lz4
+    /// leaves under 250000 bytes.
+    ///
+    /// Issue 2 of the repository, of 24 September 2026: popnei wrote such a
+    /// file and then refused to read it, saying it was damaged, because it
+    /// bounded the values that a column of a batch says it holds by the
+    /// bits of that batch as it lies on disk, where it is compressed, and
+    /// not by what the column can hold once it is decompressed.
+    #[test]
+    fn a_file_whose_genotypes_compress_below_a_bit_each_is_read_back() {
+        const NUM_VARS: usize = 5000;
+        const NUM_INDIVIDUALS: usize = 200;
+        // 5000 variants x 200 individuals x 2 alleles.
+        const ALLELES: usize = 2_000_000;
+        let individuals: Vec<String> = (0..NUM_INDIVIDUALS).map(|at| format!("ind{at}")).collect();
+        let mut chroms = ChromTable::new();
+        let chrom = chroms.intern("chr1");
+        let mut alleles = AllelesColumn::with_num_vars(NUM_VARS).expect("the alleles");
+        let two = ["A".to_owned(), "T".to_owned()];
+        for _ in 0..NUM_VARS {
+            alleles.push(&two);
+        }
+        let block = Block {
+            num_vars: NUM_VARS,
+            num_individuals: NUM_INDIVIDUALS,
+            ploidy: 2,
+            gts: [0i8, 1].into_iter().cycle().take(ALLELES).collect(),
+            chrom: Some(vec![chrom; NUM_VARS]),
+            pos: Some((1u64..).take(NUM_VARS).collect()),
+            id: Some(vec![String::new(); NUM_VARS]),
+            alleles: Some(alleles),
+            qual: Some(vec![30.0; NUM_VARS]),
+        };
+        let expected = block.gts.clone();
+        let reader = GivenBlocks {
+            individuals,
+            ploidy: 2,
+            chroms,
+            left: vec![block],
+            asked_for: Arc::new(Mutex::new(Needs::empty())),
+        };
+
+        let bytes = write_vars(reader, Vec::new(), Some(NUM_VARS))
+            .expect("the blocks were written as a vars file")
+            .0;
+
+        // Under a bit for each of the 2000000 alleles, which is what the
+        // file has to be for this test to hold the case of the issue.
+        assert!(
+            bytes.len() < 250_000,
+            "the file is {found} bytes, so its genotypes did not compress below a bit each",
+            found = bytes.len()
+        );
+        let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
+        assert_eq!(num_vars_of(&blocks), [NUM_VARS]);
+        let block = blocks.first().expect("the block of the file");
+        assert_eq!(block.gts, expected);
+        assert_eq!(chroms.name(0), Some("chr1"));
+    }
+
     /// The reader is asked for the fields the consumer wants and gives a
     /// block with those columns alone, and a change of them holds from the
     /// next block, as `docs/specs/block.md` asks of every reader: the
@@ -6007,6 +6147,63 @@ mod tests {
         assert!(!problem.is_empty(), "the error says nothing");
         let message = error.to_string();
         assert!(message.contains("damaged"), "{message}");
+    }
+
+    /// The bound on the values a column says it holds is what keeps a
+    /// damaged length from reaching arrow-rs, which builds an array of that
+    /// length: the alleles of the genotypes of a batch are its rows times
+    /// the individuals times the ploidy, and a message that says one more
+    /// is refused.
+    #[test]
+    fn a_column_that_says_more_values_than_it_can_hold_is_a_file_that_was_damaged() {
+        let mut bytes = cases_written_in_batches_of(4);
+        let at = opened(bytes.clone())
+            .expect("the file is a vars file")
+            .blocks[0];
+        let start = usize::try_from(at.offset).expect("the offset of the batch");
+        let end = start
+            .checked_add(usize::try_from(at.metadata_len).expect("the message of the batch"))
+            .expect("where the message of the batch ends");
+        // The field node of the alleles of the genotypes, two 64 bit
+        // numbers: 4 variants of 3 diploid individuals hold 24 alleles, and
+        // none of them is a null.
+        let node: Vec<u8> = 24_i64
+            .to_le_bytes()
+            .into_iter()
+            .chain(0_i64.to_le_bytes())
+            .collect();
+        let message = bytes.get(start..end).expect("the message of the batch");
+        let where_it_is: Vec<usize> = message
+            .windows(node.len())
+            .enumerate()
+            .filter(|(_, window)| *window == node.as_slice())
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(
+            where_it_is.len(),
+            1,
+            "the node of the alleles of the genotypes is in {count} places of the message",
+            count = where_it_is.len()
+        );
+        let length_at = start
+            .checked_add(*where_it_is.first().expect("the node"))
+            .expect("where the node is in the file");
+        let says_one_more = length_at
+            .checked_add(UNCOMPRESSED_LENGTH_BYTES)
+            .expect("where the length of the node ends");
+        bytes
+            .get_mut(length_at..says_one_more)
+            .expect("the length of the node")
+            .copy_from_slice(&25_i64.to_le_bytes());
+
+        let error = refused_at_the_block(bytes);
+
+        let Error::VarsBatchNotRead { batch, problem } = &error else {
+            panic!("the file whose node says 25 alleles gave {error}");
+        };
+        assert_eq!(*batch, 1);
+        assert!(problem.contains("25 values"), "{problem}");
+        assert!(problem.contains("holds 24"), "{problem}");
     }
 
     /// After an error a reader gives no block at every call, as
