@@ -719,9 +719,12 @@ pub(crate) fn chrom_column<'py>(
     Ok(PyTuple::new(py, of_each_variant)?)
 }
 
-/// The id of every variant of a block, `None` for a variant that has none,
-/// which the core gives as an empty id.
-fn id_column<'py>(py: Python<'py>, ids: &[String]) -> Result<Bound<'py, PyTuple>, PyPopneiError> {
+/// The id of every variant of a block or of the rows of a result, `None`
+/// for a variant that has none, which the core gives as an empty id.
+pub(crate) fn id_column<'py>(
+    py: Python<'py>,
+    ids: &[String],
+) -> Result<Bound<'py, PyTuple>, PyPopneiError> {
     Ok(PyTuple::new(
         py,
         ids.iter().map(|id| (!id.is_empty()).then_some(id.as_str())),

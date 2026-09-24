@@ -1077,6 +1077,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "flate2",
+ "libm",
  "memchr",
  "popnei-linalg",
  "rayon",

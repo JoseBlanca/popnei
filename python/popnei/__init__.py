@@ -11,6 +11,14 @@ from popnei import _core
 from popnei.block import Block
 from popnei.dists import Distances, calc_pairwise_kosman_dists
 from popnei.filters import FilteringStats, Step
+from popnei.gwas import (
+    GWASModel,
+    GWASResult,
+    NullModel,
+    TestType,
+    TraitType,
+    calc_gwas,
+)
 from popnei.io_vars import VarsWritten, open_vars, write_vars
 from popnei.io_vcf import open_vcf
 from popnei.kinship import Kinship, calc_kinship
@@ -40,7 +48,10 @@ __all__ = [
     "Blocks",
     "Distances",
     "FilteringStats",
+    "GWASModel",
+    "GWASResult",
     "Kinship",
+    "NullModel",
     "PCAResult",
     "PassStats",
     "PerIndividualStats",
@@ -52,9 +63,12 @@ __all__ = [
     "R2Matrix",
     "StatsDistrib",
     "Step",
+    "TestType",
+    "TraitType",
     "Variants",
     "VarsWritten",
     "__version__",
+    "calc_gwas",
     "calc_kinship",
     "calc_pairwise_kosman_dists",
     "calc_per_individual_stats",

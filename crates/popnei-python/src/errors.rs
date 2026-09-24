@@ -494,7 +494,23 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // of the core crate and reports it instead of looking at what they
         // wrote. It is named here because the arm below would make it the
         // `ValueError` of an argument a user wrote, which there is none of.
-        | popnei::Error::VarFilterOfTheLdCriterion => {
+        | popnei::Error::VarFilterOfTheLdCriterion
+        // The three of the association study that no argument of
+        // `calc_gwas` gives: the phenotype, the design and the positions of
+        // the tested individuals not holding the same individuals, which
+        // this crate is given built from one list of them; a model that
+        // answered for another number of variants than the block it was
+        // given holds; and an operation of the linear algebra that did not
+        // run, which is the rank of the design, the thin QR a model is
+        // fitted with, a solve against it or a product of a block with
+        // something the null model holds. Every size and every value of the
+        // three is checked before the linear algebra is called, so what is
+        // left is a defect of popnei or a backend that refused the work.
+        // "The Rust interface" of `docs/specs/gwas.md` has them, each as
+        // the `RuntimeError` it is here.
+        | popnei::Error::GwasInputOfAnotherSize { .. }
+        | popnei::Error::GwasAnswersOfAnotherSize { .. }
+        | popnei::Error::GwasLinalg { .. } => {
             PyRuntimeError::new_err(of_the_file(message, path))
         }
         // The two errors of a trait that the layer holding the frame names:
@@ -607,7 +623,49 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // number a user writes at that call and nothing of any file: it is
         // looked at before the pass, so the same number is refused whatever
         // the source holds.
-        | popnei::Error::LdMaxNumVarsTooLarge { .. } => PyValueError::new_err(message),
+        | popnei::Error::LdMaxNumVarsTooLarge { .. }
+        // The fourteen of the association study that are of what a user
+        // wrote and are wrong whatever file is read: a phenotype or a
+        // covariate that is not a finite number, which the package lets
+        // through as a value that came out of the user's own arithmetic as
+        // an infinity; a kinship whose entries are not finite and one that
+        // is not symmetric, which is a frame written into after the
+        // `Kinship` that checked it was built; a binomial
+        // trait whose phenotype is not 0 or 1 or is one value for
+        // everybody, and a continuous trait that is one value for everybody
+        // too; covariates that are not independent, a copy of one another
+        // or a constant, and covariates that explain the whole of the
+        // trait; the score test asked of a linear model and the Wald test
+        // of a logistic mixed one, which are the two pairs no model has;
+        // the GRAMMAR-Gamma approximation, asked for by a study with no
+        // kinship and asked for by one with a kinship, which say different
+        // things; and a study whose trait and kinship ask for one of the
+        // two models that are not written. "The Rust interface" of
+        // `docs/specs/gwas.md` has them, each as the `ValueError` it is
+        // here. What the arm at the end of this function would give them
+        // instead is the same exception with the path of the file in front
+        // of the message, and an argument that is refused names no file:
+        // `GwasGrammarGammaNotBuilt` was there until 24 September 2026 and
+        // arrived with the VCF glued on, where the refusal raised two lines
+        // from it in the core named none.
+        | popnei::Error::GwasPhenotypeNotFinite { .. }
+        | popnei::Error::GwasPhenotypeNotBinomial { .. }
+        | popnei::Error::GwasPhenotypeOfOneValue { .. }
+        | popnei::Error::GwasContinuousPhenotypeOfOneValue { .. }
+        | popnei::Error::GwasDesignValueNotFinite { .. }
+        | popnei::Error::GwasKinshipValueNotFinite { .. }
+        | popnei::Error::GwasKinshipNotSymmetric { .. }
+        | popnei::Error::GwasCovariatesCollinear { .. }
+        | popnei::Error::GwasDesignExplainsTheTrait
+        | popnei::Error::GwasScoreTestOfALinearModel
+        | popnei::Error::GwasWaldTestOfALogisticMixedModel
+        | popnei::Error::GwasGrammarGammaWithoutAKinship
+        | popnei::Error::GwasGrammarGammaNotBuilt
+        | popnei::Error::GwasModelNotBuilt { .. }
+        // The name of a trait and the name of a test that are of neither
+        // of the two, which a user writes in `trait` and in `test`.
+        | popnei::Error::GwasTraitOfAnUnknownName { .. }
+        | popnei::Error::GwasTestOfAnUnknownName { .. } => PyValueError::new_err(message),
         // The six that the dataset a user gave is wrong for: four of the
         // principal components of the variants and two of the pass over a
         // row that those components and the kinship share. Of the
@@ -676,7 +734,21 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::JackknifeGroupsVariantGoesBack { .. }
         | popnei::Error::JackknifeGroupsChromComesBack { .. }
         | popnei::Error::PopDistSumsTooLarge { .. }
-        | popnei::Error::PopDistsPloidyOutOfRange { .. } => {
+        | popnei::Error::PopDistsPloidyOutOfRange { .. }
+        // The five of the association study that the dataset a user gave is
+        // wrong for: fewer tested individuals than the columns of the
+        // design plus two, which leaves nothing to measure the uncertainty
+        // of a variant from; the three the core makes of the positions of
+        // those individuals, one that is not in the source, one that is
+        // there twice and an order that is not the source's, which the
+        // package cannot reach, since it builds those positions by walking
+        // the individuals the pass gives; and a source of more variants
+        // than this machine counts them in.
+        | popnei::Error::GwasTooFewIndividuals { .. }
+        | popnei::Error::GwasIndividualNotInTheDataset { .. }
+        | popnei::Error::GwasIndividualTestedTwice { .. }
+        | popnei::Error::GwasIndividualsOutOfOrder { .. }
+        | popnei::Error::GwasVariantsTooLarge => {
             PyValueError::new_err(of_the_file(message, path))
         }
         // Everything else is a wrong input of a function, which a file

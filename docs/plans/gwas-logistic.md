@@ -61,9 +61,17 @@ is there already. From `gwas-linear` this plan takes the two distributions,
 the design, the dosages of a block, the result and the Python and TypeScript
 functions it extends, and from `kinship` the matrix the mixed model takes.
 
-Every layer exists, so every check of the `coding` skill runs. The two notes
-of `docs/plans/linalg-gwas.md` about the release build and `wasm-bindgen`
-still hold.
+Every layer exists, so every check of the `coding` skill runs, including
+`cargo test -p popnei --no-default-features`, the core crate on faer, which
+is the backend the wasm build uses and so what runs in a browser. It was in
+no check list until 23 September 2026. Any tolerance this plan adds is
+chosen against both backends: faer sits about seven times further from
+plink2 than Accelerate does on the same data, which the order and the
+blocking of the sums allow and which a bound fixed on Accelerate alone would
+fail under wasm.
+
+The two notes of `docs/plans/linalg-gwas.md` about the release build and
+`wasm-bindgen` still hold.
 
 The reference data is in the repository: `tests/reference/gwas/`, whose
 `make_reference.py` ran the four programs again on popnei's own VCFs on 23

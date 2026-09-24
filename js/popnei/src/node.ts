@@ -17,6 +17,16 @@ export { version } from "./core.js";
 export { calcPairwiseKosmanDists, Distances } from "./dists.js";
 export type { CalcPairwiseKosmanDistsOptions } from "./dists.js";
 export type { FilteringStats, Step } from "./filters.js";
+export { calcGwas } from "./gwas.js";
+export type {
+  CalcGwasOptions,
+  GwasModel,
+  GwasNullModel,
+  GwasResult,
+  GwasStats,
+  TestType,
+  TraitType,
+} from "./gwas.js";
 export { calcKinship, Kinship } from "./kinship.js";
 export type { CalcKinshipOptions, KinshipPcsResult } from "./kinship.js";
 export { calcRogersHuffR2Matrix } from "./ld.js";

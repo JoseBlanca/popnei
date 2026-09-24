@@ -34,10 +34,14 @@
 //! one variant says about the genotype of another, is worked out from;
 //! `pop_dists` the seven measures of how far apart two populations are,
 //! which one pass over the variants gives from the counts of each
-//! population at each of them; and `kinship` gives how much more of their
+//! population at each of them; `kinship` gives how much more of their
 //! genome every pair of individuals shares than two drawn at random from
 //! the same panel would, which is the matrix a mixed model of an
-//! association study takes as the covariance of its random effect. The
+//! association study takes as the covariance of its random effect; and
+//! `gwas` tests every variant against a trait of the individuals, giving
+//! the effect of each variant on the trait, the uncertainty of that effect
+//! and its p-value, of which the two models of a continuous trait are
+//! written so far, the linear one and the linear mixed one. The
 //! modules that follow them are being written, and `docs/architecture.md`
 //! has their order.
 //!
@@ -53,6 +57,7 @@ pub mod block;
 pub mod dists;
 pub mod error;
 pub mod filters;
+pub mod gwas;
 pub mod io;
 pub mod kinship;
 pub mod ld;
