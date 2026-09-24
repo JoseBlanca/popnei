@@ -23,18 +23,16 @@
 //! by the `stats` module itself so that the two specs cannot disagree
 //! about a heterozygosity.
 //!
-//! What is built here so far is the pass, those counts of variants, the
-//! alleles each population called, the private ones among them, the
-//! variants that vary in it, F_IS, the variants in the draw of
-//! `num_called_alleles` and the three standardized values: the alleles a
-//! draw of that many called alleles is expected to show, the share of the
-//! variants such a draw is expected to vary at, and the alleles it is
-//! expected to show in one population and in no other. One thing is not
-//! built, which is work package 3 of `docs/plans/diversity.md`: the folded
-//! site frequency spectrum has no value. It is built on top of the same
-//! counts.
+//! The folded site frequency spectrum is the one of the five that is not a
+//! number but a vector: how many of the variants in the draw for a
+//! population show each count of the rarer allele in a draw of
+//! `num_called_alleles` copies, the counts `j` and `num_called_alleles - j`
+//! read as one because without an outgroup nothing says which allele is the
+//! ancestral one. It is built from the same counts of the alleles, one
+//! variant at a time.
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use crate::block::{Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of};
 use crate::error::{Error, Result};
@@ -366,6 +364,14 @@ impl OfAPop {
 pub struct PopDiversity {
     /// What each population counted, in the order of the call.
     pops: Vec<OfAPop>,
+    /// The bins of the folded spectrum of every population, `num_sfs_bins` of
+    /// them for each population in the order of the call, and no entry for a
+    /// pass that was not asked for the spectrum.
+    folded_sfs: Vec<f64>,
+    /// How many bins the spectrum of one population has,
+    /// `num_called_alleles / 2 + 1`, and 0 for a pass that was not asked for
+    /// the spectrum.
+    num_sfs_bins: usize,
     /// The variants that counted for every population at once.
     num_vars_every_pop: u64,
     /// Of those, the ones in the draw for every population at once.
@@ -577,6 +583,43 @@ impl PopDiversity {
             return None;
         }
         self.pops.get(pop).map(OfAPop::variable_vars_ratio_in_draw)
+    }
+
+    /// How the variants in the draw for the population are spread over the
+    /// count of their rarer allele: one value for each count from 0 to
+    /// `num_called_alleles / 2`, the value at `j` being how many of those
+    /// variants a draw of `num_called_alleles` of the copies the population
+    /// called is expected to show `j` copies of the rarer allele at. It is the
+    /// shape a population's history leaves in its variants and the input of
+    /// every program that fits a demographic model. `None` when `pop` is not a
+    /// population of the call or [`DiversityStats::FOLDED_SFS`] was not asked
+    /// for.
+    ///
+    /// It is folded: the counts `j` and `num_called_alleles - j` are one
+    /// value, because without an outgroup nothing says which allele is the
+    /// ancestral one, only which of the two is the rarer. The value at 0 holds
+    /// the variants a draw shows one allele at, which a draw can do at a
+    /// variant that varies in the population, and at an even
+    /// `num_called_alleles` the last value is not doubled, `j` and
+    /// `num_called_alleles - j` being the same count there.
+    ///
+    /// The values are not whole numbers: each variant in the draw gives every
+    /// count the chance that a draw shows that many rarer copies there, so the
+    /// values sum to [`PopDiversity::num_vars_in_draw`]. A variant of more
+    /// than two alleles counts as the major allele of the population there,
+    /// the one it called most often and the lower numbered of two it called
+    /// equally often, against every other allele of the variant summed into
+    /// one rarer allele.
+    ///
+    /// Every value is 0 when no variant is in the draw for the population,
+    /// which happens in the three ways [`PopDiversity::num_alleles_in_draw`]
+    /// lists and which that count of 0 says.
+    #[must_use]
+    pub fn folded_sfs(&self, pop: usize) -> Option<&[f64]> {
+        if !self.stats.contains(DiversityStats::FOLDED_SFS) {
+            return None;
+        }
+        the_bins_of_the_pop(pop, self.num_sfs_bins).and_then(|bins| self.folded_sfs.get(bins))
     }
 
     /// How far the genotypes of the population are from the proportions its
@@ -829,6 +872,10 @@ struct OfTheDraw {
     /// `num_called_alleles` factors for every allele the population called,
     /// so the one that was not asked for is not computed.
     stats: DiversityStats,
+    /// How many bins the folded spectrum of one population has,
+    /// `num_called_alleles / 2 + 1`, and 0 for a pass that was not asked for
+    /// the spectrum, which keeps no bin.
+    num_bins: usize,
 }
 
 impl OfTheDraw {
@@ -841,6 +888,7 @@ impl OfTheDraw {
             .map(|num_called_alleles| OfTheDraw {
                 num_called_alleles,
                 stats: options.stats,
+                num_bins: the_num_of_bins(options.stats, num_called_alleles),
             })
     }
 
@@ -850,13 +898,16 @@ impl OfTheDraw {
     /// `counts` is how often the population called each allele of the
     /// variant, `one_past_the_largest` the entry of `counts` a walk over them
     /// stops at, and `called_alleles` their sum, which the caller has found
-    /// to be at least `num_called_alleles`.
+    /// to be at least `num_called_alleles`. `of_the_pops_bins` is the bins of
+    /// the folded spectrum of that population, `num_bins` of them, and an
+    /// empty slice for a pass that was not asked for the spectrum.
     fn add_the_var(
         &self,
         counts: &AlleleCounts,
         one_past_the_largest: usize,
         called_alleles: u32,
         counted: &mut OfAPop,
+        of_the_pops_bins: &mut [f64],
     ) {
         // One variant of the draw, and a pass of more than
         // 18446744073709551615 variants reads more rows than any source
@@ -869,6 +920,105 @@ impl OfTheDraw {
         if self.stats.contains(DiversityStats::VARIABLE_VARS_RATIO) {
             counted.sum_varies_in_draw +=
                 self.chance_a_draw_varies(counts, one_past_the_largest, called_alleles);
+        }
+        if self.stats.contains(DiversityStats::FOLDED_SFS) {
+            self.add_the_bins_of_the_var(
+                counts,
+                one_past_the_largest,
+                called_alleles,
+                of_the_pops_bins,
+            );
+        }
+    }
+
+    /// It adds to the bins of one population the chance that a draw of
+    /// `num_called_alleles` of the `called_alleles` copies it called at one
+    /// variant shows each count of the rarer allele: the projection of "What
+    /// it gives" of "The folded site frequency spectrum" of
+    /// `docs/specs/diversity.md`.
+    ///
+    /// The variant is read as if it had two alleles, the major allele of the
+    /// population there against every other allele of it summed into one
+    /// rarer allele. So with `c` the copies the population called, `m` the
+    /// ones that are not of its major allele and `g` the draw, the chance of
+    /// `j` rarer copies is `C(m, j) * C(c - m, g - j) / C(c, g)` and it goes
+    /// to the bin `min(j, g - j)`, the counts `j` and `g - j` being one bin.
+    ///
+    /// `j` runs from `max(0, g - (c - m))` to `min(m, g)` and over no count
+    /// outside that range: the draw holds neither more rarer copies than the
+    /// variant has nor fewer than the copies of the major allele leave room
+    /// for. `m` can be far above `g`, 48 against 20 on the panel of that
+    /// spec, and a `j` above `g` has a chance of 0 and falls in no bin of the
+    /// spectrum, `g - j` being below 0 there.
+    ///
+    /// The chance of the first count of the range is
+    /// [`chance_a_draw_misses_an_allele`], the one product of `g` factors this
+    /// module has, read in one of its two ways. Where the range starts at 0 it
+    /// is `C(c - m, g) / C(c, g)`, the chance that the draw misses an allele
+    /// the population called `m` times. Where it starts above 0 every copy of
+    /// the major allele is in the draw, and the chance of that is the chance
+    /// that the `c - g` copies the draw leaves behind, which are rarer ones
+    /// alone, miss every copy of the major allele.
+    ///
+    /// The chance of each count above the first is the one before it times
+    /// `(m - j) (g - j) / ((j + 1) (c - m - g + j + 1))`, so every value the
+    /// loop holds is a chance and stays between 0 and 1, where the three
+    /// binomial coefficients on their own are above what an `f64` holds: a
+    /// draw of 180 of 20000 copies asks for a number of 444 digits and 171!
+    /// is already an infinity. The counts are stepped through with `j` rising
+    /// on every call, so two populations of one pass round the same way.
+    fn add_the_bins_of_the_var(
+        &self,
+        counts: &AlleleCounts,
+        one_past_the_largest: usize,
+        called_alleles: u32,
+        of_the_pops_bins: &mut [f64],
+    ) {
+        let of_the_major_allele = the_copies_of_the_major_allele(counts, one_past_the_largest);
+        // The copies of every allele that is not the major one. The count of
+        // one allele is one part of the sum the called alleles are, so it is
+        // never the larger of the two and the subtraction never saturates.
+        let of_the_rarer_allele = called_alleles.saturating_sub(of_the_major_allele);
+        let drawn = self.num_called_alleles;
+        // The counts of the rarer allele the draw can show: at least what the
+        // copies of the major allele leave room for, which is 0 where they
+        // could fill the draw on their own, and at most every rarer copy of
+        // the variant and no more than the draw itself.
+        let first = drawn.saturating_sub(of_the_major_allele);
+        let last = of_the_rarer_allele.min(drawn);
+        let mut chance = if first == 0 {
+            chance_a_draw_misses_an_allele(called_alleles, of_the_rarer_allele, drawn)
+        } else {
+            // The draw takes every copy of the major allele, which is the
+            // chance that a draw of the copies it leaves behind misses each of
+            // them. A draw of every copy leaves none behind and takes them
+            // with chance 1, which is the product of no factor.
+            chance_a_draw_misses_an_allele(
+                called_alleles,
+                of_the_major_allele,
+                called_alleles.saturating_sub(drawn),
+            )
+        };
+        for count in first..=last {
+            // The bin of the count, which is at most `g / 2` and so is a bin
+            // of the spectrum: the counts above half the draw fold onto the
+            // ones below it.
+            let bin = count.min(drawn.saturating_sub(count));
+            if let Some(of_the_bin) = usize::try_from(bin)
+                .ok()
+                .and_then(|bin| of_the_pops_bins.get_mut(bin))
+            {
+                *of_the_bin += chance;
+            }
+            // The chance of one more copy of the rarer allele, from the one in
+            // hand. Past the last count of the range it is 0 or a number
+            // nothing reads, one of its two numerators being 0 there.
+            let of_the_rarer_allele_left = f64::from(of_the_rarer_allele) - f64::from(count);
+            let of_the_draw_left = f64::from(drawn) - f64::from(count);
+            let room_the_major_allele_leaves =
+                f64::from(of_the_major_allele) - f64::from(drawn) + f64::from(count) + 1.0;
+            chance *= (of_the_rarer_allele_left * of_the_draw_left)
+                / ((f64::from(count) + 1.0) * room_the_major_allele_leaves);
         }
     }
 
@@ -934,6 +1084,56 @@ fn the_alleles_called(
         .filter(|count| *count > 0)
 }
 
+/// How often a population called the allele it called most often at one
+/// variant: the copies of its major allele there, which the folded spectrum
+/// reads every other allele of the variant against, and 0 where it called
+/// nothing.
+///
+/// `counts` is what the counts of the variant left for the population and
+/// `one_past_the_largest` the bound they gave on the alleles they wrote.
+/// Which of two alleles a population called equally often is the major one
+/// does not change how many copies that allele has, so the rule of
+/// `docs/glossary.md` that the lower numbered of two such alleles is the
+/// major one needs nothing here.
+fn the_copies_of_the_major_allele(counts: &AlleleCounts, one_past_the_largest: usize) -> u32 {
+    the_alleles_called(counts, one_past_the_largest)
+        .max()
+        .unwrap_or(0)
+}
+
+/// How many bins the folded spectrum of a draw of `num_called_alleles`
+/// copies has, and 0 for a pass that was not asked for the spectrum, which
+/// keeps no bin.
+///
+/// A draw of `g` copies shows 0 to `g` copies of the rarer allele, and the
+/// counts `j` and `g - j` are one bin, so the bins are the counts from 0 to
+/// `g / 2` and they are `g / 2 + 1`.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the divisor is the literal 2, and half of the largest draw a u32 holds is 2147483647, so the sum is below the largest usize of every target popnei builds for, wasm's 32 bit one among them"
+)]
+fn the_num_of_bins(stats: DiversityStats, num_called_alleles: u32) -> usize {
+    if !stats.contains(DiversityStats::FOLDED_SFS) {
+        return 0;
+    }
+    // A `usize` is 32 bits in wasm and 64 natively, and a draw of more copies
+    // than either holds is a draw of more than any dataset has.
+    let drawn = usize::try_from(num_called_alleles).unwrap_or(usize::MAX);
+    drawn / 2 + 1
+}
+
+/// Where the bins of the folded spectrum of one population are among those
+/// of every population, which hold `num_bins` of them for each population,
+/// in the order of the populations.
+///
+/// It is `None` for a first bin or a last one above what a `usize` counts,
+/// which asks for more bins than the machine could hold in any case.
+fn the_bins_of_the_pop(pop: usize, num_bins: usize) -> Option<Range<usize>> {
+    let first = pop.checked_mul(num_bins)?;
+    let past_the_last = first.checked_add(num_bins)?;
+    Some(first..past_the_last)
+}
+
 /// What every row of a pass is read with: the populations and the rule for
 /// which variants count for them.
 #[derive(Debug)]
@@ -960,20 +1160,46 @@ struct OfThePass<'a> {
     ploidy: usize,
 }
 
+impl OfThePass<'_> {
+    /// How many bins the folded spectrum of one population of the pass has,
+    /// and 0 for a pass that was not asked for the spectrum and for one that
+    /// was given no draw, neither of which keeps a bin.
+    fn num_sfs_bins(&self) -> usize {
+        self.of_the_draw
+            .map_or(0, |of_the_draw| of_the_draw.num_bins)
+    }
+}
+
 /// What a pass, or one chunk of the rows of a block, has counted over every
 /// population.
 #[derive(Debug, Clone)]
 struct Totals {
     pops: Vec<OfAPop>,
+    /// The bins of the folded spectrum of every population, `num_bins` of
+    /// them for each population in the order of the populations, and no entry
+    /// for a pass that was not asked for the spectrum.
+    ///
+    /// They are one vector of every population's bins and not a vector inside
+    /// each [`OfAPop`], which keeps the counts of a population `Copy`: a chunk
+    /// of 64 rows counts into a `Totals` of its own, so a vector for each
+    /// population would be one allocation for each population of each chunk,
+    /// 7850 of them for a block of 10000 rows and 50 populations, where these
+    /// are 157, one for each chunk.
+    folded_sfs: Vec<f64>,
     num_vars_every_pop: u64,
     num_vars_every_pop_in_draw: u64,
 }
 
 impl Totals {
-    /// The counts of `num_pops` populations before any variant is read.
-    fn of(num_pops: usize) -> Totals {
+    /// The counts of `num_pops` populations before any variant is read, with
+    /// `num_bins` bins of the folded spectrum for each of them.
+    fn of(num_pops: usize, num_bins: usize) -> Totals {
         Totals {
             pops: vec![OfAPop::none(); num_pops],
+            // A product that saturated would ask for more bins than the
+            // machine has memory for, and the allocation of them is what
+            // fails.
+            folded_sfs: vec![0.0; num_pops.saturating_mul(num_bins)],
             num_vars_every_pop: 0,
             num_vars_every_pop_in_draw: 0,
         }
@@ -1007,6 +1233,17 @@ impl Totals {
                 .num_vars_with_both_hets
                 .saturating_add(of_the_chunk.num_vars_with_both_hets);
         }
+        // The bins of every population, added in the order of the populations
+        // and of the counts of the rarer allele, as the five sums above are
+        // added in the order of the chunks: no bin depends on how many threads
+        // read the rows either.
+        for (of_the_pass, of_the_chunk) in self
+            .folded_sfs
+            .iter_mut()
+            .zip(of_the_chunk.folded_sfs.iter())
+        {
+            *of_the_pass += *of_the_chunk;
+        }
         self.num_vars_every_pop = self
             .num_vars_every_pop
             .saturating_add(of_the_chunk.num_vars_every_pop);
@@ -1021,6 +1258,7 @@ impl Totals {
         for of_the_pop in &mut self.pops {
             *of_the_pop = OfAPop::none();
         }
+        self.folded_sfs.fill(0.0);
         self.num_vars_every_pop = 0;
         self.num_vars_every_pop_in_draw = 0;
     }
@@ -1112,7 +1350,8 @@ fn the_pass<R: BlockReader + ?Sized>(
         min_called_alleles: min_called_alleles(options.min_num_individuals, ploidy_of_the_gts),
         ploidy,
     };
-    let mut totals = Totals::of(of_the_pops.len());
+    let num_sfs_bins = of_the_pass.num_sfs_bins();
+    let mut totals = Totals::of(of_the_pops.len(), num_sfs_bins);
     let mut num_vars: u64 = 0;
     while let Some(block) = reader.next_block()? {
         let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
@@ -1142,6 +1381,8 @@ fn the_pass<R: BlockReader + ?Sized>(
     }
     Ok(PopDiversity {
         pops: totals.pops,
+        folded_sfs: totals.folded_sfs,
+        num_sfs_bins,
         num_vars_every_pop: totals.num_vars_every_pop,
         num_vars_every_pop_in_draw: totals.num_vars_every_pop_in_draw,
         num_vars_of_the_pass: num_vars,
@@ -1262,11 +1503,12 @@ fn add_the_block(
     use rayon::slice::ParallelSlice;
 
     let num_pops = of_the_pass.pops.len();
+    let num_bins = of_the_pass.num_sfs_bins();
     let of_the_chunks: Result<Vec<Totals>> = block
         .gts
         .par_chunks(alleles_of_a_chunk(alleles_per_var))
         .map(|chunk| {
-            let mut of_the_chunk = Totals::of(num_pops);
+            let mut of_the_chunk = Totals::of(num_pops, num_bins);
             add_the_rows(chunk, alleles_per_var, of_the_pass, &mut of_the_chunk)?;
             Ok(of_the_chunk)
         })
@@ -1281,7 +1523,7 @@ fn add_the_block(
         // The second pass costs a read of the block, and it is made only
         // where the block is refused and nothing of it is given.
         Err(of_a_thread) => {
-            let mut read_again = Totals::of(num_pops);
+            let mut read_again = Totals::of(num_pops, num_bins);
             match add_the_chunks_one_by_one(block, alleles_per_var, of_the_pass, &mut read_again) {
                 Err(of_the_first_row) => Err(of_the_first_row),
                 // The rows are the same rows, so the second pass finds an
@@ -1323,7 +1565,7 @@ fn add_the_chunks_one_by_one(
     of_the_pass: &OfThePass,
     totals: &mut Totals,
 ) -> Result<()> {
-    let mut of_the_chunk = Totals::of(of_the_pass.pops.len());
+    let mut of_the_chunk = Totals::of(of_the_pass.pops.len(), of_the_pass.num_sfs_bins());
     for chunk in block.gts.chunks(alleles_of_a_chunk(alleles_per_var)) {
         of_the_chunk.forget_what_it_holds();
         add_the_rows(chunk, alleles_per_var, of_the_pass, &mut of_the_chunk)?;
@@ -1372,11 +1614,12 @@ fn add_the_rows(
         // A pass that was given no draw has no variant in the draw for every
         // population, so its second count of them stays 0.
         let mut every_pop_in_draw = of_the_pass.of_the_draw.is_some();
-        for ((of_the_pop, counted), at_the_row) in of_the_pass
+        for (pop, ((of_the_pop, counted), at_the_row)) in of_the_pass
             .pops
             .iter()
             .zip(totals.pops.iter_mut())
             .zip(of_each_pop.iter_mut())
+            .enumerate()
         {
             // A population of every individual of the reader in its order
             // is counted by reading the row as it is, and the width of the
@@ -1468,11 +1711,21 @@ fn add_the_rows(
                 if called_alleles < of_the_draw.num_called_alleles {
                     every_pop_in_draw = false;
                 } else {
+                    // The bins of this population among those of every
+                    // population, which the counts of the chunk hold in one
+                    // vector. The slice is empty for a pass that was not asked
+                    // for the spectrum and for no other: the counts of a chunk
+                    // hold `num_bins` bins for each of the populations of the
+                    // pass, so every population of the row has its own.
+                    let of_the_pops_bins = the_bins_of_the_pop(pop, of_the_draw.num_bins)
+                        .and_then(|bins| totals.folded_sfs.get_mut(bins))
+                        .unwrap_or_default();
                     of_the_draw.add_the_var(
                         &at_the_row.counts,
                         one_past_the_largest,
                         called_alleles,
                         counted,
+                        of_the_pops_bins,
                     );
                 }
             }
@@ -2217,13 +2470,14 @@ mod the_pass {
         }
     }
 
-    /// The same options with a draw of `num_called_alleles` called alleles.
-    /// The folded spectrum is not among them: it is task 3.4 of
-    /// `docs/plans/diversity.md` and has no value yet.
+    /// The five statistics at a draw of `num_called_alleles` called alleles,
+    /// the folded spectrum among them, which is what a pass given a draw can
+    /// be asked for.
     fn options_of_a_draw(min_num_individuals: u32, num_called_alleles: u32) -> DiversityOptions {
         DiversityOptions {
+            stats: DiversityStats::ALL,
             num_called_alleles: Some(num_called_alleles),
-            ..options_with_no_draw(min_num_individuals)
+            min_num_individuals,
         }
     }
 
@@ -2495,8 +2749,94 @@ mod the_pass {
         );
     }
 
-    /// It checks that a standardized value of one population is NaN, which
-    /// is what it is when no variant is in the draw for it.
+    /// It checks the folded spectrum of one population bin by bin, and that
+    /// its bins sum to the variants in the draw for it, which each of those
+    /// variants gives one whole variant of, spread over the bins.
+    ///
+    /// `bins` is the spectrum the reference gives, one value for each count of
+    /// the rarer allele from 0 up, and `within` what a bin may differ from it
+    /// by: `within` of the value for a bin above 1 and `within` itself for a
+    /// smaller one, so that a bin of 0, which the worked example has, is
+    /// compared at all.
+    fn assert_folded_sfs(
+        diversity: &PopDiversity,
+        pop: usize,
+        bins: &[f64],
+        within: f64,
+        what: &str,
+    ) {
+        let found = diversity.folded_sfs(pop).expect("the folded spectrum");
+
+        assert_eq!(
+            found.len(),
+            bins.len(),
+            "the bins of the spectrum of {what} are {found:?}"
+        );
+        for (count, (found, of_the_reference)) in found.iter().zip(bins).enumerate() {
+            assert!(
+                (found - of_the_reference).abs() <= within * of_the_reference.abs().max(1.0),
+                "the variants of {what} that show {count} copies of the rarer allele are {found}, \
+                 and they are {of_the_reference}"
+            );
+        }
+        let num_vars_in_draw = diversity
+            .num_vars_in_draw(pop)
+            .expect("the variants in the draw");
+        let of_every_bin: f64 = found.iter().sum();
+        // A count below 2^53 is exact in a float64, and a pass of that many
+        // variants reads more rows than any source holds.
+        let num_vars_in_draw = num_vars_in_draw as f64;
+
+        assert!(
+            (of_every_bin - num_vars_in_draw).abs() <= within * num_vars_in_draw.max(1.0),
+            "the bins of the spectrum of {what} sum to {of_every_bin}, and {num_vars_in_draw} \
+             variants are in the draw for it"
+        );
+    }
+
+    /// It checks that two results hold the same folded spectrum of every
+    /// population, the same bits in every bin, and that either both hold one
+    /// or neither does.
+    ///
+    /// The bits and not a tolerance, for the reason
+    /// [`assert_the_same_numbers`] gives: what the tests that call this ask is
+    /// whether the bins were added in the order of the variants, and a bin
+    /// whose parts were joined in another order is right to far more digits
+    /// than any tolerance of the spec and is not the same number.
+    ///
+    /// It is apart from [`assert_the_same_numbers`] because one test compares
+    /// a pass given a draw above every called allele, which holds a spectrum
+    /// of zeros, with a pass given no draw, which can hold no spectrum at all:
+    /// that test reads the zeros of the first on its own.
+    fn assert_the_same_bins(one: &PopDiversity, other: &PopDiversity, what: &str) {
+        assert_eq!(
+            one.num_pops(),
+            other.num_pops(),
+            "the populations of {what}"
+        );
+        for pop in 0..one.num_pops() {
+            let of_the_bits = |diversity: &PopDiversity| {
+                diversity
+                    .folded_sfs(pop)
+                    .map(|bins| bins.iter().map(|bin| bin.to_bits()).collect::<Vec<u64>>())
+            };
+
+            assert_eq!(
+                of_the_bits(one),
+                of_the_bits(other),
+                "the bits of the bins of the spectrum of the population {pop} of {what}, \
+                 {:?} and {:?}",
+                one.folded_sfs(pop),
+                other.folded_sfs(pop)
+            );
+        }
+    }
+
+    /// It checks that a standardized value of one population is NaN and that
+    /// every bin of its folded spectrum is 0, which is what they are when no
+    /// variant is in the draw for it: the case of "A population for which no
+    /// variant counted" and the one of a `num_called_alleles` above every
+    /// called allele, both of "The cases" of `docs/specs/diversity.md`.
     ///
     /// The private alleles of a draw are among them here because both tests
     /// that call this are of a pass no variant reached the draw at for any
@@ -2524,6 +2864,12 @@ mod the_pass {
         assert!(
             private.is_nan(),
             "a draw shows {private} private alleles in {what}, and it has no value there"
+        );
+        let bins = diversity.folded_sfs(pop).expect("the folded spectrum");
+
+        assert!(
+            bins.iter().all(|bin| *bin == 0.0),
+            "the spectrum of {what} is {bins:?}, and every bin of it is 0"
         );
     }
 
@@ -2978,6 +3324,180 @@ mod the_pass {
         assert_eq!(diversity.variable_vars_ratio_in_draw(2), None);
     }
 
+    /// The folded spectrum of the worked example at a draw of 4 called
+    /// alleles: 1, 3 and 0 variants at 0, 1 and 2 copies of the rarer allele
+    /// for `pop1`, and 1.0666666667, 1.5333333333 and 0.4 for `pop2`, which
+    /// "How it is verified" of "The folded site frequency spectrum" of
+    /// `docs/specs/diversity.md` works out variant by variant.
+    ///
+    /// `pop1` keeps its four variants and every draw is of the 4 copies it
+    /// called, so each variant is one whole variant in one bin: variants 1, 2
+    /// and 3 show 1, 1 and 3 copies of the rarer allele, which fold to the bin
+    /// 1, and variant 5, where it called one allele, shows 0. `pop2` keeps
+    /// three variants: variant 1, where it called 5 copies of one allele, is
+    /// one whole variant in the bin 0; variant 3, where it called one copy each
+    /// of four alleles, is one in the bin 1, a draw of 4 of 4 showing 3 copies
+    /// of the rarer allele; and variant 5, where it called 4 copies of one
+    /// allele and 2 of another, is spread over the three bins by a draw of 4 of
+    /// 6, which shows 0, 1 and 2 rarer copies with the chances 1/15, 8/15 and
+    /// 6/15.
+    ///
+    /// The literals are those chances as fractions and not the ten decimals of
+    /// the spec, so what a bin may differ from one by is the rounding of a few
+    /// products and not the 5e-11 a printed value stands for. A pytest test of
+    /// the same worked example reads the same numbers through the Python layer.
+    #[test]
+    fn a_draw_of_four_spreads_the_variants_of_the_worked_example_over_three_bins() {
+        let diversity = of_the_worked_example_at_a_draw(4);
+
+        assert_folded_sfs(
+            &diversity,
+            0,
+            &[1.0, 3.0, 0.0],
+            OF_AN_EXACT_QUOTIENT,
+            "pop1 at a draw of 4",
+        );
+        assert_folded_sfs(
+            &diversity,
+            1,
+            &[1.0 + 1.0 / 15.0, 1.0 + 8.0 / 15.0, 6.0 / 15.0],
+            OF_TEN_DECIMALS_OF_A_DRAW,
+            "pop2 at a draw of 4",
+        );
+        assert_eq!(diversity.folded_sfs(2), None);
+    }
+
+    /// A draw of 3 called alleles has two bins and not four, the counts 2 and
+    /// 3 of the rarer allele folding onto the counts 1 and 0: the bins of a
+    /// draw of `g` are the counts from 0 to `g / 2`, which "What it gives" of
+    /// "The folded site frequency spectrum" of `docs/specs/diversity.md`
+    /// gives.
+    ///
+    /// The draw of 3 is also the one where the count of the rarer allele
+    /// cannot start at 0 for every variant of the worked example: at variant 3
+    /// each population called one copy each of four alleles, so a draw of 3 of
+    /// those 4 copies leaves at most one copy of the major allele out and shows
+    /// 2 or 3 rarer copies, never 0 or 1. Those two chances are 3/4 and 1/4 and
+    /// they fall in the bins 1 and 0.
+    ///
+    /// `pop1` keeps its four variants and `pop2` all four of its own, variant
+    /// 2 reaching the draw here where a draw of 4 left it out, its 3 called
+    /// copies being one short of 4. The bins are 7/4 and 9/4 for `pop1` and
+    /// 49/20 and 31/20 for `pop2`, worked out variant by variant in exact
+    /// fractions: 1/4 and 3/4 at each of the variants 1, 2 and 3 of `pop1` and
+    /// 1 and 0 at its variant 5; and 1 and 0 at the variants 1 and 2 of
+    /// `pop2`, 1/4 and 3/4 at its variant 3, and 1/5 and 4/5 at its variant 5,
+    /// where a draw of 3 of 6 shows 0, 1 or 2 of the 2 rarer copies with the
+    /// chances 4/20, 12/20 and 4/20 and the last two fall in one bin.
+    #[test]
+    fn a_draw_of_three_folds_the_counts_above_half_of_it_onto_the_ones_below() {
+        let diversity = of_the_worked_example_at_a_draw(3);
+
+        assert_eq!(diversity.num_vars_in_draw(0), Some(4));
+        assert_eq!(diversity.num_vars_in_draw(1), Some(4));
+        assert_folded_sfs(
+            &diversity,
+            0,
+            &[7.0 / 4.0, 9.0 / 4.0],
+            OF_AN_EXACT_QUOTIENT,
+            "pop1 at a draw of 3",
+        );
+        assert_folded_sfs(
+            &diversity,
+            1,
+            &[49.0 / 20.0, 31.0 / 20.0],
+            OF_TEN_DECIMALS_OF_A_DRAW,
+            "pop2 at a draw of 3",
+        );
+    }
+
+    /// A count of the rarer allele above the draw is in no bin of the
+    /// spectrum, and one that the copies of the major allele leave no room for
+    /// is in none either: the count runs from `max(0, g - (c - m))` to
+    /// `min(m, g)`, which "What it gives" of "The folded site frequency
+    /// spectrum" of `docs/specs/diversity.md` gives with `c` the copies the
+    /// population called, `m` the ones that are not of its major allele and
+    /// `g` the draw.
+    ///
+    /// The population called 5 copies each of three alleles, 15 in all, and
+    /// the draw is of 8. Its major allele has 5 copies, whichever of the three
+    /// it is, so 10 copies are of the rarer allele, above the 8 of the draw,
+    /// and the draw holds at least 3 of them, the 5 copies of the major allele
+    /// leaving room for no more than 5. The counts from 3 to 8 have the
+    /// chances 120, 1050, 2520, 2100, 600 and 45 over the 6435 draws of 8 of
+    /// 15, and they fall in the bins 3, 4, 3, 2, 1 and 0, so the bins are
+    /// 1/143, 40/429, 140/429, 16/39 and 70/429, worked out in exact
+    /// fractions.
+    ///
+    /// A count of 9 or 10 rarer copies is more than the draw takes, and a
+    /// version that took it would ask for 8 - 9 copies of the major allele and
+    /// a bin below 0. One that read such a count as 0 copies of the major
+    /// allele and put it in the bin 0 gives a number that is wrong and not a
+    /// panic, which is what this case is here for: it would add 10 and 1 draws
+    /// of the 6435 to the bin 0 and make it 56/6435 where it is 45/6435.
+    ///
+    /// The three alleles are called equally often, so which of them is the
+    /// major one is settled by the rule of `docs/glossary.md` that it is the
+    /// lower numbered of two that tie; the count of its copies, which is what
+    /// the spectrum reads, is 5 whichever it is.
+    #[test]
+    fn a_count_of_the_rarer_allele_above_the_draw_is_in_no_bin() {
+        let (mut reader, of_each_pops_individuals) = a_variant_of_the_allele_counts(&[&[5, 5, 5]]);
+        let pops: Vec<&[usize]> = of_each_pops_individuals
+            .iter()
+            .map(|individuals| &individuals[..])
+            .collect();
+
+        let diversity = calc_pop_diversity(&mut reader, &pops, &options_of_a_draw(1, 8))
+            .expect("the diversity of a variant of three alleles of five copies each");
+
+        assert_eq!(diversity.num_vars_in_draw(0), Some(1));
+        assert_folded_sfs(
+            &diversity,
+            0,
+            &[
+                1.0 / 143.0,
+                40.0 / 429.0,
+                140.0 / 429.0,
+                16.0 / 39.0,
+                70.0 / 429.0,
+            ],
+            OF_TEN_DECIMALS_OF_A_DRAW,
+            "one population of 5 copies each of three alleles at a draw of 8",
+        );
+    }
+
+    /// A pass asked for the folded spectrum alone gives it and gives no other
+    /// value, and its bins are the ones of a pass asked for the five
+    /// statistics: what the spectrum reads of a variant is the counts of the
+    /// alleles the pass takes for every statistic, and the totals the other
+    /// four keep are not among them.
+    #[test]
+    fn a_pass_asked_for_the_spectrum_alone_gives_it_and_no_other_value() {
+        let mut reader = the_worked_example(6);
+        let options = DiversityOptions {
+            stats: DiversityStats::FOLDED_SFS,
+            num_called_alleles: Some(4),
+            min_num_individuals: 1,
+        };
+
+        let diversity = calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options)
+            .expect("the diversity with the folded spectrum alone");
+
+        assert_eq!(diversity.num_vars_in_draw(0), Some(4));
+        assert_eq!(diversity.num_vars_in_draw(1), Some(3));
+        assert_eq!(diversity.num_alleles(0), None);
+        assert_eq!(diversity.num_alleles_in_draw(0), None);
+        assert_eq!(diversity.private_alleles(0), None);
+        assert_eq!(diversity.num_variable_vars(0), None);
+        assert_eq!(diversity.fis(0), None);
+        assert_the_same_bins(
+            &diversity,
+            &of_the_worked_example_at_a_draw(4),
+            "a pass asked for the spectrum alone",
+        );
+    }
+
     /// A population for which no variant is in the draw has 0 in its count
     /// of them and NaN in both standardized values, which is the case of "A
     /// population for which no variant counted" of "The cases" of
@@ -3067,17 +3587,21 @@ mod the_pass {
             "pop1 of a pass of the alleles alone",
         );
         assert_eq!(of_the_alleles.variable_vars_ratio_in_draw(0), None);
+        assert_eq!(of_the_alleles.folded_sfs(0), None);
         assert_eq!(of_the_fis.num_alleles_in_draw(0), None);
         assert_eq!(of_the_fis.variable_vars_ratio_in_draw(0), None);
+        assert_eq!(of_the_fis.folded_sfs(0), None);
         assert_eq!(of_the_fis.num_vars_in_draw(0), Some(4));
         assert_eq!(of_the_fis.num_vars_in_draw(1), Some(3));
         assert_eq!(of_the_fis.num_vars_every_pop_in_draw(), 3);
     }
 
-    /// What a standardized value of the panel may differ from `vegan`'s by:
-    /// 1e-12 of it, which is what "How it is verified" of "The number of
-    /// alleles" of `docs/specs/diversity.md` compares the two within, both
-    /// sides summing the same per variant values in different orders.
+    /// What a value of the panel may differ from the one the reference program
+    /// gave by: 1e-12 of it, which is what "How it is verified" of "The number
+    /// of alleles" and of "The folded site frequency spectrum" of
+    /// `docs/specs/diversity.md` compare popnei within, against
+    /// `vegan::rarefy` and against `dadi`, both sides summing the same per
+    /// variant values in different orders.
     const OF_THE_PANEL: f64 = 1e-12;
 
     /// It checks one standardized value of the panel against `vegan`'s.
@@ -3201,6 +3725,69 @@ mod the_pass {
             &options_of_a_draw(20, num_called_alleles),
         )
         .expect("the diversity of the panel")
+    }
+
+    /// The folded spectrum of the three populations of the panel at a draw of
+    /// 20 called alleles with `min_num_individuals` 20, all 33 bins of it,
+    /// which `dadi` 2.4.4 measured and
+    /// `tests/reference/diversity/panel_folded_sfs_dadi.tsv` holds. The table
+    /// of "How it is verified" of "The folded site frequency spectrum" of
+    /// `docs/specs/diversity.md` prints the same values to ten decimals.
+    ///
+    /// Each literal is the value of that file as an `f64` keeps it. The three
+    /// columns are one row of the table each here, a count of the rarer allele
+    /// with the value of `p0`, of `p1` and of `p2`, which is how the file
+    /// reads.
+    ///
+    /// This is the tightest comparison of the module: an `f64` projection
+    /// differs from those values by up to 7.1e-14 of them, `dadi`'s own error
+    /// dominating, where the standardized number of alleles against
+    /// `vegan::rarefy` sits 550 times inside the same 1e-12. Both were
+    /// measured on 24 September 2026 by recomputing the panel in exact
+    /// rational arithmetic, which "How it is verified" of that item records.
+    /// The columns of the file sum to the 1200 variants in the draw short by
+    /// up to 7.0e-11, which is why the sum is compared within a tolerance too;
+    /// popnei's own bins are summed here and not the file's.
+    ///
+    /// `dadi` masks the bin 0 and the bins above half the draw in a folded
+    /// spectrum and popnei reports the bin 0, so the file holds the unmasked
+    /// array. It is a difference of presentation and not of value.
+    #[test]
+    fn the_folded_spectrum_of_the_panel_is_the_one_dadi_gave() {
+        let of_each_count: [[f64; 3]; 11] = [
+            [85.92616199505309, 93.69480681145635, 96.3154987274892],
+            [92.99651940325519, 95.45880325926598, 101.37814416196603],
+            [106.88963282305795, 103.72623430085372, 108.05152927646787],
+            [115.54543767638108, 110.6831031478722, 114.8500079366327],
+            [120.50559386225342, 116.6729455230275, 119.73977861754621],
+            [122.94119349597617, 121.05177240834107, 121.88331138362474],
+            [124.08151270035586, 123.60219049366185, 121.86450896763563],
+            [124.23937415023605, 124.59443950850212, 120.60097546763699],
+            [123.49607649027779, 124.54032617876919, 118.97681357034003],
+            [122.42162180189403, 124.0682314877391, 117.71473832544012],
+            [60.95687560124602, 61.907146880441395, 58.62469356518016],
+        ];
+        let diversity = of_the_panel_at_a_draw(20);
+
+        for (pop, name) in [(0, "p0"), (1, "p1"), (2, "p2")] {
+            let of_the_pop: Vec<f64> = of_each_count
+                .iter()
+                .map(|of_each_pop| of_each_pop[pop])
+                .collect();
+
+            assert_eq!(
+                diversity.num_vars_in_draw(pop),
+                Some(1200),
+                "the variants in the draw for {name}"
+            );
+            assert_folded_sfs(
+                &diversity,
+                pop,
+                &of_the_pop,
+                OF_THE_PANEL,
+                &format!("{name} of the panel at a draw of 20"),
+            );
+        }
     }
 
     /// The standardized private alleles of `p0`, `p1` and `p2` of the panel at
@@ -4102,6 +4689,11 @@ mod the_pass {
             &one_chunk_at_a_time,
             "the chunks read one after another",
         );
+        assert_the_same_bins(
+            &of_the_threads,
+            &one_chunk_at_a_time,
+            "the chunks read one after another",
+        );
     }
 
     /// The error of a block is the one of its first bad row, whichever row
@@ -4131,7 +4723,8 @@ mod the_pass {
     /// fixture of this module holds six variants or fewer, which is one
     /// chunk and nothing to share.
     ///
-    /// The bits of the two sums behind F_IS and of the two sums of the draw
+    /// The bits of the two sums behind F_IS, of the two sums of the draw and
+    /// of every bin of the folded spectrum
     /// are compared and not a tolerance: the chunks are added in the order of
     /// the block, and rayon's own `reduce` over the same chunks joins them in
     /// a tree whose shape follows the threads of the pool, which gives a
@@ -4148,7 +4741,11 @@ mod the_pass {
     /// move when their parts are added in another order, and a draw of 3 is
     /// one that does not: over these patterns its terms cancel to the bit.
     /// Measured on 24 September 2026 by adding the chunks of a block in
-    /// reverse and reading which sums changed.
+    /// reverse and reading which sums changed. The bins of the spectrum were
+    /// measured the same way on the same day: the 0 bin of `pop1`, the
+    /// variants a draw of 2 shows one allele at, moves by one unit of its last
+    /// place when the chunks are added in reverse, so the bins are parts of
+    /// this test and not only carried by it.
     ///
     /// The pools are built here and are not rayon's global one, which has
     /// one thread per core of the machine. rayon is a dependency of the
@@ -4174,7 +4771,9 @@ mod the_pass {
         assert_eq!(on_one.num_vars_in_draw(0), Some(1600));
         assert_eq!(on_one.num_vars_in_draw(1), Some(1600));
         for threads in [2, 4, 8] {
-            assert_the_same_numbers(&on_one, &in_a_pool(threads), &format!("{threads} threads"));
+            let of_the_pool = in_a_pool(threads);
+            assert_the_same_numbers(&on_one, &of_the_pool, &format!("{threads} threads"));
+            assert_the_same_bins(&on_one, &of_the_pool, &format!("{threads} threads"));
         }
     }
 }
