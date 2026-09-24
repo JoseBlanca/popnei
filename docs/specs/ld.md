@@ -785,13 +785,29 @@ before it, the reader of `docs/specs/block.md` that cuts and joins blocks
 to one size.
 
 What is kept from one block to the next is, for each population and each
-bin, the count as a `u64` and the two sums as `f64`, and the blocks of
-the window. The memory of the window is the genotypes of the variants it
-holds and the three matrices of each population over them: for 250
-variants within 250000 bp of 1000 individuals and two populations of 500,
-250 KB of genotypes and 2 x 24 bytes x 250 x 500, 6 MB. A window that
-would hold more variants than the memory can take is the error of
-`docs/specs/block.md` for a block the machine has not the memory for.
+bin, the count as a `u64` and the two sums as `f64`. Of the blocks of the
+window the window keeps the chromosome and the position of every variant
+and nothing else, since that is all it reads to say which blocks are
+still in reach. The genotypes are kept by each population, over the
+variants that population kept and over its own individuals alone, and
+they are what its three matrices are built from each time a block
+arrives. A population of 50 individuals of a source of 1000 keeps a
+twentieth of the row of a variant, where a copy of the whole row would
+cost each population as much as the source has individuals, whatever the
+population has. So the memory of the window is those genotypes and the
+three matrices of each population over them: for 250 variants within
+250000 bp of 1000 individuals and two populations of 500, 250 KB of
+genotypes, which is the row of a variant divided between the two
+populations, and 2 x 24 bytes x 250 x 500, 6 MB.
+
+A window whose genotypes or whose matrices this machine has not the
+memory of is this module's own error, the one every other allocation of
+this module is refused with, which names what could not be held, how many
+values it holds and how many bytes one of them is. It is not the error of
+`docs/specs/block.md` for a block the machine has not the memory for: a
+window is not a block, and that error says how many variants a block was
+asked to hold and how many individuals and what ploidy the source has,
+which describe no window.
 
 For the fit the pass also keeps, for each population and each distance
 from `min_dist` to `max_dist`, how many pairs it has counted there as a
@@ -1083,8 +1099,9 @@ pub struct LdAndDistOptions {
 /// no individual, an index that is not an individual, no variant in the
 /// reader, a block with variants and no position, the memory of the
 /// pairs counted at every distance of every population, which is asked
-/// with `try_reserve_exact` before the pass and not taken, and those of
-/// the reader.
+/// with `try_reserve_exact` before the pass and not taken, the memory of
+/// the window, which "How it runs" says is refused the same way, and
+/// those of the reader.
 pub fn calc_ld_and_dist<R: BlockReader + ?Sized>(
     reader: &mut R,
     pops: &[&[usize]],
