@@ -71,8 +71,13 @@ Not built, with where each goes:
   the spec's tables. `hierfstat` is not there and does not install.
 - `uv` able to make a Python 3.12 environment and install `dadi` 2.4.4 and
   `scikit-allel` 1.3.13 into it. Both were installed and run on 24
-  September 2026. `dadi` does not build on the project's Python, 3.14 with
-  the free threading build.
+  September 2026. Both also install and run on the project's own Python,
+  3.14.5 with the global interpreter lock, which `.python-version` pins by
+  its patch version; what `dadi` does not build on is 3.14.7, the free
+  threading build that `uv venv --python 3.14` picks by itself here, for
+  want of `cmake`. Measured on 24 September 2026, after this plan was
+  written, and the spec was corrected in commit `f6fe8f9`. The environments
+  stay, for the reason given under task 1.2.
 - The panel: `tests/reference/stats/panel.vcf.gz` and
   `tests/reference/stats/panel_pops_bcftools.txt`, which
   `tests/reference/stats/make_reference.py` writes and which are
@@ -170,16 +175,26 @@ side; 1.4 comes after all three.
   verified" of "The private alleles". Serves deliverable 3.
   `docs/reports/diversity-method/check_by_enumeration.py` is what it
   grows from.
-- [ ] 1.4 The page beside the scripts. Serves deliverable 4.
+- [x] 1.4 The page beside the scripts. Serves deliverable 4.
 
-**What could go wrong.** `scikit-allel` re-enables the global interpreter
-lock of the process that imports it, which the project's Python, a free
-threading build, warns about. That is why task 1.2 puts it in the
-environment it makes and not in the development dependencies of
-`pyproject.toml`: no test of popnei imports it, and the reference script
-runs in a process of its own. If a later task finds a reason to import it
-inside pytest, the warning and what it does to the other tests is measured
-first.
+**What could go wrong.** This said that `scikit-allel` re-enables the
+global interpreter lock of the process that imports it, which the
+project's Python, a free threading build, warns about, and that this is
+why task 1.2 puts it in the environment it makes rather than in the
+development dependencies of `pyproject.toml`. The premise is false: the
+project's Python is 3.14.5 with that lock already on, so there is nothing
+for `scikit-allel` to re-enable there and no warning. Measured on 24
+September 2026, and the spec was corrected in commit `f6fe8f9`.
+
+What remains of the reason is that the stored numbers should come from the
+one version of each program the spec names, 1.3.13 and 2.4.4, whatever
+popnei's development dependencies later hold, and that no test of popnei
+imports either. On that the environments stay, and they cost 5.5 s when
+both have to be built and 0.7 s when they are there. Whether the two
+become development dependencies instead, which is what the spec's opening
+says the owner decided, is under "What the owner should know" of work
+package 1 in `docs/reports/diversity.md`; nothing later in the plan turns
+on it.
 
 ## Work package 2: the counts with no draw, through the four layers
 
