@@ -225,7 +225,7 @@ fn in_the_pop(error: Error, pop: &str) -> Error {
 /// Whether `individuals` is every individual of a reader of
 /// `num_individuals`, in the order of the reader: the population a caller
 /// counts by reading a row of genotypes as it is.
-fn every_individual_in_order(individuals: &[usize], num_individuals: usize) -> bool {
+pub(crate) fn every_individual_in_order(individuals: &[usize], num_individuals: usize) -> bool {
     individuals.len() == num_individuals
         && individuals
             .iter()
@@ -700,7 +700,7 @@ pub(crate) fn checked_ploidy(kind: &'static str, value: usize) -> Result<u32> {
 /// than dividing them by the ploidy as pyNei does, which is the same test
 /// because the ploidy is positive, and which never has to hold the 4.5
 /// genotypes of a population with a half called one.
-fn min_called_alleles(min_num_individuals: u32, ploidy: u32) -> u64 {
+pub(crate) fn min_called_alleles(min_num_individuals: u32, ploidy: u32) -> u64 {
     // At most 4295 million genotypes of a ploidy of 255 at most, which is
     // 1.1e12 and fits in a u64 many times over; the saturation is there
     // because the plain operator does not compile, and a threshold that

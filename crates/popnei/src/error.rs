@@ -1809,6 +1809,76 @@ pub enum Error {
         num_pairs: usize,
     },
 
+    /// The folded site frequency spectrum was asked for and no
+    /// `num_called_alleles` was given. The spectrum counts the variants
+    /// whose rarer allele was called once, twice and so on up to half the
+    /// alleles drawn, so its bins need one number of called alleles for
+    /// every population and every variant; with none, a population of 40
+    /// called alleles and one of 400 would put their variants in bins that
+    /// mean different things. In Python it is a `ValueError`.
+    #[error(
+        "the folded site frequency spectrum was asked for and `num_called_alleles` was not given, and the bins of a spectrum are the counts of the rarer allele in a draw of that many alleles: give `num_called_alleles`, or leave the spectrum out of `stats`"
+    )]
+    DiversitySfsWithoutADraw,
+
+    /// The number of called alleles every population is brought down to is
+    /// below 2. A draw of one allele shows one allele whatever the
+    /// population holds, so every standardized value of such a draw is 1 or
+    /// 0 and says nothing about the dataset. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "`num_called_alleles` is {num_called_alleles}, and a draw shows more than one allele only when it is of 2 alleles at least: a draw of one allele finds one allele whatever the population holds"
+    )]
+    DiversityDrawTooSmall {
+        /// The number of called alleles that was asked for.
+        num_called_alleles: u32,
+    },
+
+    /// One of the populations the diversity is calculated for holds no
+    /// individual. Every statistic of a population is over the alleles its
+    /// individuals called, so a population with none has no allele to count
+    /// at any variant. In Python it is a `ValueError`.
+    #[error(
+        "the population at {pop} holds no individual, and every statistic of a population is over the alleles its individuals called"
+    )]
+    DiversityPopWithNoIndividual {
+        /// Which population of the call it is, counted from 0 in the order
+        /// they were given.
+        pop: usize,
+    },
+
+    /// An index given for an individual of a population is not an
+    /// individual of the dataset: they are counted from 0, so the last one
+    /// of a dataset of n individuals is n − 1. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the individual {individual} is in the population at {pop} and the dataset has {num_individuals} individuals, which are counted from 0"
+    )]
+    DiversityIndividualNotInTheDataset {
+        /// Which population of the call the index was given in.
+        pop: usize,
+        /// The index that was given.
+        individual: usize,
+        /// How many individuals the dataset has.
+        num_individuals: usize,
+    },
+
+    /// An individual is twice in one population of the call. Its alleles
+    /// would be counted twice in that population, at every variant and in
+    /// every one of the five statistics. An individual that is in two
+    /// populations is taken, as `docs/specs/stats.md` has it, and only the
+    /// repeat within one population is refused. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the individual {individual} is twice in the population at {pop}, and a population holds each of its individuals once"
+    )]
+    DiversityIndividualAskedForTwice {
+        /// Which population of the call holds it twice.
+        pop: usize,
+        /// The index that was given twice.
+        individual: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
