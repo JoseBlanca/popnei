@@ -581,6 +581,22 @@ solves for it by bisection between ρ of 0 and 10⁶, stopping when the
 bracket is narrower than 10⁻¹² of its own middle, about 60 halvings, and
 not from a table, so a dataset of another n needs no new number.
 
+What the curve falls towards as ρ grows is 1/n and not 0, so it reaches
+half of its value at ρ of 0 only where that half is above 1/n, which it
+is from n of 3 upwards. At n of 1 the curve runs from 1.1983471074380166
+down to 1 and half of its value at 0 is 0.5991735537190083, and at n of 2
+it runs from 0.8264462809917356 down to 0.5 and half is
+0.4132231404958678: neither is ever reached, and there the half distance
+alone is NaN, the fitted ρ per base pair and the r² at distance 0 being
+what the pairs gave. `calc_ld_and_dist` reaches neither n. A population
+of one individual has one dosage at every variant, so no variant of it
+has variance and it counts no pair; and a population of two gives every
+pair it counts an r² of 1, the correlation of two points being 1 or −1
+whenever both variants vary, which is above the curve's own ceiling at
+every ρ, so its smallest falls at the bottom end of the searched range
+and "The cases" gives it the three NaN. Worked out on 24 September 2026,
+when `fit_ld_decay` was written.
+
 It is half of the value at distance 0 and not half of the shortest bin.
 The value at 0 is the curve's own ceiling, 0.46198347107438015 at n of
 100, which the individuals sampled fix on their own, so what is being
@@ -722,6 +738,11 @@ A curve that is flat across `max_dist`, or that has fallen before the
 second base pair, is not a fall-off these pairs pin down, and the number
 at the end of the range says where the search stopped and not what the
 data says. The bins of such a population are what they would be anyway.
+
+A population of fewer than three individuals has a curve that never falls
+to half, for the reason "The curve that is fitted" gives, and its
+`half_dist` alone is NaN. No pass reaches it, and a caller of
+`fit_ld_decay` with a table of its own does.
 
 A pair of variants on two chromosomes has no distance and is in no bin,
 as in pyNei.
@@ -1184,7 +1205,9 @@ impl LdDecay {
     /// the population fix on their own.
     pub fn r2_at_zero(&self) -> f64;
     /// The distance in base pairs at which the fitted curve has fallen
-    /// to half of `r2_at_zero`.
+    /// to half of `r2_at_zero`. NaN when the other two are, and NaN on
+    /// its own when the curve never falls to half, which "The curve that
+    /// is fitted" says is n of 1 and n of 2 and no other n.
     pub fn half_dist(&self) -> f64;
 }
 ```
