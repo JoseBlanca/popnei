@@ -94,7 +94,10 @@ says so and names the worker. It happens at the call, because the header is
 read there. An array of bytes works on the main thread as it does now.
 
 A range that comes back shorter than the range that was asked for, inside a
-file of that size, is an `Error` and not the end of the file. A browser
+file of that size, is an `Error` and not the end of the file. So is a
+`Blob` whose `size` is not a whole number of 0 to 2^53: it is a number of
+JavaScript, and what a file holds has to be counted exactly before a range
+of it is asked for. A browser
 gives a short range when the file changed on disk after the page got its
 handle, and a reader that took it for the end would give the variants it had
 and say nothing. What each browser does with a file that changed has not
@@ -192,6 +195,14 @@ from a script, headless:
 - The same worker writes a vars file with `writeVars`, makes a `File` of it,
   opens it with `openVars` and asserts the same variants. The vars file
   reader seeks, so this is the check of `Seek`; the VCF reader never seeks.
+- A `File` of more than one range gives the variants of every range of it.
+  Without such a file no test reads a second range: `Blob.prototype.slice`
+  giving the end of the first range as the end of the file passed every
+  other browser test of this spec, which is the silent wrong result the
+  short range above is refused for.
+- `Blob.prototype.slice` patched to give one byte less than it was asked
+  for: the pass fails with popnei's error, and the message names the range
+  it asked for, the bytes it was given and the size of the file.
 - A `File` of a few hundred MB, the body of `many.vcf` repeated, is opened
   and passed over once with `calcPerIndividualStats`, and the test asserts
   the number of variants it counted and that the memory of the wasm module
@@ -489,9 +500,17 @@ enum TheBytes {
     /// over that source shares: the `SharedBytes` of `source.rs`, an
     /// `Arc` of the bytes wasm-bindgen filled.
     InMemory(Cursor<SharedBytes>),
-    /// A file of the page, read one range at a time: the range that is
-    /// held, where it starts, and where the pass is.
-    OfAFile { range: Vec<u8>, range_at: u64, pos: u64 },
+    /// A file of the page, read one range at a time: which entry of
+    /// `IN_JAVASCRIPT` holds it, the range that is held, where that range
+    /// starts, where the pass reads next, and how many bytes the file
+    /// holds, which a read and a seek from the end are against.
+    OfAFile {
+        source: u32,
+        range: Vec<u8>,
+        range_at: u64,
+        pos: u64,
+        num_bytes: u64,
+    },
 }
 
 impl Read for PassOverTheBytes {}
