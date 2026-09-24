@@ -1247,11 +1247,12 @@ impl ThePairsOfAStep {
             asked_for: col_end.saturating_sub(col),
             num_vars: held.len(),
         };
-        // The first variant held that is on the chromosome of the first
-        // column of the tile and within `max_dist` of it. Every column of
-        // the tile comes after that one, so no pair of the tile holds a
-        // variant before it.
-        let row_start = the_first_row_in_reach(held, col, *max_dist);
+        // The first variant held that any column of the tile pairs with.
+        // It is taken over every column and not over the first of them:
+        // nothing asks the chromosomes of a source to be grouped, so a
+        // later column can be on a chromosome the first column is not on
+        // and reach back past what the first column reaches.
+        let row_start = the_first_row_in_reach(held, (col, col_end), *max_dist);
         let (Some(num_cols), Some(num_rows)) =
             (col_end.checked_sub(col), col_end.checked_sub(row_start))
         else {
@@ -1366,18 +1367,34 @@ fn the_end_of_the_tile(first_var: u64, at: usize, num_held: usize, vars_per_tile
     usize::try_from(end).unwrap_or(num_held).min(num_held)
 }
 
-/// The first variant of the window that is on the chromosome of the
-/// variant `col` and within `max_dist` of it, and `col` itself when none
-/// is.
-fn the_first_row_in_reach(held: &[TheVariantOfTheWindow], col: usize, max_dist: u64) -> usize {
-    let (Some(of_the_column), Some(before_it)) = (held.get(col), held.get(..col)) else {
+/// The first variant of the window that is on the chromosome of one of
+/// the variants `col` to `col_end` and within `max_dist` of it, and `col`
+/// itself when none is.
+///
+/// The rows of a tile of columns run from this variant to the last column
+/// of the tile, so every pair that holds a column of the tile and a
+/// variant before it is worked out. The columns of a tile are in the
+/// order of the source, which no chromosome orders, so this is taken over
+/// all of them: a source whose chromosomes are not grouped can put a
+/// later column on a chromosome that the first column of the tile is not
+/// on, and that column reaches back to a variant the first column does
+/// not.
+fn the_first_row_in_reach(
+    held: &[TheVariantOfTheWindow],
+    (col, col_end): (usize, usize),
+    max_dist: u64,
+) -> usize {
+    let Some(of_the_columns) = held.get(col..col_end.max(col)) else {
         return col;
     };
-    before_it
+    held.get(..col)
+        .unwrap_or_default()
         .iter()
         .position(|variant| {
-            variant.chrom == of_the_column.chrom
-                && of_the_column.pos.abs_diff(variant.pos) <= max_dist
+            of_the_columns.iter().any(|of_the_column| {
+                variant.chrom == of_the_column.chrom
+                    && of_the_column.pos.abs_diff(variant.pos) <= max_dist
+            })
         })
         .unwrap_or(col)
 }
@@ -2663,6 +2680,75 @@ mod tests {
             the_pairs_of(bins),
             vec![0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1]
         );
+    }
+
+    /// A VCF of four diploid individuals with a variant at each of
+    /// `variants`, the chromosome and the position of each.
+    ///
+    /// The genotypes of a variant are the next of four patterns, each of
+    /// which holds two dosages at least, so every variant has a variance
+    /// and no pair of them is without an r².
+    fn the_vcf_of_variants_at(variants: &[(&str, u64)]) -> Vec<u8> {
+        const THE_PATTERNS: [[&str; 4]; 4] = [
+            ["0/0", "0/1", "0/1", "1/1"],
+            ["0/0", "0/0", "0/1", "1/1"],
+            ["0/1", "1/1", "0/0", "0/1"],
+            ["1/1", "0/1", "0/0", "0/0"],
+        ];
+        let of_each: Vec<(&str, u64, [&str; 4])> = variants
+            .iter()
+            .zip(THE_PATTERNS.iter().copied().cycle())
+            .map(|((chrom, pos), pattern)| (*chrom, *pos, pattern))
+            .collect();
+        vcf_of_four_individuals(&of_each)
+    }
+
+    /// The 255 variants of `chr3` a base pair apart that the test below
+    /// puts before `chr2`, `chr1` and `chr2` again, and the three that
+    /// follow them.
+    fn the_vcf_of_a_chromosome_that_comes_back(of_the_first_chromosome: u64) -> Vec<u8> {
+        let mut variants: Vec<(&str, u64)> = (1..=of_the_first_chromosome)
+            .map(|pos| ("chr3", pos))
+            .collect();
+        variants.push(("chr2", 10));
+        variants.push(("chr1", 100));
+        variants.push(("chr2", 50));
+        the_vcf_of_variants_at(&variants)
+    }
+
+    #[test]
+    fn a_column_of_a_tile_pairs_with_a_variant_the_first_column_of_that_tile_cannot_reach() {
+        // Nothing of `docs/specs/block.md` or of the VCF reader asks the
+        // chromosomes of a source to be grouped, and here chr2 comes back
+        // after chr1: the variants are 255 of chr3, then chr2 at 10, chr1
+        // at 100 and chr2 at 50. The variant of chr1 is the 257th, so a
+        // tile of 256 columns starts on it, and it reaches no variant
+        // before it while the column beside it, chr2 at 50, pairs with
+        // chr2 at 10 at a distance of 40.
+        //
+        // The variants of chr3 are a base pair apart, so the pairs of that
+        // chromosome within 100 base pairs are the sum over the distances
+        // d of 1 to 100 of 255 − d, which is 20450, and the pair of chr2
+        // makes 20451.
+        let vcf = the_vcf_of_a_chromosome_that_comes_back(255);
+        let options = LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 100,
+            num_bins: 1,
+            max_allowed_maf: 1.0,
+        };
+        for num_vars_per_block in [64, 258] {
+            for vars_per_tile in [3, 64, 256, 258] {
+                let of_the_pass =
+                    the_bins_of_a_pass(&vcf, &[], num_vars_per_block, &options, vars_per_tile);
+                let bins = bins_of(&of_the_pass, 0);
+                assert_eq!(
+                    the_pairs_of(bins),
+                    vec![20_451],
+                    "at blocks of {num_vars_per_block} variants and tiles of {vars_per_tile}"
+                );
+            }
+        }
     }
 
     /// The bins of a pass that the options or the populations were
