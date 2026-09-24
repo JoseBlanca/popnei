@@ -67,3 +67,29 @@ JavaScript with node's `stripTypeScriptTypes`, which is experimental in
 node v26.8.2 and prints one warning per run. What it buys is that the
 page, the worker and the cases are type checked with the rest of
 `js/popnei/test/`.
+
+Task 1.2, the run and the counting source, is done at 7c2bcf8. `node --test
+test/progress.test.ts` runs 10 tests where deliverable 2 asks for 6, and
+`npm test` gives 350 tests, `fail 0`. The size of a range is one constant,
+4 MiB, whose doc comment says work package 4 measures it. `js-sys` came in
+here and not in task 3.1: nothing else can call a function of JavaScript.
+
+Two sentences of the spec were wrong and are corrected at the commit after
+this one, both because a reader of popnei reads when it is built:
+
+- The calls of the two passes of the PCA come as pass 1, pass 2, pass 1,
+  pass 2, and not as the calls of the first pass and then those of the
+  second. It builds both readers before it asks either for a block, and a
+  VCF reader reads its header there, a vars file reader its footer. The
+  share of a run that is done still rises, 0, 0.5, 0.5, 1, when a page
+  draws `(pass - 1 + bytesRead / numBytes) / numPasses`, which the spec now
+  gives. What would make the calls come in the order the spec first
+  promised is a second reader built after the first pass ends, which is a
+  change to the signature of `pca_of_variants` in the core.
+- A vars file smaller than one range gives one call, of 0 bytes: a pass
+  over it never reads past its last batch, so nothing finds the end of the
+  file. The check of the spec now writes a vars file of more than one range,
+  as `vars_memory.test.ts` does, and says what a small one gives.
+
+A `told` that is neither a function nor nothing is refused where the
+application sets it, which the spec did not say and now does.

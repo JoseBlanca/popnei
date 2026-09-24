@@ -111,7 +111,7 @@ Tasks:
       which checks its name and its options as the spec says. From "How many
       passes a consumer makes". The tests of `test/num_passes.test.ts`
       written first. Serves deliverables 1 and 4.
-- [ ] 1.2 The run and the counting source: `PassOverTheBytes` with
+- [x] 1.2 The run and the counting source: `PassOverTheBytes` with
       `TheBytes::InMemory`, the two tables `IN_JAVASCRIPT` and `RUNS`, `Run`
       and `RunOfAConsumer`, `OpenSource::starts_a_run` and its `reader`
       taking the run, every consumer of `crates/popnei-js/src/` opening its
@@ -119,7 +119,9 @@ Tasks:
       tells the page", its "What it gives", "Its TypeScript function" and
       "The cases a reader of the rules would not guess", and from "The Rust
       interface". The tests of `test/progress.test.ts` written first. Needs
-      1.1 for `Consumer`. Serves deliverables 2 and 4.
+      1.1 for `Consumer`. Serves deliverables 2 and 4. It added `js-sys`
+      to the binding crate, which the plan had given to task 3.1: nothing
+      else calls a function of JavaScript.
 - [ ] 1.3 The stop: the read that fails with `std::io::Error::other`, the
       case of `JsPopneiError` that carries a `JsValue` untouched, the
       `stopped_with` of the run and the swap of the error at the boundary,

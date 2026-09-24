@@ -253,7 +253,9 @@ variants.onProgress(told?: (progress: Progress) => void): void
 
 The function is set on the `Variants` and not given to each consumer
 (**Open 1**, below), and it holds until it is set again; `onProgress()` with
-nothing takes it off. Setting it changes nothing about the variants a pass
+nothing takes it off, and anything that is neither a function nor nothing is
+an `Error` there, where the application wrote it, and not at the first read
+of the next run. Setting it changes nothing about the variants a pass
 gives.
 
 Every consumer of the package can throw the value that `told` threw:
@@ -302,10 +304,19 @@ reads, and the page hears of one pass and not of two.
 
 Passes are counted inside a run and not inside a source. A consumer opens a
 run, every reader it opens belongs to it, and a pass takes its number when
-it first reads: the PCA builds both of its readers before either has read a
-byte, and they are pass 1 and pass 2 in the order they start. Twelve
-`iterBlocks` over one source at once are twelve runs, each of one pass, and
-each of them is pass 1 of 1.
+it first reads. Twelve `iterBlocks` over one source at once are twelve
+runs, each of one pass, and each of them is pass 1 of 1.
+
+The calls of the two passes of the PCA of the variants are not the calls of
+one and then the calls of the other. It builds both of its readers before
+it asks either for a block, and a reader reads when it is built, the header
+of a VCF and the footer of a vars file, which is the first read of its pass
+and the call that says it has read nothing. So the two take their numbers
+there, one after the other, and each reads the file after that: over
+`many.vcf` the four calls of a run are pass 1 at 0 bytes, pass 2 at 0,
+pass 1 at 117346 and pass 2 at 117346. What a page draws rises all the
+same, if it draws the share of the run that is done,
+`(pass - 1 + bytesRead / numBytes) / numPasses`: 0, 0.5, 0.5 and 1.
 
 An `iterBlocks` that a user abandons without freeing it holds its run, and
 with it the entry of its source, until the `FinalizationRegistry` of the
@@ -328,14 +339,16 @@ from it, with ranges of the size popnei chose:
   `numBytes` 117346, `pass` 1 and `numPasses` 1, and `bytesRead` never goes
   down. Over `many.vcf.gz` the last call has `bytesRead` 21904 and
   `numBytes` 21904.
-- Over the vars file the first call is 0, `bytesRead` never goes down and
-  never passes `numBytes`, and the last call is the bytes of its footer and
-  its batches, which goes into the test as a literal when it is first run,
-  with the file it was measured on.
-- `doPcaFromVariants` with `numPrinComps` 10 gives calls of `pass` 1 and
-  then of `pass` 2, each starting at 0 bytes and ending at 117346, and every
-  call has `numPasses` 2; no call of `pass` 1 comes after a call of `pass`
-  2. With `numPrinComps` 0 there is one pass.
+- Over a vars file of more than one range, written by the test as
+  `vars_memory.test.ts` writes one, the first call is 0, `bytesRead` never
+  goes down and never passes `numBytes`, and the last call is the bytes of
+  its footer and its batches, which goes into the test as a literal when it
+  is first run, with the file it was measured on. Over a vars file of fewer
+  bytes than one range there is the one call of 0 bytes.
+- `doPcaFromVariants` with `numPrinComps` 10 over `many.vcf` gives four
+  calls, of pass 1, pass 2, pass 1 and pass 2, with 0, 0, 117346 and 117346
+  bytes read, and `numPasses` 2 in every one. With `numPrinComps` 0 there
+  is one pass.
 - Twelve `iterBlocks` over one source, opened together and read one after
   another, give calls of `pass` 1 and `numPasses` 1 for each of the twelve.
 - A function that throws on its first call: the consumer throws that same
