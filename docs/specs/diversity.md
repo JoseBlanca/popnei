@@ -961,10 +961,16 @@ impl DiversityStats {
     pub fn empty() -> DiversityStats;
     pub fn contains(self, other: DiversityStats) -> bool;
     pub fn union(self, other: DiversityStats) -> DiversityStats;
-    /// The name of each statistic, which is the name of the field that
+    /// Each statistic beside its name, which is the name of the field that
     /// holds its result and the word a Python or a TypeScript user writes
-    /// in `stats`.
-    pub const NAMES: [&'static str; 5];
+    /// in `stats`. The two are one table so that a statistic added to it
+    /// cannot be given a name and no value, which is what a table of the
+    /// names alone allowed.
+    pub const NAMES_AND_STATS: [(&'static str, DiversityStats); 5];
+    /// The names of the statistics of a set, in the order of the table,
+    /// which is what a binding crate builds a default `stats` and a
+    /// refusal from.
+    pub fn names(self) -> Vec<&'static str>;
     /// The statistic of a name, for a binding crate reading a user's
     /// `stats`.
     ///
@@ -1005,12 +1011,13 @@ with every individual.
 ///
 /// `FOLDED_SFS` asked for with no `num_called_alleles`, a
 /// `num_called_alleles` below 2 or above the individuals of the reader
-/// times its ploidy, a `stats` naming no statistic, a population with no
-/// individual, an index that is not an individual of the dataset, an
-/// individual asked for more than once, no variant in the reader, a
-/// variant of more alleles than a count of them holds, a block saying it
-/// holds more variants than a pass counts them in, and those of the
-/// reader.
+/// times its ploidy, a `stats` naming no statistic, a name that is no
+/// statistic, a population with no individual, an index that is not an
+/// individual of the dataset, an individual asked for more than once, no
+/// variant in the reader, a ploidy the reader states that popnei does not
+/// read, a variant of more alleles than a count of them holds, a block
+/// saying it holds more variants than a pass counts them in, and those of
+/// the reader.
 pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
     reader: &mut R,
     pops: &[&[usize]],
@@ -1073,11 +1080,21 @@ asked for without a draw size, a draw size below 2, a draw size above the
 individuals of the dataset times the ploidy, a `stats` naming no
 statistic at all, a name that is no statistic of this module, a population
 with no individual, an individual the dataset has not or named twice, a
-pass with no variant, a variant of more alleles than a count of them
-holds, and a block saying it holds more variants than the variants of a
-pass are counted in. The last two are of the variants the pass read and
+pass with no variant, a ploidy the reader states that popnei does not
+read, a variant of more alleles than a count of them holds, and a block
+saying it holds more variants than the variants of a
+pass are counted in. The last three are of the variants the pass read and
 not of what a user wrote, and they are here because a user meets them
 through this function; the rest are arguments.
+
+The ploidy is this module's own case and not the one
+`docs/specs/stats.md` raises for the `ploidy` and `exponent` arguments of
+`calc_per_var_distribs`, which `calc_pop_diversity` does not have: a user
+of this function chose no ploidy, the reader states it, and a message
+naming an argument they never wrote would send them looking for it.
+`docs/specs/dists.md` met the same thing and gave `calc_pop_dists` a case
+of its own; this follows it. What reaches it is a vars file whose metadata
+says its genotypes hold more alleles than popnei reads.
 
 Three of those a user of the Python or the TypeScript package never meets,
 and a reader of this list should know which. A population with no
