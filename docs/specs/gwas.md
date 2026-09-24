@@ -1065,7 +1065,7 @@ and a pivot of `d' sigma⁻¹ d` that has fallen to the `n` times 2.2e-16 of
 **Open 5** of the largest is a fit whose weighted design has collapsed,
 which is that rule's second caller. Neither is reached by a fit of either
 panel, and both were reached by holding `tau` where no fit takes it,
-measured on `panel_called` on 25 September 2026 on both backends: at 1e10
+measured on `panel_called` on 24 September 2026 on both backends: at 1e10
 the linearization settles in 26 rounds with a smallest weight of 3.3e-24,
 at 1e12 a weight reaches 0 and the fit is refused at its round 26, and the
 smallest pivot is 0.197 of the largest at GMMAT's `tau` of 1.508057, 0.195
@@ -1159,7 +1159,8 @@ reached at all: on `panel_called`, whose smallest eigenvalue is
 at a `tau` of 1e16, where 4 over that eigenvalue is 1.2e15; on the panel
 with 3 genotypes missing in 100, whose smallest is -0.0321, it stops at the
 row 196 at a `tau` of 1e10, where the same arithmetic gives 124. Measured on
-both backends on 25 September 2026, which give the same row. It is not a defect of popnei and not a wrong
+both backends on 24 September 2026, which give the same row. It is not a
+defect of popnei and not a wrong
 argument, so it is neither a `RuntimeError` nor a plain `ValueError` about a
 type: it is a `ValueError` about the data.
 
