@@ -1326,7 +1326,7 @@ impl ThePairsOfAStep {
         let first_var = pop.first_var();
         let mut col = first_new;
         while col < held.len() {
-            let end = the_end_of_the_tile(first_var, col, held.len(), self.vars_per_tile);
+            let end = the_end_of_the_tile(first_var, col, held, self.vars_per_tile);
             self.the_pairs_of_a_tile_of_columns(dosages, held, first_var, (col, end), bins)?;
             col = end;
         }
@@ -1386,9 +1386,15 @@ impl ThePairsOfAStep {
             &the_memory_for("the r² of a tile of columns", values, size_of::<f64>()),
         )?;
         let of_the_columns = dosages.rows(col, num_cols)?;
+        // A tile of rows ends at the last column of this tile at the
+        // latest: the pairs of the columns with the variants after them
+        // are counted at the step of those variants.
+        let Some(up_to_the_columns) = held.get(..col_end) else {
+            return Err(of_other_variants());
+        };
         let mut row = row_start;
         while row < col_end {
-            let row_end = the_end_of_the_tile(first_var, row, col_end, *vars_per_tile);
+            let row_end = the_end_of_the_tile(first_var, row, up_to_the_columns, *vars_per_tile);
             let (Some(of_the_tile), Some(at)) =
                 (row_end.checked_sub(row), row.checked_sub(row_start))
             else {
@@ -1464,14 +1470,33 @@ impl ThePairsOfAStep {
 }
 
 /// Where the tile that holds the variant `at` of the window ends, as an
-/// index into the variants held, and `num_held` when the tile runs past
-/// them.
+/// index into the variants of `up_to`, which are the variants the tile may
+/// run to: the first of them is the first variant the window holds, and
+/// the tile ends at the last of them when it would run past.
+///
+/// It is one variant past `at` at least.
 ///
 /// The tiles are cut at multiples of `vars_per_tile` counted from the
-/// first variant of the pass, which `first_var` says how many of have
-/// fallen out of the window, so a tile holds the same variants whatever
-/// the blocks the reader gave. It is one variant past `at` at least.
-fn the_end_of_the_tile(first_var: u64, at: usize, num_held: usize, vars_per_tile: usize) -> usize {
+/// first variant of the pass, which `first_var` says how many of them have
+/// fallen out of the window, and not from the first variant the window
+/// holds. What that buys is that a tile holds the same variants whatever
+/// the blocks the reader gave, so the products and the buffers of a step
+/// are the same for a dataset however it was blocked. It buys no number:
+/// the bins are the same to the bit whatever the tiling, which
+/// `the_bins_do_not_move_with_the_blocks_nor_with_the_tiles` asserts over
+/// tiles of 1, 2, 3 and 256 variants. Tiles cut from the first variant the
+/// window holds, which is this with `first_var` taken out of both of its
+/// lines, leave the 190 tests of `popnei::ld` passing. What the alignment is
+/// worth in time nobody has measured; the owner decided on 24 September
+/// 2026 that the speed of this pass goes to a performance review of its
+/// own.
+fn the_end_of_the_tile(
+    first_var: u64,
+    at: usize,
+    up_to: &[TheVariantOfTheWindow],
+    vars_per_tile: usize,
+) -> usize {
+    let num_held = up_to.len();
     let of_a_tile = the_count_of(vars_per_tile);
     // The variants a population keeps are counted in a u64, and a pass
     // that passed what one holds would have read more bytes than any
