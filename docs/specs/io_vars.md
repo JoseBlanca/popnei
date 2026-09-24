@@ -551,28 +551,34 @@ the file and the rows of the batch, walking the buffers in the order the IPC
 format lays them out: the genotypes of a batch are its rows times the
 individuals times the ploidy bytes and no more, the positions 8 bytes for each
 row, the qualities 4, the offsets of a column of texts and of a list 4 for each
-row and one after the last, and a mask of nulls a bit for each row. The texts
-of the three columns of texts, and the values of a list, have no such number,
-and neither has a column whose type popnei does not know, which stops the walk:
-what bounds those is what lz4 gives from the bytes the buffer holds, 255 for
-each byte, and the 2147483647 bytes that the 32 bit offsets of a column of
-texts address. The exact bound is what matters for the genotypes, which are the
-large buffer: a reviewer wrote a file of 20000 variants of 1000 diploid
-individuals in one batch, 25147258 bytes, and changed the eight bytes that say
-how long its `gts` buffer is once it is decompressed. Under wasm, on 21
-September 2026, 1000000000 and 2000000000 gave the error of a batch that could
-not be read and left the memory of the tab grown to 2066087936 bytes for its
-life, because arrow-rs had asked for what the buffer said before it read it;
-3000000000 and 4294967295 ended the tab with a trap, which is what wasm does
-with an allocation it cannot address.
+row and one after the last, and a mask of nulls a bit for each row rounded up
+to a whole byte, which is what arrow-rs writes. The texts of the three columns
+of texts, and the values of a list, have no such number, and neither has a
+column whose type popnei does not know, which stops the walk: what bounds those
+is what lz4 gives from the bytes the buffer holds, 255 for each byte, and the
+2147483647 bytes that the 32 bit offsets of a column of texts address. The
+exact bound is what matters for the genotypes, which are the large buffer: a
+reviewer wrote a file of 20000 variants of 1000 diploid individuals in one
+batch, 25147258 bytes, and changed the eight bytes that say how long its `gts`
+buffer is once it is decompressed. Under wasm, on 21 September 2026, 1000000000
+and 2000000000 gave the error of a batch that could not be read and left the
+memory of the tab grown to 2066087936 bytes for its life, because arrow-rs had
+asked for what the buffer said before it read it; 3000000000 and 4294967295
+ended the tab with a trap, which is what wasm does with an allocation it cannot
+address.
 
-How many values a column can hold comes from the same schema and the same
-rows, walking the columns in the order the IPC format lays them out, a column
-inside a column after the one that holds it: every column of the batch holds
-its rows, the alleles of a genotype the rows times the individuals times the
-ploidy, and the alleles of a variant, which are the values of a list, as many
-as the offsets of that list say, at most the 2147483647 that 32 bit offsets
-address. A column that comes after one whose type popnei does not know is not
+How many values a column can hold comes from the same schema and the same rows.
+It is a second check and not the first one again: a buffer of the message says
+how many bytes it holds once it is decompressed, and a field node of the same
+message says how many values its column holds, and arrow-rs reads both. For the
+genotypes the two numbers are the same, the rows times the individuals times
+the ploidy, because an allele is one byte. The walk is over the columns in the
+order the IPC format lays them out, a column inside a column after the one that
+holds it: every column of the batch holds its rows, the alleles of the
+genotypes that number, and the alleles of a variant, which are the values of a
+list, as many as the offsets of that list say, at most the 2147483647 that 32
+bit offsets address, the same number as the bytes above and from the same
+offsets. A column that comes after one whose type popnei does not know is not
 bounded, as its buffers are not.
 
 Until 24 September 2026 that bound was the bits of the batch as it lies on
