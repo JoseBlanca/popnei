@@ -34,6 +34,8 @@ use crate::variant::{
     the_major_allele_frequency,
 };
 
+mod dist;
+
 /// The most values one of the matrices of [`LdDosages`] holds, the variants
 /// it was built over times the individuals.
 ///
