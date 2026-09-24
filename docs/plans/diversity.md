@@ -275,7 +275,7 @@ and `ExpHet::of_var` of `crates/popnei/src/stats.rs`, all public today.
   at one variant at once and the second divisor, from "What it gives" of
   "The private alleles". Needs 2.2. Serves deliverables 1, 2 and 6. A
   wrong count is silent: its own commit, guarded by deliverables 2 and 5.
-- [ ] 2.4 F_IS, built from `ObsHet::of_var` and `ExpHet::of_var` of the
+- [x] 2.4 F_IS, built from `ObsHet::of_var` and `ExpHet::of_var` of the
   `stats` module so that the two specs cannot disagree about a
   heterozygosity, from "What it gives" of "The inbreeding coefficient
   F_IS", whose rule for which variants enter it is there too. Needs 2.1.
