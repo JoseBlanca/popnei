@@ -436,14 +436,18 @@ checks are common to all four:
   and set where it breaks, 1e-9 relative being the ceiling and not the
   value. Two are measured so far, on 24 September 2026. The logistic model
   is far inside it, over both panels and both of its tests: `beta` within
-  1.105e-14 of the `se`, `se` 3.368e-15 of itself and `p_value` 4.524e-14 of
-itself. Its bound is 3e-14, 2.7 times the worst, which is where this spec
-  asks a bound to sit: at 1e-12 it was 90 times the worst and would have let
-  through an error of the 1e-13 class, while the two real defects a reviewer
-  planted, dropping either of the fit's final reweightings, move the columns
-  by 1.1e-9 and 3.0e-9 and are caught either way. The
-linear mixed model is the opposite and is the reason this is per model at
-all: its own item says why 1e-9 sits at the noise of the search there.
+  1.090e-14 of the `se` at `var0833` of `panel` under the score test, `se`
+  3.368e-15 of itself at `var1151` of `panel_called` under the Wald test,
+  and `p_value` 4.524e-14 of itself at `var1004` of `panel_called` under the
+  Wald test. One bound governs all three columns, so it has to clear the
+  largest of them, which is the p-value and not `beta`. It is 1e-13, 2.2
+  times that, the same ratio the linear model's own bound uses. At the 1e-12
+  it had before it was 22 times the worst and would have let through an
+  error of the 1e-13 class, while the two real defects a reviewer planted,
+  dropping either of the fit's final reweightings, move the columns by
+  1.1e-9 and 3.0e-9 and are caught at any of these. The linear mixed model
+  is the opposite and is the reason this is per model at all: its own item
+  says why 1e-9 sits at the noise of the search there.
 
 Two more hold for every model. That the block size changes nothing: the same
 panel read in blocks of 77 gives `stats` equal to the default within 1e-12
