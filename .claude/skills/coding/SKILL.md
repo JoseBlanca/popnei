@@ -403,6 +403,16 @@ algebra backend, a dependency, the wasm wheel is built as well, with the
 steps the walking skeleton leaves in the repository, and so is the
 package of TypeScript, `npm run build && npm test` in `js/popnei`.
 
+A change of `crates/popnei-js` or of `js/popnei` also runs `npm run
+test:browser` there, which is the only thing that runs popnei in a
+browser: `FileReaderSync`, which reads a range of a file the user picked,
+exists only inside a web worker, so what node tests of a `File` is
+nothing. It starts Chromium through Playwright, and Playwright says so
+when the browser is not downloaded, `npx playwright install chromium`. It
+builds the wasm and the TypeScript before it runs, since a browser test
+over a binding crate that was not rebuilt is green whatever the crate now
+says.
+
 Report what each command printed when it failed and that it passed when it
 passed. Speed is not claimed without a measurement, with the dataset and
 the machine, before and after, as the objectives ask.
