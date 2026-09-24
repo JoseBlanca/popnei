@@ -321,6 +321,9 @@ def calc_ld_and_dist_per_pop(
     over one dataset give the same numbers here and different points there;
     it gives r² where pyNei gives r, and a missing genotype takes its
     individual out of that pair where pyNei leaves it in with a dosage of -1;
+    the distances come as `min_dist` and then `max_dist`, where pyNei's
+    signature has `max_dist` first, so a call written for pyNei that gives
+    them by position asks for something else here and nothing says so;
     `min_dist` counts the pair at that distance, where pyNei keeps the pairs
     strictly beyond it and so loses the pairs 1 base pair apart at its own
     default of 1; `max_dist` has a default, plink2's own
