@@ -148,9 +148,13 @@ fn over_the_source(
     pops: Option<&[(String, Vec<String>)]>,
     options: &DiversityOptions,
 ) -> popnei::Result<OfThePass> {
-    // The source is opened at the size of its own blocks: every statistic is
-    // a total over the variants, which comes out the same whatever the
-    // blocks are, so no `Reblock` is put over the chain.
+    // The source is opened at the size of its own blocks, and no `Reblock` is
+    // put over the chain. The four counts are totals of whole numbers and come
+    // out the same whatever the blocks are. F_IS comes out within the
+    // tolerance of `docs/specs/diversity.md` and not to the bit: its two means
+    // are sums of floats that the pass adds by chunk inside each block, so on
+    // the panel it moves 5.2e-14 of the value between the whole file and
+    // blocks of 7, which the test of the block sizes in the core measures.
     let reader = source.reader(None)?;
     // The chain of the pass stays here, lent to the core, so that the counts
     // of its filters can be read when the call is over: the loop over the

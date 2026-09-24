@@ -149,9 +149,13 @@ class PopDiversity:
     population on its own, and not Weir and Cockerham's, which comes out of a
     decomposition of the variance across populations.
 
-    It is NaN for a population that has no F_IS: one no variant counted for,
-    one whose mean unbiased expected heterozygosity is 0, every variant it
-    counted having held one allele, and every population of a haploid
+    It is NaN for a population that has no F_IS, in four cases. One no variant
+    counted for. One no counted variant of which carries both
+    heterozygosities, which a population whose counted variants hold no whole
+    called genotype reaches: two individuals whose genotypes are all half
+    called count their variants and have no observed heterozygosity at any of
+    them. One whose mean unbiased expected heterozygosity is 0, every variant
+    it counted having held one allele. And every population of a haploid
     dataset, where no genotype can be heterozygous and the ratio would be 1
     wherever the population has any diversity. The draw does not touch it:
     the observed heterozygosity is a property of whole genotypes and not of a
@@ -249,6 +253,14 @@ def calc_pop_diversity(
     A pass that gives no variant is a ``ValueError``, whether the source
     holds none or the steps kept none.
 
+    The draw is not built yet, so a `num_called_alleles` and a `stats` that
+    names the spectrum are each a ``NotImplementedError`` that says so: what
+    is given today is the four statistics over the called alleles each
+    population has, and work package 3 of `docs/plans/diversity.md` adds the
+    three `in_draw` columns and `folded_sfs`. A `num_called_alleles` that is no
+    whole number or is out of range is refused as the wrong argument it is,
+    whatever popnei computes.
+
     pyNei has none of the five, so no result here is compared with it.
     """
     if not isinstance(variants, Variants):
@@ -262,6 +274,7 @@ def calc_pop_diversity(
             f"calc_pop_diversity(open_vcf(vcf_path))"
         )
     asked_for = _the_stats(stats)
+    _refuse_what_is_not_built_yet(asked_for, num_called_alleles)
     named = _the_pops(pops)
     (
         pop_names,
@@ -306,6 +319,74 @@ def calc_pop_diversity(
     )
 
 
+# The four statistics the pass computes, as a Python user writes them, for the
+# message that refuses the fifth. They are read from the enumeration, so a
+# member renamed there is renamed in the message too.
+_THE_FOUR_THAT_ARE_COMPUTED = ", ".join(
+    f"PopDiversityStat.{stat.name}"
+    for stat in PopDiversityStat
+    if stat is not PopDiversityStat.FOLDED_SFS
+)
+
+
+def _refuse_what_is_not_built_yet(
+    asked_for: list[str], num_called_alleles: int | None
+) -> None:
+    """It refuses the draw and the folded spectrum while the pass computes
+    neither.
+
+    The pass gives the four statistics that are over the called alleles each
+    population has, and work package 3 of `docs/plans/diversity.md` adds the
+    draw to it. Until then a call that asked for either would get NaN in the
+    three `in_draw` columns and ``None`` in `folded_sfs`, which are what this
+    module gives a draw above every population's called alleles and a
+    statistic nobody asked for: the answer would be wrong and would read as an
+    answer. The two refusals go when the values arrive, with the paragraph of
+    :func:`calc_pop_diversity` that names them and the marker of the tests
+    that assert them.
+
+    Raises:
+        NotImplementedError: when `stats` names the spectrum, and when
+            `num_called_alleles` is a draw the pass would compute over.
+    """
+    if PopDiversityStat.FOLDED_SFS in asked_for:
+        raise NotImplementedError(
+            f"popnei does not compute the folded site frequency spectrum yet: it "
+            f"is work package 3 of `docs/plans/diversity.md`, and `stats` names "
+            f"it, a call that gives no `stats` asking for all five statistics. "
+            f"Write stats=({_THE_FOUR_THAT_ARE_COMPUTED},) for the four that "
+            f"are computed."
+        )
+    if _is_a_draw_the_pass_would_take(num_called_alleles):
+        raise NotImplementedError(
+            f"popnei does not take the alleles of a population down to a common "
+            f"number yet: the draw is work package 3 of "
+            f"`docs/plans/diversity.md`, and `num_called_alleles` is "
+            f"{num_called_alleles!r}. Leave `num_called_alleles` out for the "
+            f"totals, the means, the ratios and F_IS, which are over the called "
+            f"alleles each population has."
+        )
+
+
+def _is_a_draw_the_pass_would_take(num_called_alleles: int | None) -> bool:
+    """Whether `num_called_alleles` is a draw the pass would compute over once
+    the draw is built.
+
+    Anything else is a wrong argument whatever popnei computes, and it is
+    refused as one where every argument of the call is refused, by the binding
+    crate for what is no whole number and for what is negative or larger than a
+    count of called alleles, and by the Rust core for a draw of fewer than two
+    alleles: a user reads the same sentence for it now as they will then. What
+    the bound here does not have is that upper limit, so a whole number above
+    it is told that the draw is not built where it will be told that it is out
+    of range; writing the limit again here would give a user two of them for
+    one argument.
+    """
+    if isinstance(num_called_alleles, bool) or not isinstance(num_called_alleles, int):
+        return False
+    return num_called_alleles >= 2
+
+
 def _the_stats(stats: Iterable[PopDiversityStat]) -> list[str]:
     """The names of the statistics a user asked for, each once and in the
     order they named them.
@@ -345,11 +426,12 @@ def _the_stats(stats: Iterable[PopDiversityStat]) -> list[str]:
             )
         if str(stat) not in asked_for:
             asked_for.append(str(stat))
-    if not asked_for:
-        raise ValueError(
-            "`stats` names no statistic, and a result holds the ones that were "
-            "asked for: leave `stats` out for the five of `PopDiversityStat`"
-        )
+    # A `stats` that names no statistic is refused by the Rust core, which says
+    # that such a pass reads every variant of the source and computes nothing
+    # of them, and lists the five names a user can write. That sentence was
+    # written here and in the TypeScript package before it was written there,
+    # and it is not written here any more, so a third language does not write
+    # it a third time.
     return asked_for
 
 

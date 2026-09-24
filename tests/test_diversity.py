@@ -113,6 +113,25 @@ def _reference(name: str) -> dict[str, dict[str, str]]:
     return rows
 
 
+def _reference_spectrum() -> dict[str, list[str]]:
+    """`panel_folded_sfs_dadi.tsv`, as the column of each population: one
+    value per count of the rarer allele, 0 first.
+
+    Its rows are the counts of the rarer allele and not the populations, so
+    `_reference` above cannot read it.
+    """
+    lines = (DIVERSITY_REFERENCE_DIR / "panel_folded_sfs_dadi.tsv").read_text()
+    lines = lines.splitlines()
+    pops = lines[0].split("\t")[1:]
+    of_each_pop: dict[str, list[str]] = {pop: [] for pop in pops}
+    for rarer_allele, line in enumerate(lines[1:]):
+        values = line.split("\t")
+        assert int(values[0]) == rarer_allele
+        for pop, value in zip(pops, values[1:], strict=True):
+            of_each_pop[pop].append(value)
+    return of_each_pop
+
+
 def _panel() -> Variants:
     """The 1200 variants of the panel."""
     return open_vcf(PANEL)
@@ -288,6 +307,129 @@ def test_a_statistic_that_was_not_asked_for_has_no_value() -> None:
     assert diversity.num_vars.loc["p0", "with_data"] == PANEL_NUM_VARS
 
 
+def test_the_draw_and_the_spectrum_are_not_built_yet() -> None:
+    """A `num_called_alleles` and a `stats` that names the spectrum are
+    refused while the pass computes neither, and the message names the work
+    package that builds them.
+
+    Without the refusal both give an answer that is wrong and reads as an
+    answer: NaN in the three `in_draw` columns, which this module keeps for a
+    draw above every population's called alleles, and `None` in `folded_sfs`,
+    which it keeps for a statistic nobody asked for.
+    """
+    with pytest.raises(NotImplementedError, match="work package 3"):
+        _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=20)
+    with pytest.raises(NotImplementedError, match="work package 3"):
+        _of_the_panel(stats=(PopDiversityStat.FOLDED_SFS,))
+    # The call with no `stats` at all asks for the five, the spectrum among
+    # them, which is how a user meets this first.
+    with pytest.raises(NotImplementedError, match="folded site frequency spectrum"):
+        _of_the_panel()
+
+
+def test_a_num_called_alleles_that_is_no_draw_is_refused_as_a_wrong_argument() -> None:
+    """A value that is no draw at all is wrong whatever popnei computes, so it
+    is refused as one and not as a statistic that is not built: a whole number
+    is what the argument takes, and 0 and 1 are draws no standardized value
+    can be taken over."""
+    with pytest.raises(TypeError, match="num_called_alleles"):
+        _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=2.5)
+    with pytest.raises(TypeError, match="num_called_alleles"):
+        _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=True)
+    with pytest.raises(ValueError, match="num_called_alleles"):
+        _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=-1)
+    with pytest.raises(ValueError, match="num_called_alleles"):
+        _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=1)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the draw is task 3.5 of `docs/plans/diversity.md`, and until it is "
+    "built `calc_pop_diversity` refuses a `num_called_alleles`. The day the pass "
+    "fills the three `in_draw` columns and the two counts of the variants in a "
+    "draw this passes, `strict` turns that into a failure of the suite, and "
+    "whoever built it has to take this marker off and leave the assertions.",
+)
+def test_the_standardized_values_of_the_panel_are_vegans() -> None:
+    """The alleles a draw of 20 is expected to show and the chance that such a
+    draw varies, averaged over the variants of each population of the panel,
+    against `vegan`'s numbers stored in `tests/reference/diversity/`; and the
+    totals, which no draw changes.
+
+    The standardized private alleles are not here: no program outside popnei
+    computes one, and "How it is verified" of that item says what checks
+    them.
+    """
+    with_no_draw = _of_the_panel(stats=WITH_NO_SPECTRUM)
+    of_a_draw_of_20 = _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=20)
+    of_the_alleles = _reference("panel_num_alleles.tsv")
+    of_the_variable = _reference("panel_variable_vars.tsv")
+
+    assert of_a_draw_of_20.num_vars_every_pop_in_draw == PANEL_NUM_VARS
+    for pop in PANEL_POP_NAMES:
+        assert of_a_draw_of_20.num_vars.loc[pop, "in_draw"] == int(
+            of_the_alleles[pop]["num_vars_in_draw"]
+        )
+        assert _the_same_number(
+            of_a_draw_of_20.num_alleles.loc[pop, "in_draw"],
+            of_the_alleles[pop]["in_draw_vegan"],
+        ), f"the alleles a draw of 20 shows in {pop}"
+        assert _the_same_number(
+            of_a_draw_of_20.variable_vars_ratio.loc[pop, "in_draw"],
+            of_the_variable[pop]["in_draw_vegan_minus_one"],
+        ), f"the chance that a draw of 20 varies in {pop}"
+        # A draw changes the standardized values alone.
+        for statistic, column in (
+            ("num_alleles", "total"),
+            ("private_alleles", "total"),
+            ("variable_vars_ratio", "total"),
+        ):
+            assert (
+                getattr(of_a_draw_of_20, statistic).loc[pop, column]
+                == getattr(with_no_draw, statistic).loc[pop, column]
+            ), f"the {column} of the {statistic} of {pop}"
+        assert of_a_draw_of_20.fis[pop] == with_no_draw.fis[pop]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the folded site frequency spectrum is task 3.5 of "
+    "`docs/plans/diversity.md`, and until it is built `calc_pop_diversity` "
+    "refuses a `stats` that names it. The day the pass fills it this passes, "
+    "`strict` turns that into a failure of the suite, and whoever built it has "
+    "to take this marker off and leave the assertions.",
+)
+def test_the_folded_spectrum_of_the_panel_is_dadis() -> None:
+    """The variants of each population of the panel expected to show each
+    count of their rarer allele in a draw of 20, against `dadi`'s numbers
+    stored in `tests/reference/diversity/panel_folded_sfs_dadi.tsv`: eleven
+    rows, the counts 0 to 10, each column summing to the 1200 variants that
+    counted."""
+    diversity = _of_the_panel(
+        stats=(PopDiversityStat.FOLDED_SFS,), num_called_alleles=20
+    )
+    of_dadi = _reference_spectrum()
+
+    assert list(diversity.folded_sfs.index) == list(range(11))
+    for pop in PANEL_POP_NAMES:
+        for rarer_allele, theirs in enumerate(of_dadi[pop]):
+            assert _the_same_number(
+                diversity.folded_sfs.loc[rarer_allele, pop], theirs
+            ), f"the variants of {pop} with {rarer_allele} copies of the rarer allele"
+        assert _the_same_number(diversity.folded_sfs[pop].sum(), PANEL_NUM_VARS), (
+            f"the spectrum of {pop} over its variants"
+        )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the spectrum is task 3.5 of `docs/plans/diversity.md`, and until it "
+    "is built `calc_pop_diversity` refuses a `stats` that names it with a "
+    "`NotImplementedError`, before the core is reached. The day the pass fills "
+    "the spectrum this `ValueError` of the core is what a user who gives no "
+    "`num_called_alleles` reads again, `strict` turns the pass into a failure of "
+    "the suite, and whoever built it has to take this marker off.",
+)
 def test_the_spectrum_asked_for_with_no_draw_is_refused() -> None:
     """The bins of a folded spectrum are the counts of the rarer allele in a
     draw, so the spectrum needs `num_called_alleles`. It is the default
@@ -328,34 +470,82 @@ def test_a_population_short_of_the_threshold_everywhere_counts_no_variant() -> N
     assert math.isnan(diversity.variable_vars_ratio.loc["p0", "ratio"])
     assert math.isnan(diversity.fis["p0"])
     assert diversity.num_vars_every_pop == 0
-    assert math.isnan(diversity.private_alleles.loc["p0", "mean"])
+    # Every population's mean private alleles is over the variants every
+    # population counted, which is 0 here, so all three are NaN. `p1` and `p2`
+    # counted variants of their own, so they are what tells that divisor from
+    # the variants of the population.
+    for pop in PANEL_POP_NAMES:
+        assert math.isnan(diversity.private_alleles.loc[pop, "mean"]), (
+            f"the mean private alleles of {pop}"
+        )
     for pop in ("p1", "p2"):
         assert diversity.num_vars.loc[pop, "with_data"] > 0
         assert diversity.num_alleles.loc[pop, "total"] > 0
         assert not math.isnan(diversity.fis[pop])
 
 
-def test_the_totals_and_the_fis_do_not_read_the_draw() -> None:
-    """A draw changes the standardized values alone: the alleles called, the
-    private ones, the variable variants and F_IS are the same numbers with
-    `num_called_alleles` 20 as with none."""
-    with_no_draw = _of_the_panel(stats=WITH_NO_SPECTRUM)
-    of_a_draw_of_20 = _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=20)
+def test_the_mean_private_alleles_are_over_the_variants_every_population_counted(
+    write_vcf,
+) -> None:
+    """Two variants of three individuals in which one population misses the
+    second, so that the variants every population counted are fewer than the
+    variants of `pop1` and the two divisors give different numbers.
 
-    for pop in PANEL_POP_NAMES:
-        assert (
-            of_a_draw_of_20.num_alleles.loc[pop, "total"]
-            == with_no_draw.num_alleles.loc[pop, "total"]
-        )
-        assert (
-            of_a_draw_of_20.private_alleles.loc[pop, "total"]
-            == with_no_draw.private_alleles.loc[pop, "total"]
-        )
-        assert (
-            of_a_draw_of_20.variable_vars_ratio.loc[pop, "total"]
-            == with_no_draw.variable_vars_ratio.loc[pop, "total"]
-        )
-        assert of_a_draw_of_20.fis[pop] == with_no_draw.fis[pop]
+    `pop1` is `ind1` and `pop2` is `ind2`; `ind3` is in no population and
+    takes no part. At the first variant `ind1` is `0/1` and `ind2` is `2/2`,
+    so `pop1` called the alleles 0 and 1 and `pop2` called 2, and each of the
+    three is private to the population that called it. At the second `ind1` is
+    `0/0` and `ind2` has no genotype, so the variant counts for `pop1` alone
+    and is out of the private alleles of both.
+
+    `pop1` therefore has 2 variants with data, 2 private alleles and 1 variant
+    every population counted, which makes its mean private alleles 2. Over its
+    own 2 variants it would be 1, and over the same divisor its 3 alleles
+    called and its 1 variable variant would be 3 and 1 rather than 1.5 and
+    0.5.
+    """
+    path = write_vcf(
+        [
+            "chr1\t10\t.\tA\tT,G\t.\tPASS\t.\tGT\t0/1\t2/2\t0/0",
+            "chr1\t20\t.\tA\tT,G\t.\tPASS\t.\tGT\t0/0\t./.\t0/0",
+        ]
+    )
+
+    diversity = calc_pop_diversity(
+        open_vcf(path),
+        pops={"pop1": ["ind1"], "pop2": ["ind2"]},
+        stats=WITH_NO_SPECTRUM,
+        min_num_individuals=1,
+    )
+
+    assert diversity.num_vars.loc["pop1", "with_data"] == 2
+    assert diversity.num_vars.loc["pop2", "with_data"] == 1
+    assert diversity.num_vars_every_pop == 1
+    assert diversity.private_alleles.loc["pop1", "total"] == 2
+    assert diversity.private_alleles.loc["pop1", "mean"] == 2.0
+    assert diversity.private_alleles.loc["pop2", "total"] == 1
+    assert diversity.private_alleles.loc["pop2", "mean"] == 1.0
+    assert diversity.num_alleles.loc["pop1", "total"] == 3
+    assert diversity.num_alleles.loc["pop1", "mean"] == 1.5
+    assert diversity.variable_vars_ratio.loc["pop1", "total"] == 1
+    assert diversity.variable_vars_ratio.loc["pop1", "ratio"] == 0.5
+
+
+def test_a_pass_that_gives_no_variant_is_refused(write_vcf) -> None:
+    """Every count of a population is over the variants of the pass, so a pass
+    with none is an error, and the message says whether the source held none or
+    the steps kept none, with what each filter counted."""
+    variants = _panel()
+    # No variant with a called allele has a major allele frequency of 0, and
+    # one without a called allele is not kept either.
+    variants.filter_by_maf(0)
+
+    with pytest.raises(ValueError, match="the pass gave no variant") as refusal:
+        calc_pop_diversity(variants, pops=PANEL_POPS, stats=WITH_NO_SPECTRUM)
+    assert "the `maf` filter was given 1200 and kept 0" in str(refusal.value)
+
+    with pytest.raises(ValueError, match="its source holds none"):
+        calc_pop_diversity(open_vcf(write_vcf([])), stats=WITH_NO_SPECTRUM)
 
 
 def test_the_pass_stats_count_the_variants_the_pass_gave() -> None:
@@ -376,13 +566,15 @@ def test_variants_that_is_not_a_variants_is_refused() -> None:
 
 def test_stats_takes_the_members_of_the_enumeration_alone() -> None:
     """A name written as a string is refused, so a typo in one cannot pass
-    for a statistic nobody asked for, and asking for none is refused."""
+    for a statistic nobody asked for, and asking for none is refused by the
+    Rust core, which lists the five names a user can write."""
     with pytest.raises(TypeError, match="PopDiversityStat"):
         _of_the_panel(stats=("num_alleles",))
     with pytest.raises(TypeError, match="PopDiversityStat"):
         _of_the_panel(stats="fis")
-    with pytest.raises(ValueError, match="names no statistic"):
+    with pytest.raises(ValueError, match="`stats` names no statistic") as refusal:
         _of_the_panel(stats=())
+    assert "reads every variant of the source for nothing" in str(refusal.value)
 
 
 def test_one_statistic_written_on_its_own_is_that_one_statistic() -> None:
