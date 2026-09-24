@@ -446,3 +446,72 @@ the same 842 on faer, 149 linear algebra, 506 pytest, and fmt, clippy,
 wasm-check and ruff clean. `run_plink2.sh` into an empty directory exits
 0 naming no differing file, so the three tables of work package 1 are
 untouched. Every one was run by the orchestrator.
+
+**2.2, the fit and the half distance.** Commits `e5c7625`, a correction
+to the spec, and `c12dc35`, the code. A new module
+`crates/popnei/src/ld/decay.rs` holds `fit_ld_decay` and `LdDecay`: the
+curve, the sum it makes smallest, the grid of 141 values, the golden
+section search and the bisection for the half distance. Thirteen tests
+under `ld::decay`, where the plan started at none.
+
+**The test that makes a silently wrong fit impossible passes exactly.**
+Its r² are taken from the curve itself at a ρ per base pair of 0.0001 and
+100 individuals, so the answer is known before the fit runs: the fit
+gives 0.0001 back with a relative error of 0, a half distance of
+21608.13587253306 against the spec's 21608.135872529165, which is
+1.8e-13 relative where 1e-6 is asked, and the r² at distance 0 to the
+bit. A second table at a ρ per base pair of 2e-4, which is not one of the
+141 values of the grid, is what exercises the search: the grid alone
+lands 2.4e-3 away and the search brings it to 3.2e-8.
+
+Both ends of the searched range are tested, which the plan calls the case
+easiest to miss: an r² of 1 at every distance, above the curve's ceiling
+everywhere, puts the smallest at the first grid point, and an r² of 0 at
+every distance puts it at the last. Both give three NaN and not an error,
+so neither returns the half distance of about 10⁻¹² or 10¹² base pairs
+that an unguarded search would.
+
+Only one function that is not an addition, a subtraction, a
+multiplication or a division is called: `powf`, to move along the
+exponent of 10 in the grid and the search, 183 times a fit. The curve and
+the sum use the four operations alone, so the platform cannot move a
+returned value except through where the search looked.
+
+### A sentence of the spec that is wrong for small samples
+
+"The curve that is fitted" says "The curve falls without turning, so
+exactly one ρ gives half of what it gives at ρ of 0". That is true of
+every sample size a dataset reaches and false at 1 and 2 individuals.
+The curve does not fall to 0: the correction for a finite sample holds it
+up at 1 over the individuals. The orchestrator checked the arithmetic:
+
+| individuals | at ρ of 0 | half of that | the floor, 1/n | does it reach half |
+|---|---|---|---|---|
+| 1 | 1.198347 | 0.599174 | 1.000000 | never |
+| 2 | 0.826446 | 0.413223 | 0.500000 | never |
+| 3 | 0.702479 | 0.351240 | 0.333333 | yes |
+| 50 | 0.469421 | 0.234711 | 0.020000 | yes |
+| 100 | 0.461983 | 0.230992 | 0.010000 | yes |
+
+At 1 and 2 individuals the bisection would have run to the top of its
+range and returned 10⁶ divided by the fitted ρ per base pair, which is a
+number and not a NaN. The half distance alone is now NaN there, written
+into the spec in `e5c7625` before the code, with the other two kept
+because the fit itself succeeded.
+
+**What the owner may want to change.** `calc_ld_and_dist` reaches
+neither case, so only a caller of `fit_ld_decay` with a table of its own
+sees it: one individual has no variant with variance and counts no pair,
+and two individuals give every pair an r² of 1, whose smallest falls at
+the bottom end of the range and is already the three NaN of "The cases".
+If the owner would rather have three NaN there than one, it is a two-line
+change. The orchestrator took the one-NaN form because the fit did
+succeed and the other two values are real.
+
+`cargo test --workspace` gives 855 passed with 2 ignored, the same 855 on
+faer, 149 linear algebra, 506 pytest, 332 node, and fmt, clippy,
+wasm-check and ruff clean. Every one was run by the orchestrator.
+
+**One number for the performance review, not acted on.** One fit over 249
+distances takes 45.8 µs in the test profile on this machine, measured on
+24 September 2026 with a throwaway test that was not committed.

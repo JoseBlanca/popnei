@@ -272,7 +272,7 @@ is not possible: nothing of work package 1 needs anything of this one.
   when the pass ends to the distances that hold a pair. Its part of the
   spec is the last two paragraphs of "How it runs". It serves deliverable
   5 and feeds 2 and 4.
-- [ ] 2.2 `fit_ld_decay` and `LdDecay`: the curve, the sum it makes
+- [x] 2.2 `fit_ld_decay` and `LdDecay`: the curve, the sum it makes
   smallest, the grid of 141 values, the golden section, the bisection for
   the half distance, and the cases with no curve. Everything it needs is
   in "The curve that is fitted" of the item. It serves deliverables 2 and
