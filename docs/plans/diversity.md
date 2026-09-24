@@ -384,7 +384,7 @@ module is what the spec describes.
   on 24 September 2026, inside what this work package gives, since the
   refusals of the draw are its own; the owner decided the refusal the same
   day. Serves deliverable 5.
-- [ ] 3.5 `num_called_alleles` and `FOLDED_SFS` in both binding crates,
+- [x] 3.5 `num_called_alleles` and `FOLDED_SFS` in both binding crates,
   in `python/popnei/diversity.py` and in `js/popnei/src/diversity.ts`,
   with their refusals and their tests. Needs 3.2, 3.3 and 3.4. Serves
   deliverables 2, 3, 4 and 5.
