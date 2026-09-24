@@ -1357,12 +1357,14 @@ fn the_buffer_of(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-    use std::path::Path;
+    use std::fs::File;
+    use std::io::{BufReader, Cursor};
+    use std::path::{Path, PathBuf};
 
     use super::{
         LdAndDist, LdAndDistOptions, LdBins, TheDosagesOfThePops, ThePopOverTheWindow,
-        TheVariantOfTheWindow, TheWindowOfTheBlocks, the_ld_and_dist_in_tiles_of, the_variants_of,
+        TheVariantOfTheWindow, TheWindowOfTheBlocks, calc_ld_and_dist, the_ld_and_dist_in_tiles_of,
+        the_variants_of,
     };
 
     use crate::block::{Block, BlockReader};
@@ -2209,15 +2211,20 @@ mod tests {
         }
     }
 
+    /// A file of `tests/reference/ld/`, which lives at the root of the
+    /// repository, beside the script that writes the files again, and not
+    /// inside this crate.
+    fn the_reference_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference/ld")
+            .join(name)
+    }
+
     /// `tests/reference/ld/example.vcf`, the five variants of six diploid
     /// individuals of "How it is verified" of `docs/specs/ld.md`, at 1000,
     /// 2000, 3000, 4000 and 5000 base pairs of `chr1`.
-    ///
-    /// The reference files live at the root of the repository, beside the
-    /// script that writes them again, and not inside this crate.
     fn the_example_vcf() -> Vec<u8> {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference/ld/example.vcf");
+        let path = the_reference_path("example.vcf");
         match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) => panic!("{path}: {error}", path = path.display()),
@@ -2701,6 +2708,342 @@ mod tests {
                 } if filters.is_empty()
             ),
             "{error}"
+        );
+    }
+
+    /// `tests/reference/ld/ld.vcf.gz`, the 500 variants of 100 diploid
+    /// individuals `i000` to `i099` that "How it is verified" of
+    /// `docs/specs/ld.md` counts its bins over, read as diploid and with
+    /// the variants that failed their FILTER among them, which is what
+    /// plink2 was given, in blocks of `num_vars_per_block` variants.
+    fn the_ld_dataset(num_vars_per_block: usize) -> VcfReader<BufReader<File>> {
+        let path = the_reference_path("ld.vcf.gz");
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block: Some(num_vars_per_block),
+        };
+        match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        }
+    }
+
+    /// The fifty individuals of `ld.vcf.gz` that start at `first`.
+    const fn the_individuals_from(first: usize) -> [usize; 50] {
+        let mut individuals = [0; 50];
+        let mut at = 0;
+        // `first` is 0 or 50 at the two calls below and `at` is under 50,
+        // so neither sum passes 99, the last individual of the dataset.
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "fifty indices of at most 99, from the two calls below"
+        )]
+        while at < 50 {
+            individuals[at] = first + at;
+            at += 1;
+        }
+        individuals
+    }
+
+    /// The individuals of `pop_a`, `i000` to `i049` of `ld.vcf.gz`.
+    const THE_INDIVIDUALS_OF_POP_A: [usize; 50] = the_individuals_from(0);
+
+    /// The individuals of `pop_b`, `i050` to `i099` of `ld.vcf.gz`.
+    const THE_INDIVIDUALS_OF_POP_B: [usize; 50] = the_individuals_from(50);
+
+    /// The bins of "How it is verified" of `docs/specs/ld.md`: the
+    /// distances from 1 to 250000 base pairs cut into ten of 25000, with
+    /// the smallest and the largest distance of each.
+    const THE_BOUNDS_OF_THE_TABLES: [(u64, u64); 10] = [
+        (1, 25_000),
+        (25_001, 50_000),
+        (50_001, 75_000),
+        (75_001, 100_000),
+        (100_001, 125_000),
+        (125_001, 150_000),
+        (150_001, 175_000),
+        (175_001, 200_000),
+        (200_001, 225_000),
+        (225_001, 250_000),
+    ];
+
+    /// The first table of "How it is verified" of `docs/specs/ld.md`, the
+    /// one population of every one of the 100 individuals at a
+    /// `max_allowed_maf` of 0.95: for each of the ten bins, how many
+    /// pairs it holds, the mean of their r² and its standard deviation.
+    ///
+    /// Every value is the one that table prints, which
+    /// `docs/reports/ld-method/bins.py` worked out from the r² plink2
+    /// v2.0.0-a.7.7 gives for these individuals and these variants, and
+    /// which `tests/reference/ld/ld.bins.txt` holds again.
+    const THE_BINS_OF_EVERY_INDIVIDUAL: [(u64, f64, f64); 10] = [
+        (8744, 0.207_678_855_518_440_31, 0.205_686_529_744_794_65),
+        (7815, 0.078_903_591_760_625_11, 0.086_250_492_144_140_23),
+        (6846, 0.035_084_413_027_517_11, 0.041_191_741_689_879_3),
+        (5962, 0.020_569_175_806_260_69, 0.026_923_590_343_909_974),
+        (5140, 0.015_026_451_851_395_499, 0.020_606_044_304_379_79),
+        (4168, 0.011_542_104_404_978_385, 0.015_425_275_975_059_542),
+        (3308, 0.011_454_382_158_199_49, 0.015_306_615_529_156_098),
+        (2447, 0.012_095_572_873_545_887, 0.016_610_730_726_125_223),
+        (1481, 0.015_365_254_218_410_632, 0.020_746_495_170_409_326),
+        (530, 0.013_266_303_346_602_112, 0.017_768_417_874_071_147),
+    ];
+
+    /// The second table of "How it is verified" of `docs/specs/ld.md` for
+    /// `pop_a`, the individuals `i000` to `i049` at a `max_allowed_maf`
+    /// of 0.8, as [`THE_BINS_OF_EVERY_INDIVIDUAL`] holds the first.
+    ///
+    /// The counts of pairs and the means are the ones that table prints.
+    /// It leaves the standard deviations out to stay readable, so those
+    /// are read from `tests/reference/ld/ld.bins.txt`, which holds what
+    /// `docs/reports/ld-method/bins.py` printed for all three tables and
+    /// which `tests/reference/ld/run_plink2.sh` writes again and
+    /// compares.
+    const THE_BINS_OF_POP_A: [(u64, f64, f64); 10] = [
+        (7394, 0.222_263_164_322_283_82, 0.219_333_423_597_465_4),
+        (6564, 0.094_268_621_223_52, 0.103_494_028_800_708_32),
+        (5648, 0.045_650_405_823_598_73, 0.056_055_780_798_436_86),
+        (4918, 0.030_489_796_800_475_328, 0.040_343_306_810_475_03),
+        (4304, 0.024_750_005_446_480_792, 0.032_375_847_680_808_055),
+        (3540, 0.022_203_502_044_442_88, 0.029_984_493_841_579_307),
+        (2872, 0.017_701_369_916_056_54, 0.023_881_355_618_397_9),
+        (2137, 0.020_224_950_448_715_07, 0.028_823_934_904_688_44),
+        (1240, 0.017_923_378_431_226_36, 0.022_823_288_248_614_05),
+        (438, 0.020_745_833_685_396_994, 0.025_769_969_059_702_198),
+    ];
+
+    /// The third table of "How it is verified" of `docs/specs/ld.md` for
+    /// `pop_b`, the individuals `i050` to `i099` at a `max_allowed_maf`
+    /// of 0.8, whose values come from where those of
+    /// [`THE_BINS_OF_POP_A`] do.
+    const THE_BINS_OF_POP_B: [(u64, f64, f64); 10] = [
+        (7625, 0.219_351_925_929_983_45, 0.213_752_142_407_470_95),
+        (6779, 0.087_787_564_637_199_26, 0.098_879_976_941_602_94),
+        (5968, 0.044_293_996_251_491_8, 0.054_863_163_257_117_08),
+        (5189, 0.032_133_599_685_763_4, 0.041_469_004_992_669_65),
+        (4473, 0.026_760_898_025_174_62, 0.036_536_689_258_127_475),
+        (3567, 0.021_365_898_293_232_58, 0.030_124_766_387_101_015),
+        (2823, 0.025_781_473_696_727_46, 0.033_454_346_665_276_094),
+        (2086, 0.022_946_293_772_725_81, 0.030_081_908_306_131_513),
+        (1275, 0.022_448_095_913_909_734, 0.028_237_540_899_418_476),
+        (415, 0.016_086_351_215_632_733, 0.019_851_310_268_078_202),
+    ];
+
+    /// How many of the 500 variants of `ld.vcf.gz` each of the three
+    /// tables keeps: 432 at the `max_allowed_maf` of 0.95 of the first,
+    /// and 396 and 402 at the 0.8 of `pop_a` and of `pop_b`, worked out
+    /// over the individuals of each population alone.
+    const THE_VARS_OF_THE_TABLES: (u64, u64, u64) = (432, 396, 402);
+
+    /// The bins the three tables are counted in, from 1 to 250000 base
+    /// pairs in ten, with the major allele frequency a variant is kept at.
+    fn the_options_of_the_tables(max_allowed_maf: f64) -> LdAndDistOptions {
+        LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 250_000,
+            num_bins: 10,
+            max_allowed_maf,
+        }
+    }
+
+    /// The three tables of "How it is verified" of `docs/specs/ld.md`
+    /// over `ld.vcf.gz` read in blocks of `num_vars_per_block` variants:
+    /// the one population of every individual at a `max_allowed_maf` of
+    /// 0.95, and `pop_a` and `pop_b` at 0.8.
+    ///
+    /// They are two passes because the major allele frequency is one
+    /// threshold for the whole call, and the first table is at another
+    /// than the two below it.
+    fn the_three_tables_of(num_vars_per_block: usize) -> (LdAndDist, LdAndDist) {
+        let mut reader = the_ld_dataset(num_vars_per_block);
+        let of_every_individual =
+            match calc_ld_and_dist(&mut reader, &[], &the_options_of_the_tables(0.95)) {
+                Ok(of_the_pass) => of_the_pass,
+                Err(error) => panic!("the pass of every individual was refused: {error}"),
+            };
+        let mut reader = the_ld_dataset(num_vars_per_block);
+        let pops: [&[usize]; 2] = [&THE_INDIVIDUALS_OF_POP_A, &THE_INDIVIDUALS_OF_POP_B];
+        let of_the_two_pops =
+            match calc_ld_and_dist(&mut reader, &pops, &the_options_of_the_tables(0.8)) {
+                Ok(of_the_pass) => of_the_pass,
+                Err(error) => panic!("the pass of the two populations was refused: {error}"),
+            };
+        (of_every_individual, of_the_two_pops)
+    }
+
+    /// The table of one population in the bits it came out with, which is
+    /// what two runs are compared by.
+    #[derive(Debug, PartialEq, Eq)]
+    struct TheValuesOfATable {
+        /// The variants the population kept at its major allele frequency.
+        num_vars: u64,
+        /// How many pairs each bin holds, the first bin first.
+        num_pairs: Vec<u64>,
+        /// The mean and the standard deviation of each bin in their bits,
+        /// and `None` for a bin with no pair, as `the_values_of` gives
+        /// them.
+        values: Vec<Option<(u64, u64)>>,
+    }
+
+    /// The three tables of one run in the bits they came out with.
+    fn the_values_of_the_three_tables(
+        of_the_run: &(LdAndDist, LdAndDist),
+    ) -> Vec<TheValuesOfATable> {
+        let (of_every_individual, of_the_two_pops) = of_the_run;
+        [
+            bins_of(of_every_individual, 0),
+            bins_of(of_the_two_pops, 0),
+            bins_of(of_the_two_pops, 1),
+        ]
+        .into_iter()
+        .map(|bins| TheValuesOfATable {
+            num_vars: bins.num_vars(),
+            num_pairs: the_pairs_of(bins),
+            values: the_values_of(bins),
+        })
+        .collect()
+    }
+
+    /// Asserts that the bins of one population are the ten rows of its
+    /// table of "How it is verified" of `docs/specs/ld.md`: the variants
+    /// it kept and the pairs of each bin exactly, and the mean and the
+    /// standard deviation of each bin within the 1e-12 relative that item
+    /// compares them with.
+    fn assert_the_bins_are(
+        bins: &LdBins,
+        expected: &[(u64, f64, f64); 10],
+        num_vars: u64,
+        what: &str,
+    ) {
+        assert_eq!(bins.num_vars(), num_vars, "the variants {what} kept");
+        assert_eq!(bins.num_bins(), expected.len(), "the bins of {what}");
+        assert_eq!(
+            the_bounds_of(bins),
+            THE_BOUNDS_OF_THE_TABLES.to_vec(),
+            "the distances of the bins of {what}"
+        );
+        let pairs: Vec<u64> = expected.iter().map(|(pairs, _, _)| *pairs).collect();
+        assert_eq!(the_pairs_of(bins), pairs, "the pairs of the bins of {what}");
+        for (bin, (_, mean, sd)) in expected.iter().enumerate() {
+            assert_the_value_is(
+                the_mean_of(bins, bin),
+                *mean,
+                &format!("the mean r² of the bin {bin} of {what}"),
+            );
+            assert_the_value_is(
+                the_sd_of(bins, bin),
+                *sd,
+                &format!("the standard deviation of the bin {bin} of {what}"),
+            );
+        }
+    }
+
+    /// Asserts that the three tables of a run are the ones of the spec,
+    /// and says of each which run it was.
+    fn assert_the_three_tables_are_the_ones_of_the_spec(
+        of_the_run: &(LdAndDist, LdAndDist),
+        at: &str,
+    ) {
+        let (of_every_individual, of_pop_a, of_pop_b) = THE_VARS_OF_THE_TABLES;
+        assert_eq!(
+            (of_the_run.0.num_vars(), of_the_run.0.num_pops()),
+            (500, 1),
+            "the pass of every individual {at}"
+        );
+        assert_eq!(
+            (of_the_run.1.num_vars(), of_the_run.1.num_pops()),
+            (500, 2),
+            "the pass of the two populations {at}"
+        );
+        assert_the_bins_are(
+            bins_of(&of_the_run.0, 0),
+            &THE_BINS_OF_EVERY_INDIVIDUAL,
+            of_every_individual,
+            &format!("every individual {at}"),
+        );
+        assert_the_bins_are(
+            bins_of(&of_the_run.1, 0),
+            &THE_BINS_OF_POP_A,
+            of_pop_a,
+            &format!("pop_a {at}"),
+        );
+        assert_the_bins_are(
+            bins_of(&of_the_run.1, 1),
+            &THE_BINS_OF_POP_B,
+            of_pop_b,
+            &format!("pop_b {at}"),
+        );
+    }
+
+    /// The three tables of "How it is verified" of `docs/specs/ld.md`,
+    /// over `tests/reference/ld/ld.vcf.gz` read with the VCF reader in
+    /// blocks of 7, 64 and 500 variants, which give the same numbers to
+    /// the bit.
+    ///
+    /// Every r² behind the tables is plink2's and the binning is the
+    /// arithmetic of the spec: the reference script runs plink2 on the
+    /// individuals and the variants each population keeps, and
+    /// `docs/reports/ld-method/bins.py` puts its matrix into the bins.
+    /// The three sizes of block are what say that the window of the pass
+    /// neither keeps a variant further back than `max_dist` nor drops one
+    /// that a later variant still pairs with: these variants are a
+    /// thousand base pairs apart at the closest, so a window of 250000
+    /// reaches over many more of them than a block of 7 holds, and a
+    /// block of 500 holds the whole dataset.
+    #[test]
+    fn the_three_tables_of_bins_are_the_ones_plink2_gives_at_every_size_of_block() {
+        let of_seven = the_three_tables_of(7);
+        assert_the_three_tables_are_the_ones_of_the_spec(&of_seven, "at blocks of 7 variants");
+        for num_vars_per_block in [64, 500] {
+            let at = format!("at blocks of {num_vars_per_block} variants");
+            let of_the_run = the_three_tables_of(num_vars_per_block);
+            assert_the_three_tables_are_the_ones_of_the_spec(&of_the_run, &at);
+            assert_eq!(
+                the_values_of_the_three_tables(&of_the_run),
+                the_values_of_the_three_tables(&of_seven),
+                "{at}, against blocks of 7"
+            );
+        }
+    }
+
+    /// The three tables are the same, to the bit, on a pool of one thread
+    /// and on one of four.
+    ///
+    /// Both the reading and the products run on the threads of the pool
+    /// the caller is in: the VCF reader parses the lines of a batch on
+    /// them, as `docs/specs/io_vcf.md` has it, and the products of r² run
+    /// on them through faer when the `blas` feature is off, which is what
+    /// `cargo test -p popnei --no-default-features` runs. The pools are
+    /// built here and are not rayon's global one, which has one thread
+    /// per core of the machine, and `current_num_threads` inside the pool
+    /// says how many threads the pass had. rayon is a dependency of the
+    /// targets that are not wasm, so this test is compiled for those
+    /// alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_number_of_threads_does_not_change_the_three_tables() {
+        let in_a_pool = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| {
+                assert_eq!(
+                    rayon::current_num_threads(),
+                    threads,
+                    "the pass did not run on the pool it was given"
+                );
+                the_three_tables_of(64)
+            })
+        };
+
+        let on_one = in_a_pool(1);
+        assert_the_three_tables_are_the_ones_of_the_spec(&on_one, "on one thread");
+        assert_eq!(
+            the_values_of_the_three_tables(&in_a_pool(4)),
+            the_values_of_the_three_tables(&on_one),
+            "four threads against one"
         );
     }
 }
