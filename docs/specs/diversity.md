@@ -17,8 +17,8 @@ runs over.
 
 The option not taken was to add these five as items of `docs/specs/stats.md`,
 whose row of the architecture already holds the allele counts per
-population and the polymorphism ratio. A module of its own was chosen on
-24 September 2026 because the results have a shape the `stats` results
+population and the polymorphism ratio. The owner chose a module of its own
+on 24 September 2026 because the results have a shape the `stats` results
 have not: `calc_per_var_distribs` gives a mean and a histogram over the
 variants, and four of the five here give one number per population and the
 fifth a vector over the frequency of the rarer allele. The cost is a
@@ -37,6 +37,18 @@ no item below has a pyNei function to mirror, none has a difference from
 pyNei to write down, and no test runs the two libraries on the same input.
 Every number of this spec comes from a program outside the project, and
 the one quantity no outside program computes is marked where it appears.
+
+The five programs those numbers come from are `vegan` 2.7.6 and
+`adegenet` 2.1.11, which were on the owner's machine already, `poppr`
+2.9.8, installed from CRAN on 24 September 2026, and `scikit-allel` 1.3.13
+and `dadi` 2.4.4 from PyPI. The owner took them as development
+dependencies of popnei on 24 September 2026, so the plan that builds this
+module adds them where the other development dependencies are and the
+reference script runs them. `hierfstat`, which would have checked the
+standardized allele counts and F_IS in one package, is not among them: it
+does not install, `RcppParallel` and then its dependency `gaston` failing
+to build, which `docs/specs/dists.md` recorded on 23 September 2026 and
+which is still so.
 
 ## The pass and its function
 
@@ -106,6 +118,17 @@ the bins of a spectrum need one number of alleles for every population and
 every variant; asking for it without `num_called_alleles` is a
 `ValueError`. A `num_called_alleles` below 2 is a `ValueError`: a draw of
 one allele shows one allele whatever the population holds.
+
+It takes one number and not a sequence of them, so a user who wants the
+curve of allelic richness against the number of alleles drawn, which shows
+whether a population has been sampled enough, calls the function once per
+point of it. The owner decided this on 24 September 2026. The option not
+taken was a sequence, which would turn the three standardized values into
+a row per draw size and give a spectrum per draw size, and would save the
+passes, a curve of ten points being ten passes over the variants against
+one; what it costs is a result of two dimensions that every user carries
+and most do not use. A sequence can be added later without changing what
+one number gives.
 
 A variant is **in the draw** for a population when it counts for that
 population by the rule above **and** the population called at least `g`
@@ -329,7 +352,7 @@ test at `calc_pop_diversity`, where the totals and their divisor are read
 off the result.
 
 The standardized values have no program on this machine that computes
-them. ADZE is the one that does and it is not installed (**Open 2**). They
+them. ADZE is the one that does and it is not installed (**Open 1**). They
 are checked by the worked example alone, whose numbers are worked out by
 hand below, and by two properties that a cargo test asserts on the panel:
 with `num_called_alleles` equal to the smallest `c` of the dataset the
@@ -510,7 +533,7 @@ environment, and it is worth that because the projection is the arithmetic
 here most easily got wrong, being a distribution over bins and not a
 single value. Decided on 24 September 2026; the option not taken was to
 drop `dadi` and check the projection against the worked example alone, as
-the standardized private alleles are checked (**Open 2**).
+the standardized private alleles are checked (**Open 1**).
 
 The worked example, at `num_called_alleles` 4. `pop2` keeps variants 1, 3
 and 5. Variant 1 has 5 copies of allele 0 and nothing else, so every draw
@@ -761,25 +784,19 @@ pass and the same allele counts and does far less arithmetic on them.
 
 ## Open points
 
-The owner decides these. Until then the implementer follows the
-"meanwhile" of each.
+One is left, and the owner decides it. Until then the implementer follows
+its "meanwhile". The three this spec had while it was written the owner
+decided on 24 September 2026, and each is under the item it belongs to
+with the option that was not taken: that `num_called_alleles` takes one
+number and not a sequence, under "Its Python function"; that these five
+are a module of their own and not items of `docs/specs/stats.md`, in the
+opening; and that the five reference programs become development
+dependencies of popnei, also in the opening. A fourth, whether `dadi` is
+worth an environment of its own, the writer decided, under "How it is
+verified" of the folded spectrum, because it changes no value a user sees
+and no public API.
 
-**Open 1: one draw size or a curve of them.** `num_called_alleles` takes
-one number, so a user who wants the curve of allelic richness against the
-number of alleles drawn, which is what ADZE prints and what shows whether
-a population has been sampled enough, makes one call per point. The
-options are one number, which is the sketch above; a sequence of numbers,
-which turns the three standardized values into a row per draw size and the
-spectrum into one per draw size too, and makes the result two dimensional
-where it is now one; or one number with the curve left to the caller's
-loop. What the sequence saves is the passes: a curve of ten points is ten
-passes over the variants against one, and a pass over a million variants
-is the cost of this whole module. What it costs is a result shape that
-every user pays for and most do not use, and a spectrum that is a frame
-per draw size. Recommendation: one number, and the sequence added if a
-user asks for the curve. Meanwhile one number is built.
-
-**Open 2: no program checks the rarefied private alleles.** Every other
+**Open 1: no program checks the rarefied private alleles.** Every other
 value of this spec is checked against a program outside the project, which
 the objectives ask for. The standardized private alleles are checked by
 the worked example and by two properties of the panel, all three of them
