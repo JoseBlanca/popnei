@@ -287,11 +287,17 @@ fn cursor_of(bytes: &Arc<Vec<u8>>) -> Cursor<SharedBytes> {
 /// in the memory of wasm tells the page as often as that one does, so that a
 /// bar moves the same way over both.
 ///
-/// Nothing has been measured at this number: "Speed" of
-/// `docs/specs/js_sources.md` leaves it at 4 MiB until work package 4 of
-/// `docs/plans/js-sources.md` times one pass over a VCF of a few hundred MB
-/// in Chromium at 256 KiB, 1 MiB, 4 MiB and 16 MiB, and sets it from what it
-/// measures.
+/// It was measured on 24 September 2026, in Chromium on the owner's Apple M5
+/// Pro, as one pass with `calcPerIndividualStats` over a VCF of 299994147
+/// bytes and 1285000 variants of 50 diploid individuals, the best of five
+/// runs of each size: 1069 ms at 256 KiB, 1006 ms at 1 MiB, 996 ms at 4 MiB,
+/// 958 ms at 16 MiB, and 921 ms with the whole file in the memory of wasm,
+/// which is what the applications do today. That pass at 4 MiB holds
+/// 14155776 bytes of the memory of wasm against the 302383104 of the whole
+/// file, 21.4 times fewer, and costs 8.1 % of the time; 16 MiB is 38 ms
+/// faster and holds 3.7 times more. `docs/reports/js-sources-measurement.md`
+/// has the tables, the machine and the script that took the times, and
+/// "Speed" of `docs/specs/js_sources.md` the two numbers the spec carries.
 const NUM_BYTES_PER_RANGE: u64 = 4 * 1024 * 1024;
 
 /// The number of no entry of [`RUNS`] or of [`IN_JAVASCRIPT`], which a run
