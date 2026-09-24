@@ -50,6 +50,10 @@ docs/plans/diversity.md timed `calc_per_var_distribs` with, so that it and
 `calc_pop_diversity` of `time_diversity.py` count the same populations of the
 same file. The other passes take no populations and refuse the argument.
 
+The runs are 1 or more. A number of runs that is not a whole number, and
+one below 1, are refused before anything is read, each with the argument and
+what was written in the message.
+
 One pass before the timed ones is not timed: it pays the page faults of the
 first touch of the memory a pass works in, which a process pays once, and it
 reads the file, so that the timed runs read it from the page cache.
@@ -107,23 +111,42 @@ def the_pops(path: str) -> dict[str, list[str]]:
             if not line.strip():
                 continue
             written = line.rstrip("\n")
-            individual, tab, pop = written.partition("\t")
-            if not tab or not individual or not pop:
+            # The line is cut on every tab and not on the first one: with
+            # the first alone a file of three columns is read as two, and
+            # everything after the first tab becomes the name of the
+            # population, so the run times populations that no file names.
+            fields = written.split("\t")
+            if len(fields) != 2 or not fields[0] or not fields[1]:
                 raise ValueError(
                     f"{path}, line {number}: a line of a populations file is "
-                    f"the name of an individual, a tab and the name of its "
+                    f"the name of an individual, one tab and the name of its "
                     f"population, and this one is {written!r}"
                 )
+            individual, pop = fields
             pops.setdefault(pop, []).append(individual)
     return pops
 
 
-def one_pass(path: str, what: str, pops: dict[str, list[str]] | None = None) -> int:
-    """One whole pass over the vars file at `path`, and the variants it
-    gave.
+def a_count(name: str, written: str) -> int:
+    """The whole number written as `name` on the command line.
 
-    `pops` is the populations `per-var-pops` runs over, and with none it is
-    the four of 250 individuals of the report.
+    An argument that is not a whole number is refused with the argument and
+    what was written in the message, before anything is read or timed.
+    """
+    try:
+        return int(written)
+    except ValueError:
+        raise ValueError(
+            f"{name} is a whole number, and {written!r} was written"
+        ) from None
+
+
+def one_pass(path: str, what: str, pops: dict[str, list[str]] | None = None) -> int:
+    """One whole pass over the file at `path`, and the variants it gave.
+
+    The file is read as a vars file when its name ends in `.vars` and as a
+    VCF otherwise. `pops` is the populations `per-var-pops` runs over, and
+    with none it is the four of 250 individuals of the report.
     """
     variants = (
         popnei.open_vars(path) if path.endswith(".vars") else popnei.open_vcf(path)
@@ -158,7 +181,17 @@ def main() -> int:
     if len(arguments) not in (3, 4):
         print(__doc__)
         return 1
-    path, what, runs = arguments[0], arguments[1], int(arguments[2])
+    path, what = arguments[0], arguments[1]
+    try:
+        runs = a_count("the number of runs", arguments[2])
+    except ValueError as problem:
+        print(problem)
+        return 1
+    # A run of no pass gives no time, and `min` of no time raises after the
+    # untimed pass has been paid for, which is a whole read of the file.
+    if runs < 1:
+        print(f"the number of runs is 1 or more, and {runs} was written")
+        return 1
     pops_path = arguments[3] if len(arguments) == 4 else None
     if what not in WHATS:
         print(f"the pass to time is one of {WHATS}, and {what!r} was given")

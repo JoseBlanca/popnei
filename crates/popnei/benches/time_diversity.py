@@ -53,6 +53,10 @@ builds no pool of its own: `RAYON_NUM_THREADS=1` for one thread and
 reader runs on the thread that calls it, so there the threads are the
 calculation's alone.
 
+The runs are 1 or more. A draw or a number of runs that is not a whole
+number, and a number of runs below 1, are refused before anything is read,
+each with the argument and what was written in the message.
+
 A path that ends in `.vars` is opened with `open_vars` and anything else
 with `open_vcf`. Every run opens the file again, so that no block is read
 twice and every run pays the opening.
@@ -121,15 +125,34 @@ def the_pops(path: str) -> dict[str, list[str]]:
             if not line.strip():
                 continue
             written = line.rstrip("\n")
-            individual, tab, pop = written.partition("\t")
-            if not tab or not individual or not pop:
+            # The line is cut on every tab and not on the first one: with
+            # the first alone a file of three columns is read as two, and
+            # everything after the first tab becomes the name of the
+            # population, so the run times populations that no file names.
+            fields = written.split("\t")
+            if len(fields) != 2 or not fields[0] or not fields[1]:
                 raise ValueError(
                     f"{path}, line {number}: a line of a populations file is "
-                    f"the name of an individual, a tab and the name of its "
+                    f"the name of an individual, one tab and the name of its "
                     f"population, and this one is {written!r}"
                 )
+            individual, pop = fields
             pops.setdefault(pop, []).append(individual)
     return pops
+
+
+def a_count(name: str, written: str) -> int:
+    """The whole number written as `name` on the command line.
+
+    An argument that is not a whole number is refused with the argument and
+    what was written in the message, before anything is read or timed.
+    """
+    try:
+        return int(written)
+    except ValueError:
+        raise ValueError(
+            f"{name} is a whole number, and {written!r} was written"
+        ) from None
 
 
 def open_the_file(path: str):
@@ -142,9 +165,11 @@ def the_read_alone(path: str) -> tuple[int, str]:
     """One pass over the file at `path` carrying the genotypes and no other
     field, as the variants it gave and the alleles its blocks held.
 
-    `block.gts.size` is the shape of the array the core filled, which reaches
-    numpy without a copy, so adding the sizes up shows a pass whose blocks
-    carry no genotype. Nothing here reads a genotype.
+    `block.gts.size` is how many alleles the array the core filled holds,
+    and that array reaches numpy without a copy, so adding the sizes up
+    costs nothing and the total says whether the blocks carried their
+    genotypes: a pass whose blocks carried none prints 0 alleles. Nothing
+    here reads a genotype.
     """
     blocks = open_the_file(path).iter_blocks(fields=())
     num_vars = 0
@@ -237,7 +262,7 @@ def the_draw(what: str, written: str) -> int | None:
                 f"{what!r} is a pass of a draw and needs the called alleles to "
                 f"draw, and {NO_DRAW!r} was written in their place"
             )
-        return int(written)
+        return a_count("the number of called alleles to draw", written)
     if written != NO_DRAW:
         raise ValueError(
             f"{what!r} is a pass of no draw and takes {NO_DRAW!r} in the place "
@@ -257,10 +282,15 @@ def main() -> int:
         return 1
     try:
         draw = the_draw(what, written_draw)
+        runs = a_count("the number of runs", runs)
     except ValueError as problem:
         print(problem)
         return 1
-    runs = int(runs)
+    # A run of no pass gives no time, and `min` of no time raises after the
+    # untimed pass has been paid for, which is a whole read of the file.
+    if runs < 1:
+        print(f"the number of runs is 1 or more, and {runs} was written")
+        return 1
     pops = the_pops(pops_path)
     threads = os.environ.get("RAYON_NUM_THREADS", "one for each core")
     print(
