@@ -191,7 +191,11 @@ already built.
    which is what "How popnei fits it, and why not pyNei's way" describes.
 4. popnei and pyNei agree, and TypeScript gives the same numbers. The check:
    a pytest test runs both on both panels with a kinship and gets agreement
-   within 1e-9 relative, and `npm test` asserts the six literals.
+   within 1.5e-13 relative, and `npm test` asserts the six literals. The
+   bound against pyNei is per model and set where it breaks, 1e-9 being the
+   spec's ceiling and not its value; 1.5e-13 is 2.2 times the worst, the
+   p-value of `var0115` of the panel with genotypes missing under the score
+   test on faer, 6.794e-14 in `log10`.
 
 ### What it stands on
 
@@ -213,7 +217,7 @@ Work package 1, whole, since the work packages run in order.
       because a wrong trace moves the variance component and nothing
       crashes; deliverables 1 and 2 are what guard it. Built from the same
       sections. Serves deliverables 1 and 3. Needs 2.1.
-- [ ] 2.3 The score test on the projection matrix, the six literals of both
+- [x] 2.3 The score test on the projection matrix, the six literals of both
       panels as cargo tests, and the model through both bindings and both
       packages with its pytest and node tests. Built from "What it gives"
       and "How it is verified" of that item. Serves deliverables 1, 2 and 4.

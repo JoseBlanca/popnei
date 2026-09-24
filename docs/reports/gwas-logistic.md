@@ -541,6 +541,77 @@ the reciprocals of the weights, which differ from individual to individual,
 so an identity kinship leaves the two apart and the fit lands at 0.1274 in 6
 steps. A test says so, and no meanwhile was needed here.
 
+### Task 2.3, the score test and the model through every layer
+
+`calc_gwas(..., trait="binomial", kinship=k)` is the fourth model and the
+last one the spec describes. The score test reads the projection matrix the
+null fit formed, and the Wald test of this model stays refused, as the spec
+asks. The core has 813 tests, the pytest suite 512 and the node one 330.
+
+**Deliverable 2, the score test against GMMAT on both panels, holds.** The
+worst over 1200 variants is `1 / se²` at 5.342e-6 of GMMAT's `VAR`, at
+`var1032` of `panel_called`, where 1e-5 is allowed and where GMMAT's own six
+printed digits account for 4.92e-6 of it; and the p-value at 8.497e-6 in
+`log10`, at `var0520` of `panel_called`, where 1e-4 is allowed. That second
+figure is the one `docs/reports/glmm-method/README.md` printed for the same
+comparison, to every digit. The six literals of both panels are identical on
+Accelerate, on faer and under node.
+
+**Deliverable 4 holds and its bound is now measured rather than inherited.**
+The plan said 1e-9, which is the spec's ceiling and not a value. Measured
+over both panels and both tests, the worst is the p-value at 6.794e-14 in
+`log10`, at `var0115` of the panel with genotypes missing on faer, with
+Accelerate at 6.384e-14 on `var0892`; then `beta` at 3.916e-14, the genetic
+variance at 5.801e-14, `se` at 1.327e-14 and the covariate effects at
+8.976e-15. The bound is 1.5e-13, 2.2 times the worst, which is the ratio the
+plain logistic model's bound takes.
+
+**Open 2's fourth place is reached on data at last.** A fixture of eight
+individuals in two families, with a covariate that is a tenth of the first
+variant's dosages, leaves `x' p x` at 2.776e-17 on Accelerate and 1.284e-16
+on faer, against a threshold of 2.780e-15. Unguarded, that row answers
+`beta` -7136 with an `se` of 1.898e8 on one backend and -1543 with 8.826e7
+on the other. Three of the rule's four places now have a case behind them,
+and the fourth, the linear mixed model's score test, is not this plan's.
+
+### A wrong value that is nobody's plan, and is the owner's to place
+
+**On the default build, the same inversion gives different answers depending
+on how many threads are running.** It reaches the two mixed models, which
+are the only models that form an inverse.
+
+What I ran myself, at b47f52c on this machine:
+
+| run | failures |
+|---|---|
+| `cargo test -p popnei --lib gwas::logistic_mixed` | 3 of 20 |
+| the same with `--no-default-features`, which is faer | 0 of 20 |
+| the same with `-- --test-threads=1` | 0 of 20 |
+
+Two tests fail, both reading the projection matrix, which is what
+`invert_with_cholesky` forms. The subagent that found it measured the
+operation directly: 8 threads each inverting one Cholesky factor 200 times
+give answers up to 1.08e-4 apart, where faer gives exactly 0, and where
+`cholesky_lower` and `solve_with_cholesky` are stable on both backends. That
+the faer build and the single-threaded run are clean, with the same test
+code, is what says it is the backend and not popnei's fixtures sharing
+state.
+
+It is not new: at 24dc716, which is `main` with none of this work package's
+score test on it, the same filter failed 2 of 10.
+
+What is not settled, and is worth saying rather than guessing: whether
+Accelerate's inversion is genuinely non-deterministic across concurrent
+calls, or whether this matrix is ill-conditioned enough that a different
+summation order lands 1.08e-4 away. 1.08e-4 is far too large for the
+summation order of a well-conditioned inverse, which is why I doubt the
+second, but the conditioning has not been measured. Either way the
+observable is one input and two answers, depending on what else is running.
+
+Who it reaches: popnei forms this inverse once per study, so one study in
+one process is safe. A user running two studies in threads in one process
+would see numbers move in the fourth digit.
+
 ## How the work went
 
 This last section is not written for the owner, who can stop here. It is for
