@@ -93,3 +93,39 @@ this one, both because a reader of popnei reads when it is built:
 
 A `told` that is neither a function nor nothing is refused where the
 application sets it, which the spec did not say and now does.
+
+Task 1.3, the stop, is done at bc46752. `node --test test/stop.test.ts` runs
+7 tests where deliverable 3 asks for 4, five of which fail on the commit
+before it. `JsPopneiError` gained a case that carries the value the
+application threw through untouched, the read that a throw ends fails with
+`std::io::Error::other`, and nine of the ten consumers open their run in one
+function, so the swap of the error cannot be forgotten; `iterBlocks` is the
+tenth, whose run outlives the call.
+
+### What the review of work package 1 found
+
+Seven reviewers, one per category. Two findings are defects a user would
+meet, both measured:
+
+- Freeing the `Variants` from inside the progress function leaks the file
+  and leaves the handle unusable. 100 sources of `many.vcf` freed that way
+  grew the memory of wasm by 11993088 bytes, one file each, where 100 freed
+  the ordinary way grew it by 131072. wasm-bindgen zeroes the pointer and
+  unregisters the finalization before it calls into wasm, and that call
+  throws because a consumer holds the source.
+- A pass is never told that it has ended, so a bar over a vars file stops
+  short. A pass over a vars file of 12231602 bytes was last told at
+  8476400 bytes, two thirds of the way: its reads after that never reached
+  a range, and no read of a vars file finds the end of the file.
+
+The spec was wrong in four more places, each corrected in a commit of its
+own before the code: the calls of the two passes of the PCA interleave
+(8c76e4f), `free()` from inside the function is refused while a consumer
+runs (9a14d55), the end of a run is what says a pass is over (84cf028), and
+a pass whose reader is built is always told of (df5e3e7).
+
+The reviewer of the tests broke the code on purpose eleven times and named
+the tests each mutation failed, which is the check that the suite can fail.
+It found two tests that could not: the stop in the middle of a VCF would
+pass with a stop at its end, and nothing pinned that a stopped pass is not
+told again.

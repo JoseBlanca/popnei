@@ -122,7 +122,7 @@ Tasks:
       1.1 for `Consumer`. Serves deliverables 2 and 4. It added `js-sys`
       to the binding crate, which the plan had given to task 3.1: nothing
       else calls a function of JavaScript.
-- [ ] 1.3 The stop: the read that fails with `std::io::Error::other`, the
+- [x] 1.3 The stop: the read that fails with `std::io::Error::other`, the
       case of `JsPopneiError` that carries a `JsValue` untouched, the
       `stopped_with` of the run and the swap of the error at the boundary,
       and the tables left unborrowed while the function runs. From the same
