@@ -1,7 +1,8 @@
 //! What a TypeScript user reaches through `calcRogersHuffR2Matrix` and
 //! `calcLdAndDistPerPop`: the r² of every pair of the variants of a source,
 //! and how that r² falls off with the distance between the two variants of
-//! a pair, in bins of distance and for each population.
+//! a pair, in bins of distance and as the curve fitted to the pairs of each
+//! population.
 //!
 //! The calculations are the core's, `popnei::ld::calc_r2_matrix` and
 //! `popnei::ld::calc_ld_and_dist`, and what
@@ -14,10 +15,11 @@
 //! of JavaScript is, and, for a pass that gave no variant, says whether the
 //! source had none or the steps kept none, which only the chain knows.
 //!
-//! The bins of the fall-off carry two missing values that are decided here:
-//! a bin with no pair, whose mean and standard deviation the core gives as
+//! The bins of the fall-off carry one missing value that is decided here: a
+//! bin with no pair, whose mean and standard deviation the core gives as
 //! `None` and which a user reads as NaN. A pair that has no r² is NaN in
-//! the core already.
+//! the core already, and so are the three values of the curve of a
+//! population that has none.
 //!
 //! [`R2Matrix`] is the result on its way out. It lives in the memory of
 //! wasm, which the garbage collector of JavaScript does not see, so the
@@ -327,13 +329,16 @@ pub(crate) struct ArgumentsOfTheBins {
 /// What one pass of the fall-off gives TypeScript: the names of the
 /// populations in their order, the five values of every bin of every one of
 /// them, how many variants each of them kept at its major allele frequency,
-/// and the counts of the pass.
+/// the three values of the curve fitted to the pairs of each of them, and
+/// the counts of the pass.
 ///
 /// The bins of every population are in one array each, the bins of one
 /// population after the bins of the one before it: an array of arrays is
 /// not one of the types wasm-bindgen carries, so the package cuts them, as
 /// section 11 of `docs/architecture.md` has it for a table that crosses
-/// with a copy.
+/// with a copy. The curve of a population is three numbers and not three
+/// arrays, so its three arrays hold one value for each population and the
+/// package reads them by the index of the population and cuts nothing.
 ///
 /// Every array leaves the memory of wasm the first time it is asked for,
 /// and the call after that gives nothing: the package reads each of them
@@ -348,6 +353,9 @@ pub struct LdAndDistOfAPass {
     mean_r2: Option<Vec<f64>>,
     sd_r2: Option<Vec<f64>>,
     num_vars_per_pop: Option<Vec<f64>>,
+    rho_per_bp: Option<Vec<f64>>,
+    r2_at_zero: Option<Vec<f64>>,
+    half_dist: Option<Vec<f64>>,
     counts: PassCounts,
 }
 
@@ -401,6 +409,28 @@ impl LdAndDistOfAPass {
         self.num_vars_per_pop.take()
     }
 
+    /// The fitted 4Nr per base pair of the curve of every population, one
+    /// for each of `pop_names`, and NaN for a population no curve was
+    /// fitted to.
+    pub fn rho_per_bp(&mut self) -> Option<Vec<f64>> {
+        self.rho_per_bp.take()
+    }
+
+    /// That curve at a distance of 0, in the same order, and NaN for the
+    /// same populations.
+    pub fn r2_at_zero(&mut self) -> Option<Vec<f64>> {
+        self.r2_at_zero.take()
+    }
+
+    /// The distance in base pairs at which that curve has fallen to half of
+    /// its value at a distance of 0, in the same order.
+    ///
+    /// It is NaN for a population no curve was fitted to, and NaN on its
+    /// own for a curve that never falls to half, which no pass reaches.
+    pub fn half_dist(&mut self) -> Option<Vec<f64>> {
+        self.half_dist.take()
+    }
+
     /// How many variants the pass gave, before the major allele frequency
     /// of any population, and what each filter of it was given and kept.
     #[must_use]
@@ -410,8 +440,9 @@ impl LdAndDistOfAPass {
 }
 
 /// How the r² of a pair of variants falls off with the distance between
-/// them, in bins of distance and for each population of `asked`, over one
-/// pass of `source` through the steps of `steps`.
+/// them, in bins of distance and as the curve fitted to the pairs of each
+/// population of `asked`, over one pass of `source` through the steps of
+/// `steps`.
 ///
 /// The chain of readers of the pass stays here, lent to the core, so that
 /// the counts of its filters can be read when the calculation returns: the
@@ -474,6 +505,9 @@ pub(crate) fn ld_and_dist_of(
     let mut mean_r2 = Vec::with_capacity(of_every_bin);
     let mut sd_r2 = Vec::with_capacity(of_every_bin);
     let mut num_vars_per_pop = Vec::with_capacity(num_pops);
+    let mut rho_per_bp = Vec::with_capacity(num_pops);
+    let mut r2_at_zero = Vec::with_capacity(num_pops);
+    let mut half_dist = Vec::with_capacity(num_pops);
     for pop in 0..num_pops {
         let bins = of_the_pass.bins_of_pop(pop).ok_or_else(|| {
             JsPopneiError::Broken(format!(
@@ -512,6 +546,13 @@ pub(crate) fn ld_and_dist_of(
             bins.num_vars(),
             "the variants a population kept",
         )?);
+        // The three values of the curve are the core's as they are, the
+        // NaN of a population no curve was fitted to included: nothing of
+        // the fit is worked out here.
+        let curve = bins.decay();
+        rho_per_bp.push(curve.rho_per_bp());
+        r2_at_zero.push(curve.r2_at_zero());
+        half_dist.push(curve.half_dist());
     }
     Ok(LdAndDistOfAPass {
         pop_names: Some(pop_names),
@@ -522,6 +563,9 @@ pub(crate) fn ld_and_dist_of(
         mean_r2: Some(mean_r2),
         sd_r2: Some(sd_r2),
         num_vars_per_pop: Some(num_vars_per_pop),
+        rho_per_bp: Some(rho_per_bp),
+        r2_at_zero: Some(r2_at_zero),
+        half_dist: Some(half_dist),
         counts,
     })
 }

@@ -21,7 +21,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { LdAndDistPerPop, LdBins, R2Matrix, Variants } from "popnei";
+import type {
+  LdAndDistPerPop,
+  LdBins,
+  LdDecay,
+  R2Matrix,
+  Variants,
+} from "popnei";
 import {
   calcLdAndDistPerPop,
   calcRogersHuffR2Matrix,
@@ -483,6 +489,37 @@ const VARS_OF_POP_B = 402;
 /** The distances and the bins the three tables were run with. */
 const OF_THE_TABLES = { minDist: 1, maxDist: 250000, numBins: 10 };
 
+/**
+ * The first row of the table of the curve of that same part, for the same
+ * one population of every one of the 100 individuals at a `maxAllowedMaf`
+ * of 0.95 and over the same pairs as the ten bins above: the fitted ρ per
+ * base pair, which is 4Nr, four times the effective size of the population
+ * times the recombination per base pair; the fitted curve at a distance of
+ * 0; and the distance in base pairs at which it has fallen to half of that.
+ *
+ * R 4.6.1's `optimize` gave the three on 24 September 2026, over the 46441
+ * pairs of that population grouped at the 249 distances they fall at, and
+ * `tests/reference/ld/ld.decay.txt` holds them again.
+ */
+const THE_CURVE_OF_EVERY_INDIVIDUAL = {
+  rhoPerBp: 0.00031727347196446889,
+  r2AtZero: 0.46198347107438015,
+  halfDist: 6810.5712522189806,
+};
+
+/**
+ * How close the fitted ρ per base pair and the half distance have to be to
+ * R's, relative, which is the tolerance "How it is verified" of the spec
+ * gives them: both are where a search stopped, and R's two optimisers land
+ * 2.1e-9 of themselves apart on this dataset, so it is 480 times their own
+ * disagreement.
+ *
+ * The r² at a distance of 0 is the curve's ceiling, which the individuals of
+ * the population fix on their own with no search, and the spec compares it
+ * within the 1e-12 of [`TOLERANCE`].
+ */
+const TOLERANCE_OF_THE_FIT = 1e-6;
+
 /** That the mean r² `found` is `expected` within [`TOLERANCE`], relative. */
 function assertTheMeanIs(found: number, expected: number, what: string): void {
   assert.ok(
@@ -498,6 +535,28 @@ function theBinsOf(ofThePass: LdAndDistPerPop, pop: string): LdBins {
     throw new Error(`the pass gave no bins for the population ${pop}`);
   }
   return bins;
+}
+
+/** The curve of the population `pop`, which the pass has to have given. */
+function theCurveOf(ofThePass: LdAndDistPerPop, pop: string): LdDecay {
+  const curve = ofThePass.decayPerPop[pop];
+  if (curve === undefined) {
+    throw new Error(`the pass gave no curve for the population ${pop}`);
+  }
+  return curve;
+}
+
+/** That `found` is `expected` within `tolerance`, relative. */
+function assertTheFitIs(
+  found: number,
+  expected: number,
+  tolerance: number,
+  what: string,
+): void {
+  assert.ok(
+    Math.abs(found - expected) <= tolerance * Math.abs(expected),
+    `${what}: it is ${found} and not ${expected}`,
+  );
 }
 
 test("the ten bins of one population are the ones plink2 gives", async () => {
@@ -592,6 +651,111 @@ test("two populations of one pass count their own pairs and their own variants",
           `the bin ${bin} of ${pop}`,
         );
       }
+    }
+  } finally {
+    variants.free();
+  }
+});
+
+test("the curve of one population is the one R fits to its pairs", async () => {
+  const variants = await theLdDataset();
+  try {
+    const ofThePass = calcLdAndDistPerPop(variants, {
+      ...OF_THE_TABLES,
+      maxAllowedMaf: 0.95,
+    });
+
+    assert.deepEqual(Object.keys(ofThePass.decayPerPop), ["pop"]);
+    const curve = theCurveOf(ofThePass, "pop");
+    // The curve of a population is three numbers and not three arrays: one
+    // curve is fitted to every pair it counted, at the distance of each
+    // pair, so the bins do not cut it and `numBins` does not move it.
+    for (const value of [curve.rhoPerBp, curve.r2AtZero, curve.halfDist]) {
+      assert.equal(typeof value, "number");
+    }
+    assertTheFitIs(
+      curve.rhoPerBp,
+      THE_CURVE_OF_EVERY_INDIVIDUAL.rhoPerBp,
+      TOLERANCE_OF_THE_FIT,
+      "the ρ per base pair",
+    );
+    assertTheFitIs(
+      curve.r2AtZero,
+      THE_CURVE_OF_EVERY_INDIVIDUAL.r2AtZero,
+      TOLERANCE,
+      "the r² at a distance of 0",
+    );
+    assertTheFitIs(
+      curve.halfDist,
+      THE_CURVE_OF_EVERY_INDIVIDUAL.halfDist,
+      TOLERANCE_OF_THE_FIT,
+      "the half distance",
+    );
+    // Fitting the mean of each of these ten bins at the middle of the bin
+    // instead gives a half distance of 7886.60 bp, 15.8 per 100 above the
+    // 6810.57 the pairs give, so a fit that read the bins would fail this.
+    assert.ok(
+      curve.halfDist < 7000,
+      `the half distance is ${curve.halfDist} and the pairs give 6810.57 bp`,
+    );
+  } finally {
+    variants.free();
+  }
+});
+
+test("a population whose pairs fall at one distance and one with no pair get no curve", async () => {
+  // Two populations of the three individuals of the file, one for each way
+  // a pass reaches the three NaN of "The cases" of `docs/specs/ld.md`.
+  // `of_the_three` keeps every variant, and the `maxDist` of 15 leaves it
+  // the two pairs 10 base pairs apart and drops the one 20 apart, so every
+  // pair it counts is at one distance, which says nothing about a fall-off.
+  // `of_one_individual` keeps the two variants `ind3` is heterozygous at
+  // and counts no pair at all: one individual has one dosage at every
+  // variant, so no variant of it has variance and its one pair has no r².
+  const variants = openVcf(
+    vcfOf([
+      "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+      "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/0\t0/1",
+      "chr1\t30\t.\tA\tT\t.\tPASS\t.\tGT\t1/1\t0/1\t0/1",
+    ]),
+  );
+  try {
+    const ofThePass = calcLdAndDistPerPop(variants, {
+      pops: {
+        of_the_three: ["ind1", "ind2", "ind3"],
+        of_one_individual: ["ind3"],
+      },
+      minDist: 1,
+      maxDist: 15,
+      numBins: 3,
+    });
+
+    // The two come back in the order they were given and not in the order
+    // of their names, as the bins and the variants of each do.
+    assert.deepEqual(Object.keys(ofThePass.decayPerPop), [
+      "of_the_three",
+      "of_one_individual",
+    ]);
+    assert.deepEqual(ofThePass.numVarsPerPop, {
+      of_the_three: 3,
+      of_one_individual: 2,
+    });
+    // The bins say which of the two cases each population is: the pairs of
+    // the first are the two 10 base pairs apart, both in the second bin, of
+    // 6 to 10, and the second population has no pair in any bin.
+    assert.deepEqual(
+      [...theBinsOf(ofThePass, "of_the_three").numPairs],
+      [0, 2, 0],
+    );
+    assert.deepEqual(
+      [...theBinsOf(ofThePass, "of_one_individual").numPairs],
+      [0, 0, 0],
+    );
+    for (const pop of Object.keys(ofThePass.decayPerPop)) {
+      const curve = theCurveOf(ofThePass, pop);
+      assert.ok(Number.isNaN(curve.rhoPerBp), `the ρ per base pair of ${pop}`);
+      assert.ok(Number.isNaN(curve.r2AtZero), `the r² at 0 of ${pop}`);
+      assert.ok(Number.isNaN(curve.halfDist), `the half distance of ${pop}`);
     }
   } finally {
     variants.free();

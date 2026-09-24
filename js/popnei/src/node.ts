@@ -35,6 +35,7 @@ export type {
   CalcRogersHuffR2MatrixOptions,
   LdAndDistPerPop,
   LdBins,
+  LdDecay,
   R2Matrix,
 } from "./ld.js";
 export { openVars, writeVars } from "./io_vars.js";

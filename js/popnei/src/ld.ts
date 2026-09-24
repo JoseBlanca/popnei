@@ -17,7 +17,9 @@
  * the mean r² of the pairs of each bin of distance, which is the fall-off:
  * two variants that sit close together have had fewer recombinations
  * between them than two that sit far apart, and how fast r² falls is a
- * property of the population.
+ * property of the population. Beside those bins it gives the curve fitted
+ * to the pairs of each population, which carries the distance at which r²
+ * has fallen to half.
  */
 
 import {
@@ -303,8 +305,80 @@ export interface LdBins {
 }
 
 /**
+ * The curve of r² against distance fitted to the pairs of one population,
+ * and the distance at which it has fallen to half.
+ *
+ * The curve is the r² that two variants of a population are expected to
+ * have at a given recombination between them, under drift and
+ * recombination: Hill and Weir (1988), with the correction of Weir and Hill
+ * (1986) for r² being measured on a sample of individuals and not on the
+ * whole population, which is what holds the curve up at long distances. It
+ * has one number to fit, `rhoPerBp`, and the number of individuals of the
+ * population enters it as it is given.
+ *
+ * The curve is fitted to every pair the pass counted, each at its own
+ * distance, so the bins do not move it and two runs over one dataset give
+ * the same three numbers.
+ *
+ * A population whose pairs no curve was fitted to has NaN in all three, and
+ * that is no error. It happens to a population whose pairs fall at fewer
+ * than two distances, one distance saying nothing about a fall-off, which
+ * includes a population with no pair at all and one left with two variants;
+ * and to a population whose best fit falls at an end of the range of the ρ
+ * per base pair that is searched, 1e-12 to 100, a curve flat across
+ * `maxDist` or fallen before the second base pair being no fall-off that
+ * these pairs pin down.
+ *
+ * It is the `LdDecay` of the Python package with the names of TypeScript.
+ */
+export interface LdDecay {
+  /**
+   * The fitted 4Nr: four times the effective size of the population times
+   * the recombination per base pair, which is by how much ρ, the scaled
+   * recombination of the curve, grows with each base pair between the two
+   * variants of a pair.
+   *
+   * The effective size and the recombination rate enter the curve only as
+   * that product, and one pass over one dataset does not separate them, so
+   * neither is given on its own.
+   */
+  readonly rhoPerBp: number;
+
+  /**
+   * The fitted curve at a distance of 0, which is its own ceiling: two
+   * variants that never recombine still do not reach an r² of 1, because
+   * their allele frequencies drift apart.
+   *
+   * How many individuals the population has fixes it on its own,
+   * 0.46198347107438015 at 100 of them, and no pair of the dataset moves
+   * it.
+   */
+  readonly r2AtZero: number;
+
+  /**
+   * The distance in base pairs at which the fitted curve has fallen to half
+   * of `r2AtZero`.
+   *
+   * What is halved is the curve at a distance of 0 and not the mean r² of
+   * the shortest bin, so `numBins` does not move this distance; `minDist`
+   * and `maxDist` do, through `rhoPerBp`, since they choose which pairs the
+   * curve is fitted to.
+   *
+   * It is NaN when the other two are, and NaN on its own for a curve that
+   * never falls to half of its value at 0, which happens below three
+   * individuals: what the curve falls towards as ρ grows is 1 over the
+   * individuals, which is above that half at one and at two of them. No
+   * pass of `calcLdAndDistPerPop` reaches such a population, since one
+   * individual has no variant with variance and so no pair, and two give
+   * every pair an r² of 1, which the three NaN above cover.
+   */
+  readonly halfDist: number;
+}
+
+/**
  * How the r² of a pair of variants falls off with the distance between
- * them, in bins of distance and for each population.
+ * them, for each population: in bins of distance, and as a curve fitted to
+ * its pairs with the distance at which that curve has fallen to half.
  *
  * It is the `LdAndDistPerPop` of the Python package with the names of
  * TypeScript: five `Float64Array` where Python has the columns of a pandas
@@ -326,6 +400,18 @@ export interface LdAndDistPerPop {
    * individual of a population has called is out of it.
    */
   readonly numVarsPerPop: Record<string, number>;
+
+  /**
+   * The curve fitted to the pairs of each population, under its name and in
+   * the same order.
+   *
+   * The `LdDecay` of a population holds the fitted ρ per base pair, the
+   * curve at a distance of 0 and the distance at which it has fallen to
+   * half of that, as three numbers and not as arrays: one curve is fitted
+   * to every pair of the population and not one to each bin. The three are
+   * NaN for a population whose pairs no curve was fitted to.
+   */
+  readonly decayPerPop: Record<string, LdDecay>;
 
   /**
    * How many variants the pass gave, before the major allele frequency of
@@ -353,6 +439,14 @@ export interface LdAndDistPerPop {
  * source through the steps that are on it when it is called, which serves
  * every population, and the `variants` are as they were afterwards.
  *
+ * Beside the bins each population gets a curve fitted to its pairs, in the
+ * `decayPerPop` of the result: an `LdDecay` with the fitted ρ per base
+ * pair, the curve at a distance of 0 and the distance at which it has
+ * fallen to half of that. The curve is fitted to every pair and at the
+ * distance of each pair, so `numBins` does not move it, and a population
+ * whose pairs no curve was fitted to has NaN in all three, which `LdDecay`
+ * says when and which is no error.
+ *
  * A population in which every variant was left out, and a dataset whose
  * variants are all further apart than `maxDist` or each on a chromosome of
  * their own, give every bin empty, which is no error: those bins hold no
@@ -363,6 +457,8 @@ export interface LdAndDistPerPop {
  * bins over every pair, where pyNei gives a sample of at most
  * `max_num_measures_to_keep` pairs drawn with no seed, so that two runs
  * over one dataset give the same numbers here and different points there;
+ * it fits the curve and gives the half distance, where pyNei hands its
+ * sample of pairs over and leaves the fitting to the user;
  * it gives r² where pyNei gives r, and a missing genotype takes its
  * individual out of that pair where pyNei leaves it in with a dosage of -1;
  * `minDist` counts the pair at that distance, where pyNei keeps the pairs
@@ -457,8 +553,17 @@ export function calcLdAndDistPerPop(
       calculated.num_vars_per_pop(),
       "numVarsPerPop",
     );
+    // The curve of a population is three numbers and not three arrays, so
+    // each of these three arrays holds one value for each population and is
+    // read at the index of the population, where the arrays of the bins are
+    // cut into `binsOfEveryPop` values each.
+    const rhoPerBp = thePartOfTheResult(calculated.rho_per_bp(), "rhoPerBp");
+    const r2AtZero = thePartOfTheResult(calculated.r2_at_zero(), "r2AtZero");
+    const halfDist = thePartOfTheResult(calculated.half_dist(), "halfDist");
     const perPop: Record<string, LdBins> = {};
     const numVarsPerPop: Record<string, number> = {};
+    const decayPerPop: Record<string, LdDecay> = {};
+    const numPops = popNames.length;
     for (const [which, pop] of popNames.entries()) {
       // The bins of one population lie together in each array, the bins of
       // the population before it first, as the values of one measure of
@@ -481,13 +586,63 @@ export function calcLdAndDistPerPop(
         );
       }
       numVarsPerPop[pop] = kept;
+      decayPerPop[pop] = {
+        rhoPerBp: theValueOfThePop(
+          rhoPerBp,
+          which,
+          numPops,
+          "the ρ per base pair",
+        ),
+        r2AtZero: theValueOfThePop(
+          r2AtZero,
+          which,
+          numPops,
+          "the r² at a distance of 0",
+        ),
+        halfDist: theValueOfThePop(
+          halfDist,
+          which,
+          numPops,
+          "the half distance",
+        ),
+      };
     }
     return {
       perPop,
       numVarsPerPop,
+      decayPerPop,
       passStats: passStatsOf(calculated.pass_stats()),
     };
   } finally {
     calculated.free();
   }
+}
+
+/**
+ * The value of the population `which` of an array that holds one for each
+ * population of the pass, `what` naming what it is.
+ *
+ * The three values of the curve cross in one array each, one value for each
+ * population, and this reads the one of a population out of such an array.
+ *
+ * @throws {Error} When the array holds no value for that population, which
+ * is a defect of popnei and not something a caller can do: the binding
+ * crate fills the three arrays with one value for each population it
+ * counted.
+ */
+function theValueOfThePop(
+  values: Float64Array,
+  which: number,
+  numPops: number,
+  what: string,
+): number {
+  const value = values[which];
+  if (value === undefined) {
+    throw new Error(
+      `popnei: the pass counted ${numPops} populations and gave ${what} of ` +
+        `${values.length} of them, which is a defect of popnei; please ` +
+        "report it",
+    );
+  }
+  return value;
 }
