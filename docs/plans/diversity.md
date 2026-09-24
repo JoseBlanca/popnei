@@ -267,7 +267,7 @@ and `ExpHet::of_var` of `crates/popnei/src/stats.rs`, all public today.
   the error cases added to `crates/popnei/src/error.rs`. From "The pass
   and its function" and "The Rust interface". Serves deliverables 1, 3
   and 4.
-- [ ] 2.2 The alleles called and the variable variants, from "What it
+- [x] 2.2 The alleles called and the variable variants, from "What it
   gives" of "The number of alleles" and of "The variable variants". Needs
   2.1. Serves deliverables 1, 2 and 8. A wrong count is silent: its own
   commit, guarded by deliverables 2, 5 and 8.
