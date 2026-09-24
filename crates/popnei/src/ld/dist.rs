@@ -950,9 +950,6 @@ pub struct LdBins {
     min_dist: u64,
     /// The largest distance a pair is counted at, that distance included.
     max_dist: u64,
-    /// The width of one bin in base pairs, which is not a whole number
-    /// when the distances do not divide by the bins.
-    width: f64,
     /// How many variants this population kept at its major allele
     /// frequency over the whole pass.
     num_vars: u64,
@@ -975,13 +972,9 @@ impl LdBins {
     fn of(options: &LdAndDistOptions) -> Result<LdBins> {
         let num_bins = options.num_bins;
         let of_a_bin = |what: &'static str| the_memory_for(what, num_bins);
-        // The distances counted are max_dist − min_dist + 1 of them, and
-        // the caller has refused a min_dist above max_dist.
-        let of_the_range = options.max_dist.abs_diff(options.min_dist) as f64 + 1.0;
         Ok(LdBins {
             min_dist: options.min_dist,
             max_dist: options.max_dist,
-            width: of_the_range / num_bins as f64,
             num_vars: 0,
             num_pairs: a_vector_of(0, num_bins, &of_a_bin("the pairs of each bin"))?,
             sum_r2: a_vector_of(0.0, num_bins, &of_a_bin("the sum of r² of each bin"))?,
@@ -1080,50 +1073,60 @@ impl LdBins {
         }
     }
 
+    /// How many distances the bins cut into `num_bins` parts, which is
+    /// `max_dist` − `min_dist` + 1 and 1 at least.
+    fn the_distances_counted(&self) -> u128 {
+        // The caller of the pass refused a min_dist above max_dist, and
+        // the largest difference of two u64 and one more is far below
+        // what a u128 holds.
+        u128::from(self.max_dist.abs_diff(self.min_dist)).saturating_add(1)
+    }
+
     /// The bin a pair of that distance falls in, which is the last bin for
-    /// a distance the rounding would put past them.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the line above gives the last bin for anything that is not a whole number \
-                  below the bins there are, NaN and the negative among them"
-    )]
+    /// a distance the arithmetic would put past them.
+    ///
+    /// It is floor((d − `min_dist`) · `num_bins` / the distances counted)
+    /// in whole numbers, which is the arithmetic of "What it gives" of
+    /// `docs/specs/ld.md` with the width neither divided by nor rounded.
+    /// A width of 9/7 base pairs, 18 distances in 14 bins, is no `f64`,
+    /// and a distance divided by such a width and a bin multiplied by it
+    /// round the other way from each other, so a distance that is the
+    /// smallest of a bin lands in the bin below the one
+    /// [`LdBins::bounds`] answers for it.
     fn the_bin_of(&self, dist: u64) -> usize {
         let last = self.num_bins().saturating_sub(1);
         // The caller counts a pair of a distance from min_dist to
         // max_dist, so this is the distance from the first bin's own.
-        let from_the_first = dist.abs_diff(self.min_dist) as f64;
-        let bin = (from_the_first / self.width).floor();
-        if !(bin >= 0.0 && bin < last as f64) {
-            return last;
+        let from_the_first = u128::from(dist.abs_diff(self.min_dist));
+        let bin = from_the_first
+            .checked_mul(u128::from(the_count_of(self.num_bins())))
+            .and_then(|of_the_bins| of_the_bins.checked_div(self.the_distances_counted()));
+        match bin {
+            Some(bin) => usize::try_from(bin).unwrap_or(last).min(last),
+            None => last,
         }
-        bin as usize
     }
 
-    /// The smallest distance that falls in the bin, which is the smallest
-    /// whole number at or above `bin` widths from `min_dist`.
+    /// The smallest distance that falls in the bin, which is
+    /// `min_dist` + ceil(`bin` · the distances counted / `num_bins`).
+    ///
+    /// That is the smallest whole distance whose [`LdBins::the_bin_of`]
+    /// is `bin` or above, so the bounds a bin reports and the bin a pair
+    /// is counted in agree by construction.
     fn the_smallest_dist_of(&self, bin: usize) -> u64 {
-        if bin == 0 {
+        let num_bins = u128::from(the_count_of(self.num_bins()));
+        if num_bins == 0 {
             return self.min_dist;
         }
-        self.min_dist
-            .saturating_add(the_distance_of((bin as f64 * self.width).ceil()))
+        let past_the_first = u128::from(the_count_of(bin))
+            .checked_mul(self.the_distances_counted())
+            .map(|of_the_range| of_the_range.div_ceil(num_bins))
+            .and_then(|past_the_first| u64::try_from(past_the_first).ok());
+        match past_the_first {
+            Some(past_the_first) => self.min_dist.saturating_add(past_the_first),
+            None => self.max_dist,
+        }
     }
-}
-
-/// The distance in base pairs that a float holds, and 0 for one that is
-/// not a whole number a `u64` counts.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the line above leaves NaN, the negative and anything above what a u64 counts \
-              out of the cast"
-)]
-fn the_distance_of(value: f64) -> u64 {
-    if !(value >= 0.0 && value <= u64::MAX as f64) {
-        return 0;
-    }
-    value as u64
 }
 
 /// The pairs of one step of a pass: the variants a population read with
@@ -2609,6 +2612,57 @@ mod tests {
         // The six pairs are at 4, 7 and 10 base pairs from the first
         // variant, at 3 and 6 from the second and at 3 from the third.
         assert_eq!(the_pairs_of(bins), vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn a_pair_at_the_smallest_distance_of_a_bin_falls_in_that_bin() {
+        // Eighteen distances in fourteen bins is a width of 9/7 base
+        // pairs, which no f64 holds: the bin of a distance and the
+        // smallest distance of a bin are the arithmetic of "What it
+        // gives" of `docs/specs/ld.md` in whole numbers, the bin of the
+        // distance d being floor((d − min_dist) · num_bins / (max_dist −
+        // min_dist + 1)) and the smallest distance of the bin b being
+        // min_dist + ceil(b · (max_dist − min_dist + 1) / num_bins). The
+        // distance 10 is 7 · 9/7 past the first bin's own, so it is the
+        // smallest distance of the eighth bin and falls in it.
+        let vcf = vcf_of_four_individuals(&[
+            ("chr1", 1, ["0/0", "0/0", "0/1", "1/1"]),
+            ("chr1", 11, ["0/0", "0/1", "0/1", "1/1"]),
+            ("chr1", 19, ["0/0", "0/0", "0/1", "0/1"]),
+        ]);
+        let options = LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 18,
+            num_bins: 14,
+            max_allowed_maf: 1.0,
+        };
+        let of_the_pass = the_bins_of_a_pass(&vcf, &[], 3, &options, 256);
+        let bins = bins_of(&of_the_pass, 0);
+        assert_eq!(
+            the_bounds_of(bins),
+            vec![
+                (1, 2),
+                (3, 3),
+                (4, 4),
+                (5, 6),
+                (7, 7),
+                (8, 8),
+                (9, 9),
+                (10, 11),
+                (12, 12),
+                (13, 13),
+                (14, 15),
+                (16, 16),
+                (17, 17),
+                (18, 18),
+            ]
+        );
+        // The three pairs are at 10, 8 and 18 base pairs, which are the
+        // eighth bin, the sixth and the last.
+        assert_eq!(
+            the_pairs_of(bins),
+            vec![0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1]
+        );
     }
 
     /// The bins of a pass that the options or the populations were
