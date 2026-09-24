@@ -35,6 +35,15 @@ const THE_CONSUMERS_OF_ONE_PASS: readonly ConsumerName[] = [
   "iterBlocks",
 ];
 
+/**
+ * The ten consumers of the package, which are the nine above and the
+ * principal components of the variants.
+ */
+const THE_CONSUMERS: readonly ConsumerName[] = [
+  ...THE_CONSUMERS_OF_ONE_PASS,
+  "doPcaFromVariants",
+];
+
 test("the pca of the variants makes two passes when weights are asked for", async () => {
   await init();
   assert.equal(numPassesOf("doPcaFromVariants", { numPrinComps: 10 }), 2);
@@ -63,6 +72,43 @@ test("a name that is of no consumer is refused, with the names that are", async 
     name: "Error",
     message: /`calcKinships` is not a consumer of popnei.*calcKinship/s,
   });
+});
+
+/**
+ * The names the refusal of a name that is of no consumer gives, which the
+ * crate writes after the colon of that message.
+ *
+ * @throws {Error} When `calcKinships`, which is the name of no consumer, is
+ * taken.
+ */
+function theNamesOfTheRefusal(): string[] {
+  try {
+    numPassesOf("calcKinships" as ConsumerName);
+  } catch (refused) {
+    const message = refused instanceof Error ? refused.message : `${refused}`;
+    return message
+      .slice(message.lastIndexOf(":") + 1)
+      .split(",")
+      .map((name) => name.trim());
+  }
+  throw new Error(
+    "popnei: `calcKinships` is the name of no consumer and was taken",
+  );
+}
+
+test("every name the refusal gives is a name numPassesOf takes", async () => {
+  await init();
+  // The ten names live twice in the binding crate, in the function that
+  // takes a name and in the list the message of a refused name is built
+  // from, and nothing else holds the two together. A name that the message
+  // gives and the function refuses fails the loop below; a name the
+  // function takes and the message leaves out fails the comparison with the
+  // ten of this file, which are the ten of `docs/specs/js_sources.md`.
+  const names = theNamesOfTheRefusal();
+  assert.deepEqual([...names].sort(), [...THE_CONSUMERS].sort());
+  for (const name of names) {
+    assert.doesNotThrow(() => numPassesOf(name as ConsumerName));
+  }
 });
 
 test("a numPrinComps that is not a whole number of 0 or more is refused", async () => {
