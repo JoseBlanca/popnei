@@ -264,3 +264,96 @@ faer backend, and `cargo fmt --all --check`, `cargo clippy --workspace
 `calcPopDists`, `calcKinship` and `calcGwas`, so it was already stale
 before this plan and this calculation was not added to it either. It is
 worth a commit of its own, outside this plan.
+
+### What the review of work package 1 found
+
+Seven reviewers read the work package at `6fb3343`, one for each category
+the `code-review` skill lists, each with a fresh context. `spec` and
+`tests` worked in worktrees of their own because they build and break
+code; the other five read the shared checkout. The orchestrator judged
+every finding and reproduced the two worst itself before acting.
+
+**Three findings were a wrong number a user would see.** None of them
+could have been caught by the three reference tables, which is why the
+work package had passed every check.
+
+1. **The bin a pair falls in disagreed with the range that bin reports.**
+   The bin index divided by a floating point width and the bounds
+   multiplied by it, so the two rounded opposite ways. At `min_dist` 1,
+   `max_dist` 18 and `num_bins` 14 the bin labelled 9 to 9 held the pair
+   10 bp apart and the bin labelled 10 to 11 held nothing. A reviewer
+   measured it in 1.9 per 100 of random settings. The reference tables
+   never meet it because 250000/10 and 1000000/50 divide exactly. Both
+   are now worked out in whole numbers over `u128`, so they agree by
+   construction. Commit `9379058`.
+2. **A pair was lost, and the answer moved with the tile size, when a
+   chromosome came back after another one.** The rows a tile reached back
+   over were taken from its first column alone, so a variant a later
+   column still paired with was never looked at. On 255 variants of
+   `chr3` followed by `chr2:10`, `chr1:100` and `chr2:50` the bins counted
+   20450 pairs where the matrix holds 20451, and with 254 variants of
+   `chr3`, which moves the tile boundary, both give 20351. Nothing
+   refuses a source whose chromosomes are not grouped, so it was
+   reachable. The tiling was repaired rather than the input refused,
+   since a new refusal would be the owner's. Commit `259e3db`.
+3. **The counts reached pandas unsigned**, so subtracting one bin's pairs
+   from another's wrapped: 7815 − 8744 came back as
+   18446744073709550687. The Python crate already had this rule written
+   down with this reasoning, and two other modules already followed it.
+   The counts and the two distance columns are now `int64`. Commit
+   `7d2ad20`.
+
+**Two tests could not have failed.** The one guarding the order the bins
+are added up in used six individuals, so every r² was a multiple of a
+quarter and every sum exact whatever the order; two different
+reorderings left it green. And no fixture anywhere used a `min_dist` of 0
+or put two variants at one position, so a mutation pairing every variant
+with itself passed all 44 tests. The first fixture now has 24
+individuals and a companion test pins the three reference tables at four
+tile sizes; the second has a SNP and an indel at one position, giving 3
+pairs at `min_dist` 0 and 2 at 1. Commits `59480b9` and `9f6f86d`.
+
+**Each population held the window's genotypes over every individual of
+the source**, not over its own, so the genotypes sat in memory once per
+population. Measured on 3000 variants of 500 individuals with `max_dist`
+100000 and populations of one individual each, an extra population cost
+3.56 MB, which is the row of the whole source, where the three matrices
+of a population of one individual are 0.072 MB. Each population now
+keeps only its own individuals' alleles, and the window itself keeps the
+chromosome and the position and no genotypes at all. On the same shape an
+extra population now costs 0.13 MB, measured by the orchestrator: peak
+resident memory 119.2 MB at one population and 121.7 MB at twenty.
+Commit `9d30a0f`, with the spec's "How it runs" rewritten in `8ff74cb`
+to say where the genotypes live.
+
+**Three error messages misled.** A `numBins` of 0 told a TypeScript user
+about `min_dist` and `max_dist`, which their API has not (`852089e`). The
+Python refusal of `min_dist` named a floor of 1 where 0 is accepted and
+TypeScript said 0, so the two layers stated different limits
+(`2f040d5`). And the refusal of memory said "values of 8 bytes" for
+genotypes that are one byte and for structures of 16 and 104, and two
+places reported the length already held rather than the one asked for
+(`9505404`).
+
+**One finding was not taken.** A reviewer reported that the WebAssembly
+build gives a first mean of 0.20767885551844037 where the spec's literal
+is 0.20767885551844031, and asked whether anything says that is
+allowed. The `coding` skill says it plainly: popnei does not promise the
+same bits on every platform, and results agree with the reference
+programs within the tolerance of the spec. The gap is 2 units in the last
+place against a tolerance of 1e-12.
+
+**The same 2 units in the last place turned out to be the native build's
+too, and always had been.** The reviewer had assumed the native build
+matched the literal rather than running it. Both commits were built side
+by side and all three tables are byte for byte identical before and after
+the fixes, so nothing moved: popnei adds the r² in the order of the pass
+and the literal is numpy's sum over plink2's matrix in
+`docs/reports/ld-method/bins.py`.
+
+After the ten fixes: `cargo test --workspace` gives 837 passed with 2
+ignored and 149 in the linear algebra crate, the same 837 on the faer
+backend, 50 tests under `ld::dist`, 505 pytest, 332 node, fmt, clippy,
+wasm-check and ruff clean, and `run_plink2.sh` into an empty directory
+exits 0 naming no differing file. Every one of these was run by the
+orchestrator.
