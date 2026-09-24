@@ -272,7 +272,7 @@ mixed model it is also checked on.
 
 ### Its tasks
 
-- [ ] 3.1 The second pass, the factor, and the approximate denominator in
+- [x] 3.1 The second pass, the factor, and the approximate denominator in
       both mixed models, in the core, with the cargo tests. Built from "The
       GRAMMAR-Gamma approximation" of `docs/specs/gwas.md`. Serves
       deliverable 1. Needs 2.2.
