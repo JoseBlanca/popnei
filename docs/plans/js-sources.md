@@ -51,9 +51,11 @@ range, task 4.1.
   2026: the build of the package took 33 s and the 325 node tests 4.8 s.
 - On the machine: `node` v26.8.2, `cargo`, the target
   `wasm32-unknown-unknown`, `wasm-bindgen`, and Playwright, which
-  `npm view @playwright/test version` gives as 1.63.0 and whose Chromium
-  1194 is already in `~/Library/Caches/ms-playwright`, so work package 2
-  downloads little. Checked on 24 September 2026.
+  `npm view @playwright/test version` gives as 1.63.0. Checked on 24
+  September 2026. The Chromium 1194 that was already in
+  `~/Library/Caches/ms-playwright` is not the one Playwright 1.63.0 asks
+  for: task 2.1 downloaded 94.3 MiB of Chromium 1243 and its headless
+  shell.
 
 The checks that say the work is done fail today: `js/popnei/test/` has no
 `num_passes.test.ts`, `progress.test.ts`, `stop.test.ts` or `browser/`, and
@@ -154,7 +156,7 @@ packages 3 and 4 are what would have to change.
 
 Tasks:
 
-- [ ] 2.1 Playwright with Chromium as a development dependency of
+- [x] 2.1 Playwright with Chromium as a development dependency of
       `js/popnei`, its configuration, a page and a module worker that load
       the built wasm, the npm script `test:browser`, and the first test,
       which is deliverable 1. From "How it is verified" of "The source over

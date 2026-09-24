@@ -175,10 +175,13 @@ In a browser, Chromium through Playwright, the program that drives a browser
 from a script, headless:
 
 - A worker opens a `File` of the bytes of `many.vcf` and asserts the first
-  block, the chromosomes, the positions and the genotypes, against the same
-  literals the node test of `vcf.test.ts` asserts over the array of bytes.
-  The gzipped `many.vcf.gz` gives the same variants, which is the path
-  through the decompressor.
+  block, the individuals, the positions and the genotypes, against the
+  literals a node test of the package already asserts over the array of
+  bytes. For that file they are in `test/filter_individuals.test.ts`, which
+  reads its positions and its genotypes from `docs/specs/io_vcf.md`, and not
+  in `test/vcf.test.ts`, which asserts of its first block only that it holds
+  100 variants. The gzipped `many.vcf.gz` gives the same variants, which is
+  the path through the decompressor.
 - The same worker writes a vars file with `writeVars`, makes a `File` of it,
   opens it with `openVars` and asserts the same variants. The vars file
   reader seeks, so this is the check of `Seek`; the VCF reader never seeks.
