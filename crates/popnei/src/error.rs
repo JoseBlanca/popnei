@@ -1257,6 +1257,42 @@ pub enum Error {
         /// How many variants the calculation was allowed to take.
         max_num_vars: usize,
     },
+
+    /// The `max_allowed_maf` of the fall-off of r² with distance is not a
+    /// number from 0 to 1, both included: it is NaN, it is below 0 or it
+    /// is above 1. A variant is counted in a population when its major
+    /// allele frequency there is at most that number, and a major allele
+    /// frequency is one count of the variant divided by another, so it
+    /// lies between 0 and 1: a threshold outside the range leaves every
+    /// variant of every population in or takes every one out, and a NaN
+    /// one takes every one out, since no comparison with NaN holds. In
+    /// Python it is a `ValueError` that names no file: it is the number a
+    /// user writes at the call.
+    #[error(
+        "`max_allowed_maf` is {value:?}, and it is a number from 0 to 1, both included: a variant is counted in a population when its major allele frequency there is at most that number, and a frequency is one count of the variant divided by another"
+    )]
+    LdMaxAllowedMafOutOfRange {
+        /// The number that was given for it.
+        value: f64,
+    },
+
+    /// A population of the fall-off of r² with distance names no
+    /// individual. The r² of a population is taken over its individuals,
+    /// so one with none holds no pair and no variant of its own; and a
+    /// population that names no individual is how a caller of the core
+    /// asks for every individual of the dataset, so one left empty by
+    /// mistake would be counted over all of them and not over its own. A
+    /// caller that wants one population of every individual gives no
+    /// population at all. In Python it is a `ValueError` that names no
+    /// file: it is the individuals a user wrote for that population.
+    #[error(
+        "the population at the position {pop} names no individual, and the r² of a population is taken over its individuals; a caller that wants one population of every individual gives no population at all"
+    )]
+    LdPopWithNoIndividual {
+        /// Where the population is among the ones given, from 0.
+        pop: usize,
+    },
+
     /// An individual a study was asked to test is not one the source has.
     /// The individuals of a study are given by their position among those
     /// the reader gives, from 0, and this one is at or beyond their count.
