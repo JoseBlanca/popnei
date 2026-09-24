@@ -858,6 +858,28 @@ denominator told a user with no kinship to supply one, on a path reachable
 only when a kinship *was* supplied and the model came out non-mixed, which
 is popnei's own fault.
 
+## The plan's own final check
+
+Three things beyond the sum of the work packages.
+
+**The four reference programs still give what the literals say.**
+`tests/reference/gwas/make_reference.py` was rerun on this machine on 24
+September 2026, with plink2 v2.0.0-a.7.7 and R 4.6.1 with GMMAT 1.5.0 and
+rrBLUP 4.6.3. Every one of the nine files came back **byte-identical** to
+the committed one, and the script's own comparison with what pyNei stored
+for the same genotypes gives a largest difference of **0.000e+00** over all
+nine files and their 58 numeric columns. So the numbers this plan was
+checked against do not depend on which library read the genotypes, and they
+have not moved since the reference was made.
+
+**popnei agrees with pyNei for all four models, on both panels.**
+`uv run pytest tests/test_gwas.py -k "pyneis"` gives 13 passed, which is the
+four models over the panels and the tests each takes, and is the comparison
+`docs/objectives.md` asks for.
+
+**The whole study reaches a browser.** `cargo wasm-check` is clean on both
+wasm targets and `npm run build && npm test` passes in `js/popnei`.
+
 ## How the work went
 
 This last section is not written for the owner, who can stop here. It is for
