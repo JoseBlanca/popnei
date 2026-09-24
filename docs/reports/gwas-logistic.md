@@ -594,6 +594,18 @@ on faer, against a threshold of 2.780e-15. Unguarded, that row answers
 on the other. Three of the rule's four places now have a case behind them,
 and the fourth, the linear mixed model's score test, is not this plan's.
 
+**A kinship of 1e-162 times the identity answers a variance of 0, and the
+owner decided to leave it.** The true optimum there is 1.3e159 and the
+average information underflows, so popnei says the kinship explains nothing
+for a matrix that explains as much as any kinship does; what fails is that
+the parameter cannot represent the answer at that scale. The case for
+refusing was that a silent "nothing here" is a wrong answer a user acts on.
+The case for leaving it, which the owner took on 24 September 2026, is that
+no kinship popnei computes comes near it — `calc_kinship` gives entries of
+order one — so it is a contrived input, and a refusal would cost a
+comparison on every fit and a case in the spec for something nobody will
+meet.
+
 ### A wrong value that is nobody's plan, and is the owner's to place
 
 **On the default build, the same inversion gives different answers depending
