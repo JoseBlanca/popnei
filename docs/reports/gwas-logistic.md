@@ -631,13 +631,39 @@ The triangular solve and the products are clean under the same test, so
 one caller thread, the difference is exactly 0; with two caller threads it
 is already 4.736e-5.
 
-**There is a measured fix and it is not in this plan.** Building the inverse
-from the two stable operations the crate already has — solving the
-triangular factor against the identity, then multiplying that by its own
-transpose — agrees with the present route to 1.041e-17 and gives 0 wrong out
-of 2000 under the same concurrency. It belongs in the BLAS backend of
-`popnei_linalg::invert_with_cholesky`, which is the linear algebra crate and
-not the gwas module, so it is the owner's to place.
+**The owner ordered it fixed on this branch, and it is.** The inverse is now
+built from the two stable operations the crate already had, solving the
+triangular factor against the identity and multiplying the result by its own
+transpose. `cargo test -p popnei --lib gwas::logistic_mixed`, which failed 3
+or 4 runs in 20 before, fails 0 in 20 after, measured by the orchestrator;
+the guard test written with the fix fails 20 of 20 against the old route.
+No number of either mixed model moved.
+
+**The defect is not popnei's, and it is worse than the review found.**
+`accelerate-src` emits nothing but `-framework Accelerate`, `lapack-sys`
+declares `dpotri_` over 32-bit integers, and the test binary has no
+`$NEWLAPACK` symbol, so the crate's declaration and Accelerate's legacy
+interface match; and a mismatch would be wrong on one thread, where this is
+right. But `dpotri` is wrong **with no other popnei thread at all**: 2000
+inversions on one thread gave 2, 2, 1 and 0 different answers over four
+runs, because Accelerate's own threads inside the routine suffice. Other
+work in the process only takes the rate from about 1 in 1500 to about 1 in
+7. So a user running one study on one thread could already get a wrong
+projection matrix; concurrency made it frequent rather than possible.
+
+**What the fix costs.** At the 200 individuals popnei inverts at, the new
+route is 0.38 of `dpotri`'s time, 0.0000786 s against 0.000209 s. Above
+that it is dearer: 1.8 times at 1000, 1.2 at 2000, 2.0 at 5000 and 1.7 at
+10000, where it is 3.540 s against 2.108 s. It also needs two matrices of
+the individuals squared where `dpotri` needed none.
+
+**The crate's other LAPACK calls are clean.** One thread beside seven doing
+products gives no difference at all for the eigendecomposition, the singular
+values and the QR, at three shapes each, nor for either triangular solve.
+Two things are not settled: faer's own inverse was not put under the test,
+so this is about Accelerate alone, and which macOS versions besides this one
+have it is unknown.
+
 
 Who it reaches: popnei forms this inverse once per study, so one study in
 one process is safe. A user running two studies in threads in one process
