@@ -1137,12 +1137,12 @@ impl LogisticMixedModel {
     ///
     /// A variant of which the projection leaves at most the tested
     /// individuals times 2.2e-16 of what there was has no answer, and gets
-    /// the three NaNs a variant with no variance gets. What there was is
-    /// the variant's own squared length times the largest value of the
-    /// diagonal of the projection matrix, which is the scale the linear
-    /// mixed model's score test takes, so that the two mixed models answer
-    /// a variant there is nothing left to test alike rather than each
-    /// picking its own. It is **Open 2** of `docs/specs/gwas.md`.
+    /// the three NaNs a variant with no variance gets. What there was is the
+    /// variant's own squared length times the largest value of the diagonal
+    /// of the projection matrix, which is the scale the linear mixed model's
+    /// score test takes, so that the two mixed models answer a variant there
+    /// is nothing left to test alike rather than each picking its own. It is
+    /// "A variant there is nothing left to test" of `docs/specs/gwas.md`.
     ///
     /// That comparison is made against whichever of the two denominators
     /// the study formed, and under the approximation it stops firing, which
@@ -3566,9 +3566,9 @@ mod glmm {
         }
     }
 
-    /// The kinship of the fixture of **Open 2** below: eight individuals in
-    /// two families of four, who are related within a family and not
-    /// between them.
+    /// The kinship of the fixture of "A variant there is nothing left to
+    /// test" of `docs/specs/gwas.md`: eight individuals in two families of
+    /// four, who are related within a family and not between them.
     ///
     /// It is the matrix the linear mixed model's own fixture of that rule
     /// takes, so the two score tests are read over the same relatedness.
@@ -3742,8 +3742,9 @@ mod glmm {
     }
 
     /// A variant that the projection leaves nothing of has no answer under
-    /// this model's score test either, which is the meanwhile of **Open 2**
-    /// of `docs/specs/gwas.md` reaching the last of its four places.
+    /// this model's score test either, which is "A variant there is nothing
+    /// left to test" of `docs/specs/gwas.md` reaching the last of its four
+    /// places.
     ///
     /// The covariate is the first variant's dosages in units a tenth of
     /// theirs, and the projection matrix takes the design out of whatever it

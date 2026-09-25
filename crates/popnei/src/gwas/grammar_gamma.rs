@@ -14,11 +14,11 @@
 //! The factor is estimated once, from the first block of a second pass over
 //! the same variants, and it is the mean over the first
 //! [`NUM_VARS_FOR_GAMMA`] variants of that block which vary of the exact
-//! denominator divided by the approximate one. A variant of those whose
-//! exact denominator is nothing but the rounding of a cancellation is left
-//! out of that mean, by the rule of **Open 2** of `docs/specs/gwas.md` and
-//! against the same scale the model's own score test judges a denominator
-//! by.
+//! denominator divided by the approximate one. A variant of those whose exact
+//! denominator is nothing but the rounding of a cancellation is left out of
+//! that mean, by the rule of "A variant there is nothing left to test" of
+//! `docs/specs/gwas.md` and against the same scale the model's own score test
+//! judges a denominator by.
 
 use crate::error::{Error, Result};
 
@@ -67,14 +67,14 @@ impl GrammarGamma {
     ///
     /// A variant of those whose `x' p x` is at most the tested individuals
     /// times 2.2e-16 of what there was is left out of the mean. What there
-    /// was is the variant's own squared length times the largest value of
-    /// the diagonal of the projection, which is the scale the score test of
-    /// both mixed models judges a denominator by. Such a variant is one the
-    /// design explains, and what the projection leaves of it is nothing:
-    /// averaging its ratio in gives a factor of about 1e-16, which puts
-    /// every denominator of the study under the threshold of **Open 2** of
-    /// `docs/specs/gwas.md` and leaves every variant with the three NaNs
-    /// and nothing said.
+    /// was is the variant's own squared length times the largest value of the
+    /// diagonal of the projection, which is the scale the score test of both
+    /// mixed models judges a denominator by. Such a variant is one the design
+    /// explains, and what the projection leaves of it is nothing: averaging
+    /// its ratio in gives a factor of about 1e-16, which puts every
+    /// denominator of the study under the threshold of "A variant there is
+    /// nothing left to test" of `docs/specs/gwas.md` and leaves every variant
+    /// with the three NaNs and nothing said.
     ///
     /// # Errors
     ///
@@ -447,15 +447,15 @@ mod tests {
     /// A block of nothing but variants the projection leaves nothing of is
     /// refused, with the factor and how many variants it was the mean over.
     ///
-    /// The projection matrix of a null model whose design explains a
-    /// variant leaves that variant at the rounding of a cancellation, which
-    /// falls on either side of 0; the fixture is the extreme of that, a
-    /// projection of all zeros, which leaves every exact denominator
-    /// exactly 0. Every one of the four is at the threshold and is left out
-    /// of the mean, so the factor is the mean of no ratio at all, which is
-    /// NaN, and the study is refused. Unrefused with the rounding fallen
-    /// positive, the factor would be about 1e-16, every denominator of the
-    /// study would sit under the threshold of **Open 2** and the whole
+    /// The projection matrix of a null model whose design explains a variant
+    /// leaves that variant at the rounding of a cancellation, which falls on
+    /// either side of 0; the fixture is the extreme of that, a projection of
+    /// all zeros, which leaves every exact denominator exactly 0. Every one
+    /// of the four is at the threshold and is left out of the mean, so the
+    /// factor is the mean of no ratio at all, which is NaN, and the study is
+    /// refused. Unrefused with the rounding fallen positive, the factor would
+    /// be about 1e-16, every denominator of the study would sit under the
+    /// threshold of "A variant there is nothing left to test" and the whole
     /// column would be NaN with nothing to say why.
     ///
     /// The count in the message is the four variants the ratios were formed

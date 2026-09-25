@@ -102,9 +102,9 @@ pub use result::{DEFAULT_USE_GRAMMAR_GAMMA_APPROX, Gwas, NullModel};
 pub use study::{GwasInput, GwasInputShape, GwasModel, TestType, TraitType};
 
 /// The share of what a quantity was that has to be left of it for it to be
-/// worth testing, which is the threshold of the meanwhile of **Open 2** of
-/// `docs/specs/gwas.md`: the tested individuals times the distance from 1
-/// to the next `f64`.
+/// worth testing, which is the threshold of "A variant there is nothing left
+/// to test" of `docs/specs/gwas.md`: the tested individuals times the
+/// distance from 1 to the next `f64`.
 ///
 /// The rounding of a sum of `n` products is about `n` times 2.2e-16 times
 /// the largest term of the sum, so a quantity that has fallen to that share
@@ -127,12 +127,12 @@ pub use study::{GwasInput, GwasInputShape, GwasModel, TestType, TraitType};
 ///   variant leaves of the trait where the other three are what the design
 ///   leaves of the variant.
 ///
-/// Two more places read the same share, and there it is the smallest pivot
-/// of a Cholesky factorization against the largest, which is the meanwhile
-/// of **Open 5** of that spec and is why this is not named for **Open 2**
-/// alone: the system of one variant's fit in the logistic model's Wald
-/// test, and the design weighted by the covariance of the working trait in
-/// the logistic mixed model's linearization.
+/// Two more places read the same share, and there it is the smallest pivot of
+/// a Cholesky factorization against the largest, which is the meanwhile of
+/// **Open 5** of that spec and is why this is not named for "A variant there
+/// is nothing left to test" alone: the system of one variant's fit in the
+/// logistic model's Wald test, and the design weighted by the covariance of
+/// the working trait in the logistic mixed model's linearization.
 ///
 /// It is written here once because the logistic mixed model adds a second
 /// caller of the third of them, and because a threshold that differed

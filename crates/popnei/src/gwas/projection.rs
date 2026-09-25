@@ -19,18 +19,17 @@
 //! where the matrix costs a product: half the arithmetic, a triangular
 //! matrix having half the entries. That is the finding H3 of that report.
 //!
-//! What it buys beside the arithmetic is that the quantities a variant's
-//! test turns on stop being differences. `x' p x` through the matrix is a
-//! sum of terms of either sign that cancels to rounding for a variant the
-//! design explains, and the rounding falls on either side of 0 and not on
-//! the same side in the two arithmetic backends; `‖m x‖²` is a sum of
-//! squares and is 0 or above whatever the rounding does. The linear mixed
-//! model's Wald test gains the same on what the variant leaves of the
-//! trait: `y' p y - num² / den` is `‖m y - beta m x‖²`, the trait through
-//! the factor less the variant through it times the variant's effect,
-//! formed from the residuals of the one variant as the
-//! plain linear model already forms its own. Both are **Open 2** of
-//! `docs/specs/gwas.md`.
+//! What it buys beside the arithmetic is that the quantities a variant's test
+//! turns on stop being differences. `x' p x` through the matrix is a sum of
+//! terms of either sign that cancels to rounding for a variant the design
+//! explains, and the rounding falls on either side of 0 and not on the same
+//! side in the two arithmetic backends; `‖m x‖²` is a sum of squares and is 0
+//! or above whatever the rounding does. The linear mixed model's Wald test
+//! gains the same on what the variant leaves of the trait: `y' p y - num² /
+//! den` is `‖m y - beta m x‖²`, the trait through the factor less the variant
+//! through it times the variant's effect, formed from the residuals of the
+//! one variant as the plain linear model already forms its own. Both are "A
+//! variant there is nothing left to test" of `docs/specs/gwas.md`.
 
 use popnei_linalg::{TheFirstOperand, TheHalfThatHoldsTheMatrix, TheSecondOperand};
 
@@ -75,16 +74,16 @@ pub(crate) struct TheProjection {
     /// variant's own squared length is weighted by to say how much of the
     /// variant the projection has left.
     ///
-    /// It is the scale of the third row of the table of **Open 2** of
-    /// `docs/specs/gwas.md`. What bounds `x' p x` over `x' x` is the
-    /// largest eigenvalue of the projection, and this is not that: no
-    /// value of the diagonal is below 0, the matrix being 0 or above as a
-    /// quadratic form, and the largest of them is at most that
-    /// eigenvalue, 1.697 times below it on `panel_called` and 1.725 times
-    /// on `panel`, measured on 24 September 2026. So the threshold built
-    /// on it is about 1.7 times tighter than it was meant to be and not
-    /// looser, and it costs one walk over the individuals where the
-    /// eigenvalue costs a decomposition.
+    /// It is the scale of the third row of the table of "A variant there is
+    /// nothing left to test" of `docs/specs/gwas.md`. What bounds `x' p x`
+    /// over `x' x` is the largest eigenvalue of the projection, and this is
+    /// not that: no value of the diagonal is below 0, the matrix being 0 or
+    /// above as a quadratic form, and the largest of them is at most that
+    /// eigenvalue, 1.697 times below it on `panel_called` and 1.725 times on
+    /// `panel`, measured on 24 September 2026. So the threshold built on it
+    /// is about 1.7 times tighter than it was meant to be and not looser, and
+    /// it costs one walk over the individuals where the eigenvalue costs a
+    /// decomposition.
     largest_of_the_diagonal: f64,
 }
 
@@ -669,14 +668,14 @@ mod of_a_factored_covariance {
     /// gives come out the same through the factor and through the matrix,
     /// for six variants of which one is a combination of the design.
     ///
-    /// The last of the four is the quantity **Open 2** of
-    /// `docs/specs/gwas.md` is about: `y' p y - num² / den` through the
-    /// matrix, `‖m y - beta m x‖²` through the factor. The variant the design
-    /// explains is left out of that comparison alone, since there the two
-    /// are the rounding of a cancellation and its square and agree about
-    /// nothing; that it is 0 or above through the factor and of either
-    /// sign through the matrix is the point of forming it, and it is what
-    /// this asserts for that variant instead.
+    /// The last of the four is the quantity "A variant there is nothing left
+    /// to test" of `docs/specs/gwas.md` is about: `y' p y - num² / den`
+    /// through the matrix, `‖m y - beta m x‖²` through the factor. The
+    /// variant the design explains is left out of that comparison alone,
+    /// since there the two are the rounding of a cancellation and its square
+    /// and agree about nothing; that it is 0 or above through the factor and
+    /// of either sign through the matrix is the point of forming it, and it
+    /// is what this asserts for that variant instead.
     #[test]
     fn the_four_quantities_of_a_test_are_the_same_through_both() {
         let (matrix, mut projection, phenotype, values, variants) = the_two_routes();
@@ -786,9 +785,9 @@ mod of_a_factored_covariance {
     /// The largest value of the diagonal of `p` that the factored form
     /// works out is the largest value of the diagonal of the matrix.
     ///
-    /// It is the scale of the third row of the table of **Open 2** of
-    /// `docs/specs/gwas.md`, and the factored form never builds the matrix
-    /// it is the diagonal of.
+    /// It is the scale of the third row of the table of "A variant there is
+    /// nothing left to test" of `docs/specs/gwas.md`, and the factored form
+    /// never builds the matrix it is the diagonal of.
     #[test]
     fn the_largest_of_the_diagonal_is_the_matrix_own() {
         let (matrix, projection, _, _, _) = the_two_routes();

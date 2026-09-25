@@ -567,10 +567,10 @@ impl LogisticModel {
     ///
     /// A variant of which the design leaves at most the tested individuals
     /// times 2.2e-16 of `x' w x` has no answer, and gets the three NaNs a
-    /// variant with no variance gets. For a variant that is a combination
-    /// of the columns of the design what is left is the rounding of that
-    /// sum and not a quantity, and `beta` would be a number divided by
-    /// noise. It is **Open 2** of `docs/specs/gwas.md`.
+    /// variant with no variance gets. For a variant that is a combination of
+    /// the columns of the design what is left is the rounding of that sum and
+    /// not a quantity, and `beta` would be a number divided by noise. It is
+    /// "A variant there is nothing left to test" of `docs/specs/gwas.md`.
     ///
     /// `design` is the design the null model was fitted on, the same one,
     /// which is what a variant is taken through.
@@ -743,16 +743,16 @@ pub(super) fn the_chance_of(predicted: f64) -> f64 {
 /// the fit in, read off the pivots of the factorization `factored` of `n` x
 /// `n`: the smallest of them against the largest.
 ///
-/// A Cholesky factorization accepts a system whose smallest pivot is above
-/// 0 by any margin, and a logistic fit whose weighted design has collapsed
-/// can walk far past the point where its system says anything: the steps it
+/// A Cholesky factorization accepts a system whose smallest pivot is above 0
+/// by any margin, and a logistic fit whose weighted design has collapsed can
+/// walk far past the point where its system says anything: the steps it
 /// solves shrink because the system is nearly singular, not because the
 /// coefficients have settled, so the fit declares itself settled while they
-/// are still moving and answers with an effect it knows nothing about
-/// beside a standard error of 1e7. **Open 5** of `docs/specs/gwas.md` has
-/// the eight individuals that gave a p-value of 0.9999996 on one backend
-/// and three NaNs on the other, and this is the rule it chose: the same
-/// share of a scale that **Open 2** refuses a variant at,
+/// are still moving and answers with an effect it knows nothing about beside
+/// a standard error of 1e7. **Open 5** of `docs/specs/gwas.md` has the eight
+/// individuals that gave a p-value of 0.9999996 on one backend and three NaNs
+/// on the other, and this is the rule it chose: the same share of a scale
+/// that "A variant there is nothing left to test" refuses a variant at,
 /// `num_individuals` times 2.2e-16, with the largest pivot for the scale.
 ///
 /// The pivots are the squares of the diagonal of what the factorization
@@ -1546,20 +1546,21 @@ mod glm {
         }
     }
 
-    /// The design of the fixture of **Open 2** below: the intercept and
-    /// one covariate, which is the dosages of the first variant of that
-    /// fixture, `1 0 2 0 1 2 0 1`, in units a tenth of theirs, row after
-    /// row.
+    /// The design of the fixture of "A variant there is nothing left to test"
+    /// of `docs/specs/gwas.md`: the intercept and one covariate, which is the
+    /// dosages of the
+    /// first variant of that fixture, `1 0 2 0 1 2 0 1`, in units a tenth of
+    /// theirs, row after row.
     ///
-    /// The covariate carries the same information as the variant whatever
-    /// it is multiplied by, and the fit gives it an effect ten times as
-    /// large to say the same thing; what the tenth changes is the
-    /// arithmetic: the denominator of the first variant's score test lands
-    /// on 1.891e-31 on Accelerate and 9.565e-31 on faer at a tenth,
-    /// against 1.199e-32 and 1.953e-31 at a covariate equal to the
-    /// dosages, all four measured on 24 September 2026 and all four
-    /// positive and far under the threshold of **Open 2**, which is what
-    /// this fixture is for.
+    /// The covariate carries the same information as the variant whatever it
+    /// is multiplied by, and the fit gives it an effect ten times as large to
+    /// say the same thing; what the tenth changes is the arithmetic: the
+    /// denominator of the first variant's score test lands on 1.891e-31 on
+    /// Accelerate and 9.565e-31 on faer at a tenth, against 1.199e-32 and
+    /// 1.953e-31 at a covariate equal to the dosages, all four measured on 24
+    /// September 2026 and all four positive and far under the threshold of "A
+    /// variant there is nothing left to test", which is what this fixture is
+    /// for.
     const THE_DESIGN_OF_THE_FIRST_VARIANT: [f64; 16] = [
         1.0, 0.1, //
         1.0, 0.0, //
@@ -1632,8 +1633,8 @@ mod glm {
     /// 1e-12 of each other apart over its own sample.
     const OF_NUMPYS_P_VALUE: f64 = 1e-14;
 
-    /// A variant that the design leaves nothing of has no answer, which is
-    /// the meanwhile of **Open 2** of `docs/specs/gwas.md`.
+    /// A variant that the design leaves nothing of has no answer, which is "A
+    /// variant there is nothing left to test" of `docs/specs/gwas.md`.
     ///
     /// The covariate is the first variant's dosages in units a tenth of
     /// theirs, which is what a user gets by putting a genotype in as a
@@ -1829,19 +1830,18 @@ mod glm {
     /// 0.9999996244683889 on Accelerate and three NaNs on faer, which is
     /// the two builds disagreeing with the browser in the right.
     ///
-    /// What catches it is the pivot of the factorization that has fallen
-    /// to the share of the largest that **Open 2** calls nothing. What
-    /// says that the rule refuses this fit and not every fit is the panel,
-    /// whose 1199 answered variants stay answered: measured on both
-    /// backends on 24 September 2026, the smallest pivot of a fit either
-    /// reference panel answers is 2.600e-2 of the largest on the panel
-    /// with every genotype called and 4.730e-5 on the panel with 3
-    /// genotypes missing in 100, against a threshold there of 4.44e-14,
-    /// which is nine orders of magnitude of headroom. This fixture has one
-    /// variant and no second one, because the covariate it needs nearly
-    /// separates the eight individuals on its own and every variant put
-    /// beside it runs away too, by this mark or by the marks that were
-    /// there before it.
+    /// What catches it is the pivot of the factorization that has fallen to
+    /// the share of the largest that "A variant there is nothing left to
+    /// test" calls nothing. What says that the rule refuses this fit and not
+    /// every fit is the panel, whose 1199 answered variants stay answered:
+    /// measured on both backends on 24 September 2026, the smallest pivot of
+    /// a fit either reference panel answers is 2.600e-2 of the largest on the
+    /// panel with every genotype called and 4.730e-5 on the panel with 3
+    /// genotypes missing in 100, against a threshold there of 4.44e-14, which
+    /// is nine orders of magnitude of headroom. This fixture has one variant
+    /// and no second one, because the covariate it needs nearly separates the
+    /// eight individuals on its own and every variant put beside it runs away
+    /// too, by this mark or by the marks that were there before it.
     #[test]
     fn a_wald_fit_whose_system_has_collapsed_has_no_answer() {
         let mut vcf = String::from(THE_HEADER_OF_EIGHT);
@@ -2346,18 +2346,18 @@ mod glm {
     /// still ahead of it.
     ///
     /// The third variant is the dosages the covariate of the fixture is a
-    /// tenth of, so the design with it in it has two columns that carry
-    /// the same information and `d' w d` is no longer a matrix a Cholesky
+    /// tenth of, so the design with it in it has two columns that carry the
+    /// same information and `d' w d` is no longer a matrix a Cholesky
     /// factorization accepts. That is the first of the three marks, the
-    /// system the factorization refuses as singular, and it is reached at
-    /// the round 4 on Accelerate and at the round 1 on faer, the two
-    /// backends stopping at different rounds and giving the same three
-    /// NaNs. numpy 2.5.3 on the same variant, solving each round with an
-    /// LU factorization as pyNei does, is answered by a matrix a Cholesky
-    /// refuses and reaches the same three NaNs by the third mark instead,
-    /// still moving after its 50 rounds at an effect of -9.44. It is the
-    /// variant the score test of the fixture above has no answer for
-    /// either, by the threshold of **Open 2**.
+    /// system the factorization refuses as singular, and it is reached at the
+    /// round 4 on Accelerate and at the round 1 on faer, the two backends
+    /// stopping at different rounds and giving the same three NaNs. numpy
+    /// 2.5.3 on the same variant, solving each round with an LU factorization
+    /// as pyNei does, is answered by a matrix a Cholesky refuses and reaches
+    /// the same three NaNs by the third mark instead, still moving after its
+    /// 50 rounds at an effect of -9.44. It is the variant the score test of
+    /// the fixture above has no answer for either, by the threshold of "A
+    /// variant there is nothing left to test".
     ///
     /// The second variant is what says that a runaway is not the block:
     /// it is fitted and tested, and its three numbers are numpy's. The
@@ -2536,17 +2536,17 @@ mod glm {
     /// same answers in its second block as in its first, with both of its
     /// tests.
     ///
-    /// The variants are three patterns over and over, and each is one of
-    /// the three answers this model gives: the dosages of the covariate,
-    /// which neither test has an answer for, by the threshold of
-    /// **Open 2** in the score test and by the singular factorization in
-    /// the Wald test; the dosages `0 0 0 0 2 2 2 2`, which both tests
-    /// answer and which numpy 2.5.3 gives the numbers of the two fixtures
-    /// above for; and a variant every individual is heterozygous at, which
-    /// has no variance and so no answer wherever it is. Every variant is
-    /// held to the literal of its pattern and not to what the first block
-    /// answered, so a study that answered the same wrong thing in every
-    /// block would fail this as well.
+    /// The variants are three patterns over and over, and each is one of the
+    /// three answers this model gives: the dosages of the covariate, which
+    /// neither test has an answer for, by the threshold of "A variant there
+    /// is nothing left to test" in the score test and by the singular
+    /// factorization in the Wald test; the dosages `0 0 0 0 2 2 2 2`, which
+    /// both tests answer and which numpy 2.5.3 gives the numbers of the two
+    /// fixtures above for; and a variant every individual is heterozygous at,
+    /// which has no variance and so no answer wherever it is. Every variant
+    /// is held to the literal of its pattern and not to what the first block
+    /// answered, so a study that answered the same wrong thing in every block
+    /// would fail this as well.
     ///
     /// What it covers that the fixtures of two and three variants do not
     /// is the buffers of the model and of the dosages being reused from

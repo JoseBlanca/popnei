@@ -907,12 +907,12 @@ impl LinearMixedModel {
     ///
     /// A variant of which the projection leaves at most the tested
     /// individuals times 2.2e-16 of what there was has no answer, and gets
-    /// the three NaNs a variant with no variance gets. What there was is
-    /// the variant's own squared length times the largest value of the
-    /// diagonal of the projection, which is what bounds `x' p x` over
-    /// `x' x`. It is **Open 2** of `docs/specs/gwas.md`, and what it
-    /// refuses is a variant the covariates and the kinship leave nothing
-    /// of, whose `den` is not a quantity but the rounding of one.
+    /// the three NaNs a variant with no variance gets. What there was is the
+    /// variant's own squared length times the largest value of the diagonal
+    /// of the projection, which is what bounds `x' p x` over `x' x`. It is "A
+    /// variant there is nothing left to test" of `docs/specs/gwas.md`, and
+    /// what it refuses is a variant the covariates and the kinship leave
+    /// nothing of, whose `den` is not a quantity but the rounding of one.
     ///
     /// That comparison is made against whichever of the two denominators
     /// the study formed, and under the approximation it stops firing, which
@@ -935,33 +935,33 @@ impl LinearMixedModel {
     /// - With the exact denominator it is `‖m y - beta m x‖²`, formed from
     ///   the residuals of the one variant, the trait through the factor
     ///   less the variant through it times the variant's effect, as the
-    ///   plain linear model already
-    ///   forms its own. It is a sum of squares and cannot fall below 0, so
-    ///   `se` is a real number for every variant and the fourth kind of
-    ///   NaN that **Open 2** of the spec is about, a finite `beta` beside a
-    ///   NaN `se`, cannot be reached whatever the threshold does. Forming
-    ///   it does not move the threshold: what is left of a variant that
-    ///   explains the trait exactly is then the square of the rounding
-    ///   rather than the rounding, which is about 1e-28 of `y' p y` and is
-    ///   refused by a wider margin, and answering that band instead was
-    ///   measured on the fixture of six on 25 September 2026 and gives an
-    ///   `se` of 9.742e-16 on Accelerate against 1.979e-15 on faer, a
-    ///   factor of 2.03, and a p-value of 2.039e-45 against 1.708e-44, a
-    ///   factor of 8.4. It is the band where the quantity is its own
-    ///   rounding whichever way it is formed.
-    /// - With the approximate denominator there is no `v`, so it is
-    ///   `y' p y` less `num² / den`. A variant the approximation puts at or
-    ///   below that floor
-    ///   is answered from the exact denominator instead: the bound that
-    ///   keeps `num² / den` under `y' p y` is the exact denominator's and
-    ///   not the approximate one's, so the failure says which variant the
+    ///   plain linear model already forms its own. It is a sum of squares
+    ///   and cannot fall below 0, so `se` is a real number for every
+    ///   variant and the fourth kind of NaN that "A variant there is
+    ///   nothing left to test" of the spec rules out, a finite `beta`
+    ///   beside a NaN `se`, cannot be reached whatever the threshold does.
+    ///   Forming it does not move the threshold: what the variant leaves
+    ///   is then the square of the rounding rather than the rounding,
+    ///   2.847e-30 of `y' p y` on Accelerate and 1.174e-29 on faer on the
+    ///   fixture of six, against a threshold of 1.332e-15 of it. Answering
+    ///   that band instead, by squaring the share, gives an `se` of
+    ///   9.742e-16 on Accelerate against 1.979e-15 on faer and a p-value
+    ///   of 2.039e-45 against 1.708e-44, measured on 25 September 2026: it
+    ///   is the band where the quantity is its own rounding whichever way
+    ///   it is formed.
+    /// - With the approximate denominator there is no variant through the
+    ///   factor to form it from, so it is `y' p y` less `num² / den`. A
+    ///   variant the approximation puts at or below that floor is answered
+    ///   from the exact denominator instead: the bound that keeps
+    ///   `num² / den` under `y' p y` is the exact denominator's and not the
+    ///   approximate one's, so the failure says which variant the
     ///   approximation could not answer rather than that there is nothing
     ///   left to test. The factor is here for the whole pass: one solve of
     ///   that one variant against it gives its exact `x' p x` and its
     ///   residuals, and `beta`, what is left and `se` are formed again from
     ///   them and judged by the exact route's rule.
     ///   [`LinearMixedModel::num_fell_back_to_the_exact`] counts the
-    ///   variants that took it. The same item of the spec and a decision of
+    ///   variants that took it. The same rule of the spec and a decision of
     ///   24 September 2026, with the cargo test
     ///   `a_variant_whose_approximate_denominator_passes_ypy_is_answered`.
     ///
@@ -1045,9 +1045,9 @@ impl LinearMixedModel {
             }
             let answered = match test {
                 // What the variant leaves of the trait, formed from the
-                // residuals of the one variant where the exact route has
-                // them and subtracted where it has not. Open 2 of
-                // `docs/specs/gwas.md`.
+                // residuals of the one variant where the exact route has them
+                // and subtracted where it has not. "A variant there is
+                // nothing left to test" of `docs/specs/gwas.md`.
                 TestType::Wald => match through {
                     Some(through) => the_wald_of(
                         num,
@@ -2605,9 +2605,10 @@ pub(crate) mod lmm {
         }
     }
 
-    /// The kinship of the eight individuals of **Open 2** of
-    /// `docs/specs/gwas.md`, row after row: 1 for an individual with
-    /// itself, 0.2 for two of the same subpopulation and 0 across the two.
+    /// The kinship of the eight individuals of "A variant there is nothing
+    /// left to test" of `docs/specs/gwas.md`, row after row: 1 for an
+    /// individual with itself, 0.2 for two of the same subpopulation and 0
+    /// across the two.
     ///
     /// Its eigenvalues are 1.6 and 0.8, both above 0, so it is a
     /// covariance and the fit of the mixed model over it is an ordinary
@@ -2749,8 +2750,8 @@ pub(crate) mod lmm {
     }
 
     /// A variant that leaves nothing of the trait has no answer under the
-    /// Wald test, which is the third place the meanwhile of **Open 2** of
-    /// `docs/specs/gwas.md` refuses.
+    /// Wald test, which is the third place "A variant there is nothing left
+    /// to test" of `docs/specs/gwas.md` refuses.
     ///
     /// This one is not the variant the design explains, which the test
     /// below covers: it is a variant the design leaves whole and that
@@ -2773,17 +2774,17 @@ pub(crate) mod lmm {
     /// differ here, and a refusal written in the wrong place would take the
     /// score test's answer away with it.
     ///
-    /// What this fixture does not check is the size of the threshold, and
-    /// no fixture can check it on both backends. What is left is 0 in exact
+    /// What this fixture does not check is the size of the threshold, and no
+    /// fixture can check it on both backends. What is left is 0 in exact
     /// arithmetic, so its sign is whatever the rounding chose, and there is
     /// no regime between the rounding and a threshold that is the rounding
-    /// scale. Measured with the threshold set to 0 on 24 September 2026:
-    /// faer answers this variant with an `se` of 1.2167e-8, so faer is
-    /// where the size is guarded, while Accelerate leaves a value at or
-    /// below 0 and the sign alone refuses it. The evidence that the size is
-    /// right is the panel, where what is left comes out 8.53e-13 on
-    /// Accelerate and 3.98e-13 on faer against a threshold of 8.67e-12, and
-    /// that measurement is in **Open 2** of the spec.
+    /// scale. Measured with the threshold set to 0 on 24 September 2026: faer
+    /// answers this variant with an `se` of 1.2167e-8, so faer is where the
+    /// size is guarded, while Accelerate leaves a value at or below 0 and the
+    /// sign alone refuses it. The evidence that the size is right is the
+    /// panel, where what is left comes out 8.53e-13 on Accelerate and
+    /// 3.98e-13 on faer against a threshold of 8.67e-12, and that measurement
+    /// is in "A variant there is nothing left to test" of the spec.
     ///
     /// **This fixture is what holds the two halves of the factored
     /// projection together**, measured on 25 September 2026. With the
@@ -3206,7 +3207,7 @@ pub(crate) mod lmm {
     }
 
     /// A variant that the projection leaves nothing of has no answer under
-    /// either test, which is the meanwhile of **Open 2** of
+    /// either test, which is "A variant there is nothing left to test" of
     /// `docs/specs/gwas.md`.
     ///
     /// The variant is twice the covariate, so the design explains all of
@@ -3312,14 +3313,14 @@ pub(crate) mod lmm {
     /// which is what "Open 2's threshold under the approximation" of
     /// `docs/specs/gwas.md` decided on 24 September 2026.
     ///
-    /// The rule of **Open 2** is unchanged and is compared against
-    /// whichever denominator the study formed. What changes is that it
-    /// stops firing: the approximate denominator is a factor above 0 times
-    /// a sum of squares, so it holds no cancellation and it is above 0 for
-    /// every variant that varies, whatever the projection would have left.
-    /// The variant here is exactly the one the exact test refuses, a
-    /// combination of the columns of the design, and its dosages have as
-    /// much variance as any other variant's.
+    /// The rule of "A variant there is nothing left to test" is unchanged and
+    /// is compared against whichever denominator the study formed. What
+    /// changes is that it stops firing: the approximate denominator is a
+    /// factor above 0 times a sum of squares, so it holds no cancellation and
+    /// it is above 0 for every variant that varies, whatever the projection
+    /// would have left. The variant here is exactly the one the exact test
+    /// refuses, a combination of the columns of the design, and its dosages
+    /// have as much variance as any other variant's.
     ///
     /// What it is answered with, measured that day: a `beta` of -5.7e-16
     /// on Accelerate and 1.5e-15 on faer, with an `se` of 0.654 and a
@@ -3585,17 +3586,17 @@ pub(crate) mod lmm {
     /// exact one is answered under the Wald test, with the three numbers
     /// the exact denominator gives it.
     ///
-    /// The fourth place of **Open 2** of `docs/specs/gwas.md` refuses a
-    /// variant when `y' p y` less `num² / den` falls to the tested
-    /// individuals times 2.2e-16 of `y' p y`, and it holds because with the
-    /// exact `den` that subtraction cannot go below 0, so anything at or
-    /// under it is a cancellation. The approximate `den` gives no such
-    /// bound: the tested variant here has a ratio of `x' p x` to the
-    /// squared length of its centered dosages 1.00787 above the factor the
-    /// two companions pull down, so its approximate denominator is the
-    /// smaller of the two, `num² / den` passes `y' p y` honestly, and what
-    /// is left comes to -0.0068 and -0.0036 of `y' p y` at the two lower
-    /// noise levels.
+    /// The fourth place of "A variant there is nothing left to test" of
+    /// `docs/specs/gwas.md` refuses a variant when `y' p y` less `num² / den`
+    /// falls to the tested individuals times 2.2e-16 of `y' p y`, and it
+    /// holds because with the exact `den` that subtraction cannot go below 0,
+    /// so anything at or under it is a cancellation. The approximate `den`
+    /// gives no such bound: the tested variant here has a ratio of `x' p x`
+    /// to the squared length of its centered dosages 1.00787 above the factor
+    /// the two companions pull down, so its approximate denominator is the
+    /// smaller of the two, `num² / den` passes `y' p y` honestly, and what is
+    /// left comes to -0.0068 and -0.0036 of `y' p y` at the two lower noise
+    /// levels.
     ///
     /// What that variant gets is the exact denominator, formed from the
     /// projection matrix for it alone, and the three numbers the exact

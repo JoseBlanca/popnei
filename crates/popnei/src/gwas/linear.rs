@@ -1260,9 +1260,9 @@ pub(crate) mod lm {
         ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
         #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti0\ti1\ti2\ti3\ti4\ti5\ti6\ti7\n";
 
-    /// The design of the fixture of **Open 2** of `docs/specs/gwas.md`:
-    /// eight individuals and a covariate that marks two subpopulations of
-    /// four, beside the intercept.
+    /// The design of the fixture of "A variant there is nothing left to test"
+    /// of `docs/specs/gwas.md`: eight individuals and a covariate that marks
+    /// two subpopulations of four, beside the intercept.
     pub(crate) const THE_DESIGN_OF_TWO_SUBPOPULATIONS: [f64; 16] = [
         1.0, 0.0, //
         1.0, 0.0, //
@@ -1287,8 +1287,8 @@ pub(crate) mod lm {
     /// one alone.
     const OF_THE_ORDINARY_VARIANT: (f64, f64) = (-0.315_789_473_684_210_9, 0.633_330_903_431_213_6);
 
-    /// A variant that the design leaves nothing of has no answer, which is
-    /// the meanwhile of **Open 2** of `docs/specs/gwas.md`.
+    /// A variant that the design leaves nothing of has no answer, which is "A
+    /// variant there is nothing left to test" of `docs/specs/gwas.md`.
     ///
     /// The variant is twice the covariate, so the design explains all of
     /// it and what is left is rounding: `beta` is a number divided by

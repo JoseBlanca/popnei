@@ -14,13 +14,13 @@
 /// error and then squared, which is a chi square with one degree of freedom
 /// when the variant has no effect on the trait. `x` is such a statistic.
 ///
-/// An `x` of 0 or below gives 1.0, as scipy's `chi2.sf` does: nothing
-/// exceeds such a statistic, so the chance of exceeding it is 1. That is an
-/// answer and not a refusal, and it is written out because the square root
-/// of a negative number is NaN and the line below would otherwise give one.
-/// A NaN `x` is a different thing, a statistic that was never computed, and
-/// it gives NaN. Which caller may arrive with a statistic below 0 is
-/// **Open 2** of `docs/specs/gwas.md`.
+/// An `x` of 0 or below gives 1.0, as scipy's `chi2.sf` does: nothing exceeds
+/// such a statistic, so the chance of exceeding it is 1. That is an answer
+/// and not a refusal, and it is written out because the square root of a
+/// negative number is NaN and the line below would otherwise give one. A NaN
+/// `x` is a different thing, a statistic that was never computed, and it
+/// gives NaN. Which caller may arrive with a statistic below 0 is "A variant
+/// there is nothing left to test" of `docs/specs/gwas.md`.
 ///
 /// The value is `erfc(sqrt(x / 2))`, the complementary error function of
 /// the `libm` crate, which gives how much of a standard normal distribution

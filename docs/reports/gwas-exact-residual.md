@@ -13,8 +13,10 @@ algebra checked, both halves built on the branch `gwas/exact-residual`, what
 they cost, what they do to every column the two mixed models are verified
 against, and a recommendation.
 
-The recommendation is to take both halves and to leave Open 2's threshold
-where it is. Nothing is merged into `main`.
+The recommendation was to take both halves and to leave Open 2's threshold
+where it is. **The owner took it on 25 September 2026**, and the last
+section says what was then done to the two specs and where the rule lives
+now.
 
 ## The words this document uses
 
@@ -305,33 +307,37 @@ refuses it with `GwasKinshipNotACovariance` and the row it stopped at; the
 factored projection reuses the factor that fit already made, so the refusal
 is the fit's and is where it was.
 
-## What the decision changes in the spec
+## What the decision changed in the two specs
 
-Nothing of `docs/specs/gwas.md` is changed on the branch: the numbers it
-states all hold, and closing Open 2 is the owner's. If the recommendation is
-taken, these are the sentences that owe a change, in one commit before the
-code:
+Open 2 is closed. Its rule left the open points and is now "A variant there
+is nothing left to test" of "What every model shares" of
+`docs/specs/gwas.md`, which is where the three NaNs a variant can get are
+described; the open points that are left keep the numbers they have always
+had, so that a document or a commit naming one still finds it. The doc
+comments of the module name that section where they named **Open 2**. These
+are the other sentences that moved:
 
-- **Open 2**, the paragraph beginning "Or form the residual exactly", which
-  prices the exact form at "a matrix product for every variant, roughly
-  doubling that test", and the recommendation that rests on it. What
-  replaces it is that the exact form is a pass over one vector per variant
-  and that the threshold stays where it is for the reason above.
-- **Open 2's table**, whose third row says the scale of `x' p x` and whose
-  fourth says what the Wald test subtracts. Neither number moves; what
-  changes is that both quantities are now squared lengths and cannot fall
-  below 0, so the sign half of each guard is structural.
-- **"The linear mixed model"** and **"The logistic mixed model"**, where
-  each says that the two products are the whole cost of a block. One of the
-  two is now a triangular solve.
-- **"The GRAMMAR-Gamma approximation"**, where what a variant that falls
-  back to the exact denominator costs is "one product of one variant with
-  the projection matrix". It is one solve of one variant against the factor.
-- **"Speed"**, which has no popnei number at all and now has six.
-- **"The solve against a triangular matrix"** of `docs/specs/linalg.md`,
-  which names the callers of the lower half: the fit of the logistic mixed
-  model's null is no longer the only one, and the new one asks for one right
-  hand side per variant of a block rather than one per individual.
+- The table of the rule keeps its four rows and every number in them. What
+  is added is that all four quantities are formed and not subtracted, so
+  none can fall below 0 and the sign half of each guard is now structural
+  rather than a threshold's work.
+- **"The linear mixed model"** says how popnei holds the projection, as the
+  factor and the directions the design spans through it, and that the two
+  halves are one change, with the numbers of the fixture of six.
+- **"The logistic mixed model"** no longer says that the inverse is formed
+  once at the end. No inverse of a matrix that size is formed at all.
+- **"The GRAMMAR-Gamma approximation"** prices a variant that falls back to
+  the exact denominator at one solve of one variant against the factor
+  rather than one product with the projection matrix. The heading "Open 2's
+  threshold under the approximation" keeps its name, because the decision it
+  carries was taken on 24 September 2026 under that name.
+- **"Speed"** had no popnei number at all and now has eight, beside plink2's
+  and GMMAT's.
+- **"The solve against a triangular matrix"** of `docs/specs/linalg.md` has
+  the second caller of the lower half: the fit of the logistic mixed model's
+  null is no longer the only one, and the new one asks for one right hand
+  side per variant of a block rather than one per individual, at 0.63 of the
+  product it replaces where the arithmetic is half.
 
 ## What is not known
 
@@ -353,14 +359,11 @@ code:
 - **The GRAMMAR-Gamma approximation is untouched**, and it still halves both
   mixed models: 0.200 s and 0.389 s against 0.484 s and 0.662 s.
 
-## What is asked
+## What was merged
 
-Whether to merge `gwas/exact-residual` into `main`, one commit, every check
-of the `coding` skill clean at its head: `cargo fmt`, `cargo clippy
---workspace --all-targets -- -D warnings`, 1169 cargo tests of the workspace
-on Accelerate and 1019 of the core crate and 136 of the linear algebra crate
-on faer, `cargo wasm-check`, `cargo wasm-check-js`, `ruff format`, `ruff
-check` and 556 pytest tests.
-
-And whether Open 2 closes with the recommendation above, which is the six
-sentences of the section before last.
+`gwas/exact-residual` into `main` on the owner's order of 25 September 2026,
+with every check of the `coding` skill clean at its head: `cargo fmt`, `cargo
+clippy --workspace --all-targets -- -D warnings`, 1169 cargo tests of the
+workspace on Accelerate and 1019 of the core crate and 136 of the linear
+algebra crate on faer, `cargo wasm-check`, `cargo wasm-check-js`, `ruff
+format`, `ruff check` and 556 pytest tests.
