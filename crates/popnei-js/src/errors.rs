@@ -217,9 +217,10 @@ impl From<JsPopneiError> for JsValue {
 /// and `max_allowed_maf`, are rewritten here as well, in three errors: the
 /// range of distances, the frequency a variant is counted below, and the
 /// bins of no bin, whose message names the two distances the bins are cut
-/// across beside `num_bins`.
+/// across beside `num_bins`. The `num_called_alleles` of a draw the dataset
+/// cannot fill is rewritten here too.
 ///
-/// Three of the eleven names the core writes are left as they are.
+/// Three of the twelve names the core writes are left as they are.
 /// `num_prin_comps` is in the error of a second pass that was not made,
 /// which `pca.rs` of this crate opens a reader for whenever the weights are
 /// asked for, so no call of TypeScript reaches it. The `max_num_vars` of a
@@ -259,6 +260,14 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
         popnei::Error::BlockTooLarge { .. } | popnei::Error::VarsTextTooLarge { .. }
     ) {
         return message.replace("num_vars_per_block", "numVarsPerBlock");
+    }
+    if matches!(
+        error,
+        popnei::Error::DiversitySfsWithoutADraw
+            | popnei::Error::DiversityDrawTooSmall { .. }
+            | popnei::Error::DiversityDrawLargerThanTheDataset { .. }
+    ) {
+        return message.replace("num_called_alleles", "numCalledAlleles");
     }
     message
 }

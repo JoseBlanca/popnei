@@ -30,7 +30,7 @@ import {
  * code does with a larger one is to keep it modulo 2^32: 2^32 + 2 would
  * arrive as a ploidy of 2, and 2^32 + 1 as blocks of one variant.
  */
-const LARGEST_WHOLE_NUMBER = 4294967295;
+export const LARGEST_WHOLE_NUMBER = 4294967295;
 
 /**
  * The largest whole number a number of JavaScript counts to one by one,

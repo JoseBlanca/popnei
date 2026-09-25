@@ -87,6 +87,31 @@ frequency is below the polymorphism threshold, 0.95 by default, strictly;
 a variable one has it below 1. `poly` in identifiers, as in pyNei's
 `poly_threshold` and `num_poly`.
 
+**private allele.** An allele that one population of a call called at a
+variant and no other population of that call called there. `private` in
+identifiers. `docs/specs/diversity.md`.
+
+**rarefaction.** Taking a count of alleles down to what a draw of a stated
+number of the called alleles would be expected to show, without
+replacement, so that populations of different sizes can be compared: a
+population of more individuals finds more alleles for no reason but its
+size. `num_called_alleles` is the number drawn. The same draw applied to
+the site frequency spectrum is called a projection. `docs/specs/diversity.md`.
+
+**folded site frequency spectrum.** How many variants of a population show
+each count of their rarer allele, in a draw of a stated number of called
+alleles. Folded because nothing says which allele is ancestral, so the
+counts j and (the number drawn - j) are one bin. `sfs` in identifiers.
+`docs/specs/diversity.md`. Not used: the allele frequency spectrum.
+
+**F_IS.** How far the genotypes of a population are from the proportions
+its allele frequencies would give if its individuals paired at random: one
+minus the mean observed heterozygosity over the mean unbiased expected
+heterozygosity. Positive when the population holds fewer heterozygous
+genotypes than that. `fis` in identifiers. `docs/specs/diversity.md`. Not
+used: the inbreeding coefficient alone, which also names the entry on the
+diagonal of a kinship.
+
 **major allele.** The allele of a variant with the highest frequency among
 the called alleles of the individuals considered. How a tie is broken is for
 the spec of the calculation to say.

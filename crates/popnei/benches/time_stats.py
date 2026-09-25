@@ -1,5 +1,5 @@
-"""How long a whole pass of popnei over a vars file takes, for each of the
-two calculations of the stats module and for the read alone.
+"""How long a whole pass of popnei over a vars file or a VCF takes, for each
+of the two calculations of the stats module and for the read alone.
 
 It is what task 6.1 of docs/plans/stats.md timed popnei with, against the
 same passes of pyNei that `time_pynei_stats.py` times.
@@ -12,9 +12,10 @@ The six passes it can time, one per invocation:
                       which is the read of the file and nothing else
     per-var           `calc_per_var_distribs` with the five statistics and
                       no `pops`
-    per-var-pops      the same with 4 populations of 250 individuals, the
-                      individuals of the file in the order they are in it,
-                      250 to each population
+    per-var-pops      the same with populations: the four of 250 individuals
+                      of the report, the individuals of the file in the order
+                      they are in it, 250 to each, or the populations of a
+                      file given as a fourth argument
     per-var-obs-het   the same with the observed heterozygosity alone and
                       no `pops`
     per-var-maf       the same with the major allele frequency alone and no
@@ -25,15 +26,33 @@ The two passes with one statistic say how the pass with five divides up,
 and they are the rows pyNei's table of "Speed" of `docs/specs/stats.md`
 has for its own `obs_het` alone and `maf` alone.
 
-Every run opens the file again with `open_vars`, so that no block is read
-twice and every run pays the opening.
+Every run opens the file again, so that no block is read twice and every run
+pays the opening. A path that ends in `.vars` is opened with `open_vars` and
+anything else with `open_vcf`, which is how `time_pop_dists.py` and
+`time_diversity.py` open theirs: the numbers of
+`docs/reports/stats-measurement.md` are all over a vars file, and task 4.1 of
+docs/plans/diversity.md timed this pass over a VCF as well, to read it
+against `calc_pop_diversity` over the same file.
 
 The threads are rayon's, which popnei takes from the environment because it
 builds no pool of its own: `RAYON_NUM_THREADS=1` for one thread and
 `RAYON_NUM_THREADS=18` for the 18 cores of the machine.
 
-    RAYON_NUM_THREADS=1 uv run python time_stats.py <path to a vars file> \
-        <what> <runs>
+    RAYON_NUM_THREADS=1 uv run python time_stats.py <path> <what> <runs> \
+        [<populations file>]
+
+The fourth argument is a file of one line for each individual: the name of
+the individual, a tab, and the name of its population, which is the shape of
+`tests/reference/stats/panel_pops_bcftools.txt` and of the files
+`make_pops.py` writes. `per-var-pops` then runs over those populations
+instead of the four of 250, which is what task 4.1 of
+docs/plans/diversity.md timed `calc_per_var_distribs` with, so that it and
+`calc_pop_diversity` of `time_diversity.py` count the same populations of the
+same file. The other passes take no populations and refuse the argument.
+
+The runs are 1 or more. A number of runs that is not a whole number, and
+one below 1, are refused before anything is read, each with the argument and
+what was written in the message.
 
 One pass before the timed ones is not timed: it pays the page faults of the
 first touch of the memory a pass works in, which a process pays once, and it
@@ -77,10 +96,61 @@ def four_pops(variants: popnei.Variants) -> dict[str, list[str]]:
     }
 
 
-def one_pass(path: str, what: str) -> int:
-    """One whole pass over the vars file at `path`, and the variants it
-    gave."""
-    variants = popnei.open_vars(path)
+def the_pops(path: str) -> dict[str, list[str]]:
+    """The populations of the file at `path`, as the dict of population name
+    to the names of its individuals that `calc_per_var_distribs` takes.
+
+    The file holds one line for each individual, its name, a tab and the name
+    of its population. The populations come out in the order in which the
+    file first names each of them, and the individuals of each in the order
+    of the file.
+    """
+    pops: dict[str, list[str]] = {}
+    with open(path) as fhand:
+        for number, line in enumerate(fhand, start=1):
+            if not line.strip():
+                continue
+            written = line.rstrip("\n")
+            # The line is cut on every tab and not on the first one: with
+            # the first alone a file of three columns is read as two, and
+            # everything after the first tab becomes the name of the
+            # population, so the run times populations that no file names.
+            fields = written.split("\t")
+            if len(fields) != 2 or not fields[0] or not fields[1]:
+                raise ValueError(
+                    f"{path}, line {number}: a line of a populations file is "
+                    f"the name of an individual, one tab and the name of its "
+                    f"population, and this one is {written!r}"
+                )
+            individual, pop = fields
+            pops.setdefault(pop, []).append(individual)
+    return pops
+
+
+def a_count(name: str, written: str) -> int:
+    """The whole number written as `name` on the command line.
+
+    An argument that is not a whole number is refused with the argument and
+    what was written in the message, before anything is read or timed.
+    """
+    try:
+        return int(written)
+    except ValueError:
+        raise ValueError(
+            f"{name} is a whole number, and {written!r} was written"
+        ) from None
+
+
+def one_pass(path: str, what: str, pops: dict[str, list[str]] | None = None) -> int:
+    """One whole pass over the file at `path`, and the variants it gave.
+
+    The file is read as a vars file when its name ends in `.vars` and as a
+    VCF otherwise. `pops` is the populations `per-var-pops` runs over, and
+    with none it is the four of 250 individuals of the report.
+    """
+    variants = (
+        popnei.open_vars(path) if path.endswith(".vars") else popnei.open_vcf(path)
+    )
     if what == "read":
         blocks = variants.iter_blocks(fields=())
         return sum(block.gts.shape[0] for block in blocks)
@@ -88,7 +158,7 @@ def one_pass(path: str, what: str) -> int:
         return popnei.calc_per_var_distribs(variants).pass_stats.num_vars
     if what == "per-var-pops":
         return popnei.calc_per_var_distribs(
-            variants, pops=four_pops(variants)
+            variants, pops=four_pops(variants) if pops is None else pops
         ).pass_stats.num_vars
     # `pass_stats.num_vars` is the variants of the pass whatever statistics
     # were asked for, so the two passes with one of them count what the five
@@ -108,19 +178,38 @@ def one_pass(path: str, what: str) -> int:
 
 def main() -> int:
     arguments = sys.argv[1:]
-    if len(arguments) != 3:
+    if len(arguments) not in (3, 4):
         print(__doc__)
         return 1
-    path, what, runs = arguments[0], arguments[1], int(arguments[2])
+    path, what = arguments[0], arguments[1]
+    try:
+        runs = a_count("the number of runs", arguments[2])
+    except ValueError as problem:
+        print(problem)
+        return 1
+    # A run of no pass gives no time, and `min` of no time raises after the
+    # untimed pass has been paid for, which is a whole read of the file.
+    if runs < 1:
+        print(f"the number of runs is 1 or more, and {runs} was written")
+        return 1
+    pops_path = arguments[3] if len(arguments) == 4 else None
     if what not in WHATS:
         print(f"the pass to time is one of {WHATS}, and {what!r} was given")
         return 1
+    if pops_path is not None and what != "per-var-pops":
+        print(
+            f"a populations file is read by 'per-var-pops' alone, and {what!r} "
+            f"was given with {pops_path!r}"
+        )
+        return 1
+    pops = None if pops_path is None else the_pops(pops_path)
     threads = os.environ.get("RAYON_NUM_THREADS", "the cores of the machine")
     print(
         f"{path}, popnei {popnei.__version__}, {what}, {runs} runs, {threads} threads"
+        + ("" if pops is None else f", {len(pops)} populations of {pops_path}")
     )
     started = time.perf_counter()
-    num_vars = one_pass(path, what)
+    num_vars = one_pass(path, what, pops)
     print(
         f"the first run, which is not timed: {time.perf_counter() - started:.3f} s, "
         f"{num_vars} variants"
@@ -128,7 +217,7 @@ def main() -> int:
     times = []
     for run in range(1, runs + 1):
         started = time.perf_counter()
-        num_vars = one_pass(path, what)
+        num_vars = one_pass(path, what, pops)
         took = time.perf_counter() - started
         times.append(took)
         print(f"run {run}: {took:.3f} s, {num_vars} variants")

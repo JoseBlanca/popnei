@@ -42,7 +42,12 @@
 //! the effect of each variant on the trait, the uncertainty of that effect
 //! and its p-value, of which three of the four models are written, the
 //! linear one and the linear mixed one of a continuous trait and the
-//! logistic one of a binomial trait with no kinship. The
+//! logistic one of a binomial trait with no kinship. `diversity` gives,
+//! out of one pass and for each population, how many alleles it called and
+//! how many of those no other population called, how many of the variants
+//! vary in it, how its variants are spread over the frequency of their
+//! rarer allele, and how far its genotypes are from the proportions its
+//! allele frequencies would give. The
 //! modules that follow them are being written, and `docs/architecture.md`
 //! has their order.
 //!
@@ -56,6 +61,7 @@
 
 pub mod block;
 pub mod dists;
+pub mod diversity;
 pub mod error;
 pub mod filters;
 pub mod gwas;

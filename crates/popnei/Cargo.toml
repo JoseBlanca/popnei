@@ -159,3 +159,17 @@ harness = false
 [[bench]]
 name = "kinship"
 harness = false
+
+# What the pass of the diversity module costs over blocks that are already
+# in memory, of task 4.1 of docs/plans/diversity.md, which is the first
+# measurement popnei has of it and what "Speed" of docs/specs/diversity.md
+# leaves open. It builds one block, gives it to the pass a stated number of
+# times and prints, for each run, one wall time and the most bytes the pass
+# held live at once beside its block, which a counting global allocator
+# inside the benchmark gives; it takes the variants of a block, the
+# individuals, the blocks, the runs, the threads, the populations, the
+# statistics and the called alleles of the draw, and it runs without a
+# harness, as the ten above do.
+[[bench]]
+name = "diversity_pass"
+harness = false

@@ -20,6 +20,7 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 
 pub mod dists;
+pub mod diversity;
 pub mod errors;
 pub mod gwas;
 pub mod kinship;
