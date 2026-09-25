@@ -292,10 +292,14 @@ any other, so a pass takes it by wrapping the loop it already has.
 
 It is one block ahead and not more. The handover is a rendezvous: the
 reading thread holds at most one block that is built and not yet given, so
-the memory of a pass grows by one block and by nothing else. On the panel
-of 100000 variants of 1000 individuals, whose blocks are 5000 variants,
-that block is 10.0 MB of genotypes; at 10000 individuals, where a block of
-the same number of genotypes holds 250 variants, it is 5.0 MB.
+the memory of a pass grows by one block and by nothing else. A block holds
+`GENOTYPES_PER_BLOCK` genotypes, 5 million, wherever the size popnei chooses
+for the individuals of the source is neither held down nor held up, which is
+5000 variants of 1000 individuals and 500 of 10000: at the ploidy 2 the
+block is 10.0 MB of alleles in both. It is 1.0 MB for 50 individuals, where
+the size is held down to `MAX_NUM_VARS_PER_BLOCK`, 10000 variants, and 20.0
+MB for 100000 individuals, where it is held up to
+`MIN_NUM_VARS_PER_BLOCK`, 100.
 
 What the pass sees does not change, which is what lets a pass take it
 without changing a number:
@@ -327,12 +331,24 @@ A pass takes it where a measurement of that pass shows its wall time fall,
 and not otherwise, because each one costs a thread that a browser does not
 have and one more block of memory. The owner set the rule on 25 September
 2026: it is kept in a pass where the best of 5 runs falls by more than 5 per
-cent of that pass's wall time and by more than the spread of its runs.
+cent of that pass's wall time and by more than the difference between the
+best and the worst of those 5 runs.
 
-Nine passes over the blocks were measured against it on 100000 variants of
-1000 individuals with every genotype called, the owner's Apple M5 Pro of 18
-cores, and `docs/reports/perf-read-ahead-2026-09-25.md` has the two clocks
-and the wall times of each. Eight of them keep it: the association study of
+What says beforehand whether a pass is worth the thread is two clocks inside
+its loop, behind the cargo feature `bench-phases` that
+`crates/popnei/Cargo.toml` describes: how long the pass spends inside
+`next_block` of its chain, and how long it spends working on the blocks the
+chain gave it. A sampling profile gives neither, because the chain
+decompresses on the thread that then computes, so the samples of the read
+and the samples of the work are of one thread and one stack. The most the
+reading thread can take off a pass is the smaller of the two clocks, since
+what it hides behind one is the other.
+
+Nine passes over the blocks were measured against the rule on 100000
+variants of 1000 individuals with every genotype called, the owner's Apple
+M5 Pro of 18 cores, and `docs/reports/perf-read-ahead-2026-09-25.md` has the
+two clocks and the wall times of each. Eight of them keep it: the
+association study of
 `docs/specs/gwas.md`, the kinship, the two passes of the principal
 components of the variants, the Kosman distance of every pair of
 individuals, the distances between populations, the diversity of every
@@ -344,8 +360,10 @@ quadratic in the variants it was given, so the most the thread could hide is
 
 The Kosman distance is the one pass that gave something up for it. It
 dropped the sets of bits of a block and the block itself before asking for
-the next one, so that the memory of two blocks was never held at once, and
-the reading thread holds one more block by what it is.
+the next one, so that the memory of two blocks was never held at once, and a
+reading thread that waits with a block that is built and not yet given is
+that second block back. It still drops the sets of bits before the next
+block, which are as large again as the block.
 
 ### How it runs
 
@@ -362,11 +380,6 @@ does and which the Ctrl-C of a Python user comes out as, drops the handle;
 the thread is then waiting to hand over a block nobody will ask for, its
 send fails, and the thread ends with that block. Nothing joins it by hand
 and no thread is left reading: the scope joins it after the pass returns.
-
-The counts of the phases behind the cargo feature `bench-phases`, which
-`crates/popnei/Cargo.toml` describes, are what decides whether a pass is
-worth the thread: a sampling profile cannot separate the read of a block
-from the work on it while the two run on one thread.
 
 ### How it is verified
 
