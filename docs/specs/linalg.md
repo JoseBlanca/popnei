@@ -750,6 +750,20 @@ twice. `docs/reports/glmm-method/README.md`, written with
 `docs/specs/gwas.md`, has the fit those numbers belong to; this spec owns
 the operation and not the fit.
 
+The lower half has a second caller since 25 September 2026, and it is the
+one that asks the most of this operation: both mixed models of
+`docs/specs/gwas.md` hold the projection of their null model as the Cholesky
+factor of the covariance rather than as the matrix, and solve a whole block
+of variants against it, one right hand side per variant of the block where
+the fit asks for one per individual. At 5000 variants of 1000 individuals
+the solve takes 14.6 ms against the 23.1 ms of the product of that block
+with a 1000 x 1000 matrix, 0.63 of it where the arithmetic is half, measured
+with this crate on Accelerate on the owner's Apple M5 Pro on that day. So
+the routine runs at about 0.79 of the product's rate on this shape, which is
+what a caller trading a product for a solve gets and not the half the
+operation counts promise. `docs/reports/gwas-exact-residual.md` has the pass
+those numbers belong to.
+
 It is one function and not two, and which half holds the matrix is an
 argument of it, for the reason "The product with its first operand turned"
 gives for `product`: two functions over the same arguments would each take

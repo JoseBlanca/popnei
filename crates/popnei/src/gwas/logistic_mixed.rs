@@ -22,6 +22,7 @@ use super::grammar_gamma::GrammarGamma;
 use super::logistic::{
     LogisticModel, TheSystemOfTheFit, the_chance_of, the_system_of, the_system_that_is_left,
 };
+use super::projection::TheProjection;
 use super::result::{Answers, NullModel};
 use super::study::{Design, GwasInputShape, GwasModel, TestType};
 use super::the_share_that_is_nothing;
@@ -775,9 +776,10 @@ pub(crate) struct LogisticMixedModel {
     /// The variance of the random effect of the kinship the search landed
     /// on.
     genetic_variance: f64,
-    /// The projection matrix `p`, `num_individuals` x `num_individuals`,
-    /// row after row, which every variant is tested through.
-    projection: Vec<f64>,
+    /// The projection `p`, held as the factor of the covariance of the
+    /// working trait and the directions the design spans through it, which
+    /// every variant is solved against.
+    projection: TheProjection,
     /// The residual every variant's numerator is taken against, one value
     /// per tested individual: the trait less the fitted chance.
     ///
@@ -789,20 +791,6 @@ pub(crate) struct LogisticMixedModel {
     /// which is the fit's own optimality condition and is the cheapest
     /// evidence there is that the search reached its optimum.
     projected_trait: Vec<f64>,
-    /// The largest value of the diagonal of that matrix, which is what a
-    /// variant's own squared length is weighted by to say how much of the
-    /// variant the projection has left.
-    ///
-    /// It is the scale of the third place of the meanwhile of **Open 2** of
-    /// `docs/specs/gwas.md`, and it is the one the linear mixed model's
-    /// score test already takes, so that the two mixed models answer alike
-    /// rather than each picking its own. The doc comment of the field of
-    /// the same name in `linear_mixed` measures how far under the largest
-    /// eigenvalue of the projection, which is what really bounds
-    /// `x' p x / x' x`, that diagonal sits: 1.7 times on both panels of
-    /// that model, so the threshold is tighter than it was meant to be and
-    /// not looser.
-    largest_of_the_projection: f64,
     /// How many individuals the study tests.
     num_individuals: usize,
     /// How many rounds the fit ran in all, which is how many times it
@@ -837,7 +825,9 @@ pub(crate) struct LogisticMixedModel {
     )]
     steps_on_the_variance: usize,
     /// How many times it formed the inverse of a factorized matrix of that
-    /// size: 1, at the end, for the projection matrix.
+    /// size: 0, since the projection is kept as the factor of the
+    /// covariance and not as the matrix, and it was 1 while the matrix was
+    /// built.
     #[cfg_attr(
         not(test),
         expect(
@@ -852,9 +842,9 @@ pub(crate) struct LogisticMixedModel {
     /// factor from the first block of the second pass, and `None` when
     /// every variant gets the exact denominator.
     approximation: Option<GrammarGamma>,
-    /// The dosages of a block through the projection matrix, `x p`, the
-    /// variants that have variance x `num_individuals`. It stays empty
-    /// under the approximation, which is the product it does not make.
+    /// The dosages of a block through the projection, `m x`, the variants
+    /// that have variance x `num_individuals`. It stays empty under the
+    /// approximation, which is the solve it does not make.
     projected: Vec<f64>,
     /// The denominator of each variant that has variance, `x' p x`, one per
     /// variant, formed from the row above or approximated.
@@ -981,13 +971,18 @@ impl LogisticMixedModel {
                 rounds: steps_on_the_variance,
             });
         }
-        // The buffer the trace was taken in is done with, and it is as
-        // large as the projection matrix, so it is what the part of the
-        // covariance's inverse that the design explains is formed in.
-        let of_the_design = step.take_the_buffer_of_the_trace();
         drop(step);
-        let mut inverses = 0_usize;
-        let projection = the_projection_of(&fitted, of_the_design, &mut inverses)?;
+        // The last round left the covariance of the working trait
+        // factored, and the factor is what every variant is solved
+        // against: the projection is `m' m` with `m = (i - q q') l⁻¹`, so
+        // nothing of that size is inverted and nothing of that size is
+        // built. The fit's own count of the inverses it forms is therefore
+        // 0 where it was 1, which the cargo test of it reads.
+        let inverses = 0_usize;
+        let projection = TheProjection::of_the_factored_covariance(
+            std::mem::take(&mut fitted.covariance),
+            design,
+        )?;
         let projected_trait = fitted
             .phenotype
             .iter()
@@ -997,11 +992,6 @@ impl LogisticMixedModel {
         Ok(LogisticMixedModel {
             coefs: std::mem::take(&mut fitted.coefs),
             genetic_variance,
-            largest_of_the_projection: projection
-                .chunks_exact(num_individuals.max(1))
-                .zip(0..)
-                .filter_map(|(row, at)| row.get(at).copied())
-                .fold(0.0_f64, f64::max),
             projection,
             projected_trait,
             num_individuals,
@@ -1061,9 +1051,7 @@ impl LogisticMixedModel {
     /// such a variant is left out of the mean.
     pub(crate) fn approximate_the_denominator(&mut self, dosages: &GwasDosages) -> Result<()> {
         self.approximation = Some(GrammarGamma::of_the_first_block(
-            &self.projection,
-            self.num_individuals,
-            self.largest_of_the_projection,
+            &mut self.projection,
             dosages,
         )?);
         Ok(())
@@ -1108,36 +1096,12 @@ impl LogisticMixedModel {
                 .extend(of_the_variants.map(|of_the_variant| approximation.den_of(of_the_variant)));
             return Ok(());
         }
-        let values = num_vars
-            .checked_mul(self.num_individuals)
-            .ok_or(Error::GwasVariantsTooLarge)?;
-        self.projected.resize(values, 0.0);
-        popnei_linalg::product(
-            TheFirstOperand::ByTheRowsOfTheResult {
-                values: dosages.dosages(),
-                rows: num_vars,
-            },
-            self.num_individuals,
-            TheSecondOperand::ByTheValuesSummedOver {
-                values: &self.projection,
-                cols: self.num_individuals,
-            },
-            &mut self.projected,
-        )
-        .map_err(|source| Error::GwasLinalg {
-            operation: "product of a block of variants with the projection matrix",
-            source,
-        })?;
+        self.projection
+            .through(dosages.dosages(), num_vars, &mut self.projected)?;
         self.den.extend(
             self.projected
                 .chunks_exact(self.num_individuals.max(1))
-                .zip(dosages.dosages().chunks_exact(self.num_individuals.max(1)))
-                .map(|(row, of_the_variant)| {
-                    row.iter()
-                        .zip(of_the_variant)
-                        .map(|(projected, dosage)| projected * dosage)
-                        .sum::<f64>()
-                }),
+                .map(|through| through.iter().map(|value| value * value).sum::<f64>()),
         );
         Ok(())
     }
@@ -1173,12 +1137,12 @@ impl LogisticMixedModel {
     ///
     /// A variant of which the projection leaves at most the tested
     /// individuals times 2.2e-16 of what there was has no answer, and gets
-    /// the three NaNs a variant with no variance gets. What there was is
-    /// the variant's own squared length times the largest value of the
-    /// diagonal of the projection matrix, which is the scale the linear
-    /// mixed model's score test takes, so that the two mixed models answer
-    /// a variant there is nothing left to test alike rather than each
-    /// picking its own. It is **Open 2** of `docs/specs/gwas.md`.
+    /// the three NaNs a variant with no variance gets. What there was is the
+    /// variant's own squared length times the largest value of the diagonal
+    /// of the projection matrix, which is the scale the linear mixed model's
+    /// score test takes, so that the two mixed models answer a variant there
+    /// is nothing left to test alike rather than each picking its own. It is
+    /// "A variant there is nothing left to test" of `docs/specs/gwas.md`.
     ///
     /// That comparison is made against whichever of the two denominators
     /// the study formed, and under the approximation it stops firing, which
@@ -1228,7 +1192,7 @@ impl LogisticMixedModel {
         // The share of what the variant was that the projection has to
         // leave of it for the variant to be worth testing.
         let share_that_is_nothing = the_share_that_is_nothing(self.num_individuals);
-        let largest_of_the_projection = self.largest_of_the_projection;
+        let largest_of_the_projection = self.projection.largest_of_the_diagonal();
         // The squared length of each variant's dosages is the one the block
         // summed where it wrote the row, on the threads of rayon: reading
         // it here would be a second full read of the block's dosages on
@@ -1343,6 +1307,7 @@ impl TheStepOnTheVariance {
 
     /// The buffer the trace was taken in, which is as large as the
     /// projection matrix and is what that matrix is then built in.
+    #[cfg(test)]
     fn take_the_buffer_of_the_trace(&mut self) -> Vec<f64> {
         std::mem::take(&mut self.of_the_trace)
     }
@@ -1600,6 +1565,7 @@ impl TheStepOnTheVariance {
 /// # Errors
 ///
 /// [`Error::GwasLinalg`] when the inverse could not be formed.
+#[cfg(test)]
 fn the_inverse_that_is_counted(
     covariance: &[f64],
     num_individuals: usize,
@@ -1634,6 +1600,7 @@ fn the_inverse_that_is_counted(
 ///
 /// [`Error::GwasLinalg`] when the inverse, the solve or the product could
 /// not be done.
+#[cfg(test)]
 fn the_projection_of(
     fitted: &TheLinearization<'_>,
     of_the_design: Vec<f64>,
@@ -1716,7 +1683,8 @@ mod glmm {
     use std::cmp::Ordering;
 
     use super::{
-        LogisticMixedModel, TheBracket, TheLinearization, TheStepOnTheVariance, the_projection_of,
+        LogisticMixedModel, TheBracket, TheLinearization, TheProjection, TheStepOnTheVariance,
+        the_projection_of,
     };
     use crate::block::{BlockReader, Reblock};
     use crate::error::Error;
@@ -2431,10 +2399,110 @@ mod glmm {
         }
     }
 
-    /// The fit forms the inverse of a factorized individuals by
-    /// individuals matrix once, at the end, and factors one such matrix
-    /// once per round: 1 inverse against 22 factorizations on the panel,
-    /// over 8 steps on the variance of the kinship effect.
+    /// How far the denominator a variant gets from the factor may be from
+    /// the one it gets from the projection matrix multiplied out, as a
+    /// share of itself: 1e-12.
+    ///
+    /// Measured over the 1200 variants of each panel on 25 September 2026:
+    /// the worst is 2.077e-15 on Accelerate, on the panel with every
+    /// genotype called, and 2.016e-15 on faer, on the panel with genotypes
+    /// missing, so this is 480 times where it breaks. The two routes are
+    /// not each other's arithmetic: one multiplies the variant by a matrix
+    /// that was inverted and had the design taken out of it, and the other
+    /// solves the variant against a triangular factor and takes the design
+    /// out of the answer.
+    const OF_THE_TWO_ROUTES_TO_A_DENOMINATOR: f64 = 1e-12;
+
+    /// `x' p x` from the factor of the covariance is `x' p x` from the
+    /// projection matrix, over the 1200 variants of both panels.
+    ///
+    /// It is the algebra the factored projection rests on, checked against
+    /// the matrix it stands for on real data and not taken on trust. With
+    /// `l` the Cholesky factor of the covariance of the working trait and
+    /// `q` the directions `l⁻¹` makes of the design, `p` is `m' m` with
+    /// `m = (i - q q') l⁻¹`, so the squared length of `m x` is `x' p x`.
+    /// [`the_projection_of`] is the matrix itself, which the fit built and
+    /// kept until the factored form replaced it and which stays here as
+    /// the one thing this can be read against.
+    ///
+    /// The fit is held at GMMAT's variance rather than run to its own, so
+    /// that what this reads is the two routes and not the search.
+    #[test]
+    fn the_denominator_from_the_factor_is_the_one_from_the_projection_matrix() {
+        for name in ["panel_called", "panel"] {
+            let (phenotype, values, kinship) = the_panel(name);
+            let tested: Vec<usize> = (0..phenotype.len()).collect();
+            let num_individuals = phenotype.len();
+            let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
+            let mut fitted = match TheLinearization::of_the_logistic_null(
+                &phenotype, &design, &kinship, &null,
+            ) {
+                Ok(fitted) => fitted,
+                Err(error) => panic!("the linearization of {name}: {error}"),
+            };
+            if let Err(error) = fitted.at(OF_GMMAT_VARIANCE) {
+                panic!("the linearization of {name}: {error}");
+            }
+            let of_the_matrix = match the_projection_of(
+                &fitted,
+                vec![0.0_f64; num_individuals.saturating_mul(num_individuals)],
+                &mut 0,
+            ) {
+                Ok(projection) => projection,
+                Err(error) => panic!("the projection matrix of {name}: {error}"),
+            };
+            let mut of_the_factor =
+                match TheProjection::of_the_factored_covariance(fitted.covariance.clone(), &design)
+                {
+                    Ok(projection) => projection,
+                    Err(error) => panic!("the factored projection of {name}: {error}"),
+                };
+            let (_, dosages) = the_null_and_the_first_block_of(name);
+            let num_vars = dosages.num_with_variance();
+            let mut through = Vec::new();
+            of_the_factor
+                .through(dosages.dosages(), num_vars, &mut through)
+                .expect("the block through the factored projection");
+            let mut worst = 0.0_f64;
+            let mut of_the_worst = 0.0_f64;
+            for (of_the_variant, row) in dosages
+                .dosages()
+                .chunks_exact(num_individuals)
+                .zip(through.chunks_exact(num_individuals))
+            {
+                let from_the_factor = row.iter().map(|value| value * value).sum::<f64>();
+                let from_the_matrix = of_the_matrix
+                    .chunks_exact(num_individuals)
+                    .zip(of_the_variant)
+                    .map(|(of_the_row, dosage)| {
+                        dosage
+                            * of_the_row
+                                .iter()
+                                .zip(of_the_variant)
+                                .map(|(entry, other)| entry * other)
+                                .sum::<f64>()
+                    })
+                    .sum::<f64>();
+                let away = (from_the_factor - from_the_matrix).abs() / from_the_matrix.abs();
+                if away > worst {
+                    worst = away;
+                    of_the_worst = from_the_matrix;
+                }
+            }
+            assert_eq!(num_vars, 1200, "the variants of {name} that vary");
+            assert!(
+                worst <= OF_THE_TWO_ROUTES_TO_A_DENOMINATOR,
+                "{name}: the worst of the 1200 denominators is {worst} of itself away \
+                 from the one the projection matrix gives, at a denominator of \
+                 {of_the_worst}, against the {OF_THE_TWO_ROUTES_TO_A_DENOMINATOR} allowed"
+            );
+        }
+    }
+
+    /// The fit forms the inverse of no factorized individuals by
+    /// individuals matrix at all, and factors one such matrix once per
+    /// round: 0 inverses against 22 factorizations on the panel, over 8
+    /// steps on the variance of the kinship effect.
     ///
     /// It is deliverable 3 of `docs/plans/gwas-logistic.md` and the whole
     /// point of fitting this model popnei's way rather than pyNei's, which
@@ -2443,6 +2511,12 @@ mod glmm {
     /// Cholesky factorization costs a third of an inverse. A fit that
     /// inverted where it should solve would give the same numbers and
     /// nothing else here would notice.
+    ///
+    /// The one inverse this count was 1 for was the projection matrix, at
+    /// the end. The projection is kept as the factor of the covariance and
+    /// the directions the design spans through it, which
+    /// [`TheProjection`] describes, so nothing of that size is inverted
+    /// and nothing of that size is built.
     ///
     /// The three counts are taken at the calls themselves. The 22 and the
     /// 8 are what "The logistic mixed model" of `docs/specs/gwas.md` says
@@ -2464,7 +2538,7 @@ mod glmm {
             Err(error) => panic!("the fit of the panel: {error}"),
         };
         assert_eq!(
-            model.inverses, 1,
+            model.inverses, 0,
             "the inverses of a factorized individuals by individuals matrix the fit formed"
         );
         assert_eq!(
@@ -2643,31 +2717,40 @@ mod glmm {
         for name in ["panel_called", "panel"] {
             let (phenotype, values, kinship) = the_panel(name);
             let tested: Vec<usize> = (0..phenotype.len()).collect();
-            let num_individuals = phenotype.len();
             let (design, _) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
             let model = match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
                 Ok(model) => model,
                 Err(error) => panic!("the fit of {name}: {error}"),
             };
             let num_coefs = design.num_coefs();
+            let mut model = model;
             for column in 0..num_coefs {
-                for of_the_projection in 0..num_individuals {
-                    let mut against = 0.0_f64;
-                    let mut scale = 0.0_f64;
-                    for (row, of_the_individual) in values
-                        .chunks_exact(num_coefs)
-                        .zip(model.projection.chunks_exact(num_individuals))
-                    {
-                        let value = row[column] * of_the_individual[of_the_projection];
-                        against += value;
-                        scale += value.abs();
-                    }
+                let of_the_column: Vec<f64> = values
+                    .chunks_exact(num_coefs)
+                    .map(|row| row[column])
+                    .collect();
+                let mut through = Vec::new();
+                model
+                    .projection
+                    .through(&of_the_column, 1, &mut through)
+                    .expect("the column of the design through the projection");
+                // The scale of each value of `m d` is what the row of `m`
+                // would have summed in absolute terms, which is not held
+                // here, so it is taken from the largest value of `m d`
+                // against the largest of the column itself: `m` is the
+                // projection's own square root and the two are of the same
+                // size.
+                let scale = of_the_column
+                    .iter()
+                    .map(|value| value.abs())
+                    .fold(0.0_f64, f64::max);
+                for (individual, value) in through.iter().enumerate() {
                     assert!(
-                        against.abs() <= OF_THE_DESIGN_AGAINST_THE_PROJECTION * scale,
-                        "{name}: the column {column} of the design against the column \
-                         {of_the_projection} of the projection is {against}, where the \
-                         absolute terms of that sum are {scale} and \
-                         {OF_THE_DESIGN_AGAINST_THE_PROJECTION} of them is allowed"
+                        value.abs() <= OF_THE_DESIGN_AGAINST_THE_PROJECTION * scale,
+                        "{name}: the column {column} of the design through the projection \
+                         is {value} at the individual {individual}, where the largest value \
+                         of that column is {scale} and \
+                         {OF_THE_DESIGN_AGAINST_THE_PROJECTION} of it is allowed"
                     );
                 }
             }
@@ -3483,9 +3566,9 @@ mod glmm {
         }
     }
 
-    /// The kinship of the fixture of **Open 2** below: eight individuals in
-    /// two families of four, who are related within a family and not
-    /// between them.
+    /// The kinship of the fixture of "A variant there is nothing left to
+    /// test" of `docs/specs/gwas.md`: eight individuals in two families of
+    /// four, who are related within a family and not between them.
     ///
     /// It is the matrix the linear mixed model's own fixture of that rule
     /// takes, so the two score tests are read over the same relatedness.
@@ -3659,8 +3742,9 @@ mod glmm {
     }
 
     /// A variant that the projection leaves nothing of has no answer under
-    /// this model's score test either, which is the meanwhile of **Open 2**
-    /// of `docs/specs/gwas.md` reaching the last of its four places.
+    /// this model's score test either, which is "A variant there is nothing
+    /// left to test" of `docs/specs/gwas.md` reaching the last of its four
+    /// places.
     ///
     /// The covariate is the first variant's dosages in units a tenth of
     /// theirs, and the projection matrix takes the design out of whatever it

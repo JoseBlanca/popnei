@@ -121,19 +121,20 @@ pub mod phases {
 /// against.
 ///
 /// The four models keep different things, the thin QR of the design and
-/// the residuals of the trait for one, the projection matrix of the
-/// covariance for the two mixed ones and the weights of the fitted chances
-/// for the plain logistic one, and the pass over the blocks is the same for
-/// all of them: one call for each block, one answer for each variant of it
-/// that has variance.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "the logistic model carries the buffers its Wald test fits one variant in, \
-              which make it about 300 bytes larger than the other three; one of these is \
-              made for a study and lives until its pass is over, so that is 300 bytes \
-              once, where boxing it would put an allocation and a dereference between \
-              every block and the model it is tested against"
-)]
+/// the residuals of the trait for one, the factor of the covariance and the
+/// directions the design spans through it for the two mixed ones and the
+/// weights of the fitted chances for the plain logistic one, and the pass
+/// over the blocks is the same for all of them: one call for each block,
+/// one answer for each variant of it that has variance.
+///
+/// The logistic model was about 300 bytes larger than the other three and
+/// carried an `#[expect(clippy::large_enum_variant)]` saying so, with the
+/// reason that one of these is made for a study and lives until its pass is
+/// over, so that is 300 bytes once, where boxing it would put an allocation
+/// and a dereference between every block and the model it is tested
+/// against. The two mixed models grew past it when the projection became a
+/// factor and two buffers, and the lint stopped firing on 25 September
+/// 2026; the reason still holds if it fires again.
 enum TheFittedModel {
     /// The linear model, a continuous trait with no kinship.
     Linear(LinearModel),
