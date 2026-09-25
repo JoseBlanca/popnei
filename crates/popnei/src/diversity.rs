@@ -37,6 +37,7 @@ use std::ops::Range;
 use crate::block::{Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of};
 use crate::error::{Error, Result};
 use crate::io::vcf::MAX_PLOIDY;
+use crate::phases::{Phase, timed};
 use crate::stats::{ExpHet, ObsHet, every_individual_in_order, min_called_alleles};
 use crate::variant::{
     AlleleCounts, GtCounts, Needs, count_alleles, count_alleles_and_gts_of, count_alleles_of,
@@ -1402,21 +1403,25 @@ fn the_pass<R: BlockReader + ?Sized>(
     let num_sfs_bins = of_the_pass.num_sfs_bins();
     let mut totals = Totals::of(of_the_pops.len(), num_sfs_bins)?;
     let mut num_vars: u64 = 0;
-    while let Some(block) = reader.next_block()? {
-        let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-        add_the_block(&block, alleles_per_var, &of_the_pass, &mut totals)?;
-        // A `usize` is 64 bits on the targets popnei builds natively for and
-        // 32 in wasm, so every one of them is a `u64`; a block that said it
-        // held more is refused rather than counted into a number that
-        // stopped at the largest one, which would leave the pass reporting
-        // fewer variants than it read. A pass of more than
-        // 18446744073709551615 variants reads more rows than any source
-        // holds.
-        let of_the_block =
-            u64::try_from(block.num_vars).map_err(|_| Error::DiversityMoreVarsThanACountHolds {
-                num_vars: block.num_vars,
+    while let Some(block) = timed(Phase::NextBlock, || reader.next_block())? {
+        timed(Phase::Work, || -> Result<()> {
+            let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
+            add_the_block(&block, alleles_per_var, &of_the_pass, &mut totals)?;
+            // A `usize` is 64 bits on the targets popnei builds natively for and
+            // 32 in wasm, so every one of them is a `u64`; a block that said it
+            // held more is refused rather than counted into a number that
+            // stopped at the largest one, which would leave the pass reporting
+            // fewer variants than it read. A pass of more than
+            // 18446744073709551615 variants reads more rows than any source
+            // holds.
+            let of_the_block = u64::try_from(block.num_vars).map_err(|_| {
+                Error::DiversityMoreVarsThanACountHolds {
+                    num_vars: block.num_vars,
+                }
             })?;
-        num_vars = num_vars.saturating_add(of_the_block);
+            num_vars = num_vars.saturating_add(of_the_block);
+            Ok(())
+        })?;
     }
     if num_vars == 0 {
         let filters = reader.filtering_stats();

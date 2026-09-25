@@ -48,6 +48,7 @@ use crate::block::{Block, BlockReader, ROWS_PER_CHUNK, alleles_of_a_chunk, allel
 use crate::dists::{index_of_the_pair, num_pairs_of};
 use crate::error::{Error, Result};
 use crate::io::vcf::MAX_PLOIDY;
+use crate::phases::{Phase, timed};
 use crate::stats::{ObsHet, Pops, raised};
 use crate::variant::{AlleleCounts, ChromTable, GtCounts, Needs, count_alleles_and_gts_of};
 
@@ -1555,26 +1556,29 @@ pub(crate) fn sums_of_the_pass<R: BlockReader + ?Sized>(
     // the next so that the pass allocates it once.
     let mut of_the_rows: Vec<usize> = Vec::new();
     let mut num_vars: u64 = 0;
-    while let Some(block) = reader.next_block()? {
-        let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-        cut_the_rows_into_groups(&block, needs, reader.chroms(), &mut walk, &mut of_the_rows)?;
-        // The sums hold every group the variants have fallen into so far,
-        // and one run of the pairs when no groups were asked for and every
-        // row falls in the same place.
-        grow_the_sums(&mut of_each_group, walk.groups().len().max(1), &of_the_pass)?;
-        add_the_block(
-            &block,
-            alleles_per_var,
-            &of_the_rows,
-            &of_the_pass,
-            &mut of_each_group,
-        )?;
-        // Every variant of the block counts here, counted for a pair or
-        // not: `num_vars` is what a user reads as the variants of the pass.
-        // A `usize` is 64 bits natively and 32 in wasm, so the conversion
-        // holds, and a pass of more than 18446744073709551615 variants
-        // reads more rows than any source holds.
-        num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+    while let Some(block) = timed(Phase::NextBlock, || reader.next_block())? {
+        timed(Phase::Work, || -> Result<()> {
+            let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
+            cut_the_rows_into_groups(&block, needs, reader.chroms(), &mut walk, &mut of_the_rows)?;
+            // The sums hold every group the variants have fallen into so far,
+            // and one run of the pairs when no groups were asked for and every
+            // row falls in the same place.
+            grow_the_sums(&mut of_each_group, walk.groups().len().max(1), &of_the_pass)?;
+            add_the_block(
+                &block,
+                alleles_per_var,
+                &of_the_rows,
+                &of_the_pass,
+                &mut of_each_group,
+            )?;
+            // Every variant of the block counts here, counted for a pair or
+            // not: `num_vars` is what a user reads as the variants of the pass.
+            // A `usize` is 64 bits natively and 32 in wasm, so the conversion
+            // holds, and a pass of more than 18446744073709551615 variants
+            // reads more rows than any source holds.
+            num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+            Ok(())
+        })?;
     }
     Ok(PopDistSums::of_the_pass(
         num_pops,

@@ -15,6 +15,7 @@ use crate::block::{Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of};
 use crate::error::{Error, Result};
 use crate::filters::resolve_individuals;
 use crate::io::vcf::MAX_PLOIDY;
+use crate::phases::{Phase, timed};
 use crate::variant::{
     AlleleCounts, GtCounts, Needs, count_alleles, count_alleles_of, count_gts, count_gts_of,
     count_the_genotype,
@@ -1274,14 +1275,17 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
     let mut num_vars: u64 = 0;
     let num_individuals = reader.individuals().len();
     let ploidy = reader.ploidy();
-    while let Some(block) = reader.next_block()? {
-        let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-        add_the_block(&block, alleles_per_var, config, asked, &mut totals)?;
-        // A `usize` is 64 bits on the targets popnei builds natively for
-        // and 32 in wasm, so every one of them is a `u64`; and a pass of
-        // more than 18446744073709551615 variants reads more rows than any
-        // source holds.
-        num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+    while let Some(block) = timed(Phase::NextBlock, || reader.next_block())? {
+        timed(Phase::Work, || -> Result<()> {
+            let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
+            add_the_block(&block, alleles_per_var, config, asked, &mut totals)?;
+            // A `usize` is 64 bits on the targets popnei builds natively for
+            // and 32 in wasm, so every one of them is a `u64`; and a pass of
+            // more than 18446744073709551615 variants reads more rows than any
+            // source holds.
+            num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+            Ok(())
+        })?;
     }
     if num_vars == 0 {
         let filters = reader.filtering_stats();
@@ -1693,14 +1697,17 @@ pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
     // grows with the individuals and not with the variants.
     let mut counted = vec![OfAnIndividual::none(); num_individuals];
     let mut num_vars: u64 = 0;
-    while let Some(block) = reader.next_block()? {
-        let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-        count_the_block(&block, alleles_per_var, &mut counted)?;
-        // A `usize` is 64 bits on the targets popnei builds natively for
-        // and 32 in wasm, so every one of them is a `u64`; and a pass of
-        // more than 18446744073709551615 variants reads more rows than any
-        // source holds.
-        num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+    while let Some(block) = timed(Phase::NextBlock, || reader.next_block())? {
+        timed(Phase::Work, || -> Result<()> {
+            let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
+            count_the_block(&block, alleles_per_var, &mut counted)?;
+            // A `usize` is 64 bits on the targets popnei builds natively for
+            // and 32 in wasm, so every one of them is a `u64`; and a pass of
+            // more than 18446744073709551615 variants reads more rows than any
+            // source holds.
+            num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+            Ok(())
+        })?;
     }
     if num_vars == 0 {
         let filters = reader.filtering_stats();

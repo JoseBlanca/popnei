@@ -257,11 +257,40 @@ fn one_kinship(path: &Path, num_pcs: usize) -> Result<Run, popnei::Error> {
         "{num_vars_given} variants, {num_vars} of them with variance, \
          {num_individuals} individuals, the diagonal averages \
          {mean_of_the_diagonal:.6}, the largest entry is {largest:.6}, \
-         {said_about_the_components}",
+         {said_about_the_components}{phases}",
         num_vars_given = kinship.num_vars_given,
         num_vars = kinship.num_vars,
+        phases = the_phases_of_the_pass(),
     );
     Ok(Run { took, did })
+}
+
+/// The two clocks of the phases of the pass, as a piece of the line of a
+/// run: how long the pass was inside `next_block` of its reader and how
+/// long it was working on the blocks the reader gave. Taking them zeroes
+/// them, so each run prints its own.
+///
+/// It is the cargo feature `bench-phases` of the core crate, and without it
+/// there is nothing to print: the pass then calls no clock at all. `cargo
+/// bench --features bench-phases --bench kinship` is what turns it on. The
+/// two say what the reader of `with_one_block_ahead` could save this pass,
+/// which is the smaller of them, and `docs/reports/perf-read-ahead-2026-09-25.md`
+/// has what they said.
+#[cfg(feature = "bench-phases")]
+fn the_phases_of_the_pass() -> String {
+    let phases = popnei::phases::taken();
+    format!(
+        ", next_block {next_block:.4} s, work {work:.4} s",
+        next_block = phases.next_block.as_secs_f64(),
+        work = phases.work.as_secs_f64(),
+    )
+}
+
+/// Nothing, which is what the phases of the pass are when the cargo feature
+/// `bench-phases` is off and the pass holds no clock.
+#[cfg(not(feature = "bench-phases"))]
+fn the_phases_of_the_pass() -> String {
+    String::new()
 }
 
 /// The time at the place `part` of the times sorted from the shortest to

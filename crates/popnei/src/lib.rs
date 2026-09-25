@@ -51,6 +51,13 @@
 //! modules that follow them are being written, and `docs/architecture.md`
 //! has their order.
 //!
+//! `phases` is not a calculation but the two clocks of one turn of a pass
+//! over the blocks, how long it was inside its reader and how long working
+//! on the block the reader gave. It is behind the cargo feature
+//! `bench-phases`, which no build popnei ships turns on, and it is what
+//! says whether a pass is worth the thread of
+//! [`block::with_one_block_ahead`].
+//!
 //! The linear algebra those modules need, the products of matrices and
 //! the eigendecomposition, is not a module here but a crate beside this
 //! one, `popnei-linalg`, because the calls it makes to BLAS and LAPACK
@@ -69,6 +76,7 @@ pub mod io;
 pub mod kinship;
 pub mod ld;
 pub mod pca;
+pub mod phases;
 pub mod pop_dists;
 pub mod stats;
 pub mod variant;

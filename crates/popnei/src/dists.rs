@@ -24,6 +24,7 @@ use std::num::NonZeroUsize;
 
 use crate::block::{Block, BlockReader, BlockSize};
 use crate::error::{Error, Result};
+use crate::phases::{Phase, timed};
 use crate::variant::{MISSING_ALLELE, Needs};
 
 /// How many variants one word of a set of bits holds, the bits of a `u64`.
@@ -800,7 +801,7 @@ pub fn calc_kosman_sums<R: BlockReader + ?Sized>(reader: &mut R) -> Result<Kosma
     // The two counts of every pair are asked of the machine once, when the
     // first block is there: at 10000 individuals they are 400 MB, which a
     // reader with no variant would have asked for and given back.
-    let Some(block) = reader.next_block()? else {
+    let Some(block) = timed(Phase::NextBlock, || reader.next_block())? else {
         let filters = reader.filtering_stats();
         return Err(Error::PassGaveNoVariant {
             // The filter nearest the source was given what the source
@@ -813,23 +814,26 @@ pub fn calc_kosman_sums<R: BlockReader + ?Sized>(reader: &mut R) -> Result<Kosma
     let mut sums = KosmanSums::at_zero(num_individuals, ploidy)?;
     let mut next = Some(block);
     while let Some(block) = next.take() {
-        // Every variant of the block counts here, called in a pair or not:
-        // `num_vars` is what a user reads as the variants of the pass. A
-        // `usize` is 64 bits natively and 32 in wasm, so the conversion
-        // holds; the sum stops at the largest `u64`, which is more variants
-        // than any source holds, and the sums of a pair are refused long
-        // before it.
-        sums.num_vars = sums
-            .num_vars
-            .saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
-        let bits = KosmanBits::of_block(&block)?;
-        add_the_block(&mut sums, &bits)?;
-        // The sets of the block and the block itself are given back before
-        // the reader is asked for the next one, so that the memory of two
-        // blocks and of two sets of bits is never held at once.
-        drop(bits);
-        drop(block);
-        next = reader.next_block()?;
+        timed(Phase::Work, || -> Result<()> {
+            // Every variant of the block counts here, called in a pair or not:
+            // `num_vars` is what a user reads as the variants of the pass. A
+            // `usize` is 64 bits natively and 32 in wasm, so the conversion
+            // holds; the sum stops at the largest `u64`, which is more variants
+            // than any source holds, and the sums of a pair are refused long
+            // before it.
+            sums.num_vars = sums
+                .num_vars
+                .saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+            let bits = KosmanBits::of_block(&block)?;
+            add_the_block(&mut sums, &bits)?;
+            // The sets of the block and the block itself are given back before
+            // the reader is asked for the next one, so that the memory of two
+            // blocks and of two sets of bits is never held at once.
+            drop(bits);
+            drop(block);
+            Ok(())
+        })?;
+        next = timed(Phase::NextBlock, || reader.next_block())?;
     }
     Ok(sums)
 }
