@@ -11,7 +11,9 @@
 //! `docs/specs/stats.md` has the design, and the row `stats` of section 9
 //! of `docs/architecture.md` where the module sits.
 
-use crate::block::{Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of};
+use crate::block::{
+    Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of, with_one_block_ahead,
+};
 use crate::error::{Error, Result};
 use crate::filters::resolve_individuals;
 use crate::io::vcf::MAX_PLOIDY;
@@ -1275,18 +1277,35 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
     let mut num_vars: u64 = 0;
     let num_individuals = reader.individuals().len();
     let ploidy = reader.ploidy();
-    while let Some(block) = timed(Phase::NextBlock, || reader.next_block())? {
-        timed(Phase::Work, || -> Result<()> {
-            let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-            add_the_block(&block, alleles_per_var, config, asked, &mut totals)?;
-            // A `usize` is 64 bits on the targets popnei builds natively for
-            // and 32 in wasm, so every one of them is a `u64`; and a pass of
-            // more than 18446744073709551615 variants reads more rows than any
-            // source holds.
-            num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
-            Ok(())
-        })?;
-    }
+    // The blocks are read on a thread of its own, one block ahead, so that
+    // the read of the next block and the counting of the one in hand
+    // overlap. This pass is almost all reader:
+    // `docs/reports/perf-read-ahead-2026-09-25.md` measured it at 0.113 s of
+    // the 0.130 s of five statistics over 100000 variants of 1000
+    // individuals on 18 cores, against 0.017 s of counting, so what the
+    // thread hides is the counting and not the read. In wasm there is no
+    // thread and the blocks come one after another as they did.
+    // The chain is lent through a reborrow of its own, because
+    // `with_one_block_ahead` moves the reader it is given to its thread and
+    // this pass is generic over a reader that may have no size: `&mut R` is
+    // a reader of its own whatever `R` is, and it is the one that travels.
+    let mut lent = &mut *reader;
+    with_one_block_ahead(&mut lent, |blocks| {
+        while let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? {
+            timed(Phase::Work, || -> Result<()> {
+                let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
+                add_the_block(&block, alleles_per_var, config, asked, &mut totals)?;
+                // A `usize` is 64 bits on the targets popnei builds natively for
+                // and 32 in wasm, so every one of them is a `u64`; and a pass of
+                // more than 18446744073709551615 variants reads more rows than any
+                // source holds.
+                num_vars =
+                    num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })?;
     if num_vars == 0 {
         let filters = reader.filtering_stats();
         return Err(Error::PassGaveNoVariant {
@@ -1697,18 +1716,33 @@ pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
     // grows with the individuals and not with the variants.
     let mut counted = vec![OfAnIndividual::none(); num_individuals];
     let mut num_vars: u64 = 0;
-    while let Some(block) = timed(Phase::NextBlock, || reader.next_block())? {
-        timed(Phase::Work, || -> Result<()> {
-            let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-            count_the_block(&block, alleles_per_var, &mut counted)?;
-            // A `usize` is 64 bits on the targets popnei builds natively for
-            // and 32 in wasm, so every one of them is a `u64`; and a pass of
-            // more than 18446744073709551615 variants reads more rows than any
-            // source holds.
-            num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
-            Ok(())
-        })?;
-    }
+    // The blocks are read on a thread of its own, one block ahead, for the
+    // reason `calc_per_var_distribs` above has it: this pass is almost all
+    // reader, 0.113 s of its 0.129 s over 100000 variants of 1000
+    // individuals on 18 cores, against 0.016 s of counting, which
+    // `docs/reports/perf-read-ahead-2026-09-25.md` has. In wasm there is no
+    // thread and the blocks come one after another as they did.
+    // The chain is lent through a reborrow of its own, because
+    // `with_one_block_ahead` moves the reader it is given to its thread and
+    // this pass is generic over a reader that may have no size: `&mut R` is
+    // a reader of its own whatever `R` is, and it is the one that travels.
+    let mut lent = &mut *reader;
+    with_one_block_ahead(&mut lent, |blocks| {
+        while let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? {
+            timed(Phase::Work, || -> Result<()> {
+                let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
+                count_the_block(&block, alleles_per_var, &mut counted)?;
+                // A `usize` is 64 bits on the targets popnei builds natively for
+                // and 32 in wasm, so every one of them is a `u64`; and a pass of
+                // more than 18446744073709551615 variants reads more rows than any
+                // source holds.
+                num_vars =
+                    num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })?;
     if num_vars == 0 {
         let filters = reader.filtering_stats();
         return Err(Error::PassGaveNoVariant {

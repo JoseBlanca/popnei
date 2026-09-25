@@ -44,7 +44,10 @@
 //! tests assert, and the row `dists` of section 9 of
 //! `docs/architecture.md` is where the module sits.
 
-use crate::block::{Block, BlockReader, ROWS_PER_CHUNK, alleles_of_a_chunk, alleles_per_var_of};
+use crate::block::{
+    Block, BlockReader, ROWS_PER_CHUNK, alleles_of_a_chunk, alleles_per_var_of,
+    with_one_block_ahead,
+};
 use crate::dists::{index_of_the_pair, num_pairs_of};
 use crate::error::{Error, Result};
 use crate::io::vcf::MAX_PLOIDY;
@@ -1556,30 +1559,55 @@ pub(crate) fn sums_of_the_pass<R: BlockReader + ?Sized>(
     // the next so that the pass allocates it once.
     let mut of_the_rows: Vec<usize> = Vec::new();
     let mut num_vars: u64 = 0;
-    while let Some(block) = timed(Phase::NextBlock, || reader.next_block())? {
-        timed(Phase::Work, || -> Result<()> {
-            let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-            cut_the_rows_into_groups(&block, needs, reader.chroms(), &mut walk, &mut of_the_rows)?;
-            // The sums hold every group the variants have fallen into so far,
-            // and one run of the pairs when no groups were asked for and every
-            // row falls in the same place.
-            grow_the_sums(&mut of_each_group, walk.groups().len().max(1), &of_the_pass)?;
-            add_the_block(
-                &block,
-                alleles_per_var,
-                &of_the_rows,
-                &of_the_pass,
-                &mut of_each_group,
-            )?;
-            // Every variant of the block counts here, counted for a pair or
-            // not: `num_vars` is what a user reads as the variants of the pass.
-            // A `usize` is 64 bits natively and 32 in wasm, so the conversion
-            // holds, and a pass of more than 18446744073709551615 variants
-            // reads more rows than any source holds.
-            num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
-            Ok(())
-        })?;
-    }
+    // The blocks are read on a thread of its own, one block ahead, so that
+    // the read of the next block and the counting of the pairs of the one in
+    // hand overlap: `docs/reports/perf-read-ahead-2026-09-25.md` measured
+    // the reader at 0.110 s of the 0.133 s of this pass over 100000 variants
+    // of 1000 individuals on 18 cores, against 0.023 s of counting, so what
+    // the thread hides is the counting and not the read. The names of the
+    // chromosomes come off the handle and not off the chain, which is lent:
+    // each block brings the names its variants added, so the table the row
+    // of a block is cut by holds every chromosome that block named. In wasm
+    // there is no thread and the blocks come one after another as they did.
+    // The chain is lent through a reborrow of its own, because
+    // `with_one_block_ahead` moves the reader it is given to its thread and
+    // this pass is generic over a reader that may have no size: `&mut R` is
+    // a reader of its own whatever `R` is, and it is the one that travels.
+    let mut lent = &mut *reader;
+    with_one_block_ahead(&mut lent, |blocks| {
+        while let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? {
+            timed(Phase::Work, || -> Result<()> {
+                let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
+                cut_the_rows_into_groups(
+                    &block,
+                    needs,
+                    blocks.chroms(),
+                    &mut walk,
+                    &mut of_the_rows,
+                )?;
+                // The sums hold every group the variants have fallen into so far,
+                // and one run of the pairs when no groups were asked for and every
+                // row falls in the same place.
+                grow_the_sums(&mut of_each_group, walk.groups().len().max(1), &of_the_pass)?;
+                add_the_block(
+                    &block,
+                    alleles_per_var,
+                    &of_the_rows,
+                    &of_the_pass,
+                    &mut of_each_group,
+                )?;
+                // Every variant of the block counts here, counted for a pair or
+                // not: `num_vars` is what a user reads as the variants of the pass.
+                // A `usize` is 64 bits natively and 32 in wasm, so the conversion
+                // holds, and a pass of more than 18446744073709551615 variants
+                // reads more rows than any source holds.
+                num_vars =
+                    num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })?;
     Ok(PopDistSums::of_the_pass(
         num_pops,
         of_the_pass.per_var.ploidy,

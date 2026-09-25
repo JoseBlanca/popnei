@@ -34,7 +34,9 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use crate::block::{Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of};
+use crate::block::{
+    Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of, with_one_block_ahead,
+};
 use crate::error::{Error, Result};
 use crate::io::vcf::MAX_PLOIDY;
 use crate::phases::{Phase, timed};
@@ -1403,26 +1405,42 @@ fn the_pass<R: BlockReader + ?Sized>(
     let num_sfs_bins = of_the_pass.num_sfs_bins();
     let mut totals = Totals::of(of_the_pops.len(), num_sfs_bins)?;
     let mut num_vars: u64 = 0;
-    while let Some(block) = timed(Phase::NextBlock, || reader.next_block())? {
-        timed(Phase::Work, || -> Result<()> {
-            let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-            add_the_block(&block, alleles_per_var, &of_the_pass, &mut totals)?;
-            // A `usize` is 64 bits on the targets popnei builds natively for and
-            // 32 in wasm, so every one of them is a `u64`; a block that said it
-            // held more is refused rather than counted into a number that
-            // stopped at the largest one, which would leave the pass reporting
-            // fewer variants than it read. A pass of more than
-            // 18446744073709551615 variants reads more rows than any source
-            // holds.
-            let of_the_block = u64::try_from(block.num_vars).map_err(|_| {
-                Error::DiversityMoreVarsThanACountHolds {
-                    num_vars: block.num_vars,
-                }
+    // The blocks are read on a thread of its own, one block ahead, so that
+    // the read of the next block and the counting of the one in hand
+    // overlap: `docs/reports/perf-read-ahead-2026-09-25.md` measured the
+    // reader at 0.113 s of the 0.170 s of this pass over 100000 variants of
+    // 1000 individuals on 18 cores, against 0.052 s of counting. In wasm,
+    // where there is no thread, the blocks come one after another as they
+    // did, and the chain of readers is lent and not given away, so the
+    // counts of the filters below are still the chain's own.
+    // The chain is lent through a reborrow of its own, because
+    // `with_one_block_ahead` moves the reader it is given to its thread and
+    // this pass is generic over a reader that may have no size: `&mut R` is
+    // a reader of its own whatever `R` is, and it is the one that travels.
+    let mut lent = &mut *reader;
+    with_one_block_ahead(&mut lent, |blocks| {
+        while let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? {
+            timed(Phase::Work, || -> Result<()> {
+                let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
+                add_the_block(&block, alleles_per_var, &of_the_pass, &mut totals)?;
+                // A `usize` is 64 bits on the targets popnei builds natively for and
+                // 32 in wasm, so every one of them is a `u64`; a block that said it
+                // held more is refused rather than counted into a number that
+                // stopped at the largest one, which would leave the pass reporting
+                // fewer variants than it read. A pass of more than
+                // 18446744073709551615 variants reads more rows than any source
+                // holds.
+                let of_the_block = u64::try_from(block.num_vars).map_err(|_| {
+                    Error::DiversityMoreVarsThanACountHolds {
+                        num_vars: block.num_vars,
+                    }
+                })?;
+                num_vars = num_vars.saturating_add(of_the_block);
+                Ok(())
             })?;
-            num_vars = num_vars.saturating_add(of_the_block);
-            Ok(())
-        })?;
-    }
+        }
+        Ok(())
+    })?;
     if num_vars == 0 {
         let filters = reader.filtering_stats();
         return Err(Error::PassGaveNoVariant {

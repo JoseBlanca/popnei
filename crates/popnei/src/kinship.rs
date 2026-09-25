@@ -34,7 +34,7 @@ use std::mem;
 
 use popnei_linalg::{add_self_product_lower, eigh_lower};
 
-use crate::block::{Block, BlockReader, Reblock};
+use crate::block::{Block, BlockReader, Reblock, with_one_block_ahead};
 use crate::error::{Error, Result};
 use crate::pca::{fix_the_sign_of, the_components_with_variance, the_projections_of};
 use crate::phases::{Phase, timed};
@@ -426,58 +426,69 @@ fn the_pass_over_the_blocks<R: BlockReader>(
     // reads them.
     let mut standardized: Vec<f64> = Vec::new();
     let mut buffers = TheBuffersOfTheDenominators::default();
-    while let Some(mut block) = timed(Phase::NextBlock, || blocks.next_block())? {
-        timed(Phase::Work, || -> Result<()> {
-            if let Some(individuals) = individuals {
-                // The frequencies, the means and the denominators are of the
-                // individuals the kinship is of, so the others leave the block
-                // before anything is counted.
-                block.retain_individuals(individuals)?;
-            }
-            let used = the_standardized_block(
-                &block,
-                num_individuals,
-                ploidy,
-                options,
-                RowPositions {
-                    // Where the first variant of this block is among those the
-                    // reader has given, which the error of a variant with more
-                    // than two alleles names. A pass of more variants than a
-                    // `usize` counts is the error of a pass too large, and in
-                    // WebAssembly, where a `usize` is 32 bits, it is reachable.
-                    first: usize::try_from(num_vars_given)
-                        .map_err(|_| the_variants_are_too_many())?,
-                    too_many: the_variants_are_too_many,
-                },
-                &mut standardized,
-            )?;
-            let kept = used.iter().filter(|was_used| **was_used).count();
-            add_self_product_lower(&standardized, kept, num_individuals, &mut gram).map_err(
-                |source| Error::KinshipLinalg {
-                    operation: "product of a block of variants with itself",
-                    source,
-                },
-            )?;
-            if kept > 0 {
-                the_denominators_of_the_block(
+    // The blocks are read on a thread of its own, one block ahead, so that
+    // the read of the next block and the product of the one in hand
+    // overlap: `docs/reports/perf-read-ahead-2026-09-25.md` measured the
+    // reader at 0.114 s of the 0.299 s of a kinship over 100000 variants of
+    // 1000 individuals on 18 cores, against 0.184 s of work on the same
+    // blocks. In wasm, where there is no thread, the blocks come one after
+    // another as they did. The chain of readers is lent and not given away,
+    // which is what lets `calc_kinship` read its counts when this returns.
+    with_one_block_ahead(blocks, |blocks| {
+        while let Some(mut block) = timed(Phase::NextBlock, || blocks.next_block())? {
+            timed(Phase::Work, || -> Result<()> {
+                if let Some(individuals) = individuals {
+                    // The frequencies, the means and the denominators are of the
+                    // individuals the kinship is of, so the others leave the block
+                    // before anything is counted.
+                    block.retain_individuals(individuals)?;
+                }
+                let used = the_standardized_block(
                     &block,
-                    &used,
-                    kept,
                     num_individuals,
-                    num_vars,
-                    &mut buffers,
-                    &mut denominators,
+                    ploidy,
+                    options,
+                    RowPositions {
+                        // Where the first variant of this block is among those the
+                        // reader has given, which the error of a variant with more
+                        // than two alleles names. A pass of more variants than a
+                        // `usize` counts is the error of a pass too large, and in
+                        // WebAssembly, where a `usize` is 32 bits, it is reachable.
+                        first: usize::try_from(num_vars_given)
+                            .map_err(|_| the_variants_are_too_many())?,
+                        too_many: the_variants_are_too_many,
+                    },
+                    &mut standardized,
                 )?;
-            }
-            num_vars = num_vars
-                .checked_add(the_count_of(kept))
-                .ok_or_else(the_variants_are_too_many)?;
-            num_vars_given = num_vars_given
-                .checked_add(the_count_of(block.num_vars))
-                .ok_or_else(the_variants_are_too_many)?;
-            Ok(())
-        })?;
-    }
+                let kept = used.iter().filter(|was_used| **was_used).count();
+                add_self_product_lower(&standardized, kept, num_individuals, &mut gram).map_err(
+                    |source| Error::KinshipLinalg {
+                        operation: "product of a block of variants with itself",
+                        source,
+                    },
+                )?;
+                if kept > 0 {
+                    the_denominators_of_the_block(
+                        &block,
+                        &used,
+                        kept,
+                        num_individuals,
+                        num_vars,
+                        &mut buffers,
+                        &mut denominators,
+                    )?;
+                }
+                num_vars = num_vars
+                    .checked_add(the_count_of(kept))
+                    .ok_or_else(the_variants_are_too_many)?;
+                num_vars_given = num_vars_given
+                    .checked_add(the_count_of(block.num_vars))
+                    .ok_or_else(the_variants_are_too_many)?;
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })?;
     Ok(ThePass {
         gram,
         denominators,
