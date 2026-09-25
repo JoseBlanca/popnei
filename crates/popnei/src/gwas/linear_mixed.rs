@@ -1013,17 +1013,18 @@ impl LinearMixedModel {
         // approximation of it, which is what the Wald test's own comparison
         // below turns on.
         let the_denominator_is_exact = self.approximation.is_none();
-        for ((den, num), of_the_variant) in self
+        // The squared length of each variant's dosages is the one the block
+        // summed where it wrote the row, on the threads of rayon: reading
+        // it here would be a second full read of the block's dosages on
+        // this one thread for one value per variant.
+        for (((den, num), of_the_dosages), of_the_variant) in self
             .den
             .iter()
             .copied()
             .zip(self.num.iter().copied())
+            .zip(dosages.sum_of_squares().iter().copied())
             .zip(dosages.dosages().chunks_exact(self.num_individuals.max(1)))
         {
-            let of_the_dosages = of_the_variant
-                .iter()
-                .map(|dosage| dosage * dosage)
-                .sum::<f64>();
             if den <= share_that_is_nothing * largest_of_the_projection * of_the_dosages {
                 self.beta.push(f64::NAN);
                 self.se.push(f64::NAN);

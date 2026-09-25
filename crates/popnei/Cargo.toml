@@ -29,6 +29,18 @@ blas = ["popnei-linalg/blas"]
 # turns it on: `cargo bench` does, through the `required-features` of those
 # two benchmarks.
 bench-internals = []
+# The three clocks inside the loop of `calc_gwas`, which say how much of an
+# association study is the reader, how much the dosages of a block and how
+# much the test of its variants. A sampling profile cannot separate the
+# first from the second, because the reader decompresses on the thread that
+# then tests, so the read ahead thread of section 3 of
+# `docs/architecture.md` could not be decided on one: this is what decided
+# it, and the report of docs/reports/perf-gwas-2026-09-24.md has the
+# numbers. It is off by default and no build popnei ships turns it on, as
+# `bench-internals` above is: with it on, the pass calls `Instant::now`
+# three times per block, 60 times over the panel of the benchmark, and adds
+# each time to a static counter that `gwas::phases::taken` reads.
+bench-phases = []
 
 [dependencies]
 arrow-array.workspace = true
@@ -172,4 +184,15 @@ harness = false
 # harness, as the ten above do.
 [[bench]]
 name = "diversity_pass"
+harness = false
+
+# How long the association study of the variants of a file against a trait
+# takes, for each of the four models and each of the tests they have, of
+# the performance review of docs/reports/perf-gwas-2026-09-24.md, which is
+# the first measurement popnei has of that module. It takes the path of a
+# VCF or of a vars file, the model, the test, how many covariates the
+# design holds, the seed of the trait it draws and the runs, and prints one
+# wall time per run, so it runs without a harness, as the eleven above do.
+[[bench]]
+name = "gwas"
 harness = false

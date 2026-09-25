@@ -1615,6 +1615,310 @@ impl<R: BlockReader> fmt::Debug for Reblock<R> {
     }
 }
 
+/// The blocks of `reader` read one block ahead of `body`, which is what
+/// section 3 of `docs/architecture.md` asks for between a reader and its
+/// consumer.
+///
+/// A pass asks its reader for a block and then works on it, so the read of
+/// the next block and the work on the one in hand never overlap, although
+/// the read is the disc and the decompression and the work is the
+/// arithmetic. This lends `reader` to a thread of its own for as long as
+/// `body` runs: that thread builds the next block while `body` works on the
+/// one it was given, and `body` reads the blocks off a [`OneBlockAhead`],
+/// which is a [`BlockReader`] like any other. It is one block ahead and not
+/// more: the handover is a rendezvous, so the reading thread holds at most
+/// one block that is built and not yet given, and the memory of the pass
+/// grows by that one block.
+///
+/// `reader` is lent and not given away. Whoever built the chain of readers
+/// keeps it, and when this returns the thread is over and the chain can be
+/// asked for [`BlockReader::chroms`] and
+/// [`BlockReader::filtering_stats`], which is how a pass reads the names
+/// of the chromosomes and the counts of its filters when it ends, as
+/// `docs/specs/filters.md` has it.
+///
+/// It is worth its thread where the read of a block and the work on it are
+/// of the same order. On 100000 variants of 1000 individuals of a vars
+/// file, `docs/reports/perf-gwas-2026-09-24.md` measured the reader at
+/// 0.112 s of an association study, against 0.091 s for the dosages and
+/// the test of the same blocks on 18 cores.
+///
+/// In wasm there is no thread: `body` is given `reader` itself and reads
+/// the blocks one after another, as everything else of popnei does there.
+///
+/// # Errors
+///
+/// What `body` fails with, and what `reader` fails with, which reaches
+/// `body` through [`BlockReader::next_block`] after the blocks that came
+/// before it, as the trait promises. A reader that fails on its 251st
+/// variant with blocks of 100 gives two blocks and then the error.
+///
+/// # Panics
+///
+/// When the reading thread panics, which is a defect of the reader: the
+/// panic is raised again here, where a caller of popnei sees it, and the
+/// blocks that were read are dropped. Nothing of popnei panics, and a
+/// reader of a caller of the core crate can.
+pub fn with_one_block_ahead<R: BlockReader, T>(
+    reader: &mut R,
+    body: impl FnOnce(&mut dyn BlockReader) -> Result<T>,
+) -> Result<T> {
+    #[cfg(target_family = "wasm")]
+    {
+        // No thread in a browser, and so no block read ahead: the chain of
+        // readers is what the body reads, and the only cost of going
+        // through here is one dynamic call per block.
+        body(reader)
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let individuals = reader.individuals().to_vec();
+        let ploidy = reader.ploidy();
+        // A rendezvous and not a queue: the reading thread builds one block
+        // while the body works on the one it holds, and waits with it until
+        // the body asks. That is "one block ahead", and a queue of two
+        // would hold a second block for no more overlap.
+        let (built, blocks) = std::sync::mpsc::sync_channel::<ABlockRead>(0);
+        let (asked, needs) = std::sync::mpsc::channel::<Needs>();
+        std::thread::scope(|threads| {
+            threads.spawn(move || read_one_block_ahead(reader, built, needs));
+            let mut ahead = OneBlockAhead {
+                blocks,
+                asked,
+                individuals,
+                ploidy,
+                chroms: ChromTable::new(),
+                filtering_stats: Vec::new(),
+                finished: false,
+            };
+            let given = body(&mut ahead);
+            // The handle holds the end of the channel the reading thread
+            // sends on, and dropping it is what stops a thread that is
+            // waiting with a block nobody will ask for, which a body that
+            // returned an error in the middle of the pass leaves. The end
+            // of this closure would drop it, since the scope joins the
+            // thread after the closure returns and not before; it is
+            // dropped here so that what makes the thread end is a line and
+            // not the place where the closure happens to finish.
+            drop(ahead);
+            given
+        })
+    }
+}
+
+/// What the reading thread of [`with_one_block_ahead`] sends for each call
+/// it makes on the chain of readers.
+#[cfg(not(target_family = "wasm"))]
+enum ABlockRead {
+    /// A block, and what the chain had to say when it gave it.
+    Block(Block, TheChainNow),
+    /// The chain has no more blocks, and its last word.
+    NoMore(TheChainNow),
+    /// The chain failed. Nothing comes after this one.
+    Failed(Error),
+}
+
+/// What the chain of readers says of itself beside a block, which the
+/// handle keeps so that it answers [`BlockReader::chroms`] and
+/// [`BlockReader::filtering_stats`] with what the chain said when it gave
+/// the last block and not with nothing.
+#[cfg(not(target_family = "wasm"))]
+struct TheChainNow {
+    /// The names of the chromosomes the chain interned since the block
+    /// before, in the order it interned them, which the handle interns in
+    /// that same order so that a name has the same number on both sides.
+    /// It is the new names and not the table, so that a genome of many
+    /// contigs is not copied once per block.
+    new_chroms: Vec<String>,
+    /// The counts of the filters of the chain as they stand, which are a
+    /// few numbers per filter and are sent whole.
+    filtering_stats: Vec<(&'static str, FilteringStats)>,
+}
+
+/// What the chain says of itself now, with the names it has already sent
+/// left out and `sent` moved on by the ones that go now.
+#[cfg(not(target_family = "wasm"))]
+fn the_chain_now<R: BlockReader>(reader: &R, sent: &mut usize) -> TheChainNow {
+    let chroms = reader.chroms();
+    let mut new_chroms = Vec::new();
+    let mut number = *sent;
+    while number < chroms.len() {
+        if let Some(name) = u32::try_from(number).ok().and_then(|at| chroms.name(at)) {
+            new_chroms.push(name.to_owned());
+        }
+        number = number.saturating_add(1);
+    }
+    *sent = chroms.len();
+    TheChainNow {
+        new_chroms,
+        filtering_stats: reader.filtering_stats(),
+    }
+}
+
+/// The reading thread of [`with_one_block_ahead`]: every block of `reader`
+/// sent to the handle, then either the word that there are no more or the
+/// error the chain failed with.
+///
+/// It ends when the chain is over, when the chain fails, and when the
+/// handle is dropped, which is what a pass that returns early does: the
+/// send fails then, and the block that was built is dropped with the
+/// thread. The chain is left where it stopped and is not read again, which
+/// is what the caller of [`with_one_block_ahead`] then asks for its
+/// counts.
+#[cfg(not(target_family = "wasm"))]
+fn read_one_block_ahead<R: BlockReader>(
+    reader: &mut R,
+    built: std::sync::mpsc::SyncSender<ABlockRead>,
+    needs: std::sync::mpsc::Receiver<Needs>,
+) {
+    let mut chroms_sent = 0_usize;
+    loop {
+        // Every `set_needs` the handle was given since the last block was
+        // built, in the order it was given them. A block that is already
+        // built keeps the columns it was built with, which is what the
+        // trait says of a change of `Needs` in the middle of a pass.
+        while let Ok(fields) = needs.try_recv() {
+            reader.set_needs(fields);
+        }
+        let read = match reader.next_block() {
+            Ok(Some(block)) => ABlockRead::Block(block, the_chain_now(reader, &mut chroms_sent)),
+            Ok(None) => ABlockRead::NoMore(the_chain_now(reader, &mut chroms_sent)),
+            Err(error) => ABlockRead::Failed(error),
+        };
+        let more_may_follow = matches!(read, ABlockRead::Block(_, _));
+        // A send that fails is a handle that was dropped, so nobody will
+        // ask for another block and the thread is done. The error of the
+        // send holds the block, which goes with it.
+        if built.send(read).is_err() {
+            return;
+        }
+        if !more_may_follow {
+            return;
+        }
+    }
+}
+
+/// The blocks of a chain of readers that a thread of its own is reading,
+/// one block ahead of whoever asks for them, which
+/// [`with_one_block_ahead`] builds and lends.
+///
+/// It is a [`BlockReader`] and gives what the chain gives: the same blocks
+/// in the same order, the error of the chain after the blocks that came
+/// before it, and nothing after that error. What it answers of the chain
+/// itself, the names of the chromosomes and the counts of the filters, is
+/// what the chain had to say when it gave the last block, and after the
+/// last block it is the chain's last word. Whoever built the chain reads
+/// the same two from the chain itself when [`with_one_block_ahead`]
+/// returns.
+#[cfg(not(target_family = "wasm"))]
+pub struct OneBlockAhead {
+    /// Where the reading thread sends what it read.
+    blocks: std::sync::mpsc::Receiver<ABlockRead>,
+    /// Where a [`BlockReader::set_needs`] goes, which the reading thread
+    /// gives the chain before it builds its next block.
+    asked: std::sync::mpsc::Sender<Needs>,
+    /// The individuals of the chain, copied once when the thread was
+    /// started: they do not change while a source is read.
+    individuals: Vec<String>,
+    /// The ploidy of the chain, which does not change either.
+    ploidy: usize,
+    /// The names of the chromosomes, as they were when the last block was
+    /// given. The numbers are the chain's own, because the names are
+    /// interned here in the order the chain interned them.
+    chroms: ChromTable,
+    /// The counts of the filters of the chain, as they were when the last
+    /// block was given.
+    filtering_stats: Vec<(&'static str, FilteringStats)>,
+    /// Whether the chain is over or failed. After either there is no
+    /// block, and the reading thread has ended.
+    finished: bool,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl OneBlockAhead {
+    /// What the chain said of itself, kept for [`BlockReader::chroms`] and
+    /// [`BlockReader::filtering_stats`].
+    fn took(&mut self, now: TheChainNow) {
+        for name in &now.new_chroms {
+            self.chroms.intern(name);
+        }
+        self.filtering_stats = now.filtering_stats;
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl BlockReader for OneBlockAhead {
+    /// The next block of the chain, which the reading thread built while
+    /// the caller was working on the block before it.
+    ///
+    /// # Errors
+    ///
+    /// What the chain failed with, after the blocks it gave before it.
+    /// After it there is no block.
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        if self.finished {
+            return Ok(None);
+        }
+        match self.blocks.recv() {
+            Ok(ABlockRead::Block(block, now)) => {
+                self.took(now);
+                Ok(Some(block))
+            }
+            Ok(ABlockRead::NoMore(now)) => {
+                self.took(now);
+                self.finished = true;
+                Ok(None)
+            }
+            Ok(ABlockRead::Failed(error)) => {
+                self.finished = true;
+                Err(error)
+            }
+            // The thread ended without saying why, which nothing but a
+            // panic in the chain of readers does, and a panic of a thread
+            // of the scope is raised again where `with_one_block_ahead`
+            // was called, so what this returns is thrown away there. There
+            // is no block either way.
+            Err(_) => {
+                self.finished = true;
+                Ok(None)
+            }
+        }
+    }
+
+    fn individuals(&self) -> &[String] {
+        &self.individuals
+    }
+
+    fn ploidy(&self) -> usize {
+        self.ploidy
+    }
+
+    /// The names of the chromosomes the chain had interned when it gave the
+    /// last block, which are the ones the variants of that block can name,
+    /// and all of its names once it has no more blocks.
+    fn chroms(&self) -> &ChromTable {
+        &self.chroms
+    }
+
+    /// What the chain is asked to fill from its next block on. The block
+    /// that was read ahead was built before this was said and keeps the
+    /// columns it was built with, so a change reaches the caller one block
+    /// later than it does over a chain that is read on one thread.
+    fn set_needs(&mut self, needs: Needs) {
+        // A send that fails is a reading thread that has ended, and then
+        // there is no next block for the fields to be filled in.
+        let _ = self.asked.send(needs);
+    }
+
+    /// The counts of the filters of the chain as they were when it gave the
+    /// last block, and all of them once it has no more blocks. Whoever
+    /// built the chain reads them from the chain itself when
+    /// [`with_one_block_ahead`] returns.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.filtering_stats.clone()
+    }
+}
+
 /// `values` after what `column` holds, with the memory asked of the machine
 /// first. A column that is in neither block, or in one of them alone, is
 /// left as it is: `Reblock` joins blocks of the same columns.
@@ -1740,7 +2044,7 @@ mod tests {
         AllelesColumn, Block, BlockReader, BlockSize, FIELD_NAMES, FIELDS_OF_THE_NAMES,
         GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK, Reblock,
         check_the_size_of_a_block, default_num_vars_per_block, needs_of_the_fields,
-        size_of_the_blocks,
+        size_of_the_blocks, with_one_block_ahead,
     };
     use crate::error::{Error, Result};
     use crate::filters::FilteringStats;
@@ -3810,5 +4114,155 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every block a reader gives when it is read one block ahead, until it
+    /// has no more or it fails.
+    fn blocks_given_one_ahead(reader: &mut impl BlockReader) -> Result<Vec<Block>> {
+        with_one_block_ahead(reader, |ahead| {
+            // A `&mut dyn BlockReader` is a reader of blocks itself, which
+            // is what lets the helper the other tests use read it.
+            let mut ahead = ahead;
+            blocks_given(&mut ahead)
+        })
+    }
+
+    /// The error of a reader read one block ahead arrives after the blocks
+    /// that came before it and not before them, which is what section 7 of
+    /// `docs/architecture.md` promises and what a thread between the reader
+    /// and its consumer is most able to break.
+    ///
+    /// It is the case of `a_wrong_line_after_two_hundred_and_fifty_
+    /// variants_leaves_twenty_eight_blocks_of_seven` above, in the shape
+    /// the task of the read ahead states: 250 good lines, a wrong one after
+    /// them, blocks of 100, two blocks and then the error.
+    #[test]
+    fn a_wrong_line_after_two_hundred_and_fifty_variants_read_one_block_ahead_leaves_two_blocks() {
+        let mut lines: Vec<String> = (1..=250)
+            .map(|variant| format!("chr1 {variant}00 rs{variant} A T . PASS . GT 0/0 0/1 1/1"))
+            .collect();
+        // The genotype of the 251st variant is of the ploidy 4 under a
+        // reader of the ploidy 2.
+        lines.push("chr1 25100 rs251 A T . PASS . GT 0/0 0/1 0/0/1/1".to_string());
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let vcf = vcf_of(&lines);
+
+        let mut source = reader_over_text(&vcf, VcfOptions::default(), Needs::CHROM_POS, Some(100));
+        let mut blocks = Vec::new();
+        let error = with_one_block_ahead(&mut source, |ahead| {
+            loop {
+                match ahead.next_block() {
+                    Ok(Some(block)) => blocks.push(block),
+                    // The error has to come before the reader runs out, or
+                    // the pass would have taken 250 variants of a file that
+                    // is malformed for a whole file.
+                    Ok(None) => return Ok(None),
+                    Err(error) => {
+                        // Nothing comes after the error, and the caller is
+                        // the one that stops asking.
+                        assert!(ahead.next_block().expect("no block").is_none());
+                        return Ok(Some(error));
+                    }
+                }
+            }
+        })
+        .expect("the reader was read")
+        .expect("the reader failed");
+        assert_eq!(num_vars_of(&blocks), [100, 100]);
+        assert!(
+            matches!(error, Error::VcfGenotypePloidy { .. }),
+            "the error is {error}"
+        );
+    }
+
+    /// A reader read one block ahead gives the blocks of the reader, in the
+    /// order of the file and holding the same variants, which is what says
+    /// that the thread changed nothing a consumer sees. It is the 475
+    /// variants `many.vcf` gives under the default options, in blocks of 7,
+    /// so that a block of the source is cut and the last one is shorter.
+    #[test]
+    fn the_blocks_read_one_block_ahead_are_the_blocks_of_the_reader_in_the_order_of_the_file() {
+        let of_one_thread = {
+            let source = source_over("many.vcf", VcfOptions::default(), Needs::ALL, Some(100));
+            let mut reblock = Reblock::new(source, Some(7)).expect("the reblock");
+            blocks_given(&mut reblock).expect("the blocks")
+        };
+        let source = source_over("many.vcf", VcfOptions::default(), Needs::ALL, Some(100));
+        let mut reblock = Reblock::new(source, Some(7)).expect("the reblock");
+        let read_ahead = blocks_given_one_ahead(&mut reblock).expect("the blocks");
+
+        assert_eq!(num_vars_of(&of_one_thread), num_vars_of(&read_ahead));
+        let expected = variants_of(&of_one_thread);
+        let given = variants_of(&read_ahead);
+        assert_eq!(given.len(), 475, "how many variants were read one ahead");
+        for (index, (given, expected)) in given.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                given, expected,
+                "the variant {index}, counted from 0, read one block ahead"
+            );
+        }
+    }
+
+    /// The chain of readers is lent to the thread and not given away: what
+    /// is asked of it reaches it, and when the read ahead is over its
+    /// counts and its names are read from the chain itself, which is what
+    /// the pass of a study does when it ends.
+    ///
+    /// The handle answers the same two while the pass runs, as of the last
+    /// block it gave, so a consumer that has only the handle is not left
+    /// with nothing.
+    #[test]
+    fn the_chain_read_one_block_ahead_is_lent_and_its_counts_are_read_from_it_after() {
+        let mut reader =
+            GivenBlocks::reporting(vec![cases_block(&[0, 1]), cases_block(&[2])], two_counts());
+        let blocks = with_one_block_ahead(&mut reader, |ahead| {
+            ahead.set_needs(Needs::GTS);
+            let mut ahead = ahead;
+            let blocks = blocks_given(&mut ahead)?;
+            // The handle knows the counts of the chain and the one
+            // chromosome of `cases.vcf`, and knows them from the chain and
+            // not from a table of its own.
+            assert_eq!(ahead.filtering_stats(), two_counts());
+            assert_eq!(ahead.chroms().name(0), Some("chr1"));
+            assert_eq!(ahead.individuals().len(), 3);
+            assert_eq!(ahead.ploidy(), 2);
+            Ok(blocks)
+        })
+        .expect("the blocks");
+        assert_eq!(num_vars_of(&blocks), [2, 1]);
+        assert_eq!(reader.needs, Needs::GTS);
+        assert_eq!(reader.filtering_stats(), two_counts());
+        assert!(reader.left.is_empty());
+    }
+
+    /// A pass that stops in the middle, which is what a study whose test of
+    /// a block fails does and what the Ctrl-C of a Python user comes out
+    /// as, gets its own error back and leaves no thread reading: this test
+    /// ending is what says so, since a thread still waiting with a block
+    /// nobody asked for would hold the read ahead open for ever.
+    ///
+    /// The reader is left with the blocks it had not given, which is what
+    /// says that it stopped and was not read to the end.
+    #[test]
+    fn a_pass_that_stops_after_one_block_leaves_no_thread_reading_the_rest() {
+        let mut reader = GivenBlocks::of_one_variant_each();
+        let stopped: Result<()> = with_one_block_ahead(&mut reader, |ahead| {
+            let first = ahead.next_block()?;
+            assert_eq!(first.map(|block| block.num_vars), Some(1));
+            Err(Error::PassGaveNoVariant {
+                num_vars_of_the_source: 0,
+                filters: Vec::new(),
+            })
+        });
+        assert!(
+            matches!(stopped, Err(Error::PassGaveNoVariant { .. })),
+            "the pass stopped with {stopped:?}"
+        );
+        // Four blocks of one variant, one given and at most one more read
+        // ahead of it, so the reader has not been read to the end.
+        assert!(
+            !reader.left.is_empty(),
+            "the reader was read to the end although the pass stopped"
+        );
     }
 }

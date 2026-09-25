@@ -50,6 +50,18 @@ struct RowDosages {
     /// Whether the called genotypes of the tested individuals hold two
     /// dosages at least, which is what a variant needs to be tested.
     has_variance: bool,
+    /// The squared length of the row of dosages, summed left to right over
+    /// the values that were written into it.
+    ///
+    /// It is accumulated where the row is written, on the thread that
+    /// wrote it and with the row in the cache of that thread, because the
+    /// three models that read it would otherwise read the whole block of
+    /// dosages a second time on the one thread the pass runs on: at 5000
+    /// variants x 1000 individuals that is another 40 MB streamed per
+    /// block for one `f64` per row. What it is for is the scale the
+    /// threshold of [`super::the_share_that_is_nothing`] is taken of, and
+    /// nothing else.
+    sum_of_squares: f64,
 }
 
 /// The buffers one thread keeps while it reads the dosages of the rows of
@@ -168,15 +180,25 @@ fn the_dosages_of_a_row(
         0 => 0.0,
         genotypes => called.dosages as f64 / genotypes as f64,
     };
+    // The squared length of the row is summed here, as each value is
+    // written and while it is in a register, and it is summed left to
+    // right over those values and from 0.0, which is what
+    // `row.iter().map(|value| value * value).sum::<f64>()` on the finished
+    // row does: the three models that read it get the same bits they
+    // computed for themselves before, and LLVM reassociates neither.
+    let mut sum_of_squares = 0.0_f64;
     for (value, code) in row.iter_mut().zip(codes.iter().copied()) {
-        *value = match code {
+        let dosage = match code {
             MISSING_CODE => mean,
             dosage => f64::from(dosage),
         };
+        *value = dosage;
+        sum_of_squares += dosage * dosage;
     }
     Ok(RowDosages {
         allele_freq: mean / ploidy as f64,
         has_variance: called.highest > called.lowest,
+        sum_of_squares,
     })
 }
 
@@ -403,6 +425,11 @@ pub(crate) struct GwasDosages {
     pub(super) allele_freq: Vec<f64>,
     /// Whether each variant of the block has variance, in its order.
     pub(super) has_variance: Vec<bool>,
+    /// The squared length of the dosages of each variant that has
+    /// variance, in the order of the block: one value for each row of
+    /// [`GwasDosages::dosages`] and in the same order, which is what the
+    /// rows being compacted the same way gives.
+    sum_of_squares: Vec<f64>,
 }
 
 impl GwasDosages {
@@ -416,6 +443,7 @@ impl GwasDosages {
             dosages: Vec::new(),
             allele_freq: Vec::new(),
             has_variance: Vec::new(),
+            sum_of_squares: Vec::new(),
         }
     }
 
@@ -567,6 +595,16 @@ impl GwasDosages {
             .iter()
             .filter(|has_variance| **has_variance)
             .count();
+        // The squared lengths are kept for the variants that have
+        // variance and in the order of the block, which is the same filter
+        // and the same order the rows of the buffer are compacted with
+        // below: a model reads the two of one variant by the same index.
+        self.sum_of_squares.clear();
+        self.sum_of_squares.extend(
+            rows.iter()
+                .filter(|row| row.has_variance)
+                .map(|row| row.sum_of_squares),
+        );
         // The rows of the variants that have variance are moved to the
         // start of the buffer, so that the block is one matrix of the
         // variants a model can test and the ones that have no answer are
@@ -651,6 +689,25 @@ impl GwasDosages {
         // more variants than the block holds.
         let values = self.num_with_variance.saturating_mul(self.num_individuals);
         self.dosages.get(..values).unwrap_or_default()
+    }
+
+    /// The squared length of the dosages of each variant that has
+    /// variance, in the order of the block: one value for each row of
+    /// [`GwasDosages::dosages`], summed left to right over the values of
+    /// that row.
+    ///
+    /// It is summed where the row is written, on the threads of rayon, and
+    /// not where it is read, so that the models that need it do not read
+    /// the whole block of dosages a second time on the thread of the pass.
+    /// The three that do are the linear model, the score test of the
+    /// linear mixed model and the score test of the logistic mixed model,
+    /// and all three read it for one thing: the scale the threshold of
+    /// [`super::the_share_that_is_nothing`] is taken of, which says whether
+    /// what is left of the variant is a quantity or the rounding of a
+    /// cancellation.
+    #[must_use]
+    pub(crate) fn sum_of_squares(&self) -> &[f64] {
+        &self.sum_of_squares
     }
 
     /// The frequency of the alleles that are not the major one, over the
@@ -962,6 +1019,92 @@ mod tests {
         );
     }
 
+    /// The squared length a block carries for each variant that has
+    /// variance is the sum over that variant's row of the matrix, to the
+    /// bit, and it is the row the matrix holds and not the variant the
+    /// block held.
+    ///
+    /// This is what the three models that read it rest on: each of them
+    /// summed `dosage * dosage` over the row itself until the block began
+    /// carrying the value, so a sum taken in another order, from another
+    /// starting value or over other individuals would move a threshold and
+    /// with it which variants have an answer.
+    ///
+    /// The fixture is the panel of eight of `fixtures::OF_EIGHT`, read
+    /// twice. Over the four tested individuals `v0` has no variance, every
+    /// one of them being heterozygous, and `v3` has no called genotype, so
+    /// the matrix holds the rows of `v1` and `v2` alone and the value of
+    /// `v1` has to be the first of the column and not the second: a column
+    /// left in the order of the block would pass every other assertion
+    /// here. `v2` is the case where the two orders could part, its missing
+    /// genotype taking the mean 2 / 3, which no `f64` holds exactly, so its
+    /// squared length is a sum of a rounded value and whole ones. Over all
+    /// eight individuals every variant has variance and none is left out.
+    #[test]
+    fn the_squared_length_of_a_variant_is_the_sum_over_the_row_of_the_matrix() {
+        /// The squared length of the row of `v1` over the four tested
+        /// individuals, worked out by hand: their dosages are 0, 1, 2 and
+        /// 1, as `FREQUENCIES_OF_THE_TESTED` says, so it is
+        /// 0 + 1 + 4 + 1 = 6, which every order of the sum gives since the
+        /// four terms are whole numbers.
+        const OF_V1_OF_THE_TESTED: f64 = 6.0;
+
+        for (individuals, tested) in [
+            (&TESTED_OF_EIGHT[..], "the four tested individuals"),
+            (&THE_PANEL_OF_EIGHT[..], "all eight individuals"),
+        ] {
+            let (phenotype, design) = the_phenotype_and_the_design_of(individuals);
+            let study = a_study(&phenotype, &design, individuals);
+            let design = the_design_of(&study, 8);
+            let mut block = a_block(8, 2, &OF_EIGHT);
+            let mut dosages = GwasDosages::of_a_study();
+            dosages
+                .read_the_block(&mut block, &design, the_first_block_of(2))
+                .expect("the dosages of the block");
+
+            let num_individuals = individuals.len();
+            let lengths = dosages.sum_of_squares();
+            assert_eq!(
+                lengths.len(),
+                dosages.num_with_variance(),
+                "the squared lengths over {tested}, which are one for each row of the matrix"
+            );
+            for (var, (length, row)) in lengths
+                .iter()
+                .zip(dosages.dosages().chunks_exact(num_individuals))
+                .enumerate()
+            {
+                let of_the_row = row.iter().map(|dosage| dosage * dosage).sum::<f64>();
+                assert_eq!(
+                    length.to_bits(),
+                    of_the_row.to_bits(),
+                    "the squared length of the row {var} over {tested} is {length} where the \
+                     row itself sums to {of_the_row}"
+                );
+            }
+        }
+
+        let (phenotype, design) = the_phenotype_and_the_design_of(&TESTED_OF_EIGHT);
+        let study = a_study(&phenotype, &design, &TESTED_OF_EIGHT);
+        let design = the_design_of(&study, 8);
+        let mut block = a_block(8, 2, &OF_EIGHT);
+        let mut dosages = GwasDosages::of_a_study();
+        dosages
+            .read_the_block(&mut block, &design, the_first_block_of(2))
+            .expect("the dosages of the block over the four tested individuals");
+        assert_eq!(
+            dosages.num_with_variance(),
+            2,
+            "the variants with variance among the four tested individuals, which are `v1` \
+             and `v2`"
+        );
+        assert_eq!(
+            dosages.sum_of_squares().first().copied(),
+            Some(OF_V1_OF_THE_TESTED),
+            "the squared length of the first row of the matrix, which is `v1` and not `v0`"
+        );
+    }
+
     /// The rows of a block are read on the threads of rayon, and neither
     /// the dosages nor the frequencies depend on how many there are, nor
     /// on whether the rows were read one after another, which is what
@@ -1071,6 +1214,10 @@ mod tests {
             "the frequencies on one thread and on four"
         );
         assert_eq!(on_one.has_variance(), on_four.has_variance());
+        assert!(
+            the_same_values(on_one.sum_of_squares(), on_four.sum_of_squares()),
+            "the squared lengths of the rows on one thread and on four"
+        );
 
         // The rows read one after another, which is the pass WebAssembly
         // takes, against the rows read on the threads, over the genotypes
@@ -1114,8 +1261,16 @@ mod tests {
         assert_eq!(rows.len(), 300);
         for (var, (row, one_by_one)) in rows.iter().zip(&rows_one_by_one).enumerate() {
             assert_eq!(
-                (row.allele_freq.to_bits(), row.has_variance),
-                (one_by_one.allele_freq.to_bits(), one_by_one.has_variance),
+                (
+                    row.allele_freq.to_bits(),
+                    row.has_variance,
+                    row.sum_of_squares.to_bits()
+                ),
+                (
+                    one_by_one.allele_freq.to_bits(),
+                    one_by_one.has_variance,
+                    one_by_one.sum_of_squares.to_bits()
+                ),
                 "the variant {var}"
             );
         }
