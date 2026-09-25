@@ -19,6 +19,8 @@
 //!
 //! `docs/specs/io_vars.md` has the format, the writer and the reader.
 
+#[cfg(not(target_family = "wasm"))]
+use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
@@ -1357,14 +1359,33 @@ pub struct VarsReader<R: Read + Seek> {
     /// Which fields the consumer asks for, which the projection of the
     /// next batch that is read is built from.
     needs: Needs,
-    /// Which batch of the file is the next one to read.
+    /// Which batch of the file is the next one whose bytes are read.
     next: usize,
+    /// The batches that were decoded and not yet given, in the order of the
+    /// file, each with its place among the batches, and the first error of a
+    /// decode as the last entry after them.
+    ///
+    /// The batches of a window are decoded at once, and a consumer takes one
+    /// block per call, so the ones that are decoded and not asked for yet
+    /// wait here. The error goes in as an entry of its own, at the end,
+    /// because the blocks of the batches before it are given first, as they
+    /// were when each batch was decoded on its own.
+    #[cfg(not(target_family = "wasm"))]
+    decoded: VecDeque<(usize, Result<RecordBatch>)>,
     /// The names of the chromosomes of the variants that were given, each
     /// with its number.
     chroms: ChromTable,
-    /// How many variants the batches that were read hold, which is what
-    /// the variant of the error of a null is counted from.
-    vars_before: u64,
+    /// How many variants the batches before each batch of the file hold,
+    /// one entry for each batch, which is what the variant of the error of a
+    /// null is counted from.
+    ///
+    /// It is the prefix sum of what the `popnei_batches` key of the footer
+    /// says each batch holds, worked out when the file is opened, and not a
+    /// count of the rows of the batches that were read: a batch is decoded
+    /// before the ones in front of it have been. It is the same number,
+    /// because a batch whose rows are not as many as its entry of the footer
+    /// says is refused before any batch after it is given.
+    vars_before: Vec<u64>,
     /// Whether the reader gave its last block or an error. After either,
     /// every call gives no block.
     finished: bool,
@@ -1415,6 +1436,7 @@ impl<R: Read + Seek> VarsReader<R> {
         let blocks = batches_of_the_footer(&footer, file_len)?;
         let batches = batch_info_of_the_footer(&footer, blocks.len())?;
         let num_vars = num_vars_of_the_file(&batches, &metadata)?;
+        let vars_before = vars_before_each_batch(&batches);
         Ok(VarsReader {
             source,
             schema,
@@ -1426,8 +1448,10 @@ impl<R: Read + Seek> VarsReader<R> {
             num_vars,
             needs: Needs::ALL,
             next: 0,
+            #[cfg(not(target_family = "wasm"))]
+            decoded: VecDeque::new(),
             chroms: ChromTable::new(),
-            vars_before: 0,
+            vars_before,
             finished: false,
         })
     }
@@ -1502,9 +1526,268 @@ struct BatchPlace {
     num_vars: usize,
 }
 
+/// How many batches of a vars file are decoded at once, on the threads of
+/// rayon.
+///
+/// The decompression of the buffers is what bounds a pass over a vars file:
+/// of the 5.5 ms a batch of 5000 variants of 1000 individuals takes, 4.99 ms
+/// is lz4. The genotypes of such a batch are one lz4 frame of three
+/// independent blocks of 4 MiB, so decompressing the blocks of one batch on
+/// the threads takes that batch from 4.534 to 1.972 ms and no further.
+/// Decoding whole batches at once is the only route that scales past it, and
+/// this is how many are in flight.
+///
+/// What it costs is memory. The reader holds the compressed bytes of the
+/// batches of a window while they are decoded, and then their decoded arrow
+/// buffers until a consumer has asked for each of them: for 1000 individuals
+/// and 5000 variants in a batch, 3.9 MB compressed and 11.4 MB decoded for
+/// each batch of the window. On `bigcalled.vars`, 100000 variants of 1000
+/// individuals in 20 batches, `/usr/bin/time -l` of the `vars_file`
+/// benchmark reads 495.6 MB of maximum resident set size before this and
+/// 623.0 MB after it at 18 threads, 538.4 MB at one.
+///
+/// The value is the knee of a sweep of 1, 2, 4, 8 and 18 at 18 threads on
+/// the owner's Apple M5 Pro of 18 cores, over that file, the best of 10 runs
+/// of the genotypes alone: 107.8 ms at 1, 62.3 at 2, 37.7 at 4, 27.8 at 8
+/// and 24.2 at 18. A window of 18 is another 10% of the best time for 2.25
+/// times the memory of a window of 8, and its median over four sets of runs,
+/// 26.8 to 30.7 ms, is no better than the 28.7 to 29.9 ms of the window of
+/// 8. A window smaller than the pool leaves the threads above its size with
+/// nothing to do, which is what the 24.2 ms at 18 are: the report of the
+/// performance review of the vars reader has the whole sweep.
+#[cfg(not(target_family = "wasm"))]
+const BATCHES_AT_ONCE: usize = 8;
+
+/// How many variants the batches before each batch hold, one entry for each
+/// batch, which is the prefix sum of what the footer says each one holds.
+///
+/// The count of a whole file was checked to fit in a `usize` when the file
+/// was opened, so no sum here is above what a `u64` holds and none of them
+/// saturates.
+fn vars_before_each_batch(batches: &[BatchInfo]) -> Vec<u64> {
+    let mut before = Vec::with_capacity(batches.len());
+    let mut so_far: u64 = 0;
+    for batch in batches {
+        before.push(so_far);
+        so_far = so_far.saturating_add(u64::try_from(batch.num_vars).unwrap_or(u64::MAX));
+    }
+    before
+}
+
+impl<R: Read + Seek> VarsReader<R> {
+    /// Where the batch at `index` is, counted from 0: which batch of the
+    /// file it is, how many variants the batches before it hold and how many
+    /// its entry of the footer says it holds.
+    ///
+    /// # Errors
+    ///
+    /// When the file has no entry of the footer for that batch, which
+    /// `new` refuses a file for.
+    fn place_of(&self, index: usize) -> Result<BatchPlace> {
+        // The two vectors are of one entry for each entry of the footer, so
+        // either both are there or the footer has no entry for this batch,
+        // which is what the error says.
+        let (Some(info), Some(vars_before)) =
+            (self.batches.get(index), self.vars_before.get(index))
+        else {
+            return Err(Error::VarsBatchesDoNotMatch {
+                found: self.batches.len(),
+                expected: self.blocks.len(),
+            });
+        };
+        Ok(BatchPlace {
+            batch: counted_from_one(index),
+            vars_before: *vars_before,
+            num_vars: info.num_vars,
+        })
+    }
+
+    /// The bytes of the batch at `at`, read from the source.
+    ///
+    /// The source is one `Read + Seek`, so this is the part of reading a
+    /// batch that no thread but the caller's does.
+    ///
+    /// # Errors
+    ///
+    /// When the batch holds more bytes than this machine counts, and when
+    /// the source cannot be read.
+    fn bytes_of_the_batch(&mut self, at: BatchAt, place: BatchPlace) -> Result<Vec<u8>> {
+        // Both lengths were checked to lie inside the file when it was
+        // opened, so their sum is one of its bytes.
+        let len = at.metadata_len.saturating_add(at.body_len);
+        // A batch of more bytes than this machine counts, which under wasm,
+        // where a `usize` is 32 bits, is 4 GB: the file is more than this
+        // build of popnei reads, and the way out is smaller batches.
+        let Ok(len) = usize::try_from(len) else {
+            return Err(block_too_large(place.num_vars, &self.metadata));
+        };
+        bytes_at(&mut self.source, at.offset, len)
+    }
+
+    /// The block of the batch that was decoded at `index`, with the checks
+    /// that were always made on the thread that asks for it.
+    ///
+    /// # Errors
+    ///
+    /// When the batch holds another number of variants than its entry of the
+    /// footer says, and when one of its columns holds a null where every
+    /// variant has a value.
+    fn block_of_a_decoded_batch(
+        &mut self,
+        index: usize,
+        batch: &RecordBatch,
+        wanted: &[(VarsColumn, usize)],
+    ) -> Result<Option<Block>> {
+        let place = self.place_of(index)?;
+        let num_vars = batch.num_rows();
+        if num_vars != place.num_vars {
+            return Err(Error::VarsBatchNumVars {
+                batch: place.batch,
+                found: num_vars,
+                expected: place.num_vars,
+            });
+        }
+        // A batch of no variants is not given as a block, since
+        // `docs/specs/block.md` says that a reader never gives one: the
+        // caller takes the next batch, as a filter does with a block it
+        // emptied.
+        if num_vars == 0 {
+            return Ok(None);
+        }
+        Ok(Some(block_of_the_batch(
+            batch,
+            wanted,
+            &self.metadata,
+            &mut self.chroms,
+            place,
+        )?))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
 impl<R: Read + Seek> VarsReader<R> {
     /// The next batch of the file as a block, the batches of no variant
     /// passed over, and `None` when there are no more.
+    ///
+    /// The bytes of up to [`BATCHES_AT_ONCE`] batches are read from the
+    /// source, in the order of the file, and those batches are decoded on
+    /// the threads of the pool the caller is in; the blocks then come out of
+    /// that window one call at a time, in the order of the file, and the
+    /// checks of each batch and the building of each block are made on the
+    /// thread that asks for it. The chromosome table hands its numbers out
+    /// in the order the names are first seen, and nine other places of
+    /// popnei index their results by a running count of the variants, so a
+    /// block out of order would be a wrong result and not a slower one.
+    ///
+    /// # Errors
+    ///
+    /// When a batch cannot be read, when it holds another number of
+    /// variants than its entry of the footer, and when one of its columns
+    /// holds a null where every variant has a value. The error is that of
+    /// the first batch of the window in the order of the file that gave one,
+    /// and the blocks of the batches before it are given first.
+    fn next_batch(&mut self) -> Result<Option<Block>> {
+        // The columns to decompress are chosen when the batch is read, so a
+        // consumer that asks for other fields is served from here on.
+        let wanted = projection_of(self.needs, &self.columns);
+        let places: Vec<usize> = wanted.iter().map(|(_, place)| *place).collect();
+        loop {
+            if self.decoded.is_empty() {
+                self.decode_the_next_batches(&places);
+            }
+            let Some((index, decoded)) = self.decoded.pop_front() else {
+                return Ok(None);
+            };
+            let batch = decoded?;
+            if let Some(block) = self.block_of_a_decoded_batch(index, &batch, &wanted)? {
+                return Ok(Some(block));
+            }
+        }
+    }
+
+    /// It reads the bytes of the next batches of the file, up to
+    /// [`BATCHES_AT_ONCE`] of them, decodes them on the threads of rayon and
+    /// puts what each gave into the queue, in the order of the file.
+    ///
+    /// The bytes are read one batch after another, because they come from one
+    /// `Read + Seek`. The results are collected in the order of the file and
+    /// walked in that order, and the first error stops the queue, so the
+    /// error a consumer is given is the one of the first batch of the window
+    /// that failed and not of whichever thread failed first: `try_for_each`
+    /// or `find_any` would make the message depend on the threads.
+    ///
+    /// It gives nothing back: an error of a batch goes into the queue behind
+    /// the batches before it, whose blocks a consumer is given first, as it
+    /// was when the batches were read one at a time.
+    fn decode_the_next_batches(&mut self, places: &[usize]) {
+        use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+        let mut fetched: Vec<(usize, BatchPlace, BatchAt, Vec<u8>)> = Vec::new();
+        let mut failed: Option<(usize, Error)> = None;
+        while fetched.len() < BATCHES_AT_ONCE {
+            let Some(at) = self.blocks.get(self.next).copied() else {
+                break;
+            };
+            let index = self.next;
+            let fetch = self
+                .place_of(index)
+                .and_then(|place| Ok((place, self.bytes_of_the_batch(at, place)?)));
+            let (place, bytes) = match fetch {
+                Ok(fetched) => fetched,
+                Err(problem) => {
+                    failed = Some((index, problem));
+                    break;
+                }
+            };
+            // The batches of a file are as many as the machine counts, so
+            // this never saturates.
+            self.next = self.next.saturating_add(1);
+            fetched.push((index, place, at, bytes));
+        }
+        // Neither of these is of the reader, so the decode touches nothing
+        // that is: the schema is shared and the version is a number.
+        let schema = &self.schema;
+        let version = self.version;
+        let decoded: Vec<(usize, Result<RecordBatch>)> = fetched
+            .into_par_iter()
+            .map(|(index, place, at, bytes)| {
+                (index, batch_of(schema, version, places, at, bytes, place))
+            })
+            .collect();
+        for (index, batch) in decoded {
+            let failed = batch.is_err();
+            self.decoded.push_back((index, batch));
+            if failed {
+                return;
+            }
+        }
+        if let Some((index, problem)) = failed {
+            self.decoded.push_back((index, Err(problem)));
+        }
+    }
+
+    /// It throws the batches that were decoded and not given away, and the
+    /// next batch to read is the first of them again.
+    ///
+    /// A batch of the queue was decoded with the projection of the fields
+    /// that were asked for before, so a consumer that asks for others is
+    /// served from the next block on, which is what `set_needs` says. The few
+    /// batches of the window are decoded again, which costs one window and is
+    /// right.
+    fn throw_the_queue_away(&mut self) {
+        if let Some((index, _)) = self.decoded.front() {
+            self.next = *index;
+        }
+        self.decoded.clear();
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl<R: Read + Seek> VarsReader<R> {
+    /// The next batch of the file as a block, the batches of no variant
+    /// passed over, and `None` when there are no more.
+    ///
+    /// One batch at a time, which is what wasm does: it has no threads.
     ///
     /// # Errors
     ///
@@ -1520,129 +1803,94 @@ impl<R: Read + Seek> VarsReader<R> {
             let Some(at) = self.blocks.get(self.next).copied() else {
                 return Ok(None);
             };
-            // The entries of the footer were counted against the batches
-            // when the file was opened, so every batch has one.
-            let Some(expected) = self.batches.get(self.next).map(|info| info.num_vars) else {
-                return Err(Error::VarsBatchesDoNotMatch {
-                    found: self.batches.len(),
-                    expected: self.blocks.len(),
-                });
-            };
-            let place = BatchPlace {
-                batch: counted_from_one(self.next),
-                vars_before: self.vars_before,
-                num_vars: expected,
-            };
+            let index = self.next;
+            let place = self.place_of(index)?;
+            let bytes = self.bytes_of_the_batch(at, place)?;
             // The batches of a file are as many as the machine counts, so
             // this never saturates.
             self.next = self.next.saturating_add(1);
-            let batch = self.batch_of(at, &places, place)?;
-            let num_vars = batch.num_rows();
-            if num_vars != expected {
-                return Err(Error::VarsBatchNumVars {
-                    batch: place.batch,
-                    found: num_vars,
-                    expected,
-                });
+            let batch = batch_of(&self.schema, self.version, &places, at, bytes, place)?;
+            if let Some(block) = self.block_of_a_decoded_batch(index, &batch, &wanted)? {
+                return Ok(Some(block));
             }
-            self.vars_before = self
-                .vars_before
-                .saturating_add(u64::try_from(num_vars).unwrap_or(u64::MAX));
-            // A batch of no variants is not given as a block, since
-            // `docs/specs/block.md` says that a reader never gives one: the
-            // next batch is taken, as a filter does with a block it emptied.
-            if num_vars == 0 {
-                continue;
-            }
-            return Ok(Some(block_of_the_batch(
-                &batch,
-                &wanted,
-                &self.metadata,
-                &mut self.chroms,
-                place,
-            )?));
         }
     }
+}
 
-    /// One batch of the file, with the columns of `places` decompressed and
-    /// the buffers of the rest walked past.
-    ///
-    /// # Errors
-    ///
-    /// When the source cannot be read, when the bytes of the batch are not
-    /// what the file says they are, and when they are compressed with zstd.
-    fn batch_of(
-        &mut self,
-        at: BatchAt,
-        places: &[usize],
-        place: BatchPlace,
-    ) -> Result<RecordBatch> {
-        // Both lengths were checked to lie inside the file when it was
-        // opened, so their sum is one of its bytes.
-        let len = at.metadata_len.saturating_add(at.body_len);
-        // A batch of more bytes than this machine counts, which under wasm,
-        // where a `usize` is 32 bits, is 4 GB: the file is more than this
-        // build of popnei reads, and the way out is smaller batches.
-        let Ok(len) = usize::try_from(len) else {
-            return Err(block_too_large(place.num_vars, &self.metadata));
-        };
-        let bytes = bytes_at(&mut self.source, at.offset, len)?;
-        let (Ok(metadata_len), Ok(body_len)) =
-            (i32::try_from(at.metadata_len), i64::try_from(at.body_len))
-        else {
-            return Err(batch_of_other_bytes(
-                place.batch,
-                format!(
-                    "its footer says the batch is {metadata} and {body} bytes, which an arrow file does not hold",
-                    metadata = at.metadata_len,
-                    body = at.body_len
-                ),
-            ));
-        };
-        // arrow-rs reads the four bytes that mark a continuation and the
-        // four that say how long the message is before anything else, so a
-        // batch of fewer bytes than those eight is refused here.
-        if bytes.len() < MESSAGE_START_BYTES {
-            return Err(batch_of_other_bytes(
-                place.batch,
-                format!(
-                    "it is {found} bytes and the message of a batch of an arrow file starts with {MESSAGE_START_BYTES}",
-                    found = bytes.len()
-                ),
-            ));
-        }
-        // What the message of the batch says about its buffers, checked
-        // against the bytes that are there before arrow-rs reads any of
-        // them by their place.
-        message_fits(&bytes, metadata_len, &self.schema, place)?;
-        let decoder = FileDecoder::new(Arc::clone(&self.schema), self.version)
-            .with_projection(places.to_vec());
-        // The net under the checks above: arrow-rs reads a length of the
-        // message and panics where the bytes it points at are not there,
-        // and a file that was damaged in a way those checks do not see must
-        // not end the session of a user. Nothing of the reader is given to
-        // arrow-rs, so what it leaves behind is the batch alone, and the
-        // reader is finished after the error either way. Under wasm, where
-        // a panic ends the program and unwinds nothing, this catches
-        // nothing and the checks above are the whole defence.
-        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            decoder.read_record_batch(
-                &ArrowBlock::new(0, metadata_len, body_len),
-                &Buffer::from(bytes),
-            )
-        }));
-        match read {
-            Ok(Ok(Some(batch))) => Ok(batch),
-            Ok(Ok(None)) => Err(batch_of_other_bytes(
-                place.batch,
-                "the message where it starts is not one of a batch".to_owned(),
-            )),
-            Ok(Err(problem)) => Err(batch_not_read(&problem, place.batch)),
-            Err(_) => Err(batch_of_other_bytes(
-                place.batch,
-                "arrow-rs did not come back from reading it".to_owned(),
-            )),
-        }
+/// One batch of a vars file, from `bytes`, with the columns of `places`
+/// decompressed and the buffers of the rest walked past.
+///
+/// Nothing of the reader is read here: the schema and the version are what
+/// the file was opened with, `at` and `place` are where the batch is, and
+/// `bytes` are its bytes. That is what lets the batches of a window be
+/// decoded at once on the threads of rayon.
+///
+/// # Errors
+///
+/// When the bytes of the batch are not what the file says they are, and when
+/// they are compressed with zstd.
+fn batch_of(
+    schema: &SchemaRef,
+    version: MetadataVersion,
+    places: &[usize],
+    at: BatchAt,
+    bytes: Vec<u8>,
+    place: BatchPlace,
+) -> Result<RecordBatch> {
+    let (Ok(metadata_len), Ok(body_len)) =
+        (i32::try_from(at.metadata_len), i64::try_from(at.body_len))
+    else {
+        return Err(batch_of_other_bytes(
+            place.batch,
+            format!(
+                "its footer says the batch is {metadata} and {body} bytes, which an arrow file does not hold",
+                metadata = at.metadata_len,
+                body = at.body_len
+            ),
+        ));
+    };
+    // arrow-rs reads the four bytes that mark a continuation and the
+    // four that say how long the message is before anything else, so a
+    // batch of fewer bytes than those eight is refused here.
+    if bytes.len() < MESSAGE_START_BYTES {
+        return Err(batch_of_other_bytes(
+            place.batch,
+            format!(
+                "it is {found} bytes and the message of a batch of an arrow file starts with {MESSAGE_START_BYTES}",
+                found = bytes.len()
+            ),
+        ));
+    }
+    // What the message of the batch says about its buffers, checked
+    // against the bytes that are there before arrow-rs reads any of
+    // them by their place.
+    message_fits(&bytes, metadata_len, schema, place)?;
+    let decoder = FileDecoder::new(Arc::clone(schema), version).with_projection(places.to_vec());
+    // The net under the checks above: arrow-rs reads a length of the
+    // message and panics where the bytes it points at are not there,
+    // and a file that was damaged in a way those checks do not see must
+    // not end the session of a user. Nothing of the reader is given to
+    // arrow-rs, so what it leaves behind is the batch alone, and the
+    // reader is finished after the error either way. Under wasm, where
+    // a panic ends the program and unwinds nothing, this catches
+    // nothing and the checks above are the whole defence.
+    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        decoder.read_record_batch(
+            &ArrowBlock::new(0, metadata_len, body_len),
+            &Buffer::from(bytes),
+        )
+    }));
+    match read {
+        Ok(Ok(Some(batch))) => Ok(batch),
+        Ok(Ok(None)) => Err(batch_of_other_bytes(
+            place.batch,
+            "the message where it starts is not one of a batch".to_owned(),
+        )),
+        Ok(Err(problem)) => Err(batch_not_read(&problem, place.batch)),
+        Err(_) => Err(batch_of_other_bytes(
+            place.batch,
+            "arrow-rs did not come back from reading it".to_owned(),
+        )),
     }
 }
 
@@ -1698,6 +1946,10 @@ impl<R: Read + Seek + Send> BlockReader for VarsReader<R> {
     /// next block.
     fn set_needs(&mut self, needs: Needs) {
         self.needs = needs;
+        // The batches that were decoded and not given were decoded with the
+        // projection of the fields that were asked for before this call.
+        #[cfg(not(target_family = "wasm"))]
+        self.throw_the_queue_away();
     }
 
     /// None: a source has no filter over it.
@@ -2982,8 +3234,8 @@ mod tests {
     };
     use arrow_buffer::{NullBuffer, ScalarBuffer};
     use arrow_ipc::reader::FileReader;
-    use arrow_ipc::root_as_message;
     use arrow_ipc::writer::FileWriter;
+    use arrow_ipc::{root_as_footer, root_as_message};
     use arrow_schema::{DataType, Field, Fields, Schema};
 
     use super::{
@@ -2992,9 +3244,10 @@ mod tests {
         MAX_VALUES_OF_A_LIST, MESSAGE_START_BYTES, NOT_COMPRESSED, NodeHolds, POPNEI_BATCHES_KEY,
         POPNEI_KEY, POS_COLUMN, QUAL_COLUMN, Region, UNCOMPRESSED_LENGTH_BYTES, VarsColumn,
         VarsColumns, VarsMetadata, VarsReader, VarsWriter, alleles_column, batches_as_json,
-        batches_from_json, block_of_the_batch, block_too_large, chrom_column, counted_from_one,
-        gts_field, id_column, metadata_as_json, metadata_from_json, num_vars_of_the_file,
-        projection_of, schema_of, what_the_nodes_hold, write_vars,
+        batches_from_json, batches_of_the_footer, block_of_the_batch, block_too_large,
+        chrom_column, counted_from_one, footer_of, gts_field, id_column, metadata_as_json,
+        metadata_from_json, num_vars_of_the_file, projection_of, schema_of, what_the_nodes_hold,
+        write_vars,
     };
     use crate::block::{AllelesColumn, Block, BlockReader, BlockSize};
     use crate::error::{Error, Result};
@@ -7126,5 +7379,273 @@ mod tests {
         assert_eq!(block.num_vars, 2);
         let expected: Vec<ReadRow> = CASES[1..3].iter().map(row_read).collect();
         assert_eq!(rows_of(&[block], &chroms), expected);
+    }
+
+    /// The chromosome that every batch of the file of many batches holds,
+    /// which the first batch is the first to hold.
+    const SHARED_CHROM: &str = "chr0";
+
+    /// One batch of the file of many batches: two variants, the first on
+    /// `chrom`, a name that no batch before it held, and the second on the
+    /// chromosome every batch holds.
+    ///
+    /// Every field of the batch depends on which batch it is, so a block that
+    /// came out of another batch is not equal to it: the batches of a file
+    /// whose variants were all the same would be read in any order and
+    /// nothing would say so.
+    fn two_variants_of_a_batch(batch: u64, chrom: &str, chroms: &mut ChromTable) -> Block {
+        let mut alleles = AllelesColumn::with_num_vars(2).expect("the alleles");
+        alleles.push(&["A".to_owned(), "T".to_owned()]);
+        alleles.push(&["C".to_owned(), "G".to_owned(), "GG".to_owned()]);
+        let of_its_own = chroms.intern(chrom);
+        let shared = chroms.intern(SHARED_CHROM);
+        let first_allele = i8::try_from(batch % 3).expect("the first allele of the batch");
+        let quality = 29.5 + f32::from(u16::try_from(batch).expect("the quality of the batch"));
+        Block {
+            num_vars: 2,
+            num_individuals: CASES_INDIVIDUALS,
+            ploidy: CASES_PLOIDY,
+            gts: vec![
+                first_allele,
+                1,
+                MISSING,
+                1,
+                1,
+                0,
+                1,
+                0,
+                0,
+                0,
+                MISSING,
+                MISSING,
+            ],
+            chrom: Some(vec![of_its_own, shared]),
+            pos: Some(vec![
+                100_u64.saturating_add(batch),
+                1000_u64.saturating_add(batch),
+            ]),
+            // The second variant has no id, which the file holds as a null.
+            id: Some(vec![format!("rs{batch}"), String::new()]),
+            alleles: Some(alleles),
+            // The second variant has no quality, which is a NaN in the block
+            // and a null in the file.
+            qual: Some(vec![quality, f32::NAN]),
+        }
+    }
+
+    /// A vars file of `num_batches` batches of two variants, where the name
+    /// of the chromosome of the first variant of each batch first appears in
+    /// that batch: `chr0` in the first, `chr1` in the second, and so on, so
+    /// that the table of the names of a pass is in the order of the batches
+    /// and a pass that read them in another order numbered them otherwise.
+    fn a_file_of_many_batches(num_batches: u64) -> Vec<u8> {
+        let mut chroms = ChromTable::new();
+        let mut blocks = Vec::new();
+        for batch in 0..num_batches {
+            let chrom = format!("chr{batch}");
+            blocks.push(two_variants_of_a_batch(batch, &chrom, &mut chroms));
+        }
+        let (bytes, refused) =
+            written_block_by_block(blocks, &chroms, &cases_individuals(), CASES_PLOIDY);
+        assert!(refused.is_none(), "the file was written: {refused:?}");
+        bytes
+    }
+
+    /// Everything a pass over a vars file gave, as values a test compares:
+    /// every variant of every block in the order they came out, the numbers
+    /// behind their chromosomes block by block, and the names of the table in
+    /// the order of their numbers.
+    ///
+    /// The names go in beside the numbers because the two can be wrong
+    /// together: a pass that read the batches in another order would hand the
+    /// numbers out in that order, and each variant would still find its own
+    /// name behind its own number.
+    #[derive(Debug, PartialEq)]
+    struct WholePass {
+        rows: Vec<ReadRow>,
+        chrom_numbers: Vec<Vec<u32>>,
+        chrom_names: Vec<String>,
+    }
+
+    /// One pass over the vars file in `bytes` with every field asked for.
+    fn the_whole_pass(bytes: &[u8]) -> WholePass {
+        let mut reader = VarsReader::new(Cursor::new(bytes)).expect("the reader");
+        reader.set_needs(Needs::ALL);
+        let blocks = blocks_of(&mut reader).expect("the blocks of the file");
+        let chroms = reader.chroms();
+        WholePass {
+            rows: rows_of(&blocks, chroms),
+            chrom_numbers: blocks
+                .iter()
+                .map(|block| block.chrom.clone().unwrap_or_default())
+                .collect(),
+            chrom_names: (0..chroms.len())
+                .map(|number| {
+                    let number = u32::try_from(number).expect("the number of a chromosome");
+                    chroms.name(number).unwrap_or("").to_owned()
+                })
+                .collect(),
+        }
+    }
+
+    /// The batches of a vars file are decompressed on the threads of the pool
+    /// the caller is in, and the blocks come out in the order of the file
+    /// whatever that pool is: a pool of one thread and a pool of four give
+    /// the same variants, field by field, in the same order, with the same
+    /// chromosome numbers and the same table of names.
+    ///
+    /// The file holds more batches than the reader decompresses at once, so
+    /// several windows of batches are read, and the name of the chromosome of
+    /// the first variant of each batch first appears in that batch, so a
+    /// batch decoded before the one in front of it would number the names in
+    /// another order and this would see it. The numbers of a table are handed
+    /// out in the order the names are first seen, and nine places of popnei
+    /// index their results by a running count of the variants, so a block out
+    /// of order is a wrong result and not a slower one.
+    ///
+    /// The pools are built here and are not rayon's global one, which has one
+    /// thread per core of the machine. rayon is a dependency of the targets
+    /// that are not wasm, so this test is compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_number_of_threads_does_not_change_the_blocks_of_a_vars_file() {
+        use super::BATCHES_AT_ONCE;
+
+        let num_batches = u64::try_from(BATCHES_AT_ONCE)
+            .expect("how many batches are decompressed at once")
+            .saturating_mul(2)
+            .saturating_add(1);
+        let bytes = a_file_of_many_batches(num_batches);
+        let in_a_pool = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| the_whole_pass(&bytes))
+        };
+
+        let on_one = in_a_pool(1);
+
+        // Two variants of each batch, and the names of the chromosomes are
+        // the one every batch holds and one of each batch after the first.
+        assert_eq!(
+            on_one.rows.len(),
+            usize::try_from(num_batches).expect("the batches") * 2
+        );
+        assert_eq!(
+            on_one.chrom_names.len(),
+            usize::try_from(num_batches).expect("the batches")
+        );
+        assert_eq!(on_one.chrom_names.first().map(String::as_str), Some("chr0"));
+        let of_the_last_batch = format!("chr{last}", last = num_batches.saturating_sub(1));
+        assert_eq!(
+            on_one.chrom_names.last().map(String::as_str),
+            Some(of_the_last_batch.as_str()),
+            "the name of the chromosome of the last batch is the last of the table"
+        );
+        assert_eq!(on_one, in_a_pool(4));
+        assert_eq!(on_one, in_a_pool(18));
+    }
+
+    /// Where each batch of the file in `bytes` is, from its footer, which is
+    /// what a test that damages one batch of a file needs.
+    fn batches_at(bytes: &[u8]) -> Vec<BatchAt> {
+        let file_len = u64::try_from(bytes.len()).expect("the length of the file");
+        let mut source = Cursor::new(bytes);
+        let footer_bytes = footer_of(&mut source, file_len).expect("the footer");
+        let footer = root_as_footer(&footer_bytes).expect("the footer of an arrow file");
+        batches_of_the_footer(&footer, file_len).expect("where the batches are")
+    }
+
+    /// The bytes of the file with the eight bytes that the message of the
+    /// batch at `batch`, counted from 0, starts with written over with
+    /// zeroes, which is a batch arrow-rs cannot read.
+    fn a_batch_damaged(bytes: &[u8], batch: usize) -> Vec<u8> {
+        let at = batches_at(bytes)[batch];
+        let offset = usize::try_from(at.offset).expect("where the batch starts");
+        let ends = offset
+            .checked_add(MESSAGE_START_BYTES)
+            .expect("where the message of the batch ends");
+        let mut damaged = bytes.to_vec();
+        for byte in &mut damaged[offset..ends] {
+            *byte = 0;
+        }
+        damaged
+    }
+
+    /// The batches of a file are decompressed several at once, and the error
+    /// the reader gives is still the one of the first batch in the order of
+    /// the file: a file with a damaged batch gives the error of that batch,
+    /// and a file with two damaged batches gives the error of the earlier of
+    /// the two and not of whichever thread failed first.
+    ///
+    /// The blocks before the damaged batch are given, as they are today, and
+    /// every call after the error gives none.
+    #[test]
+    fn the_first_damaged_batch_in_the_order_of_the_file_is_the_error_the_reader_gives() {
+        let bytes = a_file_of_many_batches(17);
+        let the_sixth = a_batch_damaged(&bytes, 5);
+        let the_sixth_and_the_eighth = a_batch_damaged(&the_sixth, 7);
+
+        let mut reader = VarsReader::new(Cursor::new(&the_sixth)).expect("the reader");
+        let blocks = blocks_of(&mut reader);
+        let of_the_sixth = match blocks {
+            Err(Error::VarsBatchNotRead { batch, problem }) => {
+                assert_eq!(batch, 6);
+                problem
+            }
+            other => panic!("the sixth batch of the file is damaged: {other:?}"),
+        };
+        // The reader is finished after an error: it gave the five blocks
+        // before the damaged batch and gives nothing from here on.
+        assert!(
+            reader
+                .next_block()
+                .expect("no block after the error")
+                .is_none(),
+            "the reader is finished after the error"
+        );
+
+        let mut reader =
+            VarsReader::new(Cursor::new(&the_sixth_and_the_eighth)).expect("the reader");
+        match blocks_of(&mut reader) {
+            Err(Error::VarsBatchNotRead { batch, problem }) => {
+                assert_eq!(batch, 6, "the earlier of the two damaged batches");
+                assert_eq!(problem, of_the_sixth, "the error of the sixth batch alone");
+            }
+            other => panic!("the sixth and the eighth batches are damaged: {other:?}"),
+        }
+    }
+
+    /// The five blocks before the damaged batch are given before the error,
+    /// which is what says that a reader of a window of batches does not lose
+    /// the blocks it decoded before the fault.
+    #[test]
+    fn the_blocks_before_a_damaged_batch_are_given_before_the_error() {
+        let bytes = a_file_of_many_batches(17);
+        let damaged = a_batch_damaged(&bytes, 5);
+        let whole = the_whole_pass(&bytes);
+
+        let mut reader = VarsReader::new(Cursor::new(&damaged)).expect("the reader");
+        reader.set_needs(Needs::ALL);
+        let mut given = Vec::new();
+        let error = loop {
+            match reader.next_block() {
+                Ok(Some(block)) => given.push(block),
+                Ok(None) => panic!("the file ended and its sixth batch is damaged"),
+                Err(error) => break error,
+            }
+        };
+
+        assert!(
+            matches!(error, Error::VarsBatchNotRead { batch: 6, .. }),
+            "the error of the sixth batch: {error:?}"
+        );
+        assert_eq!(given.len(), 5);
+        assert_eq!(
+            rows_of(&given, reader.chroms()),
+            whole.rows[..10],
+            "the ten variants of the five batches before the damaged one"
+        );
     }
 }
