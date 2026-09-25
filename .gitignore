@@ -24,6 +24,10 @@ js/popnei/wasm/
 js/popnei/LICENSE
 tmp/
 .claude/worktrees/
+# What Playwright leaves for a browser test that failed, the screenshot
+# and the trace of `js/popnei/test/browser/`, which `playwright.config.ts`
+# runs.
+js/popnei/test-results/
 # The messages that sessions working at the same time leave for each other,
 # described in .claude/board/README.md. They live outside the branches so
 # that a session on one branch sees what a session on another posted, and

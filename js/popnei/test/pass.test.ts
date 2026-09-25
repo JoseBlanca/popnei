@@ -47,8 +47,10 @@ const SIX_VARIANTS = vcfOf([
 test("a pass gives no block after an error of its own", () => {
   const source = open_vcf(SIX_VARIANTS, 2, false);
   // A pass runs the steps it is given, and a pass with none is asked for
-  // with an empty list of them: the argument cannot be left out.
-  const pass = source.blocks(["chrom", "pos"], 2, new Steps());
+  // with an empty list of them: the argument cannot be left out. The steps
+  // are built with the individuals of the source, which is what a filter of
+  // individuals resolves its names against, and this one has no step.
+  const pass = source.blocks(["chrom", "pos"], 2, new Steps([]));
   try {
     const first = pass.next_block();
     assert.ok(first !== undefined);

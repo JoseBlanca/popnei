@@ -7,8 +7,10 @@
  * `tests/reference/vcf/make_reference.py` writes and bcftools was run on.
  * The reference vars files are those of `docs/specs/io_vars.md`, in
  * `tests/reference/vars/`, which `tests/reference/vars/make_reference.py`
- * writes with pyarrow because popnei cannot write them. The Python tests
- * read the same files.
+ * writes with pyarrow because popnei cannot write them. The tables of
+ * `docs/specs/pca.md` are in `tests/reference/pca/`, which
+ * `tests/reference/pca/make_reference.py` writes. The Python tests read the
+ * same files.
  *
  * It is not a test file: node's test runner runs the files whose name ends
  * in `.test.ts`.
@@ -26,6 +28,16 @@ const REFERENCE_VARS_DIR = new URL(
   import.meta.url,
 );
 
+const REFERENCE_STATS_DIR = new URL(
+  "../../../tests/reference/stats/",
+  import.meta.url,
+);
+
+const REFERENCE_DISTS_DIR = new URL(
+  "../../../tests/reference/dists/",
+  import.meta.url,
+);
+
 /** The bytes of the reference VCF `name`, `cases.vcf` or `many.vcf.gz`. */
 export async function referenceVcf(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_VCF_DIR)));
@@ -34,6 +46,99 @@ export async function referenceVcf(name: string): Promise<Uint8Array> {
 /** The bytes of the reference vars file `name`, `zstd.vars`. */
 export async function referenceVars(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_VARS_DIR)));
+}
+
+/**
+ * The bytes of the reference file `name` of the stats module, the panel
+ * `panel.vcf.gz` and the `panel_pops_bcftools.txt` of its populations.
+ *
+ * `tests/reference/stats/make_reference.py` writes both, and the same
+ * script runs the plink2 and bcftools commands of `docs/specs/stats.md` and
+ * keeps their reports beside them.
+ */
+export async function referenceStats(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_STATS_DIR)));
+}
+
+/**
+ * The bytes of the reference file `name` of the Kosman distances,
+ * `panel.vcf.gz` or `panel.gdkosman.tsv`.
+ *
+ * They are the files of "How it is verified" of `docs/specs/dists.md`, in
+ * `tests/reference/dists/`, which `tests/reference/dists/make_reference.py`
+ * writes: the four datasets as gzipped VCFs and, beside each, the distance
+ * and the number of variants that `gd.kosman` of the R package
+ * PopGenReport 3.1.3 gives for every pair. The Python tests read the same
+ * files.
+ */
+export async function referenceDists(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_DISTS_DIR)));
+}
+
+const REFERENCE_KINSHIP_DIR = new URL(
+  "../../../tests/reference/kinship/",
+  import.meta.url,
+);
+
+/**
+ * The bytes of the reference file `name` of the kinship,
+ * `panel_called.vcf.gz`.
+ *
+ * They are the files of "How it is verified" of `docs/specs/kinship.md`, in
+ * `tests/reference/kinship/`, which
+ * `tests/reference/kinship/make_reference.py` writes: 200 individuals and
+ * 1200 biallelic diploid variants with every genotype called, and beside it
+ * the matrix that plink2 v2.0.0-a.7.7 wrote for it with `--make-rel square`.
+ * The Python tests read the same files.
+ */
+export async function referenceKinship(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_KINSHIP_DIR)));
+}
+
+const REFERENCE_GWAS_DIR = new URL(
+  "../../../tests/reference/gwas/",
+  import.meta.url,
+);
+
+/**
+ * The text of the reference file `name` of the association study,
+ * `phenotypes.csv`.
+ *
+ * They are the files of "How it is verified" of `docs/specs/gwas.md`, in
+ * `tests/reference/gwas/`, which `tests/reference/gwas/make_reference.py`
+ * writes: the traits and the covariates of the two panels of
+ * `tests/reference/kinship/`, the five causal variants, and what plink2
+ * v2.0.0-a.7.7, GMMAT 1.5.0 and rrBLUP 4.6.3 answered on them. The Python
+ * tests read the same files.
+ *
+ * `refusals_of_both_layers.json` is the one file there that no reference
+ * program wrote: it lists the calls that this package and the Python one
+ * both refuse, with what both messages have to say, and each suite writes
+ * the call of each case in its own language.
+ */
+export async function referenceGwas(name: string): Promise<string> {
+  return readFile(new URL(name, REFERENCE_GWAS_DIR), "utf8");
+}
+
+const REFERENCE_LD_DIR = new URL(
+  "../../../tests/reference/ld/",
+  import.meta.url,
+);
+
+/**
+ * The bytes of the reference file `name` of the linkage disequilibrium,
+ * `ld.vcf.gz` or `example.vcf`.
+ *
+ * They are the files of "How it is verified" of `docs/specs/ld.md`, in
+ * `tests/reference/ld/`, which `tests/reference/ld/make_reference.py`
+ * writes: two chromosomes of 250 biallelic variants each, 1000 bp apart,
+ * of 100 diploid individuals with 3 in 100 genotypes missing, and the
+ * worked example of 5 variants of 6 individuals. plink2 v2.0.0-a.7.7 was
+ * run on both and its matrices are stored beside them. The Python tests
+ * read the same files.
+ */
+export async function referenceLd(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_LD_DIR)));
 }
 
 /**
@@ -57,10 +162,161 @@ export function manyVariantsVcf(numVars: number): Uint8Array {
   return vcfOf(lines);
 }
 
+/**
+ * The bytes of a VCF of `numIndividuals` diploid individuals and `numVars`
+ * variants, for a test that needs a vars file of some megabytes.
+ *
+ * The genotypes are drawn with a generator of its own, so that the file
+ * does not compress to nothing: a column of one repeated genotype would be
+ * a few kilobytes of lz4 whatever its number of variants. The generator is
+ * a linear congruential one, the one of numerical recipes, and it starts
+ * from the same seed at every run, so the file and its size are the same
+ * too.
+ */
+export function vcfOfDrawnGenotypes(
+  numVars: number,
+  numIndividuals: number,
+): Uint8Array {
+  const names = Array.from(
+    { length: numIndividuals },
+    (_unused, individual) => `ind${individual + 1}`,
+  );
+  const lines = [
+    "##fileformat=VCFv4.4",
+    `#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t${names.join("\t")}`,
+  ];
+  let drawn = 1;
+  const nextAllele = (): number => {
+    drawn = (Math.imul(drawn, 1664525) + 1013904223) >>> 0;
+    return drawn >>> 30;
+  };
+  for (let variant = 0; variant < numVars; variant += 1) {
+    const genotypes = Array.from({ length: numIndividuals }, () => {
+      const first = nextAllele();
+      const second = nextAllele();
+      return `${first > 2 ? "." : first}/${second > 2 ? "." : second}`;
+    });
+    lines.push(
+      `chr1\t${variant + 1}\t.\tA\tC,G\t.\tPASS\t.\tGT\t${genotypes.join("\t")}`,
+    );
+  }
+  return new TextEncoder().encode([...lines, ""].join("\n"));
+}
+
 export function vcfOf(dataLines: readonly string[]): Uint8Array {
   const header = [
     "##fileformat=VCFv4.4",
     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tind1\tind2\tind3",
   ];
   return new TextEncoder().encode([...header, ...dataLines, ""].join("\n"));
+}
+
+const REFERENCE_PCA_DIR = new URL(
+  "../../../tests/reference/pca/",
+  import.meta.url,
+);
+
+/**
+ * The bytes of the VCF `name` of `tests/reference/pca/`, `worked.vcf`,
+ * which `tests/reference/pca/make_reference.py` writes.
+ */
+export async function referencePcaVcf(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_PCA_DIR)));
+}
+
+/** A table of numbers: its values row after row, and its two sides. */
+export interface Table {
+  values: Float64Array;
+  numRows: number;
+  numCols: number;
+}
+
+/**
+ * The table `name` of `tests/reference/pca/`, `iris.tsv`, which
+ * `tests/reference/pca/make_reference.py` writes with pandas.
+ *
+ * The first line of such a file names the traits and the first field of
+ * every other line names the row, and neither is a value of the table, so
+ * both are left out here, as the tests of the core crate leave them out.
+ *
+ * @throws {Error} When the file has no rows, when its rows do not all hold
+ * the same number of fields, or when a field is not a finite number: a
+ * table read wrong would be the analysis of something else.
+ */
+export async function referenceTable(name: string): Promise<Table> {
+  const text = await readFile(new URL(name, REFERENCE_PCA_DIR), "utf8");
+  const lines = text.split("\n").filter((line) => line.trim() !== "");
+  const rows = lines.slice(1).map((line, row) =>
+    line
+      .split("\t")
+      .slice(1)
+      .map((field) => {
+        const value = Number(field.trim());
+        if (!Number.isFinite(value)) {
+          throw new Error(
+            `${name}: the row ${row} holds the field \`${field}\``,
+          );
+        }
+        return value;
+      }),
+  );
+  const numCols = rows[0]?.length ?? 0;
+  if (rows.length === 0 || rows.some((row) => row.length !== numCols)) {
+    throw new Error(`${name}: its rows do not all hold ${numCols} values`);
+  }
+  return {
+    values: Float64Array.from(rows.flat()),
+    numRows: rows.length,
+    numCols,
+  };
+}
+
+const REFERENCE_POP_DISTS_DIR = new URL(
+  "../../../tests/reference/pop_dists/",
+  import.meta.url,
+);
+
+/**
+ * The bytes of the reference file `name` of the distances between
+ * populations, `micro.vcf.gz` or `micro_pops.txt`.
+ *
+ * They are the files of "How it is verified" of `docs/specs/dists.md`, in
+ * `tests/reference/pop_dists/`, which
+ * `tests/reference/pop_dists/make_reference.py` writes: the multiallelic
+ * panel of 120 microsatellite loci with the populations of its individuals,
+ * and, for it and for the biallelic panel of `tests/reference/dists/`, what
+ * plink2, adegenet, mmod and ADMIXTOOLS 2 printed. The Python tests read the
+ * same files.
+ */
+export async function referencePopDists(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_POP_DISTS_DIR)));
+}
+
+/**
+ * The populations of a file of `IID` and `popcat` columns, which is what
+ * plink2 reads them from, under their names in order.
+ *
+ * popnei keeps the order of the keys of `pops`, so the pairs come out in the
+ * order of the names here, which is the order the reference programs print
+ * their pairs in. The individuals of the biallelic panel are interleaved in
+ * its file, p0 first, then p2, then p1, so reading them in the order they
+ * appear would give the pairs in another order than those files.
+ */
+export function popsOfTheFile(bytes: Uint8Array): Record<string, string[]> {
+  const ofEachName = new Map<string, string[]>();
+  const lines = new TextDecoder().decode(bytes).trimEnd().split("\n");
+  for (const line of lines.slice(1)) {
+    const [individual, pop] = line.split("\t");
+    if (individual === undefined || pop === undefined) {
+      throw new Error(`the line \`${line}\` is no individual and population`);
+    }
+    const ofThePop = ofEachName.get(pop) ?? [];
+    ofThePop.push(individual);
+    ofEachName.set(pop, ofThePop);
+  }
+  const pops: Record<string, string[]> = {};
+  for (const pop of [...ofEachName.keys()].sort()) {
+    pops[pop] = ofEachName.get(pop) as string[];
+  }
+  return pops;
 }

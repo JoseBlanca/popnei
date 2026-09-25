@@ -1,0 +1,31 @@
+68 of the 500 variants of ld.vcf have one dosage at most among their called genotypes, which the diagonal of the r2 matrix of plink2 says.
+max_dist 10000, max_allowed_r2 0.1: 84 variants kept of 500
+  kept with fewer than two dosages: 0 of 84
+  kept pairs inside the window above the threshold: 0 of 84
+  dropped with two dosages and nothing above the threshold kept before them inside their window: 0 of 348
+max_dist 10000, max_allowed_r2 0.3: 133 variants kept of 500
+  kept with fewer than two dosages: 0 of 133
+  kept pairs inside the window above the threshold: 0 of 288
+  dropped with two dosages and nothing above the threshold kept before them inside their window: 0 of 299
+max_dist 50000, max_allowed_r2 0.3: 85 variants kept of 500
+  kept with fewer than two dosages: 0 of 85
+  kept pairs inside the window above the threshold: 0 of 593
+  dropped with two dosages and nothing above the threshold kept before them inside their window: 0 of 347
+max_dist 250000, max_allowed_r2 0.3: 85 variants kept of 500
+  kept with fewer than two dosages: 0 of 85
+  kept pairs inside the window above the threshold: 0 of 1764
+  dropped with two dosages and nothing above the threshold kept before them inside their window: 0 of 347
+
+Each of the four sets above was built with the rule the three properties state, so there all three are 0 by construction. Below, each property is given a set that breaks it, at max_dist 50000 and max_allowed_r2 0.3. If one of these three numbers came out 0, that property would no longer catch what it is there for, and the program that writes this file stops rather than write it.
+The first property against every variant of ld.vcf kept, the set of a filter that never asked whether a variant has a second dosage: 500 of the 500 variants kept. The first number below is 68 because the 68 variants whose called genotypes hold one dosage are in the set, and of the three properties only the first looks at them.
+  kept with fewer than two dosages: 68 of 500
+  kept pairs inside the window above the threshold: 2158 of 22450
+  dropped with two dosages and nothing above the threshold kept before them inside their window: 0 of 0
+The second property against each variant compared with the last variant kept and with nothing else, neither chromosome nor position read, the rule of _filter_chunk_by_ld of pyNei: 264 of the 500 variants kept. The second number below is 707 because a variant that repeats the variant two before it is kept whenever the variant in between hid it, so pairs above the threshold are left inside the window.
+  kept with fewer than two dosages: 0 of 264
+  kept pairs inside the window above the threshold: 707 of 6168
+  dropped with two dosages and nothing above the threshold kept before them inside their window: 0 of 168
+The third property against the 85 variants kept at these settings with the first ten of them taken out, the set of a filter that dropped ten variants it could have kept: 75 of the 500 variants kept. The third number below is 64 because each of the ten, and each variant that only they had dropped, has two dosages and nothing above the threshold kept before it inside its window.
+  kept with fewer than two dosages: 0 of 75
+  kept pairs inside the window above the threshold: 0 of 520
+  dropped with two dosages and nothing above the threshold kept before them inside their window: 64 of 357

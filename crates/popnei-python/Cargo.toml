@@ -23,6 +23,14 @@ crate-type = ["cdylib"]
 test = false
 doctest = false
 
+# The feature of the core crate, which is the one of crates/popnei-linalg,
+# passed on so that a wheel can be built without the BLAS and LAPACK of
+# the system: with it off the linear algebra runs on faer and nothing
+# links a library of the system. docs/specs/linalg.md says what it is for.
+[features]
+default = ["blas"]
+blas = ["popnei/blas"]
+
 [dependencies]
 numpy.workspace = true
 popnei.workspace = true

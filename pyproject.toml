@@ -23,7 +23,22 @@ requires-python = ">=3.14"
 # binding crate hands it the arrays of the core, so a user gets them without
 # a copy. It is the version pyNei asks for, so that the two libraries share
 # one numpy in the environment where they are compared.
-dependencies = ["numpy>=2.4.6"]
+#
+# pandas holds the results that a user reads by name: the square matrix of a
+# `Distances`, indexed by the names of the individuals, the projections of a
+# principal component analysis, a frame of the individuals by the components,
+# whose names come from the frame the user gave, and the results per
+# population of `docs/specs/stats.md`, the mean of a statistic and the counts
+# of its histogram, which come out of the core as one value per population and
+# go back as the series and the frames pyNei's own results are, keyed by
+# population name. It is imported by `popnei.dists`, by `popnei.pca` and by
+# `popnei.stats`, and so by `import popnei`. The version is
+# the pandas of the pyodide the wheel is built for, 3.0.2 in pyodide 314.0.7,
+# as numpy's floor is its numpy: micropip refuses a wheel that asks for more
+# than what pyodide ships, and nothing here needs a newer pandas. It is also
+# the version pyNei asks for, so that the two libraries share one pandas in the
+# environment where they are compared.
+dependencies = ["numpy>=2.4.6", "pandas>=3.0.2"]
 
 [project.urls]
 repository = "https://github.com/JoseBlanca/popnei"
@@ -83,6 +98,20 @@ testpaths = ["tests"]
 # the skills under `.claude/` are prose that the `writing` skill governs.
 # `tests/reference` holds the VCFs and the script from pyNei that writes
 # them again, which stays as it came.
+#
+# The 13 Python files of `crates/popnei/benches/` are not here, and so no
+# check of the project reads them: a duplicate `import os` and a bare `x=1`
+# appended to `time_diversity.py` left both `ruff format --check` and `ruff
+# check` passing. Adding `crates/popnei/benches/*.py` on 24 September 2026
+# was tried and taken out again, because it is not formatting alone.
+# `ruff format --check` would reformat `make_big_vcf.py` in four places and
+# `make_pops.py` in one, and `ruff check` finds two errors in
+# `make_big_vcf.py`: FURB122, a `fhand.write` in a `for` loop that
+# `fhand.writelines` replaces, and UP012, a `"...".encode()` that is a bytes
+# literal. Both are in a file that writes a fixture and neither is a defect
+# of it, and fixing eleven harnesses nobody was reading is a change of its
+# own. The owner decides whether those files come under the checks and who
+# fixes what the checks then find.
 include = ["pyproject.toml", "python/**/*.py", "tests/*.py"]
 extend-exclude = ["tests/reference"]
 

@@ -19,8 +19,16 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
+pub mod dists;
+pub mod diversity;
 pub mod errors;
+pub mod gwas;
+pub mod kinship;
+pub mod ld;
+pub mod pca;
+pub mod pop_dists;
 pub mod source;
+pub mod stats;
 pub mod steps;
 pub mod vars;
 pub mod vcf;

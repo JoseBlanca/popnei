@@ -23,6 +23,8 @@ doctest = false
 [dependencies]
 popnei.workspace = true
 wasm-bindgen.workspace = true
+js-sys.workspace = true
+web-sys.workspace = true
 
 [lints]
 workspace = true

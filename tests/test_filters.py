@@ -1,20 +1,32 @@
-"""The three filters from Python: which variants they keep, what they count
-and what a `Variants` carries once they are put on it.
+"""The filters from Python: which variants they keep, what they count and
+what a `Variants` carries once they are put on it.
 
-`docs/specs/filters.md` has the three filters, the counts of each and the
-`Step` that a filter is in a `Variants`. The comparison it asks for is with
-pyNei at commit ef0ca6e, which `pyproject.toml` names: `many.vcf` of
-`docs/specs/io_vcf.md`, 500 variants of 50 diploid individuals, is read by
-both libraries, popnei with `only_passed=False` because pyNei gives every
-variant whatever its FILTER says, and the genotypes and the positions of the
-blocks of one are compared with those of the chunks of the other. The
-numbers each filter keeps are those of bcftools 1.24 as well, and
-`tests/reference/filters/` holds every position each one keeps.
+`docs/specs/filters.md` has the four filters, the counts of each and the
+`Step` that a filter is in a `Variants`. The three that compare one number
+of a variant are first in this file, and the one by linkage disequilibrium,
+which compares a variant with the variants kept before it and is run on
+another dataset, is at its end.
+
+The comparison the spec asks for of the three is with pyNei at commit
+ef0ca6e, which `pyproject.toml` names: `many.vcf` of `docs/specs/io_vcf.md`,
+500 variants of 50 diploid individuals, is read by both libraries, popnei
+with `only_passed=False` because pyNei gives every variant whatever its
+FILTER says, and the genotypes and the positions of the blocks of one are
+compared with those of the chunks of the other. The numbers each filter
+keeps are those of bcftools 1.24 as well, and `tests/reference/filters/`
+holds every position each one keeps.
 
 The counts of a chain are compared with pyNei's `gather_filtering_stats`,
 kind by kind: pyNei gives the last filter first and popnei gives the filters
 in the order of the steps, which is asserted apart, over `list(filtering)`,
 because two dicts of the same pairs are equal in any order.
+
+The filter by linkage disequilibrium is compared with nothing of pyNei,
+which the spec says why: pyNei's rule compares a candidate with the last
+kept variant alone and reads no position, so the two libraries keep
+different sets on any dataset where a variant is linked to one that is not
+its predecessor. What that filter is checked against is plink2, through the
+table of counts and positions that the spec holds.
 """
 
 from pathlib import Path
@@ -489,3 +501,260 @@ def test_a_filter_over_a_vars_file_keeps_what_it_keeps_over_the_vcf(
 
     assert of_the_file[1] == of_the_vcf[1]
     numpy.testing.assert_array_equal(of_the_file[0], of_the_vcf[0])
+
+
+# The filter by linkage disequilibrium, the fourth filter and the one that
+# compares a variant with the variants kept before it instead of with a
+# number of the variant alone. It is run on `ld.vcf.gz` of
+# `tests/reference/ld/`, 500 variants of 100 individuals on two chromosomes
+# 250000 bp long, which `docs/specs/ld.md` describes and for which plink2
+# wrote every r² this filter decides by.
+REFERENCE_LD_DIR = Path(__file__).parent / "reference" / "ld"
+LD_NUM_VARS = 500
+
+# The first five variants kept at a threshold of 0.3, which are the same at
+# each of the three windows of the table below.
+THE_FIRST_FIVE_AT_0_3 = (
+    "chr1:1000",
+    "chr1:5000",
+    "chr1:7000",
+    "chr1:11000",
+    "chr1:15000",
+)
+
+# The table of "How it is verified" of the item "The filter by linkage
+# disequilibrium" of `docs/specs/filters.md`: the window in base pairs, the
+# largest r² a kept variant may have against a variant of its window, how
+# many of the 500 variants are kept, and the first five of them by position.
+THE_LD_TABLE = [
+    (
+        10000,
+        0.1,
+        84,
+        ("chr1:1000", "chr1:10000", "chr1:16000", "chr1:22000", "chr1:27000"),
+    ),
+    (10000, 0.3, 133, THE_FIRST_FIVE_AT_0_3),
+    (50000, 0.3, 85, THE_FIRST_FIVE_AT_0_3),
+    (250000, 0.3, 85, THE_FIRST_FIVE_AT_0_3),
+]
+
+# The threshold a maf filter is given before the filter by linkage
+# disequilibrium so that it keeps every variant of the file and the second
+# filter is given all 500: a major allele frequency is at most 1.
+THE_MAF_THAT_KEEPS_EVERY_VARIANT = 1.0
+
+
+def _ld() -> Variants:
+    """The 500 variants of `ld.vcf.gz`, all of them whatever their FILTER
+    says, which is what the cargo tests of this filter read."""
+    return open_vcf(REFERENCE_LD_DIR / "ld.vcf.gz", only_passed=False)
+
+
+def _at(blocks) -> tuple[str, ...]:
+    """Where each variant of a pass is, ``chr1:1000``, in the order the
+    blocks give them."""
+    return tuple(
+        f"{chrom}:{pos}"
+        for block in blocks
+        for chrom, pos in zip(block.chrom, block.pos, strict=True)
+    )
+
+
+@pytest.mark.parametrize(
+    ("max_dist", "max_allowed_r2", "kept", "first_five"), THE_LD_TABLE
+)
+def test_the_ld_filter_keeps_the_variants_of_the_table_of_the_spec(
+    max_dist: int, max_allowed_r2: float, kept: int, first_five: tuple[str, ...]
+) -> None:
+    """The four rows of the table, each with the variants that the blocks of
+    a whole pass hold and with the counts of the pass.
+
+    The set behind each count is pinned to plink2's numbers and not to
+    popnei's own: `tests/reference/ld/make_reference.py` checks the three
+    properties of it against the r² that plink2 wrote for every pair.
+    """
+    variants = _ld()
+    variants.filter_by_ld(max_allowed_r2, max_dist)
+
+    blocks = variants.iter_blocks(fields=("chrom", "pos"))
+    at = _at(blocks)
+
+    assert len(at) == kept
+    assert at[:5] == first_five
+    assert blocks.pass_stats.num_vars == kept
+    assert blocks.pass_stats.filtering == {
+        "ld": FilteringStats(vars_processed=LD_NUM_VARS, vars_kept=kept)
+    }
+
+
+def test_the_ld_step_carries_the_kind_ld_and_both_of_its_arguments() -> None:
+    """The step a user reads after a maf filter and this one, with the
+    window as the whole number of base pairs they wrote and not as a
+    float."""
+    variants = _ld()
+    variants.filter_by_maf(0.95)
+
+    assert variants.filter_by_ld(0.1, 10000) is None
+
+    assert variants.steps == (
+        Step(kind="maf", args={"max_allowed_maf": 0.95}),
+        Step(kind="ld", args={"max_allowed_r2": 0.1, "max_dist": 10000}),
+    )
+    assert isinstance(variants.steps[1].args["max_dist"], int)
+    assert "ld(max_allowed_r2=0.1, max_dist=10000)" in repr(variants)
+
+
+def test_the_counts_of_a_maf_filter_and_an_ld_filter_after_it() -> None:
+    """What a user writes in place of pyNei's one `filter_by_ld_and_maf`:
+    the two filters apart, each with its counts under its kind and in the
+    order of the steps.
+
+    The maf filter is at 1.0, which keeps every variant of the file, so the
+    filter by linkage disequilibrium is given all 500 and keeps the 84 of
+    the first row of the table.
+    """
+    variants = _ld()
+    variants.filter_by_maf(THE_MAF_THAT_KEEPS_EVERY_VARIANT)
+    variants.filter_by_ld(0.1, 10000)
+
+    blocks = variants.iter_blocks()
+    at = _at(blocks)
+
+    assert len(at) == 84
+    assert list(blocks.pass_stats.filtering) == ["maf", "ld"]
+    assert blocks.pass_stats.filtering == {
+        "maf": FilteringStats(vars_processed=LD_NUM_VARS, vars_kept=LD_NUM_VARS),
+        "ld": FilteringStats(vars_processed=LD_NUM_VARS, vars_kept=84),
+    }
+
+
+@pytest.mark.parametrize(("threshold", "written"), THRESHOLDS_REFUSED)
+def test_a_max_allowed_r2_that_is_not_a_number_from_0_to_1_is_refused(
+    threshold: float, written: str
+) -> None:
+    """The threshold of this filter is an r², a number from 0 to 1, and one
+    that is not is refused at the call that adds the filter, which names the
+    argument and the value and leaves the steps as they were."""
+    variants = _ld()
+
+    with pytest.raises(ValueError) as refusal:
+        variants.filter_by_ld(threshold, 10000)
+
+    assert "max_allowed_r2" in str(refusal.value)
+    assert written in str(refusal.value)
+    assert variants.steps == ()
+
+
+@pytest.mark.parametrize("max_dist", [0, -1])
+def test_a_max_dist_below_1_is_refused_at_the_call(max_dist: int) -> None:
+    """A window of 0 base pairs reaches no variant but the ones at the very
+    position of the variant it is the window of, and a negative one reaches
+    none at all.
+
+    A negative number is the `ValueError` of this argument and not the
+    `OverflowError` that pyo3 raises when a negative number is asked of an
+    unsigned one, which says nothing of what a user wrote.
+    """
+    variants = _ld()
+
+    with pytest.raises(ValueError) as refusal:
+        variants.filter_by_ld(0.1, max_dist)
+
+    assert "max_dist" in str(refusal.value)
+    assert str(max_dist) in str(refusal.value)
+    # A window of 0 base pairs is no window, so the refusal of a negative
+    # one states 1 as the smallest, where the two distances of the fall-off
+    # of r² with distance take 0.
+    if max_dist < 0:
+        assert "1 or more" in str(refusal.value)
+    assert variants.steps == ()
+
+
+@pytest.mark.parametrize("given", ["0.5", None, True, False])
+def test_an_argument_of_filter_by_ld_that_is_no_number_is_a_type_error(
+    given: object,
+) -> None:
+    """A truth value among them, which Python counts as 1 and as 0 and which
+    says nothing about a threshold or about a number of base pairs."""
+    variants = _ld()
+
+    with pytest.raises(TypeError) as of_the_threshold:
+        variants.filter_by_ld(given, 10000)
+    assert "max_allowed_r2" in str(of_the_threshold.value)
+
+    with pytest.raises(TypeError) as of_the_window:
+        variants.filter_by_ld(0.1, given)
+    assert "max_dist" in str(of_the_window.value)
+
+    assert variants.steps == ()
+
+
+def test_filter_by_ld_with_an_argument_missing_is_a_type_error() -> None:
+    """Neither argument has a default, as the threshold of the other three
+    filters has none."""
+    variants = _ld()
+
+    with pytest.raises(TypeError):
+        variants.filter_by_ld(0.1)
+    with pytest.raises(TypeError):
+        variants.filter_by_ld()
+
+    assert variants.steps == ()
+
+
+def test_a_second_filter_by_ld_is_refused_with_the_threshold_that_is_set() -> None:
+    """A second filter of this kind is refused as a second one of any other
+    kind is, and a filter of another kind between the two changes
+    nothing."""
+    variants = _ld()
+    variants.filter_by_ld(0.1, 10000)
+    variants.filter_by_maf(0.95)
+
+    with pytest.raises(ValueError) as refusal:
+        variants.filter_by_ld(0.3, 50000)
+
+    assert "ld" in str(refusal.value)
+    assert "0.1" in str(refusal.value)
+    assert "0.3" in str(refusal.value)
+    assert len(variants.steps) == 2
+
+
+@pytest.mark.parametrize(
+    ("last_variant", "positions"),
+    [
+        (("chr1", 1000), ("2000", "1000")),
+        (("chr0", 3000), ("2000", "3000")),
+    ],
+)
+def test_a_source_whose_variants_do_not_come_in_order_is_refused(
+    write_vcf, last_variant: tuple[str, int], positions: tuple[str, str]
+) -> None:
+    """The window of a variant is the variants kept behind it on its
+    chromosome, so this filter is the one reader of popnei that needs the
+    variants of each chromosome to come together and in the order of their
+    positions.
+
+    A position that falls below the one before it, and a chromosome that had
+    already ended, are a `ValueError` that names the file and both
+    positions. It comes when the pass runs and not at the call that adds the
+    filter, which reads nothing of the source.
+    """
+    gts = "GT\t0/0\t0/1\t1/1"
+    chrom, pos = last_variant
+    path = write_vcf(
+        [
+            f"chr0\t1000\t.\tA\tC\t.\tPASS\t.\t{gts}",
+            f"chr1\t2000\t.\tA\tC\t.\tPASS\t.\t{gts}",
+            f"{chrom}\t{pos}\t.\tA\tC\t.\tPASS\t.\t{gts}",
+        ]
+    )
+    variants = open_vcf(path)
+    variants.filter_by_ld(0.5, 10000)
+
+    with pytest.raises(ValueError) as refusal:
+        list(variants.iter_blocks())
+
+    message = str(refusal.value)
+    assert message.startswith(str(path))
+    for position in positions:
+        assert position in message

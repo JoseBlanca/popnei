@@ -19,7 +19,8 @@ import { Steps } from "../wasm/popnei.js";
 
 import {
   aNumber,
-  namesOfFields,
+  distanceInBasePairs,
+  namesOf,
   whatWasGiven,
   wholeNumberOfOneOrMore,
 } from "./arguments.js";
@@ -44,6 +45,19 @@ export type SourceOfVariants = VcfSource | VarsSource;
 export interface SourceAndSteps {
   source: SourceOfVariants;
   steps: StepsOfTheCore;
+  /**
+   * What `readsTheSource` gives, with the run it makes counted as reading
+   * these variants while it runs.
+   *
+   * Every call that hands the source to the core goes through here, because
+   * that is what `free()` refuses to free under: wasm-bindgen holds the
+   * source for the length of such a call, and the free of a value it holds
+   * throws inside wasm after the generated code has already zeroed the
+   * pointer of the handle and taken it out of the `FinalizationRegistry`.
+   * The source would then be left in the memory of wasm with nothing to
+   * free it.
+   */
+  whileTheRunReads: <T>(readsTheSource: () => T) => T;
 }
 
 /**
@@ -61,10 +75,32 @@ export interface PassStats {
 
   /**
    * How many variants each filter of the pass was given and kept, under the
-   * kind of the filter, `"missing_data"`, `"maf"` or `"obs_het"`, in the
-   * order of the steps. It is empty for a pass with no filter.
+   * kind of the filter, `"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`,
+   * in the order of the steps. It is empty for a pass with no filter.
    */
   filtering: Record<string, FilteringStats>;
+}
+
+/**
+ * How far a pass over the source has got, which a page draws a bar from.
+ *
+ * A pass is one reading of the source from its start, and a run is one call
+ * of one consumer, `calcKinship` or the iteration of `iterBlocks`, with the
+ * passes it makes. `Variants.onProgress` is where the function that is told
+ * these four numbers is set, and it says when the calls are made.
+ */
+export interface Progress {
+  /** How many bytes of the file this pass has read, `numBytes` at most. */
+  bytesRead: number;
+
+  /** How many bytes the file holds. */
+  numBytes: number;
+
+  /** Which pass of the run is reading, 1 for the first. */
+  pass: number;
+
+  /** How many passes the run makes, `numPassesOf` of its consumer. */
+  numPasses: number;
 }
 
 /**
@@ -119,14 +155,38 @@ export function passStatsOf(counts: PassCounts): PassStats {
   }
 }
 
+/**
+ * The kind of an argument whose value is the threshold of a filter, which
+ * is in `arg_thresholds`, of one whose value is the names of the
+ * individuals to keep, which are in `arg_individuals`, and of one whose
+ * value is a window of base pairs, which is in `arg_distances`. They are
+ * the three numbers `arg_kinds` of the binding crate gives.
+ */
+const A_THRESHOLD = 0;
+const THE_NAMES_OF_INDIVIDUALS = 1;
+const A_DISTANCE = 2;
+
 /** The steps of the core as the steps a user reads, in their order. */
 function stepsOf(steps: StepsOfTheCore): Step[] {
   const kinds = steps.kinds();
   const names = steps.arg_names();
-  const values = steps.arg_values();
   const numArgsPerStep = steps.num_args_per_step();
+  // The value of an argument crosses in the array of its kind: the
+  // threshold of a filter is one number, and the individuals to keep are
+  // their names, one argument after another. Which array each argument is
+  // read from is the kind that crosses beside it, and an argument of a
+  // kind this version of the package does not know is thrown for and not
+  // read as a threshold.
+  const argKinds = steps.arg_kinds();
+  const numNamesPerArg = steps.num_names_per_arg();
+  const thresholds = steps.arg_thresholds();
+  const individuals = steps.arg_individuals();
+  const distances = steps.arg_distances();
   const ofEachStep: Step[] = [];
-  let first = 0;
+  let firstArg = 0;
+  let nextThreshold = 0;
+  let nextDistance = 0;
+  let firstName = 0;
   for (const [step, kind] of kinds.entries()) {
     // The arguments of every step cross flat, the ones of the first step
     // first, and how many each step has is what cuts them apart.
@@ -137,19 +197,57 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
           "arguments every one of them has",
       );
     }
-    const args: Record<string, number> = {};
-    for (let argument = first; argument < first + numArgs; argument += 1) {
+    const args: Record<string, unknown> = {};
+    for (let argument = firstArg; argument < firstArg + numArgs; argument += 1) {
       const name = names[argument];
-      const value = values[argument];
-      if (name === undefined || value === undefined) {
+      const argKind = argKinds[argument];
+      const numNames = numNamesPerArg[argument];
+      if (name === undefined || argKind === undefined || numNames === undefined) {
         throw new Error(
           `popnei: the step \`${kind}\` of these variants holds ${numArgs} ` +
-            `arguments and not the name and the value of every one of them`,
+            `arguments and not the name and the kind of every one of them`,
         );
       }
-      args[name] = value;
+      if (argKind === A_THRESHOLD) {
+        const threshold = thresholds[nextThreshold];
+        if (threshold === undefined) {
+          throw new Error(
+            `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+              "variants is a threshold and has no number",
+          );
+        }
+        args[name] = threshold;
+        nextThreshold += 1;
+      } else if (argKind === A_DISTANCE) {
+        const distance = distances[nextDistance];
+        if (distance === undefined) {
+          throw new Error(
+            `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+              "variants is a window of base pairs and has no number",
+          );
+        }
+        args[name] = distance;
+        nextDistance += 1;
+      } else if (argKind === THE_NAMES_OF_INDIVIDUALS) {
+        const kept = individuals.slice(firstName, firstName + numNames);
+        if (kept.length !== numNames) {
+          throw new Error(
+            `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+              `variants holds ${numNames} names and not every one of them`,
+          );
+        }
+        args[name] = kept;
+        firstName += numNames;
+      } else {
+        throw new Error(
+          `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+            `variants is of the kind ${argKind}, which this version of the ` +
+            "package does not know; the package and the wasm it was built " +
+            "with are of one version",
+        );
+      }
     }
-    first += numArgs;
+    firstArg += numArgs;
     ofEachStep.push({ kind, args });
   }
   return ofEachStep;
@@ -211,21 +309,28 @@ export function numberOfOpenPasses(): number {
  * the dataset is never in memory as a whole. The genotypes come out of it
  * through `iterBlocks` and through nothing else.
  *
- * What is done with it is of two kinds, and what a call gives back says
- * which. A step, a filter of `docs/specs/filters.md`, is a method that adds
- * itself to the list of steps, reads nothing and returns nothing, and
- * `steps` is that list. A consumer, `iterBlocks`, `writeVars` or the
- * function of a calculation, gives something back, and it runs the steps: it
- * makes as many passes over the source as it needs, each one built from the
- * steps the `Variants` has when that pass starts. So a step added between
- * two consumers holds for the second, and one added while a pass runs holds
- * from the next pass.
+ * What is done with it is of three kinds. A step, a filter of
+ * `docs/specs/filters.md`, is a method that adds itself to the list of steps,
+ * reads nothing and returns nothing, and `steps` is that list. A consumer,
+ * `iterBlocks`, `writeVars` or the function of a calculation, gives something
+ * back, and it runs the steps: it makes as many passes over the source as it
+ * needs, each one built from the steps the `Variants` has when that pass
+ * starts. So a step added between two consumers holds for the second, and one
+ * added while a pass runs holds from the next pass. The third kind is
+ * `onProgress`, which sets the function that every pass tells how far it has
+ * got: it returns nothing, as a step does, but it adds no step and changes
+ * nothing of the variants a pass gives.
  *
  * It is pyNei's `Variants` under the word of `docs/glossary.md`: what pyNei
  * calls a sample is here an individual, one organism that was genotyped.
  */
 export class Variants {
-  /** The file in the memory of wasm, and `null` once `free` took it. */
+  /**
+   * The source in the memory of wasm, which holds the bytes of the file when
+   * it was opened over a `Uint8Array` and the number of the entry that holds
+   * the handle of the file when it was opened over a `File` or a `Blob`, and
+   * `null` once `free` took it.
+   */
   #source: SourceOfVariants | null;
   /**
    * The steps in the memory of wasm, which every pass is built from, and
@@ -234,6 +339,15 @@ export class Variants {
   #steps: StepsOfTheCore | null;
   #individuals: readonly string[];
   #ploidy: number;
+  /**
+   * How many calls of a consumer over these variants are on the stack,
+   * which is what `free()` refuses to free under.
+   *
+   * It is more than 1 when the function that is told the progress starts a
+   * consumer of its own, which `docs/specs/js_sources.md` says runs as any
+   * other call does.
+   */
+  #runsReading = 0;
 
   /**
    * The handle over `source`, which `openVcf` and `openVars` build, with no
@@ -241,21 +355,36 @@ export class Variants {
    *
    * The names of the individuals and the ploidy are read here, from the
    * header of the VCF or the schema of the vars file that was read once, so
-   * that they answer without the core.
+   * that they answer without the core. The names go to the steps as well,
+   * which resolve the names of a filter of individuals against them.
    */
   constructor(source: SourceOfVariants) {
+    const steps = new Steps(source.individuals());
     this.#source = source;
-    this.#steps = new Steps();
-    this.#individuals = Object.freeze(source.individuals());
+    this.#steps = steps;
+    // The names of the individuals the next pass gives, which the steps are
+    // what says: those of the source until a filter of individuals is put
+    // on them. They are kept in JavaScript so that `individuals` answers
+    // after `free`.
+    this.#individuals = Object.freeze(steps.individuals());
     this.#ploidy = source.ploidy();
   }
 
-  /** The names of the individuals, in the order the source has them. */
+  /**
+   * The names of the individuals the next pass gives, in its order.
+   *
+   * They are those of the source, in the order the source has them, until
+   * `filterIndividuals` is put on the `Variants`: from then on they are the
+   * ones that filter keeps, in the order they were named, which is the
+   * order of the genotypes of every block. A pass changes nothing of them,
+   * so they are the same read before one and after one, and they answer
+   * after `free` as well: they are in JavaScript.
+   */
   get individuals(): readonly string[] {
     return this.#individuals;
   }
 
-  /** How many individuals the source holds. */
+  /** How many individuals the next pass gives the genotypes of. */
   get numIndividuals(): number {
     return this.#individuals.length;
   }
@@ -376,6 +505,114 @@ export class Variants {
   }
 
   /**
+   * Keeps the variants whose r² against every variant kept no more than
+   * `maxDist` base pairs behind them on their chromosome is at most
+   * `maxAllowedR2`.
+   *
+   * r² is the square of the correlation, across the individuals called at
+   * both variants, between the dosages of two variants, where the dosage
+   * of a genotype is how many of its alleles are not the major allele of
+   * its variant. It is 1 when the dosage of an individual at one variant
+   * fixes its dosage at the other and 0 when knowing one says nothing
+   * about the other, so two variants with a high r² say the same thing
+   * about these individuals, and what this filter leaves is a set of
+   * variants that says each thing once. A principal component analysis or
+   * a kinship over variants that repeat one another counts that stretch of
+   * the genome as many times as it has variants, and this is the filter a
+   * user puts before them.
+   *
+   * The variants a candidate is compared with, its window, are those the
+   * filter has already kept that are on its chromosome and no more than
+   * `maxDist` base pairs behind it, and of two variants above the
+   * threshold the one that comes first is the one kept. A variant whose
+   * called genotypes hold one dosage, and one with no called genotype at
+   * all, is dropped at every threshold, having nothing to tell another
+   * variant apart with; a pair whose r² cannot be worked out, the
+   * individuals called at both holding one dosage, drops neither of the
+   * two.
+   *
+   * The dosages are read over every individual of the dataset. A user who
+   * wants them read over one population puts the filter of individuals
+   * before this one. Neither argument has a default.
+   *
+   * The largest window is 9007199254740991 base pairs, 2^53 - 1, which is
+   * `Number.MAX_SAFE_INTEGER`, the largest whole number a number of
+   * JavaScript counts to one by one: the core takes a window of up to
+   * 2^64 - 1, which is what a user of popnei in Python can write, and above
+   * 2^53 - 1 a number of JavaScript counts in twos, so a larger window would
+   * reach the core as another number than the one written. No genome comes
+   * near it: the largest one known, over 1e11 base pairs in all of its
+   * chromosomes together, is smaller by more than four orders of magnitude.
+   *
+   * The call adds a step and gives nothing back.
+   *
+   * @throws {Error} When `maxAllowedR2` is not a number from 0 to 1 or is
+   * not given, when `maxDist` is not a whole number of base pairs from 1 to
+   * 9007199254740991, and when
+   * a filter of this kind is set already. It also throws when the variants
+   * were freed and when `init` has not been awaited. The variants of each
+   * chromosome have to come together and in order of position, which is
+   * what this filter alone of popnei asks of a source: a position below
+   * the one before it on the same chromosome, and a chromosome that had
+   * already ended, are an `Error` thrown by the block of the pass that
+   * would have held that variant, and not by this call.
+   */
+  filterByLd(maxAllowedR2: number, maxDist: number): void {
+    theWasmHasToBeLoaded();
+    this.#stepsThatWereNotFreed().filter_by_ld(
+      aNumber("maxAllowedR2", maxAllowedR2),
+      distanceInBasePairs("maxDist", maxDist),
+    );
+  }
+
+  /**
+   * Keeps the genotypes of `individuals` at every variant and drops those of
+   * the rest.
+   *
+   * Every variant stays: the step takes columns of the genotypes away and no
+   * row, so it has no entry in the counts of a pass. The individuals are
+   * kept in the order they are named here, which is the order of the
+   * genotypes of every block and of the rows of every result over
+   * individuals, so it is also the way to put a dataset's individuals in the
+   * order a user wants. pyNei's `filter_samples` keeps them in the order of
+   * the source instead.
+   *
+   * A step of it is what every step that comes after it sees:
+   * `filterByMissingData` before the call divides by all the individuals of
+   * the source, and after it by the kept ones alone. `individuals` and
+   * `numIndividuals` are the kept ones from the call on, since they are what
+   * the next pass gives.
+   *
+   * The call adds a step and gives nothing back.
+   *
+   * @throws {Error} When `individuals` is not an array of names, which one
+   * name written as a string is: the call would ask for the individuals
+   * `i`, `n`, `d` and so on. A name that is not an individual of the source
+   * is an `Error` that names it, where pyNei drops it in silence and gives
+   * the individuals it did find; a name that is there twice is one too,
+   * since one individual is kept once; and so is a call with no name,
+   * because variants of nobody are no dataset. A second filter of
+   * individuals on the same `Variants` is an `Error` as well: two lists keep
+   * the individuals that are in both, which is one list, so the second says
+   * that the steps are not what their user thinks. A user who wants two sets
+   * of individuals over one file opens it twice. After any of them the steps
+   * are as they were. It also throws when the variants were freed and when
+   * `init` has not been awaited.
+   */
+  filterIndividuals(individuals: readonly string[]): void {
+    theWasmHasToBeLoaded();
+    const kept = namesOf("individuals", individuals, {
+      oneOfThem: "individual",
+      anExample: "ind00",
+    });
+    const steps = this.#stepsThatWereNotFreed();
+    steps.filter_individuals(kept);
+    // The names the next pass gives, which the core is what says: they are
+    // kept here as well so that `individuals` answers after `free`.
+    this.#individuals = Object.freeze(steps.individuals());
+  }
+
+  /**
    * The variants of the source, block by block, from its start.
    *
    * Every call reads the source from its start, so a `Variants` can be
@@ -407,9 +644,10 @@ export class Variants {
     theWasmHasToBeLoaded();
     const source = this.#sourceThatWasNotFreed();
     const steps = this.#stepsThatWereNotFreed();
-    const fields = namesOfFields(
+    const fields = namesOf(
       "fields",
       options.fields === undefined ? FIELDS_OF_A_BLOCK : options.fields,
+      { oneOfThem: "field", anExample: "chrom" },
     );
     const numVarsPerBlock =
       options.numVarsPerBlock === undefined
@@ -422,8 +660,105 @@ export class Variants {
     // crosses by value, so the Rust that refuses the field owns it and drops
     // it. Measured on this build: 20000 calls refused for their field left
     // the memory of wasm at the 1310720 bytes it held before them.
+    // The pass is opened with the run counted, which is where the header of
+    // a VCF or the footer of a vars file is read and the page is told that
+    // the pass has read nothing: a `free()` from inside that call is
+    // refused. The blocks after it are read with no call holding the
+    // source, so a `free()` from inside one of those is taken and the pass
+    // reads on to its end.
     return new BlocksOfOnePass(
-      source.blocks(fields, numVarsPerBlock, steps.of_a_pass()),
+      this.#whileTheRunReads(() =>
+        source.blocks(fields, numVarsPerBlock, steps.of_a_pass()),
+      ),
+    );
+  }
+
+  /**
+   * Sets `told` as the function that is told how far every pass over the
+   * source has got, and takes the one that was set off when it is called
+   * with nothing.
+   *
+   * While a consumer runs, the worker is inside wasm and reads no message,
+   * so this is how a page learns how a run is going. Three things make a
+   * call: the first read of each pass, which says that pass has read
+   * nothing; a read that brings the bytes read since the last call to the
+   * size of a range, 4 MiB of the file; and the end of the run, which makes
+   * one call for each of its passes, in the order of their numbers, with
+   * the bytes that pass read. The last of the three is what says a pass is
+   * over, because no read does: a pass over a vars file stops after its
+   * last batch, and a run that fails stops where it failed. Every call
+   * carries the bytes that pass has read, the bytes the file holds, which
+   * pass of the run is reading and how many passes the run makes.
+   *
+   * The 4 MiB of a range is popnei's own choice and not a number the
+   * package promises: nothing has been measured at that size, and "Speed"
+   * of `docs/specs/js_sources.md` leaves it there until a pass over a VCF of
+   * a few hundred MB is timed in Chromium at 256 KiB, 1 MiB, 4 MiB and
+   * 16 MiB, which will set it. An application that draws a bar reads the
+   * bytes of each call and not the size of a range.
+   *
+   * The bytes are those of the file on disk, so a gzipped VCF is counted in
+   * its compressed bytes: a pass over `many.vcf.gz` ends at the 21904 bytes
+   * of the gzip and not at the 117346 of the text inside it. A pass over a
+   * vars file ends below the size of the file, because it does not read all
+   * of it: it reads the last ten bytes, which say how long the footer is,
+   * then the footer, which says where the batches are, and then each batch,
+   * and never the schema message at the head of the file, since the footer
+   * carries the schema too.
+   *
+   * A page that draws a bar from these numbers sees it fill once per pass
+   * and knows which pass it is on, so a principal component analysis that
+   * reads the file twice does not look broken when the bar goes back to
+   * empty.
+   *
+   * What `told` throws ends the pass where it was reading, and the consumer
+   * throws that same value: an application that cancels a run tells its own
+   * cancel from a file that could not be read with `===` and without reading
+   * a message, and its worker is not ended. Whichever error the read failed
+   * with inside popnei is not the one it gets. The `Variants` is then the
+   * one it was, and the next run over it reads the file from its start.
+   *
+   * The function holds until it is set again, and setting it changes nothing
+   * about the variants a pass gives. The reads of `openVcf` and `openVars`,
+   * the header of a VCF and the schema of a vars file, are told to nobody:
+   * they are made before there is a `Variants` to set a function on.
+   *
+   * What it may call is every function of the package, a consumer of these
+   * same variants among them, which runs there as it runs anywhere else.
+   * The two calls it may not make are the `free()` of the variants the run
+   * is reading and the `passStats` of an iteration of `iterBlocks` that is
+   * reading a block: each of the two is held by the call that is reading,
+   * each throws an `Error` of popnei that says so, and that error, thrown
+   * inside the function, ends the pass as any other value it throws does.
+   * Between two blocks of an iteration nothing is held, so a function
+   * called from there may make both.
+   *
+   * It has no counterpart in the Python API, which `docs/objectives.md` asks
+   * every difference between the two to be written down: what it is for is a
+   * page that draws a bar and a user who presses a button, and Python reads
+   * a file by its path in a program that has neither.
+   *
+   * @throws {Error} When `told` is given and is not a function, when the
+   * variants were freed, and when `init` has not been awaited.
+   */
+  onProgress(told?: (progress: Progress) => void): void {
+    theWasmHasToBeLoaded();
+    const source = this.#sourceThatWasNotFreed();
+    if (told === undefined) {
+      source.on_progress(undefined);
+      return;
+    }
+    if (typeof told !== "function") {
+      throw new Error(
+        "popnei: `told` is the function that is told how far a pass has got, " +
+          `and ${whatWasGiven(told)} was given`,
+      );
+    }
+    // The four numbers cross one by one and the object a user reads is built
+    // here, as every other result of the package is built in TypeScript.
+    source.on_progress(
+      (bytesRead: number, numBytes: number, pass: number, numPasses: number) =>
+        told({ bytesRead, numBytes, pass, numPasses }),
     );
   }
 
@@ -434,12 +769,39 @@ export class Variants {
    * of these variants and every read of `steps`. The names of the
    * individuals and the ploidy still answer: they are in JavaScript. A
    * second call is not an error: it has nothing left to give back.
+   *
+   * It is refused while a consumer of these variants is running, which is
+   * what a `free()` from inside the function of `onProgress` is: that call
+   * holds the source, and freeing it there would leave the source in the
+   * memory of wasm with no handle left to free it. An iteration of
+   * `iterBlocks` holds no such call between two blocks, so a free from
+   * inside the function of a pass that is iterating goes through and that
+   * pass reads on to its end.
+   *
+   * @throws {Error} When a consumer of these variants has not returned.
    */
   free(): void {
-    this.#source?.free();
+    if (this.#runsReading > 0) {
+      throw new Error(
+        "popnei: a run is reading these variants, so they cannot be freed " +
+          "yet: the free of a source a consumer is reading would leave it in " +
+          "the memory of wasm with no handle left to free it. What frees " +
+          "them is a call made after the consumer returns.",
+      );
+    }
+    // The handles are taken out of the `Variants` before they are freed, and
+    // the second is freed whatever the first does: a free that threw in the
+    // middle would otherwise leave a `Variants` that holds a source nobody
+    // can read and steps nobody can free.
+    const source = this.#source;
+    const steps = this.#steps;
     this.#source = null;
-    this.#steps?.free();
     this.#steps = null;
+    try {
+      source?.free();
+    } finally {
+      steps?.free();
+    }
   }
 
   /**
@@ -462,7 +824,27 @@ export class Variants {
     return {
       source: this.#sourceThatWasNotFreed(),
       steps: this.#stepsThatWereNotFreed(),
+      whileTheRunReads: (readsTheSource) =>
+        this.#whileTheRunReads(readsTheSource),
     };
+  }
+
+  /**
+   * What `readsTheSource` gives, with this run counted while it runs, so
+   * that a `free()` from inside the function that is told the progress is
+   * refused instead of breaking the handle.
+   *
+   * The count goes back down whatever the run did, an error of the core and
+   * the value an application threw to stop it among them: a run that failed
+   * is a run that no longer reads.
+   */
+  #whileTheRunReads<T>(readsTheSource: () => T): T {
+    this.#runsReading += 1;
+    try {
+      return readsTheSource();
+    } finally {
+      this.#runsReading -= 1;
+    }
   }
 
   /** The source, or the `Error` of a source that was freed. */
@@ -533,6 +915,11 @@ class BlocksOfOnePass implements Blocks {
    * answers from then on, and `null` while it still answers itself.
    */
   #countsWhenItEnded: PassStats | null = null;
+  /**
+   * Whether the pass is inside the read of a block, which is where a call
+   * of the function of `onProgress` is made from.
+   */
+  #isReadingABlock = false;
   #blocks: Generator<Block, void, undefined>;
 
   constructor(pass: PassOfTheCore) {
@@ -558,6 +945,17 @@ class BlocksOfOnePass implements Blocks {
   }
 
   get passStats(): PassStats {
+    if (this.#isReadingABlock) {
+      throw new Error(
+        "popnei: the counts of this pass cannot be read while it is reading " +
+          "a block, which is what a read of them from inside the function of " +
+          "`onProgress` is: the pass is held by the call that is reading, the " +
+          "counts would fail that hold, and what the failure leaves behind " +
+          "keeps the pass and the bytes it read in the memory of wasm with " +
+          "nothing left to free them. What reads them is a call made between " +
+          "two blocks or once the pass is over.",
+      );
+    }
     if (this.#pass !== null) {
       return passStatsOf(this.#pass.pass_stats());
     }
@@ -585,7 +983,17 @@ class BlocksOfOnePass implements Blocks {
     try {
       for (;;) {
         const pass = this.#passThatIsRunning();
-        const columns = pass.next_block();
+        // The pass is held by this call for as long as it lasts, and the
+        // function of `onProgress` is called from inside it: what says so
+        // to `passStats` is the flag, which is what stops a read of the
+        // counts there from leaving the pass unfreeable.
+        this.#isReadingABlock = true;
+        let columns;
+        try {
+          columns = pass.next_block();
+        } finally {
+          this.#isReadingABlock = false;
+        }
         if (columns === undefined) {
           return;
         }

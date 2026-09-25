@@ -17,16 +17,35 @@
  * refuses them here, before the call, and says what was given.
  */
 
-import { room_for_bytes as roomForBytes } from "../wasm/popnei.js";
+import {
+  largest_max_num_vars as largestMaxNumVars,
+  room_for_bytes as roomForBytes,
+} from "../wasm/popnei.js";
 
 /**
- * The largest number the package hands to the core, 2^32 - 1.
+ * The largest number the package hands to a whole number of the core that
+ * is 32 bits wide, 2^32 - 1.
  *
  * A whole number of Rust is 32 bits wide in wasm, and what the generated
  * code does with a larger one is to keep it modulo 2^32: 2^32 + 2 would
  * arrive as a ploidy of 2, and 2^32 + 1 as blocks of one variant.
  */
-const LARGEST_WHOLE_NUMBER = 4294967295;
+export const LARGEST_WHOLE_NUMBER = 4294967295;
+
+/**
+ * The largest whole number a number of JavaScript counts to one by one,
+ * 2^53 - 1, which is `Number.MAX_SAFE_INTEGER` and what
+ * `Number.isSafeInteger` takes.
+ *
+ * A float64 counts in twos above it, so 2^53 + 1 is read as 2^53 and a
+ * number written above this one is not the number the user wrote.
+ *
+ * The position of a variant reaches one further, the 2^53 of
+ * `docs/specs/block.md`, which a float64 holds exactly: a position is read
+ * from a file, where this number is written by a user and read back to
+ * them.
+ */
+const LARGEST_EXACT_WHOLE_NUMBER = 9007199254740991;
 
 /**
  * `value` when it is a whole number of 1 or more that the core holds, and
@@ -47,6 +66,149 @@ export function wholeNumberOfOneOrMore(
     throw new Error(
       `popnei: \`${argument}\` is a whole number of 1 or more and at most ` +
         `${LARGEST_WHOLE_NUMBER}, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
+ * `value` when it is a whole number of 0 or more that the core holds, and an
+ * `Error` that names `argument` and what was given otherwise.
+ *
+ * What it refuses is what would reach the core as another number: the
+ * generated code throws the fraction of 2.5 away, keeps 2^32 + 2 modulo
+ * 2^32 and turns a negative number into a count of about four thousand
+ * million. Whether the number is one the argument takes, a histogram of 1
+ * bin or more and a ploidy of 1 to 255, is a rule of the core, which holds
+ * for every pass and not for this call alone.
+ *
+ * Which numbers the argument itself takes is in the doc comment of the
+ * function that takes it: 0 asks for no component at all in
+ * `numPrinComps`, how many components the weights are asked for, and for
+ * every pair that was called at all in `minNumSnps`, how many variants a
+ * pair of individuals needs before it gets a distance, where pyNei takes a
+ * negative number and does with it what it does with 0. The callers are
+ * not listed here; the list that was here had gone three of them behind.
+ *
+ * @throws {Error} When `value` is not such a number.
+ */
+export function wholeNumberOfZeroOrMore(
+  argument: string,
+  value: unknown,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > LARGEST_WHOLE_NUMBER
+  ) {
+    throw new Error(
+      `popnei: \`${argument}\` is a whole number of 0 or more and at most ` +
+        `${LARGEST_WHOLE_NUMBER}, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
+ * `value` when it is a number of variants the matrix of every pair can be
+ * taken of, and an `Error` that names `argument`, the largest such number
+ * and what was given otherwise.
+ *
+ * The `maxNumVars` of `calcRogersHuffR2Matrix` comes through here. The
+ * matrix holds one r² for each pair, which is the variants squared, and a
+ * whole number of the core is 32 bits wide in a browser: the 4294967296
+ * values of 65536 variants are more than it counts, so 65535 variants are
+ * the most a cap can ask for. `largest_max_num_vars` of the binding crate
+ * is where that number comes from, so a build whose whole numbers are
+ * wider says its own. A Python user of the same calculation has
+ * 4294967295, and neither of the two reaches the memory of their machine:
+ * the matrix of 23170 variants is already the 4 GB a page holds.
+ *
+ * @throws {Error} When `value` is not such a number.
+ */
+export function varsOfTheMatrixOfEveryPair(
+  argument: string,
+  value: unknown,
+): number {
+  const largest = largestMaxNumVars();
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > largest
+  ) {
+    throw new Error(
+      `popnei: \`${argument}\` is a whole number of 1 or more and at most ` +
+        `${largest}, and ${whatWasGiven(value)} was given: the matrix holds ` +
+        `one r² for each pair of the variants, which is the variants squared, ` +
+        `and a browser counts those values in 32 bits, so the matrix of ` +
+        `${largest + 1} variants holds more of them than it counts`,
+    );
+  }
+  return value;
+}
+
+/**
+ * `value` when it is a whole number of base pairs of `smallest` or more
+ * that a number of JavaScript counts to one by one, and an `Error` that
+ * names `argument` and what was given otherwise.
+ *
+ * The window of `filterByLd` comes through here, how many base pairs behind
+ * a variant the variants it is compared with reach, and so do the `minDist`
+ * and the `maxDist` of `calcLdAndDistPerPop`, the distances a pair of
+ * variants is counted at. The core takes each of them as a
+ * 64 bit whole number, which a Python user can fill to 1.8e19, and
+ * JavaScript is what cuts it at 2^53 - 1: the numbers above that one no
+ * longer run one by one, so a distance written there would reach the core as
+ * another number than the one that was written. No genome comes near
+ * either of the two: the largest known, over 1e11 base pairs in all of its
+ * chromosomes together, is smaller by more than four orders of magnitude.
+ *
+ * `smallest` is the smallest number the argument takes: 1 for a window,
+ * which is no stretch of a chromosome at 0, and 0 for the two distances of
+ * the fall-off of r², where a `minDist` of 0 counts the pairs of two
+ * variants at one position and a `maxDist` of 0 is left to the core, which
+ * has its own word for a range that counts no pair.
+ *
+ * @throws {Error} When `value` is not such a number.
+ */
+export function distanceInBasePairs(
+  argument: string,
+  value: unknown,
+  smallest: 0 | 1 = 1,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < smallest
+  ) {
+    throw new Error(
+      `popnei: \`${argument}\` is a whole number of base pairs of ` +
+        `${smallest} or more and at most ${LARGEST_EXACT_WHOLE_NUMBER}, the ` +
+        `largest whole number a number of JavaScript counts to one by one, ` +
+        `and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
+ * `value` when it is a string, and an `Error` that names `argument` and what
+ * was given otherwise.
+ *
+ * Which strings the argument takes, the two kinds of bins of a histogram
+ * among them, is a rule of the core: it refuses a name it does not know and
+ * writes the ones it knows in the message. What the generated code does with
+ * what is no string at all is to throw a `TypeError` of its own, which names
+ * neither the argument nor what was given.
+ *
+ * @throws {Error} When `value` is not a string.
+ */
+export function aString(argument: string, value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error(
+      `popnei: \`${argument}\` is a name, and ${whatWasGiven(value)} was given`,
     );
   }
   return value;
@@ -90,20 +252,32 @@ export function aBoolean(argument: string, value: unknown): boolean {
 }
 
 /**
- * The bytes of `value` when it is a `Uint8Array` that can be read and that
- * the memory of wasm takes, and an `Error` otherwise.
+ * The file of `value`: the bytes when it is a `Uint8Array` that can be read
+ * and that the memory of wasm takes, the file of the page when it is a
+ * `Blob`, and an `Error` otherwise.
  *
- * @throws {Error} When `value` is not a `Uint8Array`, when its buffer was
- * transferred, which leaves the array with nothing to read, and when the
- * memory of wasm does not take a copy of it.
+ * A `File`, the handle a page gets when the user picks a file, is a `Blob`,
+ * and so is a `Blob` an application built itself. Nothing of it is read
+ * here: what popnei reads a range of a file with lives in a web worker, and
+ * the binding crate is where a call made outside one is refused.
+ *
+ * @throws {Error} When `value` is neither a `Uint8Array` nor a `Blob`, when
+ * the buffer of a `Uint8Array` was transferred, which leaves the array with
+ * nothing to read, and when the memory of wasm does not take a copy of it.
  */
-export function bytes(argument: string, value: unknown): Uint8Array {
+export function bytesOrFile(
+  argument: string,
+  value: unknown,
+): Uint8Array | Blob {
+  if (value instanceof Blob) {
+    return value;
+  }
   if (!(value instanceof Uint8Array)) {
     throw new Error(
-      `popnei: \`${argument}\` is a Uint8Array with the bytes of the file, and ` +
-        `${whatWasGiven(value)} was given; text is turned into bytes with ` +
-        "new TextEncoder().encode(text), and a file of node is read with " +
-        'new Uint8Array(await readFile(path))',
+      `popnei: \`${argument}\` is the file to read, a Uint8Array with its bytes ` +
+        `or the File of a page, and ${whatWasGiven(value)} was given; text is ` +
+        "turned into bytes with new TextEncoder().encode(text), and a file of " +
+        "node is read with new Uint8Array(await readFile(path))",
     );
   }
   // A page that sends bytes to a web worker transfers their buffer, which
@@ -128,9 +302,76 @@ export function bytes(argument: string, value: unknown): Uint8Array {
   return value;
 }
 
+/** What one of the names is and an example of one, for the message. */
+export interface WhatTheNamesAre {
+  /** What one name is, `field` or `individual`. */
+  oneOfThem: string;
+  /**
+   * A name of that kind, `chrom` or `ind00`, which the message writes
+   * inside the array the user should have written. What they gave is
+   * written there instead when it is one name as a string.
+   */
+  anExample: string;
+}
+
+/**
+ * The values of `value` when it is a `Float64Array` that holds a table of
+ * `numRows` rows of `numCols` values each, row after row, and that the
+ * memory of wasm takes, and an `Error` otherwise.
+ *
+ * The two sides are checked against the values there are here and not in the
+ * core: a table given with fewer rows than it has would be the analysis of
+ * the first of them, with nothing to show it, and one given with more traits
+ * than it has would read the second row as the end of the first. The core
+ * refuses only the second of the two, so a caller that says `numCols: 3` of
+ * a table of 4 traits has to be stopped before the call.
+ *
+ * @throws {Error} When `value` is not a `Float64Array`, when its buffer was
+ * transferred, which leaves the array with nothing to read, when it does not
+ * hold `numRows` times `numCols` values, and when the memory of wasm does not
+ * take a copy of it.
+ */
+export function valuesOfATable(
+  argument: string,
+  value: unknown,
+  numRows: number,
+  numCols: number,
+): Float64Array {
+  if (!(value instanceof Float64Array)) {
+    throw new Error(
+      `popnei: \`${argument}\` is a Float64Array with the values of the table, ` +
+        `row after row, and ${whatWasGiven(value)} was given; an array of ` +
+        `numbers is turned into one with Float64Array.from(numbers)`,
+    );
+  }
+  // A page that sends the values to a web worker transfers their buffer,
+  // which leaves the array it came from with a length of 0 and no memory
+  // behind it, as `bytes` says above.
+  if ((value.buffer as { detached?: unknown }).detached === true) {
+    throw new Error(
+      `popnei: the buffer of \`${argument}\` was transferred, to a web worker ` +
+        "or somewhere else, and the values of the table are there and not in " +
+        "this array; the worker that was given them is where they are read",
+    );
+  }
+  if (value.length !== numRows * numCols) {
+    throw new Error(
+      `popnei: the table was given as ${numRows} x ${numCols}, which is ` +
+        `${numRows * numCols} values, and \`${argument}\` holds ${value.length}`,
+    );
+  }
+  // The copy into the memory of wasm is made by the generated code, before
+  // any code of popnei runs, and an allocation that fails there is a trap
+  // that leaves the module unusable, as `bytes` says above. A value is 8
+  // bytes.
+  roomForBytes(value.length * 8);
+  return value;
+}
+
 /**
  * The names of `value` when it is an array of strings, and an `Error`
- * otherwise.
+ * otherwise, which says what one of them is, a `field` or an `individual`,
+ * and writes an example of it in what the user should have written.
  *
  * One name written where the array goes, `fields: "alleles"`, is the case
  * this catches: a string spread into an array is its letters, and popnei
@@ -138,15 +379,64 @@ export function bytes(argument: string, value: unknown): Uint8Array {
  *
  * @throws {Error} When `value` is not an array of strings.
  */
-export function namesOfFields(argument: string, value: unknown): string[] {
+export function namesOf(
+  argument: string,
+  value: unknown,
+  whatTheNamesAre: WhatTheNamesAre,
+): string[] {
   if (!Array.isArray(value) || value.some((name) => typeof name !== "string")) {
+    const { oneOfThem, anExample } = whatTheNamesAre;
     throw new Error(
       `popnei: \`${argument}\` is an array of names, and ${whatWasGiven(value)} ` +
-        `was given; one field is asked for with ${argument}: ` +
-        `${typeof value === "string" ? `["${value}"]` : '["chrom"]'}`,
+        `was given; one ${oneOfThem} is asked for with ${argument}: ` +
+        `["${typeof value === "string" ? value : anExample}"]`,
     );
   }
   return value as string[];
+}
+
+/**
+ * The populations of `value` as the flat arrays the binding crate takes:
+ * their names in the order the keys iterate in, the names of the individuals
+ * of every one of them one after another, and how many individuals each of
+ * them holds.
+ *
+ * An array of arrays is not one of the types wasm-bindgen carries, so every
+ * calculation that takes populations sends them flat, and the binding crate
+ * cuts them back into the populations.
+ *
+ * The names of the individuals are not looked up here: they are resolved
+ * against the individuals the pass gives, which are those of the source
+ * after a filter of individuals when the `Variants` has one, and only the
+ * pass knows them.
+ *
+ * @throws {Error} When `value` is not an object of names to arrays of names.
+ */
+export function popsOfTheObject(value: unknown): {
+  names: string[];
+  individuals: string[];
+  numIndividualsPerPop: Uint32Array;
+} {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      "popnei: `pops` is an object of the name of a population to the names " +
+        `of its individuals, {pop1: ["ind00", "ind01"]}, and ` +
+        `${whatWasGiven(value)} was given`,
+    );
+  }
+  const pops = value as Record<string, unknown>;
+  const names = Object.keys(pops);
+  const individuals: string[] = [];
+  const numIndividualsPerPop = new Uint32Array(names.length);
+  for (const [which, pop] of names.entries()) {
+    const ofThePop = namesOf(`pops.${pop}`, pops[pop], {
+      oneOfThem: "individual",
+      anExample: "ind00",
+    });
+    individuals.push(...ofThePop);
+    numIndividualsPerPop[which] = ofThePop.length;
+  }
+  return { names, individuals, numIndividualsPerPop };
 }
 
 /**
@@ -156,8 +446,15 @@ export function namesOfFields(argument: string, value: unknown): string[] {
  * which is where the Python package puts it too: the article that would
  * come before it is `a` for a `Uint8Array` and `an` for an `Array`, and no
  * rule of the letters tells the two apart.
+ *
+ * The empty string is said in words: written in the backticks the other
+ * strings get, it would be an empty pair of them, and a reader would take
+ * the message for one that lost its value.
  */
 export function whatWasGiven(value: unknown): string {
+  if (value === "") {
+    return "the empty string";
+  }
   if (typeof value === "string") {
     return `the string \`${value}\``;
   }

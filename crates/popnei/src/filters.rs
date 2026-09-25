@@ -10,20 +10,42 @@
 //! that every reader gives for the filters between it and its source,
 //! through [`BlockReader::filtering_stats`].
 //!
+//! [`LdFilter`] is the fourth filter and compares no number of a variant
+//! alone: it takes out the variants whose r², the measure of linkage
+//! disequilibrium of `docs/specs/ld.md`, is above a threshold against a
+//! variant it kept no more than `max_dist` base pairs behind them on their
+//! chromosome. It is a type of its own because it holds those kept variants,
+//! its window, between one block and the next.
+//!
 //! A filter of a pass over the variants is a reader over another reader,
-//! [`FilteredReader`], and several filters are several of them, one over
-//! the other, in the order in which the user put them on. [`chain_of`]
-//! builds that chain from the criteria of one pass, and it is what each
-//! binding crate calls when a pass starts.
+//! [`FilteredReader`] for the three that compare one number of a variant
+//! and [`LdFilteredReader`] for the fourth, and several filters are several
+//! of them, one over the other, in the order in which the user put them on.
+//! What the user put on is a [`PassStep`], and [`chain_of`] builds the chain
+//! from the steps of one pass: it is what each binding crate calls when a
+//! pass starts.
+//!
+//! One step of a pass takes no variant out: the filter of individuals keeps,
+//! of every variant, the genotypes of the individuals a user named, in the
+//! order they named them, and drops those of the rest. It is
+//! [`IndividualsReader`], a reader over another reader as well, with
+//! [`resolve_individuals`] turning the names a user wrote into the indices
+//! among the individuals of the source that it compacts each block by. It
+//! has no counts, and a filter of the variants after it in the steps counts
+//! over the kept individuals alone.
 //!
 //! `docs/specs/filters.md` has the design, and the row `filters` of section
 //! 9 of `docs/architecture.md` where the module sits.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::block::{Block, BlockReader};
 use crate::error::{Error, Result};
-use crate::variant::{AlleleCounts, ChromTable, Needs, count_alleles, count_gts};
+use crate::ld::{LdDosages, r2_between};
+use crate::variant::{
+    AlleleCounts, ChromTable, Needs, count_alleles, count_gts, the_major_allele_frequency,
+};
 
 /// How many variants a filter was given and how many of them it kept, over
 /// every block it has taken since it was built.
@@ -41,15 +63,21 @@ pub struct FilteringStats {
     pub vars_kept: u64,
 }
 
-/// Which number of a variant a filter compares with a threshold, with the
-/// largest value of that number that keeps the variant.
+/// What a filter compares with a threshold, with the largest value that
+/// keeps the variant.
 ///
-/// A variant stays when its number is at most the threshold, so one whose
-/// number is exactly the threshold stays. Each number is one count of the
-/// variant divided by another, so a threshold is a number from 0 to 1. A
-/// variant that has no number, one with no called allele for the major
-/// allele frequency and one with no called genotype for the observed
-/// heterozygosity, is not kept, whatever the threshold.
+/// The first three compare one number of the variant alone, and the fourth
+/// compares the variant with the variants kept before it. A variant stays
+/// when the value is at most the threshold, so one whose value is exactly
+/// the threshold stays. Each of the four values is one count divided by
+/// another, or an r², which is a correlation squared, so a threshold is a
+/// number from 0 to 1. A variant that has no value, one with no called
+/// allele for the major allele frequency and one with no called genotype
+/// for the observed heterozygosity, is not kept, whatever the threshold.
+///
+/// The first three are filtered by a [`VarFilter`] under a
+/// [`FilteredReader`], and the fourth by an [`LdFilter`] under an
+/// [`LdFilteredReader`], which [`chain_of`] is what builds for each.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VarFilteringCriterion {
     /// Missing genotypes divided by all the individuals of the dataset, and
@@ -67,24 +95,41 @@ pub enum VarFilteringCriterion {
     /// is heterozygous when it is called and its alleles are not all the
     /// same, at any ploidy.
     MaxObsHet(f64),
+    /// The largest r² a variant may have against a variant kept no more
+    /// than `max_dist` base pairs behind it on its chromosome, which is the
+    /// window of that variant. r² is the squared correlation between the
+    /// dosages of two variants, `docs/specs/ld.md`, and a variant whose
+    /// called genotypes hold one dosage is dropped at every threshold,
+    /// having nothing to tell another variant apart with.
+    MaxLdR2 {
+        /// The largest r² against a variant of the window that keeps the
+        /// variant, a number from 0 to 1.
+        max_allowed_r2: f64,
+        /// How many base pairs behind a variant its window reaches, 1 or
+        /// more.
+        max_dist: u64,
+    },
 }
 
 impl VarFilteringCriterion {
-    /// `"missing_data"`, `"maf"` or `"obs_het"`: the name under which the
-    /// counts of the filter reach a Python or a TypeScript user, and the
-    /// name by which a chain of readers is asked whether it holds a filter
-    /// of this kind already.
+    /// `"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`: the name under
+    /// which the counts of the filter reach a Python or a TypeScript user,
+    /// and the name by which a chain of readers is asked whether it holds a
+    /// filter of this kind already.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
             VarFilteringCriterion::MaxMissingRate(_) => "missing_data",
             VarFilteringCriterion::MaxMaf(_) => "maf",
             VarFilteringCriterion::MaxObsHet(_) => "obs_het",
+            VarFilteringCriterion::MaxLdR2 { .. } => THE_KIND_OF_THE_LD_FILTER,
         }
     }
 
-    /// The largest value of the number of a variant that keeps it,
-    /// whichever of the three numbers this criterion compares.
+    /// The largest value that keeps the variant, whichever of the four
+    /// values this criterion compares, which for
+    /// [`MaxLdR2`](VarFilteringCriterion::MaxLdR2) is its
+    /// `max_allowed_r2`.
     ///
     /// A binding crate reads it for the arguments of the step it shows the
     /// user, `{"max_allowed_maf": 0.95}`.
@@ -93,7 +138,28 @@ impl VarFilteringCriterion {
         match self {
             VarFilteringCriterion::MaxMissingRate(threshold)
             | VarFilteringCriterion::MaxMaf(threshold)
-            | VarFilteringCriterion::MaxObsHet(threshold) => *threshold,
+            | VarFilteringCriterion::MaxObsHet(threshold)
+            | VarFilteringCriterion::MaxLdR2 {
+                max_allowed_r2: threshold,
+                ..
+            } => *threshold,
+        }
+    }
+
+    /// The `max_dist` of [`MaxLdR2`](VarFilteringCriterion::MaxLdR2), the
+    /// second value of the arguments of its step, and `None` for the three
+    /// criteria that compare one number of a variant alone.
+    ///
+    /// A binding crate reads it for the step it shows the user,
+    /// `{"max_allowed_r2": 0.1, "max_dist": 10000}`, where the threshold is
+    /// the first of the two.
+    #[must_use]
+    pub fn max_dist(&self) -> Option<u64> {
+        match self {
+            VarFilteringCriterion::MaxMissingRate(_)
+            | VarFilteringCriterion::MaxMaf(_)
+            | VarFilteringCriterion::MaxObsHet(_) => None,
+            VarFilteringCriterion::MaxLdR2 { max_dist, .. } => Some(*max_dist),
         }
     }
 }
@@ -119,8 +185,16 @@ impl VarFilter {
     /// # Errors
     ///
     /// When the threshold is NaN, below 0 or above 1: the error names the
-    /// criterion and the value.
+    /// criterion and the value. And when `criterion` is
+    /// [`MaxLdR2`](VarFilteringCriterion::MaxLdR2), which holds the window
+    /// of the variants kept behind a variant and is filtered by an
+    /// [`LdFilter`]: no call from Python or from TypeScript reaches it,
+    /// since [`chain_of`] builds an [`LdFilteredReader`] for that
+    /// criterion.
     pub fn new(criterion: VarFilteringCriterion) -> Result<VarFilter> {
+        if let VarFilteringCriterion::MaxLdR2 { .. } = criterion {
+            return Err(Error::VarFilterOfTheLdCriterion);
+        }
         let threshold = criterion.threshold();
         // A NaN is in no range, so this one comparison refuses the three
         // thresholds that are not a number from 0 to 1.
@@ -207,6 +281,1011 @@ impl VarFilter {
     pub fn stats(&self) -> FilteringStats {
         self.stats
     }
+}
+
+/// The name under which the counts of the filter by linkage disequilibrium
+/// reach a Python or a TypeScript user, and the name by which a chain of
+/// readers is asked whether it holds one already.
+const THE_KIND_OF_THE_LD_FILTER: &str = "ld";
+
+/// How many variants the filter by linkage disequilibrium settles at a
+/// time.
+///
+/// Whether a variant is kept decides what the variants after it are
+/// compared with, so the variants of a block cannot all be settled at once.
+/// What one set of the products of `docs/specs/ld.md` gives is the r² of a
+/// set of variants against every variant kept before that set began, and
+/// this is how many variants such a set holds: the r² of 256 variants
+/// against each other is 65536 values, 512 KB, whatever the size of the
+/// block.
+///
+/// It is the tile of the matrix of `docs/specs/ld.md`, and no measurement
+/// of the filter has chosen it: the bench that would is work package 4 of
+/// `docs/plans/ld.md`, which measures the tile of the matrix on the
+/// products themselves. A set of more variants takes fewer calls of the
+/// products and holds more candidates whose r² against the window was
+/// worked out before a variant of the same set dropped them.
+///
+/// It changes no result, which
+/// `the_variants_kept_do_not_change_with_the_variants_settled_at_a_time`
+/// asserts at 1, at 3 and at 256: the rule reads the positions of the
+/// variants and never the end of a set or of a block, and the six sums of a
+/// pair are whole numbers that an `f64` holds exactly, so a pair has the
+/// same r² in whichever set it is worked out.
+///
+/// It is of the crate and not of its users, as the tile of the matrix of
+/// `docs/specs/ld.md` is private to its module: nothing outside this file
+/// reads it.
+pub(crate) const THE_VARS_SETTLED_AT_A_TIME: usize = 256;
+
+/// How a variant given to [`LdFilter::filter_block`] does not come after
+/// the variant before it.
+///
+/// The window of a variant is the variants kept behind it on its
+/// chromosome, so the filter by linkage disequilibrium is the one reader of
+/// popnei that needs the variants of each chromosome to come together and
+/// in the order of their positions. Which chromosome it is on is
+/// [`TheChromOfTheVariant`], beside this in the error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TheOrderOfTheVariants {
+    /// The position of the variant is below the position of the variant
+    /// before it, which is on its chromosome.
+    ThePositionFalls {
+        /// The position of the variant.
+        pos: u64,
+        /// The position of the variant before it.
+        pos_before: u64,
+    },
+    /// The variant is on a chromosome that had already ended: a variant of
+    /// another chromosome came between it and the last variant of its own.
+    TheChromosomeCameBack {
+        /// The position of the variant.
+        pos: u64,
+        /// The position of the variant before it, which is on another
+        /// chromosome.
+        pos_before: u64,
+    },
+}
+
+impl fmt::Display for TheOrderOfTheVariants {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::ThePositionFalls { pos, pos_before } => write!(
+                formatter,
+                "it is at the position {pos} of its chromosome and the variant before it at the position {pos_before} of the same chromosome"
+            ),
+            Self::TheChromosomeCameBack { pos, pos_before } => write!(
+                formatter,
+                "it is at the position {pos} of a chromosome that had already ended, and the variant before it at the position {pos_before} of another chromosome"
+            ),
+        }
+    }
+}
+
+/// The chromosome of a variant that the filter by linkage disequilibrium
+/// refused for not coming after the variant before it.
+///
+/// A block holds the number each of its chromosomes has in the table of the
+/// reader that gave it and not its name, so [`LdFilter::filter_block`],
+/// which is given a block and nothing else, has the number; an
+/// [`LdFilteredReader`] has the table of its source and puts the name in
+/// its place, which is what a user looks for in their file. On an assembly
+/// of ten thousand scaffolds there is no finding the row otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TheChromOfTheVariant {
+    /// The name of the chromosome in the table of the reader of the pass.
+    Named(String),
+    /// The number it has in that table, which is what a filter given a
+    /// block on its own has of it.
+    Numbered(u32),
+}
+
+impl fmt::Display for TheChromOfTheVariant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Named(name) => write!(formatter, "the chromosome {name}"),
+            Self::Numbered(chrom) => write!(
+                formatter,
+                "the chromosome numbered {chrom} in the table of the reader"
+            ),
+        }
+    }
+}
+
+/// The filter that takes out the variants that repeat what a variant kept
+/// near them on their chromosome already said.
+///
+/// Two variants say the same thing when their r² is high, and
+/// `docs/specs/ld.md` is where popnei works it out. A variant is kept when
+/// its called genotypes hold two dosages at least and its r² against every
+/// variant of its window is at most `max_allowed_r2`; the window of a
+/// variant is the variants the filter has already kept that are on its
+/// chromosome and no more than `max_dist` base pairs behind it. A pair
+/// whose r² is not defined does not drop the candidate, so the first
+/// variant of each chromosome whose called genotypes hold two dosages is
+/// always kept, and a variant whose called genotypes hold one dosage is
+/// always dropped, having nothing to tell any other variant apart with.
+///
+/// It is a type of its own and not a [`VarFilter`]: it holds the window
+/// between one block and the next, where a `VarFilter` reads each block on
+/// its own and keeps nothing but its two counts. The window holds, for each
+/// variant of it, its genotypes, its chromosome and its position, one byte
+/// for each allele: 500 KB for 250 kept variants of 1000 diploid
+/// individuals. The three matrices of
+/// [`LdDosages`](crate::ld::LdDosages), 24 bytes for each individual and
+/// variant, are built over the whole window when a set of candidates
+/// arrives and are given back when it has been settled, so the 6 MB of
+/// those 250 variants of 1000 individuals is held while a block is
+/// filtered and not between two blocks.
+///
+/// The dosages are read over every individual of the dataset. A user who
+/// wants them read over one population puts the filter of individuals
+/// before this one.
+pub struct LdFilter {
+    /// The largest r² a variant may have against a variant of its window.
+    max_allowed_r2: f64,
+    /// How many base pairs behind a variant its window reaches.
+    max_dist: u64,
+    /// How many variants it was given and how many it kept.
+    stats: FilteringStats,
+    /// The variants kept that are still within `max_dist` of the last
+    /// variant read, in the order they were kept, which is the order of
+    /// their positions.
+    window: TheWindow,
+    /// The chromosome and the position of the last variant read, and
+    /// `None` before the first block.
+    before: Option<TheVariantBefore>,
+    /// The number of every chromosome the filter has read a variant of,
+    /// which is what says that a chromosome has come back: one value for
+    /// each chromosome of the table of the reader, true for the ones a
+    /// variant has been read of.
+    ///
+    /// The numbers of a [`ChromTable`] are dense, so whether a chromosome
+    /// has been read is one index into this and not a search: a filter that
+    /// searched a list of the chromosomes read, and copied it for every
+    /// block, took 0.11 s over a source of 40000 chromosomes and 2.47 s
+    /// over one of 320000, which grows with the square of them, where a
+    /// fragmented assembly has millions.
+    chroms_read: Vec<bool>,
+}
+
+/// The chromosome and the position of the variant the filter read last,
+/// which say whether the variant after it comes after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TheVariantBefore {
+    /// The number of its chromosome in the table of the reader.
+    chrom: u32,
+    /// Its position.
+    pos: u64,
+}
+
+/// Where the filter has got to in its source once a block has been read
+/// through, which it takes over when the block is kept.
+struct TheOrderRead {
+    /// The last variant of the block.
+    before: Option<TheVariantBefore>,
+    /// The chromosomes of the block that the filter had not read before and
+    /// marked as read: a block that is refused further on unmarks them, so
+    /// that the filter is as it was.
+    marked: Vec<u32>,
+}
+
+impl LdFilter {
+    /// The filter that keeps the variants whose r² against every variant of
+    /// their window is at most `max_allowed_r2`, with an empty window and
+    /// both its counts at 0.
+    ///
+    /// `max_dist` is how many base pairs behind a variant its window
+    /// reaches, and two variants at one position are 0 apart, so each is in
+    /// the window of the other.
+    ///
+    /// # Errors
+    ///
+    /// When `max_allowed_r2` is NaN, below 0 or above 1, and when
+    /// `max_dist` is below 1: the error names the argument and the value.
+    pub fn new(max_allowed_r2: f64, max_dist: u64) -> Result<LdFilter> {
+        // A NaN is in no range, so this one comparison refuses the three
+        // thresholds that are not a number from 0 to 1.
+        if !(0.0..=1.0).contains(&max_allowed_r2) {
+            return Err(Error::VarFilterThresholdOutOfRange {
+                kind: THE_KIND_OF_THE_LD_FILTER,
+                threshold: max_allowed_r2,
+            });
+        }
+        if max_dist == 0 {
+            return Err(Error::LdFilterMaxDistTooSmall { max_dist });
+        }
+        Ok(LdFilter {
+            max_allowed_r2,
+            max_dist,
+            stats: FilteringStats::default(),
+            window: TheWindow::default(),
+            before: None,
+            chroms_read: Vec::new(),
+        })
+    }
+
+    /// What it filters by, with both its arguments: the criterion a binding
+    /// crate reads the kind and the arguments of the step from.
+    #[must_use]
+    pub fn criterion(&self) -> VarFilteringCriterion {
+        VarFilteringCriterion::MaxLdR2 {
+            max_allowed_r2: self.max_allowed_r2,
+            max_dist: self.max_dist,
+        }
+    }
+
+    /// The largest r² a variant may have against a variant of its window.
+    #[must_use]
+    pub fn max_allowed_r2(&self) -> f64 {
+        self.max_allowed_r2
+    }
+
+    /// How many base pairs behind a variant its window reaches.
+    #[must_use]
+    pub fn max_dist(&self) -> u64 {
+        self.max_dist
+    }
+
+    /// The variants of the block that pass, kept in it in their order, and
+    /// the others dropped: the genotypes and every column of the block are
+    /// compacted in place.
+    ///
+    /// The window carries over, so the variants of a block are compared
+    /// with the variants kept in the blocks before it, and so does the last
+    /// variant read, which the first variant of the block has to come
+    /// after. The variants of the block are added to the counts, and the
+    /// ones that stayed to the ones kept. A block of no variants is left as
+    /// it is.
+    ///
+    /// # Errors
+    ///
+    /// When the arrays of the block are not of the size the block states,
+    /// which [`Block::check`] finds; when the block has variants and no
+    /// genotypes or no position, which is the error of a field that is not
+    /// in the block; when a variant of the block does not come after the
+    /// one before it, its position falling within its chromosome or its
+    /// chromosome having already ended; and what the dosages of the block
+    /// refuse, which the `# Errors` of
+    /// [`LdDosages::of_block`](crate::ld::LdDosages::of_block) lists, a
+    /// ploidy above 255 and a block this machine has not the memory of the
+    /// three matrices for among them. After any of them the block is as it
+    /// was, nothing was added to the counts and the window is as it was.
+    pub fn filter_block(&mut self, block: &mut Block) -> Result<()> {
+        self.the_block_filtered(block, THE_VARS_SETTLED_AT_A_TIME)
+    }
+
+    /// The block filtered with `at_a_time` variants settled at a time,
+    /// which [`LdFilter::filter_block`] is with
+    /// [`THE_VARS_SETTLED_AT_A_TIME`] and the tests are what give another
+    /// number.
+    ///
+    /// The variants kept are the same whatever the number, which
+    /// `the_variants_kept_do_not_change_with_the_variants_settled_at_a_time`
+    /// asserts at 1, at 3 and at 256: the rule reads the positions of the
+    /// variants and never the end of a set, and a pair has the same r² in
+    /// whichever set it is worked out.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`LdFilter::filter_block`].
+    fn the_block_filtered(&mut self, block: &mut Block, at_a_time: usize) -> Result<()> {
+        // The rows are cut out of the genotypes by the sizes the block
+        // states, so those sizes are checked before anything is read.
+        block.check()?;
+        let processed = block.num_vars;
+        if processed == 0 {
+            return Ok(());
+        }
+        let missing = (Needs::GTS | Needs::CHROM_POS).difference(block.fields());
+        if !missing.is_empty() {
+            return Err(Error::FieldsNotInTheBlock { fields: missing });
+        }
+        let (Some(chroms), Some(positions)) = (block.chrom.as_deref(), block.pos.as_deref()) else {
+            // A block holds the chromosome and the position as one field
+            // and only when both columns are there, so the check above is
+            // what refuses a block without them and this is not reached.
+            return Err(Error::FieldsNotInTheBlock {
+                fields: Needs::CHROM_POS,
+            });
+        };
+        // The order of the variants is read before the dosages are built: a
+        // source whose positions do not rise is refused whatever else the
+        // block holds.
+        let order = self.the_order_read(chroms, positions)?;
+        let settled = the_variants_that_stay(self, block, chroms, positions, at_a_time)
+            .and_then(|settled| block.retain_vars(&settled.keep).map(|()| settled));
+        let settled = match settled {
+            Ok(settled) => settled,
+            Err(error) => {
+                // The block is refused, so the chromosomes it was the first
+                // to hold a variant of are unmarked and the filter is as it
+                // was.
+                self.the_chromosomes_unmarked(&order.marked);
+                return Err(error);
+            }
+        };
+        // Nothing of the filter has changed until here but the chromosomes
+        // read, so an error above left the window, the counts and the place
+        // in the source as they were: the block was settled against a
+        // window of its own.
+        self.window = settled.window;
+        self.before = order.before;
+        // A `usize` is 64 bits on the targets popnei builds natively for
+        // and 32 in wasm, so every one of them is a `u64` and neither
+        // conversion takes the value it saturates at.
+        self.stats.vars_processed = self
+            .stats
+            .vars_processed
+            .saturating_add(u64::try_from(processed).unwrap_or(u64::MAX));
+        self.stats.vars_kept = self
+            .stats
+            .vars_kept
+            .saturating_add(u64::try_from(settled.kept).unwrap_or(u64::MAX));
+        Ok(())
+    }
+
+    /// How many variants it was given and how many it kept, over every
+    /// block it has taken since it was built.
+    #[must_use]
+    pub fn stats(&self) -> FilteringStats {
+        self.stats
+    }
+
+    /// The variant the block ends at once the filter has read the block,
+    /// with every variant of it checked against the one before it and the
+    /// chromosomes of the block marked as read.
+    ///
+    /// What it marked comes back with it, so that a block refused further
+    /// on unmarks those chromosomes and leaves the filter as it was; a
+    /// variant of the block that is refused here unmarks them itself.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdFilterVariantOutOfOrder`] at the first variant of the
+    /// block whose position falls below the position of the variant before
+    /// it on its chromosome, or whose chromosome had already ended, and
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// the chromosomes read.
+    fn the_order_read(&mut self, chroms: &[u32], positions: &[u64]) -> Result<TheOrderRead> {
+        let mut marked: Vec<u32> = Vec::new();
+        match self.the_order_walked(chroms, positions, &mut marked) {
+            Ok(before) => Ok(TheOrderRead { before, marked }),
+            Err(error) => {
+                self.the_chromosomes_unmarked(&marked);
+                Err(error)
+            }
+        }
+    }
+
+    /// The variant the block ends at, with every variant of it checked
+    /// against the one before it, and the chromosomes the block was the
+    /// first to hold a variant of written into `marked` and marked as read.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`LdFilter::the_order_read`], which unmarks what this
+    /// marked before it gives one on.
+    fn the_order_walked(
+        &mut self,
+        chroms: &[u32],
+        positions: &[u64],
+        marked: &mut Vec<u32>,
+    ) -> Result<Option<TheVariantBefore>> {
+        let mut before = self.before;
+        for (variant, (chrom, pos)) in chroms.iter().zip(positions).enumerate() {
+            let out_of_order = match before {
+                Some(before) if before.chrom == *chrom => {
+                    (*pos < before.pos).then_some(TheOrderOfTheVariants::ThePositionFalls {
+                        pos: *pos,
+                        pos_before: before.pos,
+                    })
+                }
+                Some(before) => {
+                    self.has_read(*chrom)
+                        .then_some(TheOrderOfTheVariants::TheChromosomeCameBack {
+                            pos: *pos,
+                            pos_before: before.pos,
+                        })
+                }
+                // The first variant the filter reads comes after nothing.
+                None => None,
+            };
+            if let Some(problem) = out_of_order {
+                return Err(Error::LdFilterVariantOutOfOrder {
+                    variant: self
+                        .stats
+                        .vars_processed
+                        .saturating_add(u64::try_from(variant).unwrap_or(u64::MAX))
+                        .saturating_add(1),
+                    chrom: TheChromOfTheVariant::Numbered(*chrom),
+                    problem,
+                });
+            }
+            if before.is_none_or(|before| before.chrom != *chrom) {
+                self.mark_as_read(*chrom, marked)?;
+            }
+            before = Some(TheVariantBefore {
+                chrom: *chrom,
+                pos: *pos,
+            });
+        }
+        Ok(before)
+    }
+
+    /// Whether the filter has read a variant of that chromosome.
+    fn has_read(&self, chrom: u32) -> bool {
+        the_place_of(chrom)
+            .and_then(|of_it| self.chroms_read.get(of_it))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Marks a chromosome the filter has read a variant of, and writes it
+    /// into `marked` when it was not marked already.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// one value for each chromosome up to that one.
+    fn mark_as_read(&mut self, chrom: u32, marked: &mut Vec<u32>) -> Result<()> {
+        // A `usize` is 64 bits natively and 32 in WebAssembly, so the
+        // number of a chromosome is one; on a machine whose `usize` is
+        // narrower the vector is asked for a length no machine gives and
+        // the memory is what answers.
+        let of_it = the_place_of(chrom).unwrap_or(usize::MAX);
+        let chroms = of_it.saturating_add(1);
+        if self.chroms_read.len() < chroms {
+            let more = chroms.saturating_sub(self.chroms_read.len());
+            the_room_for(&mut self.chroms_read, more, "the chromosomes read")?;
+            self.chroms_read.resize(chroms, false);
+        }
+        let Some(read) = self.chroms_read.get_mut(of_it) else {
+            // The vector was grown to hold that chromosome, so this is not
+            // reached.
+            return Err(Error::LdNoMemory {
+                what: "the chromosomes read",
+                values: chroms,
+                bytes_per_value: size_of::<bool>(),
+            });
+        };
+        if !*read {
+            *read = true;
+            the_room_for(marked, 1, "the chromosomes of the block")?;
+            marked.push(chrom);
+        }
+        Ok(())
+    }
+
+    /// Unmarks the chromosomes a block marked as read, which is what a
+    /// block that is refused leaves behind.
+    fn the_chromosomes_unmarked(&mut self, marked: &[u32]) {
+        for chrom in marked {
+            if let Some(read) =
+                the_place_of(*chrom).and_then(|of_it| self.chroms_read.get_mut(of_it))
+            {
+                *read = false;
+            }
+        }
+    }
+}
+
+/// Where the chromosome of that number is in the chromosomes read of an
+/// [`LdFilter`], and `None` on a machine whose `usize` does not hold a
+/// `u32`.
+fn the_place_of(chrom: u32) -> Option<usize> {
+    usize::try_from(chrom).ok()
+}
+
+impl fmt::Debug for LdFilter {
+    /// What it filters and where it has got to. The dosages of the window
+    /// are left out and how many variants it holds is given instead: they
+    /// are three numbers for each individual of each variant of it.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LdFilter")
+            .field("max_allowed_r2", &self.max_allowed_r2)
+            .field("max_dist", &self.max_dist)
+            .field("stats", &self.stats)
+            .field("vars_in_the_window", &self.window.num_vars())
+            .field("before", &self.before)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Which variants of a block the filter by linkage disequilibrium keeps,
+/// with the window it leaves behind.
+struct TheBlockSettled {
+    /// One value for each variant of the block, in its order.
+    keep: Vec<bool>,
+    /// How many of them stayed.
+    kept: usize,
+    /// The window once every variant of the block has been settled: the
+    /// variants the filter had kept that the last variant of the block has
+    /// not left behind, with the ones the block added to them.
+    window: TheWindow,
+}
+
+/// The variants a candidate is compared with: the ones the filter has kept
+/// that are on the candidate's chromosome and no more than `max_dist` base
+/// pairs behind it, in the order of their positions.
+///
+/// It holds the genotypes of those variants and not their dosages, because
+/// the whole window is one operand of the products of `docs/specs/ld.md`
+/// when a set of candidates arrives: [`TheWindow::dosages`] builds the
+/// three matrices of every variant of it together, so the r² of a set of
+/// candidates against the window is one call of
+/// [`r2_between`](crate::ld::r2_between) and not one call for each variant
+/// kept. The genotypes are one byte for each allele where the three
+/// matrices are 24 bytes for each individual, so a diploid window holds
+/// between two blocks a twelfth of what they would be.
+#[derive(Debug, Default)]
+struct TheWindow {
+    /// The number of the chromosome of each variant of it, in the table of
+    /// the reader that gave the block it came in.
+    chroms: Vec<u32>,
+    /// The position of each of them, 1 based as in a VCF.
+    poss: Vec<u64>,
+    /// The genotypes of each of them over every individual of the dataset,
+    /// one variant after another, as a block holds them.
+    gts: Vec<i8>,
+    /// How many individuals the block the variants of the window came in
+    /// had, which their dosages are built over.
+    num_individuals: usize,
+    /// How many alleles the genotype of one individual holds in that same
+    /// block.
+    ploidy: usize,
+}
+
+impl TheWindow {
+    /// How many variants it holds.
+    fn num_vars(&self) -> usize {
+        self.poss.len()
+    }
+
+    /// How many alleles the genotypes of one variant of it hold.
+    fn alleles_per_var(&self) -> usize {
+        // The genotypes of a block of this many individuals of this ploidy
+        // are in memory, so their product is a number this machine counted.
+        self.num_individuals.saturating_mul(self.ploidy)
+    }
+
+    /// A window of the same variants, which a block is settled against and
+    /// which the filter takes over once the block has been settled, so that
+    /// a block that is refused leaves the window of the filter as it was.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// the genotypes of the window or of its two columns.
+    fn copy_of(&self) -> Result<TheWindow> {
+        Ok(TheWindow {
+            chroms: the_copy_of(&self.chroms, "the chromosomes of the window")?,
+            poss: the_copy_of(&self.poss, "the positions of the window")?,
+            gts: the_copy_of(&self.gts, "the genotypes of the window")?,
+            num_individuals: self.num_individuals,
+            ploidy: self.ploidy,
+        })
+    }
+
+    /// Takes the individuals and the ploidy of `block`, or refuses a block
+    /// that does not hold the dataset the variants of the window came from.
+    ///
+    /// The window keeps the genotypes of its variants and reads them as the
+    /// individuals and the ploidy of the source, so a block of other
+    /// individuals or of another ploidy would give the window dosages read
+    /// off the wrong alleles. It is the error of `docs/specs/block.md` for
+    /// blocks of one source that do not hold the same dataset, which is a
+    /// defect of the reader and not of what a user wrote.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BlocksDoNotFitTogether`] when the block holds another
+    /// number of individuals or another ploidy than the variants of the
+    /// window were read in.
+    fn takes_the_block(&mut self, block: &Block) -> Result<()> {
+        if self.num_vars() == 0 {
+            self.num_individuals = block.num_individuals;
+            self.ploidy = block.ploidy;
+            return Ok(());
+        }
+        if self.num_individuals != block.num_individuals || self.ploidy != block.ploidy {
+            return Err(Error::BlocksDoNotFitTogether {
+                num_individuals: self.num_individuals,
+                ploidy: self.ploidy,
+                found_num_individuals: block.num_individuals,
+                found_ploidy: block.ploidy,
+            });
+        }
+        Ok(())
+    }
+
+    /// The three matrices of `docs/specs/ld.md` over every variant of the
+    /// window, which one call of [`r2_between`](crate::ld::r2_between) then
+    /// reads a whole set of candidates against.
+    ///
+    /// The genotypes are lent to the dosages and taken back with the memory
+    /// they have, so the window is as it was and nothing of it is copied.
+    ///
+    /// # Errors
+    ///
+    /// What [`LdDosages::of_block`](crate::ld::LdDosages::of_block)
+    /// refuses, a window this machine has not the memory of the three
+    /// matrices for among them.
+    fn dosages(&mut self) -> Result<LdDosages> {
+        let num_vars = self.num_vars();
+        the_dosages_of(&mut self.gts, num_vars, self.num_individuals, self.ploidy)
+    }
+
+    /// Takes off the variants that a variant at `pos` of the chromosome
+    /// `chrom` has left behind: the ones on another chromosome and the ones
+    /// more than `max_dist` base pairs behind it. They are the first of the
+    /// window, whose variants are in the order of their positions.
+    fn leave_behind(&mut self, chrom: u32, pos: u64, max_dist: u64) {
+        let left = self
+            .chroms
+            .iter()
+            .zip(&self.poss)
+            .take_while(|(of_it, at_it)| {
+                **of_it != chrom || pos.checked_sub(**at_it).is_none_or(|dist| dist > max_dist)
+            })
+            .count();
+        let alleles = left
+            .saturating_mul(self.alleles_per_var())
+            .min(self.gts.len());
+        self.chroms.drain(..left);
+        self.poss.drain(..left);
+        self.gts.drain(..alleles);
+    }
+
+    /// Adds a variant the filter has kept, which is ahead of every variant
+    /// of the window, with its genotypes over every individual of the
+    /// dataset.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// one more variant of the window.
+    fn push(&mut self, chrom: u32, pos: u64, gts: &[i8]) -> Result<()> {
+        the_room_for(&mut self.chroms, 1, "the chromosomes of the window")?;
+        the_room_for(&mut self.poss, 1, "the positions of the window")?;
+        the_room_for(&mut self.gts, gts.len(), "the genotypes of the window")?;
+        self.chroms.push(chrom);
+        self.poss.push(pos);
+        self.gts.extend_from_slice(gts);
+        Ok(())
+    }
+}
+
+/// The dosages of the `num_vars` variants whose genotypes are in `gts`,
+/// over the `num_individuals` individuals of the ploidy `ploidy`.
+///
+/// The buffer is given back as it was, with the memory it has and with the
+/// genotypes in it, whether the dosages were built or not: the sets of a
+/// block share one allocation, and the window lends its own genotypes and
+/// keeps them.
+///
+/// # Errors
+///
+/// What [`LdDosages::of_block`](crate::ld::LdDosages::of_block) refuses,
+/// which its `# Errors` lists, a set of variants this machine has not the
+/// memory of the three matrices for among them.
+fn the_dosages_of(
+    gts: &mut Vec<i8>,
+    num_vars: usize,
+    num_individuals: usize,
+    ploidy: usize,
+) -> Result<LdDosages> {
+    let mut block = Block {
+        num_vars,
+        num_individuals,
+        ploidy,
+        gts: std::mem::take(gts),
+        chrom: None,
+        pos: None,
+        id: None,
+        alleles: None,
+        qual: None,
+    };
+    let dosages = LdDosages::of_block(&block, &[]);
+    *gts = std::mem::take(&mut block.gts);
+    dosages
+}
+
+/// Asks this machine for room for `more` values in `vector`, which `what`
+/// names.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`] when the machine does not give it. The memory is
+/// asked for with `try_reserve`, which gives it back as an error where a
+/// `push` or an `extend` would end the process, as `docs/specs/filters.md`
+/// asks for a window this machine has not the memory of.
+fn the_room_for<T>(vector: &mut Vec<T>, more: usize, what: &'static str) -> Result<()> {
+    vector.try_reserve(more).map_err(|_| Error::LdNoMemory {
+        what,
+        values: more,
+        bytes_per_value: size_of::<T>(),
+    })
+}
+
+/// A copy of `values`, which `what` names, with its memory asked of this
+/// machine and not taken.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`] when the machine does not give it.
+fn the_copy_of<T: Copy>(values: &[T], what: &'static str) -> Result<Vec<T>> {
+    let mut copy: Vec<T> = Vec::new();
+    copy.try_reserve_exact(values.len())
+        .map_err(|_| Error::LdNoMemory {
+            what,
+            values: values.len(),
+            bytes_per_value: size_of::<T>(),
+        })?;
+    copy.extend_from_slice(values);
+    Ok(copy)
+}
+
+/// A buffer of `values` values of `value`, which `what` names, with its
+/// memory asked of this machine and not taken.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`] when the machine does not give it.
+fn the_buffer_of<T: Clone>(value: T, values: usize, what: &'static str) -> Result<Vec<T>> {
+    let mut buffer: Vec<T> = Vec::new();
+    buffer
+        .try_reserve_exact(values)
+        .map_err(|_| Error::LdNoMemory {
+            what,
+            values,
+            bytes_per_value: size_of::<T>(),
+        })?;
+    buffer.resize(values, value);
+    Ok(buffer)
+}
+
+/// Grows `buffer` to `values` values of 0, and leaves it as it is when it
+/// holds that many already.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`] when this machine does not give the memory of the
+/// values it has not.
+fn the_buffer_grown_to(buffer: &mut Vec<f64>, values: usize, what: &'static str) -> Result<()> {
+    let more = values.saturating_sub(buffer.len());
+    if more == 0 {
+        return Ok(());
+    }
+    the_room_for(buffer, more, what)?;
+    buffer.resize(values, 0.0);
+    Ok(())
+}
+
+/// Which variants of the block the filter keeps, with the window it leaves
+/// behind.
+///
+/// The variants are settled `at_a_time` at a time. The r² of a whole set of
+/// them against the whole window is one call, over one set of the products
+/// of `docs/specs/ld.md`, and the r² of the variants of the set against one
+/// another is one more: what cannot be done that way is a candidate against
+/// the variants kept inside its own set, since whether one of them is kept
+/// decides what the next one is compared with, so those are read out of the
+/// r² of the set in the order of the variants.
+///
+/// `at_a_time` changes no result, which
+/// `the_variants_kept_do_not_change_with_the_variants_settled_at_a_time`
+/// asserts at 1, at 3 and at 256: the rule reads the positions of the
+/// variants and never the end of a set or of a block, and the six sums of a
+/// pair are whole numbers that an `f64` holds exactly, so a pair has the
+/// same r² in whichever set it is worked out.
+/// [`THE_VARS_SETTLED_AT_A_TIME`] is what the filter passes.
+///
+/// `chroms` and `positions` are the columns of the block, which
+/// [`Block::check`] has found to hold one value for each of its variants.
+///
+/// # Errors
+///
+/// [`Error::BlocksDoNotFitTogether`] when the block holds other individuals
+/// or another ploidy than the variants of the window were read in,
+/// [`Error::LdNoMemory`] when this machine does not give the memory of the
+/// window, of the genotypes of a set or of the r² of one, and what
+/// [`LdDosages::of_block`](crate::ld::LdDosages::of_block) and
+/// [`r2_between`](crate::ld::r2_between) refuse.
+fn the_variants_that_stay(
+    filter: &LdFilter,
+    block: &Block,
+    chroms: &[u32],
+    positions: &[u64],
+    at_a_time: usize,
+) -> Result<TheBlockSettled> {
+    let alleles_per_var = block.alleles_per_var()?;
+    // The block is settled against a window of its own, which the filter
+    // takes over once every variant of the block has been settled, so a
+    // block that is refused leaves the window of the filter as it was.
+    let mut window = filter.window.copy_of()?;
+    window.takes_the_block(block)?;
+    let at_a_time = at_a_time.min(block.num_vars).max(1);
+    // The buffers of a set, asked for once and written over by every set of
+    // the block: the genotypes of a set are at most the genotypes of the
+    // block, which are in memory, and the r² of the pairs of a set of 256
+    // variants is 65536 values, 512 KB. A count that saturates here is more
+    // memory than any machine gives, so it comes back as the error of the
+    // memory and never as a buffer of the wrong size.
+    let mut keep: Vec<bool> = Vec::new();
+    the_room_for(
+        &mut keep,
+        block.num_vars,
+        "the variants of the block that stay",
+    )?;
+    let mut gts_of_the_set: Vec<i8> = Vec::new();
+    the_room_for(
+        &mut gts_of_the_set,
+        at_a_time.saturating_mul(alleles_per_var),
+        "the genotypes of a set of candidates",
+    )?;
+    let mut dropped = the_buffer_of(false, at_a_time, "the candidates of a set that are dropped")?;
+    let mut r2_of_the_set = the_buffer_of(
+        0.0,
+        at_a_time.saturating_mul(at_a_time),
+        "the r² of the pairs of a set",
+    )?;
+    let mut r2_against_the_window: Vec<f64> = Vec::new();
+    let mut first: usize = 0;
+    for (chroms_of_the_set, positions_of_the_set) in
+        chroms.chunks(at_a_time).zip(positions.chunks(at_a_time))
+    {
+        let num_vars = chroms_of_the_set.len();
+        // The genotypes of the set are cut out of the block by the sizes
+        // the block states, which `Block::check` has found to hold.
+        let from = first.saturating_mul(alleles_per_var);
+        let to = from.saturating_add(num_vars.saturating_mul(alleles_per_var));
+        let Some(gts_of_the_variants) = block.gts.get(from..to) else {
+            return Err(Error::BlockArrayOfAnotherSize {
+                array: "gts",
+                found: block.gts.len(),
+                expected: to,
+            });
+        };
+        gts_of_the_set.clear();
+        gts_of_the_set.extend_from_slice(gts_of_the_variants);
+        let set = the_dosages_of(
+            &mut gts_of_the_set,
+            num_vars,
+            block.num_individuals,
+            block.ploidy,
+        )?;
+        // Which of the variants of the window drop a candidate cannot
+        // change with what the set does, so the whole window is read
+        // against the whole set in one call.
+        dropped.fill(false);
+        if let (Some(chrom), Some(pos)) = (chroms_of_the_set.first(), positions_of_the_set.first())
+        {
+            // A variant of the window that the first variant of the set has
+            // left behind is behind every variant of the set: the positions
+            // rise and the chromosomes do not come back.
+            window.leave_behind(*chrom, *pos, filter.max_dist);
+        }
+        if window.num_vars() > 0 {
+            let values = window.num_vars().saturating_mul(num_vars);
+            the_buffer_grown_to(
+                &mut r2_against_the_window,
+                values,
+                "the r² of a set of candidates against the window",
+            )?;
+            let of_the_window = window.dosages()?;
+            let Some(r2_of_the_window) = r2_against_the_window.get_mut(..values) else {
+                // The buffer was grown to that many values, so this is not
+                // reached.
+                return Err(Error::LdR2OfAnotherSize {
+                    num_values: r2_against_the_window.len(),
+                    num_vars_of_a: window.num_vars(),
+                    num_vars_of_b: num_vars,
+                });
+            };
+            r2_between(&of_the_window, &set, r2_of_the_window)?;
+            for ((r2_of_a_variant, chrom_of_it), pos_of_it) in r2_of_the_window
+                .chunks_exact(num_vars)
+                .zip(&window.chroms)
+                .zip(&window.poss)
+            {
+                for ((dropped_it, r2), (chrom, pos)) in dropped
+                    .iter_mut()
+                    .zip(r2_of_a_variant)
+                    .zip(chroms_of_the_set.iter().zip(positions_of_the_set))
+                {
+                    let within = chrom == chrom_of_it
+                        && pos
+                            .checked_sub(*pos_of_it)
+                            .is_some_and(|dist| dist <= filter.max_dist);
+                    if !within {
+                        // The variants after this one are further ahead or
+                        // on a later chromosome, and this variant of the
+                        // window is behind the window of all of them.
+                        break;
+                    }
+                    if *r2 > filter.max_allowed_r2 {
+                        *dropped_it = true;
+                    }
+                }
+            }
+        }
+        // The r² of every pair of the set, which is where a candidate is
+        // compared with the variants kept inside it: at most 256 variants
+        // are settled at a time, so this is 65536 values, 512 KB, whatever
+        // the size of the block.
+        let values = num_vars.saturating_mul(num_vars);
+        let Some(r2_of_the_pairs) = r2_of_the_set.get_mut(..values) else {
+            // The buffer holds the square of the variants a set settles at
+            // a time and a set is at most that many, so this is not
+            // reached.
+            return Err(Error::LdR2OfAnotherSize {
+                num_values: r2_of_the_set.len(),
+                num_vars_of_a: num_vars,
+                num_vars_of_b: num_vars,
+            });
+        };
+        r2_between(&set, &set, r2_of_the_pairs)?;
+        let mut after_it = dropped.as_mut_slice();
+        for ((r2_of_the_variant, (chrom, pos)), variant) in r2_of_the_pairs
+            .chunks_exact(num_vars)
+            .zip(chroms_of_the_set.iter().zip(positions_of_the_set))
+            .zip(0..num_vars)
+        {
+            let Some((dropped_it, after)) = std::mem::take(&mut after_it).split_first_mut() else {
+                // One value was made for each variant of the set, so this
+                // is not reached.
+                break;
+            };
+            after_it = after;
+            let stays = set.has_variance(variant) && !*dropped_it;
+            keep.push(stays);
+            if !stays {
+                continue;
+            }
+            // It is kept, so it is in the window of every variant of the
+            // set after it that is within `max_dist` on its chromosome.
+            let next = variant.saturating_add(1);
+            for ((dropped_later, r2), (chrom_later, pos_later)) in after_it
+                .iter_mut()
+                .zip(r2_of_the_variant.iter().skip(next))
+                .zip(
+                    chroms_of_the_set
+                        .iter()
+                        .skip(next)
+                        .zip(positions_of_the_set.iter().skip(next)),
+                )
+            {
+                let within = chrom_later == chrom
+                    && pos_later
+                        .checked_sub(*pos)
+                        .is_some_and(|dist| dist <= filter.max_dist);
+                if !within {
+                    break;
+                }
+                if *r2 > filter.max_allowed_r2 {
+                    *dropped_later = true;
+                }
+            }
+            // The genotypes of the variant, which the window keeps and
+            // builds its dosages from when the next set arrives.
+            let of_it = variant.saturating_mul(alleles_per_var);
+            let Some(gts_of_it) =
+                gts_of_the_variants.get(of_it..of_it.saturating_add(alleles_per_var))
+            else {
+                return Err(Error::BlockArrayOfAnotherSize {
+                    array: "gts",
+                    found: block.gts.len(),
+                    expected: to,
+                });
+            };
+            window.push(*chrom, *pos, gts_of_it)?;
+        }
+        first = first.saturating_add(num_vars);
+    }
+    let kept = keep.iter().filter(|stays| **stays).count();
+    Ok(TheBlockSettled { keep, kept, window })
 }
 
 /// A reader that gives the variants of its source that pass one filter.
@@ -354,13 +1433,268 @@ impl<R: BlockReader> BlockReader for FilteredReader<R> {
     }
 }
 
-/// One [`FilteredReader`] over `reader` for each criterion, in their order,
-/// so that each filter sees what the one before it kept: the chain of the
-/// filters of one pass. No criterion gives `reader` as it is.
+/// A reader that gives the variants of its source that the filter by
+/// linkage disequilibrium keeps.
+///
+/// It is [`FilteredReader`] for an [`LdFilter`], and it keeps the same
+/// contract of a reader of `docs/specs/block.md`: a block left with no
+/// variant is not given and the next one is taken; after an error, of its
+/// source or of its filter, it gives `None` at every call and does not call
+/// its source again; and a source that gives a block of no variants has a
+/// defect and is the error of that.
+///
+/// Two things are its own. Its filter holds the window of the variants kept
+/// behind the variant it is reading, so what carries from one block to the
+/// next is that window and not two counts alone. And it asks its source for
+/// the chromosome and the position besides the genotypes, whatever its
+/// consumer asked for, since the window of a variant is the variants kept
+/// within `max_dist` base pairs of it on its chromosome: the blocks it
+/// gives hold all three.
+pub struct LdFilteredReader<R: BlockReader> {
+    reader: R,
+    filter: LdFilter,
+    /// Whether the source has no more blocks or one of the two, the source
+    /// or the filter, gave an error. After any of them there is no block.
+    finished: bool,
+}
+
+impl<R: BlockReader> LdFilteredReader<R> {
+    /// The reader that gives the variants of `reader` that `filter` keeps.
+    ///
+    /// Building the chain asks `reader` for nothing: the consumer of the
+    /// pass calls [`BlockReader::set_needs`] on the outermost reader of the
+    /// chain, once it is built, and this one adds the genotypes, the
+    /// chromosome and the position to what it passes on. A source that was
+    /// narrowed to fields without them before it was wrapped, and that
+    /// nobody asks again, gives blocks the filter fails at with the error
+    /// of a field that is not in the block.
+    ///
+    /// # Errors
+    ///
+    /// When `reader` holds a filter by linkage disequilibrium already,
+    /// which its [`BlockReader::filtering_stats`] says: the second one
+    /// would work its r² out over the variants the first left, which is not
+    /// what either threshold asks for. The error carries the
+    /// `max_allowed_r2` of `filter`, and no threshold of the filter that is
+    /// set: a chain says which kinds it holds and not with which
+    /// thresholds.
+    pub fn new(reader: R, filter: LdFilter) -> Result<LdFilteredReader<R>> {
+        let kind = THE_KIND_OF_THE_LD_FILTER;
+        if reader
+            .filtering_stats()
+            .iter()
+            .any(|(of_the_chain, _)| *of_the_chain == kind)
+        {
+            return Err(Error::VarFilterOfAKindThatIsSet {
+                kind,
+                threshold: filter.max_allowed_r2(),
+                threshold_that_is_set: None,
+            });
+        }
+        Ok(LdFilteredReader {
+            reader,
+            filter,
+            finished: false,
+        })
+    }
+
+    /// The error of a variant out of order with the name its chromosome has
+    /// in the table of the source in place of its number, and every other
+    /// error as it is.
+    ///
+    /// The filter is given blocks, which carry the number of a chromosome
+    /// and not its name, and this reader has the table: the name is what a
+    /// user looks the row up by in their file.
+    fn the_chromosome_named(&self, error: Error) -> Error {
+        let Error::LdFilterVariantOutOfOrder {
+            variant,
+            chrom,
+            problem,
+        } = error
+        else {
+            return error;
+        };
+        let named = match chrom {
+            TheChromOfTheVariant::Numbered(number) => self
+                .reader
+                .chroms()
+                .name(number)
+                .map_or(TheChromOfTheVariant::Numbered(number), |name| {
+                    TheChromOfTheVariant::Named(name.to_owned())
+                }),
+            // The filter gives the number, so a name is one this reader
+            // has already put there.
+            named @ TheChromOfTheVariant::Named(_) => named,
+        };
+        Error::LdFilterVariantOutOfOrder {
+            variant,
+            chrom: named,
+            problem,
+        }
+    }
+}
+
+impl<R: BlockReader> BlockReader for LdFilteredReader<R> {
+    /// The next block of the source with the variants that the filter keeps
+    /// kept in it, and the blocks that its filter emptied passed over.
+    ///
+    /// # Errors
+    ///
+    /// When the source fails; when a block of the source holds no variant,
+    /// which no reader of popnei gives; and everything the filter refuses,
+    /// which the `# Errors` of [`LdFilter::filter_block`] lists: a block
+    /// whose arrays are not of its size, a block that has variants and no
+    /// genotypes or no position, a variant that does not come after the one
+    /// before it, and what the dosages of a block refuse. After any of them
+    /// there is no block and the source is not called again.
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        if self.finished {
+            return Ok(None);
+        }
+        loop {
+            let mut block = match self.reader.next_block() {
+                Ok(Some(block)) => block,
+                Ok(None) => {
+                    self.finished = true;
+                    return Ok(None);
+                }
+                Err(error) => {
+                    self.finished = true;
+                    return Err(error);
+                }
+            };
+            // A source that gives a block of no variants has a defect, and
+            // it is not asked again: over a source that always gives one, a
+            // reader that asked again would never come back.
+            if block.num_vars == 0 {
+                self.finished = true;
+                return Err(Error::ReaderGaveABlockOfNoVariants);
+            }
+            if let Err(error) = self.filter.filter_block(&mut block) {
+                self.finished = true;
+                return Err(self.the_chromosome_named(error));
+            }
+            // A block the filter emptied is not given: the next one is
+            // taken, and the source says when there are no more.
+            if block.num_vars > 0 {
+                return Ok(Some(block));
+            }
+        }
+    }
+
+    fn individuals(&self) -> &[String] {
+        self.reader.individuals()
+    }
+
+    fn ploidy(&self) -> usize {
+        self.reader.ploidy()
+    }
+
+    /// The table of the source: a reader over another reader has none of
+    /// its own.
+    fn chroms(&self) -> &ChromTable {
+        self.reader.chroms()
+    }
+
+    /// The fields of the consumer, the genotypes, the chromosome and the
+    /// position, which the filter reads for every variant of every block:
+    /// so the blocks this reader gives hold the three also when the
+    /// consumer asked for none of them.
+    fn set_needs(&mut self, needs: Needs) {
+        self.reader
+            .set_needs(needs.union(Needs::GTS).union(Needs::CHROM_POS));
+    }
+
+    /// The counts of this filter, and after them those of the filters
+    /// between the source and its own source.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        let mut stats = vec![(THE_KIND_OF_THE_LD_FILTER, self.filter.stats())];
+        stats.extend(self.reader.filtering_stats());
+        stats
+    }
+}
+
+impl<R: BlockReader> fmt::Debug for LdFilteredReader<R> {
+    /// What it filters and where it has got to. The source is left out, so
+    /// that an `LdFilteredReader` over a reader that has no `Debug` has
+    /// one.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LdFilteredReader")
+            .field("filter", &self.filter)
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One step of a pass over the variants: what every pass built from a
+/// `Variants` does to the variants it reads, in the order in which the user
+/// put the steps on.
+///
+/// Each binding crate keeps the steps of its `Variants` as a list of these,
+/// and [`chain_of`] builds the readers of one pass from that list: which
+/// reader a step becomes, and in which order, is of the filters and not of
+/// Python or of TypeScript.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum PassStep {
+    /// The variants whose number is at most the threshold of the criterion
+    /// are kept, and the others are left out of every block of the pass.
+    VarFilter(VarFilteringCriterion),
+    /// The names of the individuals to keep, in the order to keep them:
+    /// every variant stays, and of each one the genotypes of these
+    /// individuals alone go on.
+    KeepIndividuals(Vec<String>),
+}
+
+impl PassStep {
+    /// `"missing_data"`, `"maf"`, `"obs_het"` or `"individuals"`: the name
+    /// the step has for a Python and a TypeScript user, under which the
+    /// counts of a filter reach them and by which a second step of the same
+    /// kind is refused.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            PassStep::VarFilter(criterion) => criterion.kind(),
+            PassStep::KeepIndividuals(_) => "individuals",
+        }
+    }
+}
+
+/// The names of the individuals the next pass gives, in the order it gives
+/// them: the names the last [`PassStep::KeepIndividuals`] of `steps` keeps,
+/// and `of_the_source` when no step of `steps` is one.
+///
+/// A `Variants` holds no genotype and answers what its next pass would give,
+/// so this is what a user reads of it as its individuals, and what the `pops`
+/// of `docs/specs/stats.md` name individuals among. Both binding crates read
+/// it, and neither walks the steps itself: which step says who the next pass
+/// holds is of the filters and not of Python or of TypeScript. A second
+/// filter of individuals is refused, by [`refuse_a_second_filter_of_a_kind`]
+/// at the call that adds it and by [`chain_of`] when the pass is built, so
+/// the last one is the only one.
+#[must_use]
+pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<String> {
+    steps
+        .iter()
+        .rev()
+        .find_map(|step| match step {
+            PassStep::KeepIndividuals(names) => Some(names.clone()),
+            PassStep::VarFilter(_) => None,
+        })
+        .unwrap_or_else(|| of_the_source.to_vec())
+}
+
+/// One reader over `reader` for each step, in their order, so that each
+/// step sees what the one before it gave: the chain of one pass. A
+/// [`PassStep::VarFilter`] becomes a [`FilteredReader`], except for the
+/// criterion [`MaxLdR2`](VarFilteringCriterion::MaxLdR2), which becomes an
+/// [`LdFilteredReader`], and no step gives `reader` as it is.
 ///
 /// Both binding crates build the chain of a pass with this, and neither
-/// writes the loop: in which order the filters go, and what comes out while
-/// they are built, are of the filters and not of Python or of TypeScript.
+/// writes the loop: in which order the steps go, and what comes out while
+/// the readers are built, are of the filters and not of Python or of
+/// TypeScript.
 ///
 /// What it gives is the outermost reader of the chain, which whoever started
 /// the pass holds: they read [`BlockReader::filtering_stats`] from it when
@@ -370,50 +1704,285 @@ impl<R: BlockReader> BlockReader for FilteredReader<R> {
 ///
 /// # Errors
 ///
-/// What [`VarFilter::new`] refuses, a threshold that is NaN, below 0 or
-/// above 1, and what [`FilteredReader::new`] refuses, a criterion of the
-/// kind of one before it in `criteria` or of a filter that `reader` holds
-/// already, which a chain built over a chain has. No block was read then.
-pub fn chain_of(
-    reader: Box<dyn BlockReader>,
-    criteria: &[VarFilteringCriterion],
-) -> Result<Box<dyn BlockReader>> {
+/// What [`VarFilter::new`] and [`LdFilter::new`] refuse, a threshold that
+/// is NaN, below 0 or above 1 and a `max_dist` below 1, and what
+/// [`FilteredReader::new`] and [`LdFilteredReader::new`] refuse, a filter of
+/// the kind of one before it in `steps` or of a filter that `reader` holds
+/// already, which a chain built over a chain has. What
+/// [`IndividualsReader::new`] refuses, a name that is not an individual of
+/// what the step is put on, a name that is there twice and no name at all.
+/// And a second [`PassStep::KeepIndividuals`] among `steps`, which the
+/// chain has to find itself: the filter of individuals takes no variant
+/// out, so it has no counts and a reader cannot be asked whether it holds
+/// one. No block was read when any of them comes.
+pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<dyn BlockReader>> {
     let mut chain = reader;
-    for criterion in criteria {
-        chain = Box::new(FilteredReader::new(chain, VarFilter::new(*criterion)?)?);
+    for (index, step) in steps.iter().enumerate() {
+        match step {
+            // The three criteria that compare one number of a variant with
+            // a threshold: the variant is kept or dropped on what it holds
+            // itself, which is what a `VarFilter` answers.
+            PassStep::VarFilter(
+                criterion @ (VarFilteringCriterion::MaxMissingRate(_)
+                | VarFilteringCriterion::MaxMaf(_)
+                | VarFilteringCriterion::MaxObsHet(_)),
+            ) => {
+                chain = Box::new(FilteredReader::new(chain, VarFilter::new(*criterion)?)?);
+            }
+            // The fourth criterion is not one of those: whether a variant
+            // is kept turns on the variants kept behind it, which the
+            // window of an `LdFilter` holds from one block to the next, so
+            // `VarFilter::new` refuses this criterion and the reader of it
+            // is an `LdFilteredReader`.
+            PassStep::VarFilter(VarFilteringCriterion::MaxLdR2 {
+                max_allowed_r2,
+                max_dist,
+            }) => {
+                chain = Box::new(LdFilteredReader::new(
+                    chain,
+                    LdFilter::new(*max_allowed_r2, *max_dist)?,
+                )?);
+            }
+            PassStep::KeepIndividuals(names) => {
+                // The steps before this one: `index` is the place of `step`
+                // in `steps`, so it is below their number and the split is
+                // the prefix that ends where this step begins.
+                refuse_a_second_filter_of_a_kind(steps.split_at(index).0, step)?;
+                chain = Box::new(IndividualsReader::new(chain, names)?);
+            }
+        }
     }
     Ok(chain)
 }
 
 /// The error of a second filter of one kind, when `new` is of the kind of
-/// one of `set`, the criteria of the filters that are set already.
+/// one of `set`, the steps that are set already.
 ///
 /// Two threshold filters of one kind keep the variants that the stricter of
-/// the two keeps alone, so the second says that the user has lost track of
-/// what their variants carry. Both binding crates call this when a user
-/// adds a filter to a `Variants`, where no reader exists yet and the steps
-/// are what says which filters are set.
+/// the two keeps alone, and a second filter by linkage disequilibrium works
+/// its r² out over the variants the first left, so either says that the
+/// user has lost track of what their variants carry. Both binding crates
+/// call this when a user adds a filter to a `Variants`, where no reader
+/// exists yet and the steps are what says which filters are set.
 ///
 /// # Errors
 ///
-/// When a criterion of `set` has the kind of `new`. The error carries both
-/// thresholds, the one of `new` and the one that is set, where the same
-/// error from [`FilteredReader::new`] carries the first alone: a chain of
-/// readers says which kinds of filter it holds and not with which
-/// thresholds.
-pub fn refuse_a_second_filter_of_a_kind(
-    set: &[VarFilteringCriterion],
-    new: VarFilteringCriterion,
-) -> Result<()> {
-    let kind = new.kind();
-    if let Some(that_is_set) = set.iter().find(|criterion| criterion.kind() == kind) {
+/// When a step of `set` has the kind of `new`. For a threshold filter the
+/// error carries both thresholds, the one of `new` and the one that is set,
+/// where the same error from [`FilteredReader::new`] carries the first
+/// alone: a chain of readers says which kinds of filter it holds and not
+/// with which thresholds. For the filter of individuals it carries the
+/// kind, since a list of individuals has no number to name it by, and two
+/// lists keep the individuals that are in both, which is one list.
+pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Result<()> {
+    let criterion = match new {
+        PassStep::VarFilter(criterion) => criterion,
+        PassStep::KeepIndividuals(_) => {
+            return match set
+                .iter()
+                .any(|step| matches!(step, PassStep::KeepIndividuals(_)))
+            {
+                true => Err(Error::FilterOfIndividualsThatIsSet { kind: new.kind() }),
+                false => Ok(()),
+            };
+        }
+    };
+    let kind = criterion.kind();
+    let that_is_set = set
+        .iter()
+        .filter_map(|step| match step {
+            PassStep::VarFilter(of_the_step) => Some(of_the_step),
+            PassStep::KeepIndividuals(_) => None,
+        })
+        .find(|of_the_step| of_the_step.kind() == kind);
+    if let Some(that_is_set) = that_is_set {
         return Err(Error::VarFilterOfAKindThatIsSet {
             kind,
-            threshold: new.threshold(),
+            threshold: criterion.threshold(),
             threshold_that_is_set: Some(that_is_set.threshold()),
         });
     }
     Ok(())
+}
+
+/// The index of each of `names` among `individuals`, in the order of
+/// `names`: the individuals a filter of individuals keeps, as the indices
+/// into the individuals of the source that [`Block::retain_individuals`]
+/// takes.
+///
+/// Both binding crates call it when a user adds the step, against the
+/// individuals of the source, so that the three refusals reach the user at
+/// the call they wrote, and [`IndividualsReader::new`] calls it again when
+/// a pass builds its chain.
+///
+/// # Errors
+///
+/// A name that is not one of `individuals`, a name that is there twice, and
+/// no name at all. The first two name the name, which is what the user
+/// wrote.
+pub fn resolve_individuals(names: &[String], individuals: &[String]) -> Result<Vec<usize>> {
+    if names.is_empty() {
+        return Err(Error::NoIndividualNamed);
+    }
+    let of_the_source: HashMap<&str, usize> = individuals
+        .iter()
+        .enumerate()
+        .map(|(individual, name)| (name.as_str(), individual))
+        .collect();
+    let mut keep = Vec::with_capacity(names.len());
+    let mut named = HashSet::with_capacity(names.len());
+    for name in names {
+        let Some(individual) = of_the_source.get(name.as_str()) else {
+            return Err(Error::IndividualNotInTheSource { name: name.clone() });
+        };
+        if !named.insert(*individual) {
+            return Err(Error::IndividualNamedTwice { name: name.clone() });
+        }
+        keep.push(*individual);
+    }
+    Ok(keep)
+}
+
+/// A reader that gives the blocks of its source with the genotypes of the
+/// individuals a user named, in the order they named them, and those of no
+/// other individual.
+///
+/// Every variant of the source comes out, so it takes no variant out and
+/// has no counts of its own: [`BlockReader::filtering_stats`] gives those
+/// of its source alone. It takes a block of its source at whatever size it
+/// comes and compacts it with [`Block::retain_individuals`], so the blocks
+/// it gives are the blocks of its source, whose size was worked out from
+/// the individuals of the source and not from the kept ones. It allocates
+/// no block and keeps nothing from one block to the next.
+///
+/// A threshold filter before it in the steps counts over every individual
+/// of the source and one after it over the kept ones, which is what a
+/// user's numbers turn on: the missing data filter at 0 over `many.vcf`
+/// keeps 26 of its 500 variants, and 423 of them over three of its 50
+/// individuals.
+///
+/// It keeps the contract of a reader of `docs/specs/block.md`: after an
+/// error, of its source or of the compaction, it gives `None` at every call
+/// and does not call its source again, and a source that gives a block of
+/// no variants has a defect and is the error of that.
+pub struct IndividualsReader<R: BlockReader> {
+    reader: R,
+    /// The index of each kept individual among those of the source, in the
+    /// order the user named them.
+    keep: Vec<usize>,
+    /// The names of the kept individuals, in the same order.
+    individuals: Vec<String>,
+    /// Whether the source has no more blocks or one of the two, the source
+    /// or the compaction, gave an error.
+    finished: bool,
+}
+
+impl<R: BlockReader> IndividualsReader<R> {
+    /// The reader that gives the genotypes of `individuals` of every block
+    /// of `reader`.
+    ///
+    /// # Errors
+    ///
+    /// What [`resolve_individuals`] refuses against the individuals of
+    /// `reader`: a name that is not one of them, a name that is there twice
+    /// and no name at all.
+    pub fn new(reader: R, individuals: &[String]) -> Result<IndividualsReader<R>> {
+        let of_the_source = reader.individuals();
+        let keep = resolve_individuals(individuals, of_the_source)?;
+        // An index of `resolve_individuals` is the place of a name among
+        // the individuals of the source, so each of these is there; one
+        // that is not would leave the reader with fewer names than the
+        // blocks it gives hold individuals.
+        let names = keep
+            .iter()
+            .map(|individual| {
+                of_the_source.get(*individual).cloned().ok_or(
+                    Error::IndividualToKeepNotInTheBlock {
+                        individual: *individual,
+                        num_individuals: of_the_source.len(),
+                    },
+                )
+            })
+            .collect::<Result<Vec<String>>>()?;
+        Ok(IndividualsReader {
+            reader,
+            keep,
+            individuals: names,
+            finished: false,
+        })
+    }
+}
+
+impl<R: BlockReader> BlockReader for IndividualsReader<R> {
+    /// The next block of the source with the genotypes of the kept
+    /// individuals alone in it, in the order the user named them. Every
+    /// variant of the block stays, with every column it had.
+    ///
+    /// # Errors
+    ///
+    /// When the source fails; when a block of the source holds no variant,
+    /// which no reader of popnei gives; and what
+    /// [`Block::retain_individuals`] refuses, a block whose arrays are not
+    /// of its size and a block that has variants and no genotypes. After
+    /// any of them there is no block and the source is not called again.
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        if self.finished {
+            return Ok(None);
+        }
+        let mut block = match self.reader.next_block() {
+            Ok(Some(block)) => block,
+            Ok(None) => {
+                self.finished = true;
+                return Ok(None);
+            }
+            Err(error) => {
+                self.finished = true;
+                return Err(error);
+            }
+        };
+        // A source that gives a block of no variants has a defect, and it
+        // is not asked again: over a source that always gives one, a reader
+        // that asked again would never come back.
+        if block.num_vars == 0 {
+            self.finished = true;
+            return Err(Error::ReaderGaveABlockOfNoVariants);
+        }
+        if let Err(error) = block.retain_individuals(&self.keep) {
+            self.finished = true;
+            return Err(error);
+        }
+        Ok(Some(block))
+    }
+
+    /// The kept individuals, in the order the user named them, which is
+    /// what everything after this reader sees as the individuals of the
+    /// dataset.
+    fn individuals(&self) -> &[String] {
+        &self.individuals
+    }
+
+    fn ploidy(&self) -> usize {
+        self.reader.ploidy()
+    }
+
+    /// The table of the source: a reader over another reader has none of
+    /// its own.
+    fn chroms(&self) -> &ChromTable {
+        self.reader.chroms()
+    }
+
+    /// The fields of the consumer and the genotypes, which this reader
+    /// compacts in every block: so the blocks it gives hold the genotypes
+    /// also when the consumer did not ask for them.
+    fn set_needs(&mut self, needs: Needs) {
+        self.reader.set_needs(needs.union(Needs::GTS));
+    }
+
+    /// The counts of the filters between the source and its own source.
+    /// This reader adds none: it takes no variant out.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.reader.filtering_stats()
+    }
 }
 
 impl<R: BlockReader> fmt::Debug for FilteredReader<R> {
@@ -558,11 +2127,12 @@ fn keeps(
         }
         VarFilteringCriterion::MaxMaf(_) => {
             let called_alleles = count_alleles(gts, counts)?;
-            if called_alleles == 0 {
+            let Some(frequency) = the_major_allele_frequency(counts, called_alleles) else {
+                // A variant with no called allele has no major allele
+                // frequency, and this filter drops it.
                 return Ok(false);
-            }
-            let largest = counts.iter().copied().max().unwrap_or(0);
-            f64::from(largest) / f64::from(called_alleles)
+            };
+            frequency
         }
         VarFilteringCriterion::MaxObsHet(_) => {
             let gt_counts = count_gts(gts, ploidy)?;
@@ -570,6 +2140,13 @@ fn keeps(
                 return Ok(false);
             }
             f64::from(gt_counts.het) / f64::from(gt_counts.called)
+        }
+        VarFilteringCriterion::MaxLdR2 { .. } => {
+            // A criterion reaches this through a `VarFilter`, which is not
+            // built for this one, so it is not reached: the r² of a variant
+            // is not a number of the variant alone and is worked out by an
+            // `LdFilter` against the window it holds.
+            return Err(Error::VarFilterOfTheLdCriterion);
         }
     };
     Ok(number <= criterion.threshold())
@@ -584,15 +2161,26 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{
-        FilteredReader, FilteringStats, VarFilter, VarFilteringCriterion, chain_of,
-        keep_of_the_rows, keep_of_the_rows_one_by_one, refuse_a_second_filter_of_a_kind,
+        FilteredReader, FilteringStats, LdFilter, LdFilteredReader, PassStep,
+        THE_VARS_SETTLED_AT_A_TIME, TheChromOfTheVariant, TheOrderOfTheVariants, VarFilter,
+        VarFilteringCriterion, chain_of, individuals_of, keep_of_the_rows,
+        keep_of_the_rows_one_by_one, refuse_a_second_filter_of_a_kind, resolve_individuals,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
     use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
-    use VarFilteringCriterion::{MaxMaf, MaxMissingRate, MaxObsHet};
+    use VarFilteringCriterion::{MaxLdR2, MaxMaf, MaxMissingRate, MaxObsHet};
+
+    /// The steps of the threshold filters of `criteria`, in their order,
+    /// which is what `chain_of` and `refuse_a_second_filter_of_a_kind` take.
+    fn steps_of(criteria: &[VarFilteringCriterion]) -> Vec<PassStep> {
+        criteria
+            .iter()
+            .map(|criterion| PassStep::VarFilter(*criterion))
+            .collect()
+    }
 
     /// The six variants of five diploid individuals of the worked example
     /// of "How it is verified" of `docs/specs/filters.md`, each at the
@@ -1051,7 +2639,63 @@ mod tests {
         assert_eq!(MaxMissingRate(0.04).kind(), "missing_data");
         assert_eq!(MaxMaf(0.8).kind(), "maf");
         assert_eq!(MaxObsHet(0.5).kind(), "obs_het");
+        assert_eq!(
+            MaxLdR2 {
+                max_allowed_r2: 0.1,
+                max_dist: 10_000,
+            }
+            .kind(),
+            "ld"
+        );
         assert_eq!(MaxMaf(0.0).kind(), MaxMaf(1.0).kind());
+    }
+
+    /// The criterion by linkage disequilibrium carries both the arguments a
+    /// user wrote: its threshold is the `max_allowed_r2`, the first of the
+    /// two values of the step a binding crate shows them, and its
+    /// `max_dist` is the second. The three criteria that compare one number
+    /// of a variant have no distance at all, so nothing of them reaches
+    /// that second value.
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the threshold comes back as it was written and is not the end of any arithmetic"
+    )]
+    fn the_criterion_by_linkage_disequilibrium_carries_the_threshold_and_the_distance() {
+        let criterion = MaxLdR2 {
+            max_allowed_r2: 0.3,
+            max_dist: 50_000,
+        };
+
+        assert_eq!(criterion.threshold(), 0.3);
+        assert_eq!(criterion.max_dist(), Some(50_000));
+        assert_eq!(MaxMissingRate(0.04).max_dist(), None);
+        assert_eq!(MaxMaf(0.8).max_dist(), None);
+        assert_eq!(MaxObsHet(0.5).max_dist(), None);
+    }
+
+    /// The criterion of the filter by linkage disequilibrium is no
+    /// criterion of a `VarFilter`: the r² of a variant is worked out
+    /// against the window of the variants kept behind it and not out of the
+    /// counts of the variant alone. `chain_of` builds the reader of the
+    /// right filter for it, so no call from Python or from TypeScript
+    /// reaches this, and a caller of the core crate that builds the wrong
+    /// one is told which filter that criterion is filtered by.
+    #[test]
+    fn a_filter_of_one_number_of_a_variant_is_refused_the_criterion_by_linkage_disequilibrium() {
+        let error = VarFilter::new(MaxLdR2 {
+            max_allowed_r2: 0.1,
+            max_dist: 10_000,
+        })
+        .expect_err("the criterion was refused");
+
+        let message = error.to_string();
+        assert!(
+            matches!(error, Error::VarFilterOfTheLdCriterion),
+            "{message}"
+        );
+        assert!(message.contains("LdFilter"), "{message}");
+        assert!(message.contains("chain_of"), "{message}");
     }
 
     /// The table of "How it is verified" of `docs/specs/filters.md`: each
@@ -1417,6 +3061,17 @@ mod tests {
             }
         }
 
+        /// A reader of the six individuals of the worked example of the r²,
+        /// which the blocks of the filter by linkage disequilibrium are
+        /// built from, where the worked example of the three filters has
+        /// five.
+        fn of_the_r2_example(blocks: Vec<Block>) -> GivenBlocks {
+            GivenBlocks {
+                individuals: (1..=6).map(|number| format!("ind{number}")).collect(),
+                ..GivenBlocks::of(blocks)
+            }
+        }
+
         /// How many times it has been asked for a block, which the test
         /// reads after the reader over it took it.
         fn calls(&self) -> Arc<AtomicUsize> {
@@ -1604,8 +3259,11 @@ mod tests {
     #[test]
     fn chain_of_the_three_criteria_over_many_vcf_keeps_the_106_variants_with_their_counts() {
         let source = Box::new(many_vcf_reader(Some(7), Needs::GTS | Needs::CHROM_POS));
-        let mut chain = chain_of(source, &[MaxMissingRate(0.04), MaxMaf(0.8), MaxObsHet(0.5)])
-            .expect("the chain of the three criteria");
+        let mut chain = chain_of(
+            source,
+            &steps_of(&[MaxMissingRate(0.04), MaxMaf(0.8), MaxObsHet(0.5)]),
+        )
+        .expect("the chain of the three criteria");
 
         let blocks = blocks_of(&mut chain).expect("the blocks");
         let positions = positions_of_blocks(&blocks);
@@ -1651,7 +3309,7 @@ mod tests {
     fn chain_of_a_criterion_of_a_kind_that_is_set_is_the_error_of_the_reader() {
         let refused = |criteria: &[VarFilteringCriterion]| {
             let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
-            let error = chain_of(source, criteria)
+            let error = chain_of(source, &steps_of(criteria))
                 .err()
                 .expect("the chain was refused");
             let message = error.to_string();
@@ -1676,11 +3334,15 @@ mod tests {
     #[test]
     fn chain_of_a_criterion_of_a_kind_the_reader_holds_is_the_error_of_the_reader() {
         let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
-        let with_a_maf_filter = chain_of(source, &[MaxMaf(0.8)]).expect("the chain of one");
+        let with_a_maf_filter =
+            chain_of(source, &steps_of(&[MaxMaf(0.8)])).expect("the chain of one");
 
-        let error = chain_of(with_a_maf_filter, &[MaxMissingRate(0.04), MaxMaf(0.95)])
-            .err()
-            .expect("the chain over it was refused");
+        let error = chain_of(
+            with_a_maf_filter,
+            &steps_of(&[MaxMissingRate(0.04), MaxMaf(0.95)]),
+        )
+        .err()
+        .expect("the chain over it was refused");
 
         let message = error.to_string();
         assert!(
@@ -1695,14 +3357,20 @@ mod tests {
     /// steps of the `Variants` are the criteria that are set.
     #[test]
     fn refuse_a_second_filter_of_a_kind_takes_a_kind_that_is_not_set_and_refuses_one_that_is() {
-        let set = [MaxMissingRate(0.04), MaxMaf(0.8)];
+        let set = steps_of(&[MaxMissingRate(0.04), MaxMaf(0.8)]);
 
-        assert!(refuse_a_second_filter_of_a_kind(&set, MaxObsHet(0.5)).is_ok());
-        assert!(refuse_a_second_filter_of_a_kind(&[], MaxMaf(0.95)).is_ok());
+        assert!(
+            refuse_a_second_filter_of_a_kind(&set, &PassStep::VarFilter(MaxObsHet(0.5))).is_ok()
+        );
+        assert!(refuse_a_second_filter_of_a_kind(&[], &PassStep::VarFilter(MaxMaf(0.95))).is_ok());
         // A criterion of another kind between the two changes nothing: the
         // kind is looked for among all of them.
         assert!(
-            refuse_a_second_filter_of_a_kind(&[MaxMaf(0.8), MaxObsHet(0.5)], MaxMaf(0.95)).is_err()
+            refuse_a_second_filter_of_a_kind(
+                &steps_of(&[MaxMaf(0.8), MaxObsHet(0.5)]),
+                &PassStep::VarFilter(MaxMaf(0.95))
+            )
+            .is_err()
         );
     }
 
@@ -1711,8 +3379,11 @@ mod tests {
     /// see which of their cells they ran twice.
     #[test]
     fn refuse_a_second_filter_of_a_kind_names_the_kind_and_both_thresholds() {
-        let error = refuse_a_second_filter_of_a_kind(&[MaxMaf(0.8)], MaxMaf(0.95))
-            .expect_err("the second maf filter was refused");
+        let error = refuse_a_second_filter_of_a_kind(
+            &steps_of(&[MaxMaf(0.8)]),
+            &PassStep::VarFilter(MaxMaf(0.95)),
+        )
+        .expect_err("the second maf filter was refused");
 
         let message = error.to_string();
         assert!(
@@ -1736,7 +3407,7 @@ mod tests {
     #[test]
     fn chain_of_a_threshold_out_of_range_is_the_error_of_the_filter() {
         let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
-        let error = chain_of(source, &[MaxMissingRate(0.04), MaxMaf(1.5)])
+        let error = chain_of(source, &steps_of(&[MaxMissingRate(0.04), MaxMaf(1.5)]))
             .err()
             .expect("the chain was refused");
 
@@ -1766,5 +3437,1814 @@ mod tests {
             maf.filtering_stats(),
             vec![("maf", pair(4, 3)), ("missing_data", pair(6, 4))]
         );
+    }
+
+    /// An allele that was not called, the `.` of a VCF.
+    const M: i8 = MISSING_ALLELE;
+
+    /// The five variants of six diploid individuals of the worked example
+    /// of "How it is verified" of `docs/specs/ld.md`, each with the
+    /// position that example gives it, and each row the alleles of one
+    /// individual after those of the individual before it.
+    ///
+    /// Their r², which plink2 v2.0.0-a.7.7 gives for the same file,
+    /// `tests/reference/ld/example.vcf`, are 0.675 for v1 and v2,
+    /// 0.7544642857142857 for v1 and v3, 0.0625 for v1 and v5,
+    /// 0.6428571428571429 for v2 and v3, 0 for v2 and v5, and 0.21875 for
+    /// v3 and v5. v4 has one dosage in every individual, so it has no r²
+    /// against any of them.
+    const THE_WORKED_EXAMPLE_OF_THE_R2: [(u64, [i8; 12]); 5] = [
+        // v1 0/0 0/0 0/1 0/1 1/1 1/1
+        (1000, [0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1]),
+        // v2 0/0 0/1 0/1 1/1 1/1 1/1
+        (2000, [0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1]),
+        // v3 0/0 0/0 0/0 0/1 ./. 1/1
+        (3000, [0, 0, 0, 0, 0, 0, 0, 1, M, M, 1, 1]),
+        // v4 0/0 0/0 0/0 0/0 0/0 0/0
+        (4000, [0; 12]),
+        // v5 0/1 1/1 0/0 0/1 1/1 0/0
+        (5000, [0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0]),
+    ];
+
+    /// A block of the variants given, each with its chromosome and its
+    /// position, of `num_individuals` individuals of the ploidy `ploidy`:
+    /// the fields the filter by linkage disequilibrium asks its source for.
+    fn block_of_the_chromosomes(
+        variants: &[(u32, u64, &[i8])],
+        num_individuals: usize,
+        ploidy: usize,
+    ) -> Block {
+        let mut gts = Vec::new();
+        let mut chrom = Vec::new();
+        let mut pos = Vec::new();
+        for (chromosome, position, row) in variants {
+            gts.extend_from_slice(row);
+            chrom.push(*chromosome);
+            pos.push(*position);
+        }
+        Block {
+            num_vars: variants.len(),
+            num_individuals,
+            ploidy,
+            gts,
+            chrom: Some(chrom),
+            pos: Some(pos),
+            id: None,
+            alleles: None,
+            qual: None,
+        }
+    }
+
+    /// A block of the variants of the worked example of the r² that are
+    /// named, in the order they are named, each at its own position and all
+    /// of them on one chromosome.
+    fn block_of_the_r2_example(variants: &[usize]) -> Block {
+        let rows: Vec<(u32, u64, &[i8])> = variants
+            .iter()
+            .filter_map(|variant| THE_WORKED_EXAMPLE_OF_THE_R2.get(*variant))
+            .map(|(pos, gts)| (0, *pos, gts.as_slice()))
+            .collect();
+        block_of_the_chromosomes(&rows, 6, 2)
+    }
+
+    /// The positions of the variants the filter keeps of the blocks, which
+    /// it takes one after another as a reader over a reader gives them.
+    fn kept_of_the_blocks(filter: &mut LdFilter, blocks: Vec<Block>) -> Result<Vec<u64>> {
+        let mut kept = Vec::new();
+        for mut block in blocks {
+            filter.filter_block(&mut block)?;
+            kept.extend(positions_of(&block));
+        }
+        Ok(kept)
+    }
+
+    /// The variants of the worked example of the r² that the filter keeps
+    /// at that setting, by their positions, with its counts.
+    fn kept_of_the_r2_example(max_allowed_r2: f64, max_dist: u64) -> (Vec<u64>, FilteringStats) {
+        let mut filter = LdFilter::new(max_allowed_r2, max_dist).unwrap();
+        let block = block_of_the_r2_example(&[0, 1, 2, 3, 4]);
+        let kept = kept_of_the_blocks(&mut filter, vec![block]).expect("the block was filtered");
+        (kept, filter.stats())
+    }
+
+    /// The three rows of the table of the worked example of "How it is
+    /// verified" of the item of `docs/specs/filters.md`: at 5000 bp and
+    /// 0.5 the variants kept are v1 and v5, since v2 and v3 are above 0.5
+    /// against v1 and v4 has one dosage; at 5000 and 0.7 they are v1, v2
+    /// and v5, since v2 is 0.675 against v1 and v3 is 0.754; and at 1000
+    /// and 0.5 they are v1, v3 and v5, since v3 and v5 have no kept variant
+    /// within 1000 bp. The counts of the first row are 5 variants given and
+    /// 2 kept.
+    #[test]
+    fn the_filter_keeps_the_variants_of_the_worked_example_at_each_setting() {
+        assert_eq!(kept_of_the_r2_example(0.5, 5000).0, [1000, 5000]);
+        assert_eq!(kept_of_the_r2_example(0.7, 5000).0, [1000, 2000, 5000]);
+        assert_eq!(kept_of_the_r2_example(0.5, 1000).0, [1000, 3000, 5000]);
+        assert_eq!(
+            kept_of_the_r2_example(0.5, 5000).1,
+            FilteringStats {
+                vars_processed: 5,
+                vars_kept: 2,
+            }
+        );
+    }
+
+    /// A candidate is compared with every variant of its window and not
+    /// with the last kept one alone, which is what pyNei's
+    /// `_filter_chunk_by_ld` does: at 5000 bp and 0.7 the last variant kept
+    /// before v3 is v2, whose r² against it is 0.643 and below the
+    /// threshold, and v3 goes because of v1, which is 0.754 against it and
+    /// is in its window too.
+    ///
+    /// v1, v2 and v3 are given in blocks of their own, so that v1 and v2
+    /// are in the window the filter carries over and not in the set of
+    /// variants v3 is settled with: a filter that compared v3 with the last
+    /// kept variant alone would keep it here, where one that compares it
+    /// with its whole window drops it. The same three variants in one block
+    /// say nothing about that, since there v3 is read out of the r² of its
+    /// own set.
+    #[test]
+    fn a_variant_is_compared_with_every_variant_of_its_window_and_not_the_last_kept_one_alone() {
+        assert_eq!(kept_of_the_r2_example(0.7, 5000).0, [1000, 2000, 5000]);
+
+        let mut filter = LdFilter::new(0.7, 5000).unwrap();
+        let of_its_own: Vec<Block> = [0, 1, 2, 4]
+            .into_iter()
+            .map(|variant| block_of_the_r2_example(&[variant]))
+            .collect();
+        let kept = kept_of_the_blocks(&mut filter, of_its_own).expect("the blocks");
+        assert_eq!(kept, [1000, 2000, 5000]);
+    }
+
+    /// A variant whose r² is exactly the threshold stays, as a variant
+    /// whose number is exactly the threshold stays in the three filters
+    /// that compare one number: the r² of v1 and v2 is 27/40, which is
+    /// 0.675, and v2 stays at that threshold and goes at 0.674.
+    ///
+    /// The two variants are given in one block and in two, the second of
+    /// which compares v2 with the window the filter carried over: the r²
+    /// of a pair of one set and the r² of a candidate against the window
+    /// are two paths, and each of them keeps a pair exactly at the
+    /// threshold.
+    #[test]
+    fn a_variant_whose_r2_is_exactly_the_threshold_stays() {
+        assert_eq!(kept_of_the_r2_example(0.675, 5000).0, [1000, 2000, 5000]);
+        assert_eq!(kept_of_the_r2_example(0.674, 5000).0, [1000, 5000]);
+
+        for (threshold, of_two_blocks) in [(0.675, vec![1000, 2000]), (0.674, vec![1000])] {
+            let mut filter = LdFilter::new(threshold, 5000).unwrap();
+            let blocks = vec![block_of_the_r2_example(&[0]), block_of_the_r2_example(&[1])];
+            let kept = kept_of_the_blocks(&mut filter, blocks).expect("the blocks");
+            assert_eq!(kept, of_two_blocks, "at a threshold of {threshold}");
+        }
+    }
+
+    /// At a threshold of 1 every variant with two dosages stays, whatever
+    /// its r² against the variants of its window, since no r² is above 1;
+    /// v4, whose called genotypes hold one dosage, goes at every threshold.
+    #[test]
+    fn at_a_threshold_of_1_every_variant_with_two_dosages_stays() {
+        assert_eq!(
+            kept_of_the_r2_example(1.0, 5000).0,
+            [1000, 2000, 3000, 5000]
+        );
+    }
+
+    /// A variant whose called genotypes hold one dosage, and one with no
+    /// called genotype, are dropped wherever they are, the first place
+    /// included: pyNei keeps the first variant of the first chunk whatever
+    /// it is, and when every one of its genotypes holds the same value
+    /// nothing else is ever kept, since every r against it is NaN.
+    #[test]
+    fn a_variant_of_one_dosage_or_of_none_is_dropped_wherever_it_is() {
+        let of_one_dosage = THE_WORKED_EXAMPLE_OF_THE_R2[3].1;
+        let called_nowhere = [M; 12];
+        for first in [of_one_dosage, called_nowhere] {
+            let mut variants: Vec<(u32, u64, &[i8])> = vec![(0, 500, first.as_slice())];
+            variants.extend(
+                [0, 1, 4]
+                    .iter()
+                    .filter_map(|variant| THE_WORKED_EXAMPLE_OF_THE_R2.get(*variant))
+                    .map(|(pos, gts)| (0, *pos, gts.as_slice())),
+            );
+            let block = block_of_the_chromosomes(&variants, 6, 2);
+            let mut filter = LdFilter::new(0.5, 5000).unwrap();
+            let kept = kept_of_the_blocks(&mut filter, vec![block]).expect("the block");
+            assert_eq!(kept, [1000, 5000]);
+            assert_eq!(filter.stats(), pair(4, 2));
+        }
+    }
+
+    /// A pair whose r² is not defined does not drop the candidate: the two
+    /// variants here have two dosages each and no individual called at
+    /// both, so their r² is NaN, and both stay at a threshold of 0, where
+    /// two variants that say the same thing would leave one.
+    ///
+    /// Each pair is given in one block and in two, since a candidate
+    /// against the window and a pair of one set are two paths and a NaN
+    /// drops the candidate on neither.
+    #[test]
+    fn a_pair_with_no_r2_does_not_drop_the_candidate() {
+        // 0/0 0/1 1/1 ./. ./. ./. and ./. ./. ./. 0/0 0/1 1/1.
+        let called_first = [0, 0, 0, 1, 1, 1, M, M, M, M, M, M];
+        let called_last = [M, M, M, M, M, M, 0, 0, 0, 1, 1, 1];
+        let pair_with_no_r2 = block_of_the_chromosomes(
+            &[
+                (0, 1000, called_first.as_slice()),
+                (0, 2000, called_last.as_slice()),
+            ],
+            6,
+            2,
+        );
+        let mut filter = LdFilter::new(0.0, 5000).unwrap();
+        let kept = kept_of_the_blocks(&mut filter, vec![pair_with_no_r2]).expect("the block");
+        assert_eq!(kept, [1000, 2000]);
+
+        // The same threshold over two variants that are the same leaves
+        // the second one, so what keeps the pair above is the NaN.
+        let the_same_twice = block_of_the_chromosomes(
+            &[
+                (0, 1000, called_first.as_slice()),
+                (0, 2000, called_first.as_slice()),
+            ],
+            6,
+            2,
+        );
+        let mut filter = LdFilter::new(0.0, 5000).unwrap();
+        let kept = kept_of_the_blocks(&mut filter, vec![the_same_twice]).expect("the block");
+        assert_eq!(kept, [1000]);
+
+        // The two of each pair in blocks of their own: the second variant
+        // is then compared with the first through the window and not
+        // through the r² of one set.
+        let in_two_blocks = |second: &[i8]| {
+            let blocks = vec![
+                block_of_the_chromosomes(&[(0, 1000, called_first.as_slice())], 6, 2),
+                block_of_the_chromosomes(&[(0, 2000, second)], 6, 2),
+            ];
+            let mut filter = LdFilter::new(0.0, 5000).expect("the filter");
+            kept_of_the_blocks(&mut filter, blocks).expect("the blocks")
+        };
+        assert_eq!(in_two_blocks(called_last.as_slice()), [1000, 2000]);
+        assert_eq!(in_two_blocks(called_first.as_slice()), [1000]);
+    }
+
+    /// The variants kept do not change with the size of the blocks: the
+    /// rule reads the positions of the variants and never a block
+    /// boundary, and the window carries over from one block to the next.
+    #[test]
+    fn the_variants_kept_do_not_change_with_the_size_of_the_blocks() {
+        for size in 1..=5 {
+            let blocks: Vec<Block> = (0..5)
+                .collect::<Vec<usize>>()
+                .chunks(size)
+                .map(block_of_the_r2_example)
+                .collect();
+            let mut filter = LdFilter::new(0.5, 5000).unwrap();
+            let kept = kept_of_the_blocks(&mut filter, blocks).expect("the blocks");
+            assert_eq!(kept, [1000, 5000], "in blocks of {size} variants");
+            assert_eq!(filter.stats(), pair(5, 2), "in blocks of {size} variants");
+        }
+    }
+
+    /// The variants of one chromosome, each of them the one before it with
+    /// about one allele in ten changed, so that the variants near each
+    /// other are linked and the ones far apart are not.
+    ///
+    /// The numbers are of a generator written here and of no reference
+    /// program: what the test that reads them asserts is that two ways of
+    /// cutting one dataset into blocks keep the same variants, which needs
+    /// a dataset the filter drops some variants of and keeps others.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the counts are of a dataset of 600 variants of 20 individuals built here"
+    )]
+    fn a_linked_chromosome(num_vars: usize, num_individuals: usize) -> Vec<(u64, Vec<i8>)> {
+        let mut alleles: Vec<i8> = (0..num_individuals * 2)
+            .map(|allele| i8::from(allele % 3 == 0))
+            .collect();
+        let mut seed: u64 = 20_260_923;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            seed >> 33
+        };
+        (1..=num_vars)
+            .map(|variant| {
+                for allele in &mut alleles {
+                    if next() % 10 == 0 {
+                        *allele = 1 - *allele;
+                    }
+                }
+                (variant as u64 * 1000, alleles.clone())
+            })
+            .collect()
+    }
+
+    /// The variants kept do not change with how many of them the filter
+    /// settles at a time, which is what
+    /// `ld::tests::neither_the_blocks_nor_the_tiles_change_the_matrix` does
+    /// for the tiles of the matrix: one block of 600 variants keeps the
+    /// same set at 1, at 3 and at the 256 of `THE_VARS_SETTLED_AT_A_TIME`.
+    ///
+    /// At 1 every candidate is compared with its whole window and with
+    /// nothing else, and at 256 the last 344 of them are compared with the
+    /// variants kept inside their own set as well, so the two paths give
+    /// the same set.
+    #[test]
+    fn the_variants_kept_do_not_change_with_the_variants_settled_at_a_time() {
+        let num_vars = 600;
+        let variants = a_linked_chromosome(num_vars, 20);
+        let kept_at = |at_a_time| {
+            let rows: Vec<(u32, u64, &[i8])> = variants
+                .iter()
+                .map(|(pos, gts)| (0, *pos, gts.as_slice()))
+                .collect();
+            let mut block = block_of_the_chromosomes(&rows, 20, 2);
+            let mut filter = LdFilter::new(0.3, 10_000).expect("the filter");
+            filter
+                .the_block_filtered(&mut block, at_a_time)
+                .expect("the block");
+            positions_of(&block)
+        };
+        let at_the_default = kept_at(THE_VARS_SETTLED_AT_A_TIME);
+        // A set that is neither every variant nor one of them: a dataset
+        // the filter does nothing on would tell no two ways of settling it
+        // apart.
+        assert!(
+            at_the_default.len() > 20 && at_the_default.len() < num_vars - 20,
+            "{} variants of {num_vars} kept",
+            at_the_default.len()
+        );
+        assert_eq!(kept_at(1), at_the_default, "settled one at a time");
+        assert_eq!(kept_at(3), at_the_default, "settled three at a time");
+    }
+
+    /// The variants kept do not change with the size of the blocks over a
+    /// dataset of more variants than the filter settles at a time, so that
+    /// the sets it works the r² of in one product are cut in one place when
+    /// the blocks are of 7 variants and in another when they are of 600.
+    #[test]
+    fn the_variants_kept_do_not_change_with_the_size_of_the_blocks_over_600_variants() {
+        let num_vars = 600;
+        assert!(num_vars > THE_VARS_SETTLED_AT_A_TIME);
+        let variants = a_linked_chromosome(num_vars, 20);
+        let of_one_block = {
+            let rows: Vec<(u32, u64, &[i8])> = variants
+                .iter()
+                .map(|(pos, gts)| (0, *pos, gts.as_slice()))
+                .collect();
+            let mut filter = LdFilter::new(0.3, 10000).unwrap();
+            kept_of_the_blocks(&mut filter, vec![block_of_the_chromosomes(&rows, 20, 2)])
+                .expect("the block")
+        };
+        // A set that is neither every variant nor one of them: a dataset
+        // the filter does nothing on would tell no two ways of reading it
+        // apart.
+        assert!(
+            of_one_block.len() > 20 && of_one_block.len() < num_vars - 20,
+            "{} variants of {num_vars} kept",
+            of_one_block.len()
+        );
+
+        for size in [7, 64, 256, 257] {
+            let blocks: Vec<Block> = variants
+                .chunks(size)
+                .map(|of_a_block| {
+                    let rows: Vec<(u32, u64, &[i8])> = of_a_block
+                        .iter()
+                        .map(|(pos, gts)| (0, *pos, gts.as_slice()))
+                        .collect();
+                    block_of_the_chromosomes(&rows, 20, 2)
+                })
+                .collect();
+            let mut filter = LdFilter::new(0.3, 10000).unwrap();
+            let kept = kept_of_the_blocks(&mut filter, blocks).expect("the blocks");
+            assert_eq!(kept, of_one_block, "in blocks of {size} variants");
+        }
+    }
+
+    /// The window ends with the chromosome: the first variant of a
+    /// chromosome with two dosages is kept although it says exactly what
+    /// the last variant of the chromosome before it said, where pyNei
+    /// carries the last kept variant from one chromosome to the next.
+    #[test]
+    fn the_first_variant_of_a_chromosome_is_kept_although_it_repeats_the_last_of_the_one_before() {
+        let (pos, gts) = THE_WORKED_EXAMPLE_OF_THE_R2[0];
+        let two_chromosomes =
+            block_of_the_chromosomes(&[(0, pos, gts.as_slice()), (1, pos, gts.as_slice())], 6, 2);
+        let mut filter = LdFilter::new(0.0, 250_000).unwrap();
+        let kept = kept_of_the_blocks(&mut filter, vec![two_chromosomes]).expect("the block");
+        assert_eq!(kept, [1000, 1000]);
+        assert_eq!(filter.stats(), pair(2, 2));
+    }
+
+    /// Two variants at one position are 0 apart, so each is in the window
+    /// of the other whatever `max_dist` is: at the smallest window of 1
+    /// base pair, v2 goes against v1 at a threshold of 0.5, their r² being
+    /// 0.675.
+    #[test]
+    fn two_variants_at_one_position_are_each_in_the_window_of_the_other() {
+        let (_, v1) = THE_WORKED_EXAMPLE_OF_THE_R2[0];
+        let (_, v2) = THE_WORKED_EXAMPLE_OF_THE_R2[1];
+        let at_one_position =
+            block_of_the_chromosomes(&[(0, 1000, v1.as_slice()), (0, 1000, v2.as_slice())], 6, 2);
+        let mut filter = LdFilter::new(0.5, 1).unwrap();
+        let kept = kept_of_the_blocks(&mut filter, vec![at_one_position]).expect("the block");
+        assert_eq!(kept, [1000]);
+    }
+
+    /// A variant is in the window of a variant exactly `max_dist` base
+    /// pairs ahead of it and out of the window of the next base pair: v2 is
+    /// 0.675 against v1 and goes at 1000 bp when the two are 1000 apart,
+    /// and stays when they are 1001 apart.
+    #[test]
+    fn a_variant_leaves_the_window_when_the_filter_passes_max_dist_beyond_it() {
+        let (_, v1) = THE_WORKED_EXAMPLE_OF_THE_R2[0];
+        let (_, v2) = THE_WORKED_EXAMPLE_OF_THE_R2[1];
+        let with_the_second_at = |pos| {
+            let block = block_of_the_chromosomes(
+                &[(0, 1000, v1.as_slice()), (0, pos, v2.as_slice())],
+                6,
+                2,
+            );
+            let mut filter = LdFilter::new(0.5, 1000).unwrap();
+            kept_of_the_blocks(&mut filter, vec![block]).expect("the block")
+        };
+        // 1000 bp behind the second variant and 1001 bp behind it.
+        assert_eq!(with_the_second_at(2000), [1000]);
+        assert_eq!(with_the_second_at(2001), [1000, 2001]);
+    }
+
+    /// A position that falls below the position of the variant before it on
+    /// its chromosome is refused, and the block, the counts and the window
+    /// are as they were: the block that comes after the refused one is
+    /// filtered against the window of the blocks before it.
+    #[test]
+    fn a_position_that_falls_within_a_chromosome_is_refused() {
+        let (_, v1) = THE_WORKED_EXAMPLE_OF_THE_R2[0];
+        let (_, v2) = THE_WORKED_EXAMPLE_OF_THE_R2[1];
+        let mut filter = LdFilter::new(0.5, 5000).unwrap();
+        let mut first = block_of_the_chromosomes(&[(0, 1000, v1.as_slice())], 6, 2);
+        filter.filter_block(&mut first).expect("the first block");
+
+        let mut out_of_order =
+            block_of_the_chromosomes(&[(0, 3000, v2.as_slice()), (0, 2000, v2.as_slice())], 6, 2);
+        let error = filter
+            .filter_block(&mut out_of_order)
+            .expect_err("the block was refused");
+        assert!(
+            matches!(
+                error,
+                Error::LdFilterVariantOutOfOrder {
+                    variant: 3,
+                    chrom: TheChromOfTheVariant::Numbered(0),
+                    problem: TheOrderOfTheVariants::ThePositionFalls {
+                        pos: 2000,
+                        pos_before: 3000,
+                    },
+                }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("the variant 3"), "{error}");
+        // The filter is given a block, which holds the number of a
+        // chromosome and not its name, so the message names the number; a
+        // reader over a source puts the name there.
+        assert!(
+            error.to_string().contains("the chromosome numbered 0"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("`bcftools sort` writes"),
+            "{error}"
+        );
+        assert_eq!(out_of_order.num_vars, 2);
+        assert_eq!(positions_of(&out_of_order), [3000, 2000]);
+        assert_eq!(filter.stats(), pair(1, 1));
+
+        // v1 is still in the window, and v2 is 0.675 against it.
+        let mut after_it = block_of_the_chromosomes(&[(0, 2000, v2.as_slice())], 6, 2);
+        filter.filter_block(&mut after_it).expect("the block after");
+        assert_eq!(after_it.num_vars, 0);
+        assert_eq!(filter.stats(), pair(2, 1));
+    }
+
+    /// A position that falls below the last variant of the block before it
+    /// is refused too: the filter carries where it has got to from one
+    /// block to the next, as it carries the window.
+    #[test]
+    fn a_position_that_falls_below_the_last_variant_of_the_block_before_is_refused() {
+        let (_, v1) = THE_WORKED_EXAMPLE_OF_THE_R2[0];
+        let (_, v2) = THE_WORKED_EXAMPLE_OF_THE_R2[1];
+        let mut filter = LdFilter::new(0.5, 5000).unwrap();
+        let mut first = block_of_the_chromosomes(&[(0, 3000, v1.as_slice())], 6, 2);
+        filter.filter_block(&mut first).expect("the first block");
+        let mut goes_back = block_of_the_chromosomes(&[(0, 2000, v2.as_slice())], 6, 2);
+        let error = filter
+            .filter_block(&mut goes_back)
+            .expect_err("the block was refused");
+        assert!(
+            matches!(
+                error,
+                Error::LdFilterVariantOutOfOrder {
+                    variant: 2,
+                    chrom: TheChromOfTheVariant::Numbered(0),
+                    problem: TheOrderOfTheVariants::ThePositionFalls {
+                        pos: 2000,
+                        pos_before: 3000,
+                    },
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    /// A chromosome that comes back is refused, whatever the positions: a
+    /// variant of it sits behind variants of another chromosome, so the
+    /// window of every variant after it would hold what the filter has
+    /// already given away.
+    #[test]
+    fn a_chromosome_that_comes_back_is_refused() {
+        let (_, v1) = THE_WORKED_EXAMPLE_OF_THE_R2[0];
+        let mut filter = LdFilter::new(0.5, 5000).unwrap();
+        let mut blocks = block_of_the_chromosomes(
+            &[
+                (0, 1000, v1.as_slice()),
+                (1, 1000, v1.as_slice()),
+                (0, 2000, v1.as_slice()),
+            ],
+            6,
+            2,
+        );
+        let error = filter
+            .filter_block(&mut blocks)
+            .expect_err("the block was refused");
+        assert!(
+            matches!(
+                error,
+                Error::LdFilterVariantOutOfOrder {
+                    variant: 3,
+                    chrom: TheChromOfTheVariant::Numbered(0),
+                    problem: TheOrderOfTheVariants::TheChromosomeCameBack {
+                        pos: 2000,
+                        pos_before: 1000,
+                    },
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(filter.stats(), FilteringStats::default());
+    }
+
+    /// A `max_allowed_r2` that is not a number from 0 to 1 and a `max_dist`
+    /// below 1 are refused where the filter is built, and the error names
+    /// the argument and the value.
+    #[test]
+    fn the_arguments_of_the_filter_are_refused_where_it_is_built() {
+        for threshold in [-0.1, 1.5, f64::NAN] {
+            let error = LdFilter::new(threshold, 5000).expect_err("the threshold was refused");
+            assert!(
+                matches!(
+                    error,
+                    Error::VarFilterThresholdOutOfRange { kind: "ld", .. }
+                ),
+                "{error}"
+            );
+        }
+        let error = LdFilter::new(0.5, 0).expect_err("the distance was refused");
+        assert!(
+            matches!(error, Error::LdFilterMaxDistTooSmall { max_dist: 0 }),
+            "{error}"
+        );
+        assert!(LdFilter::new(0.0, 1).is_ok());
+        assert!(LdFilter::new(1.0, u64::MAX).is_ok());
+    }
+
+    /// The filter asks its source for the position besides the genotypes, so
+    /// a block with variants and no position, as one with variants and no
+    /// genotypes, is the error of a field that is not in the block.
+    #[test]
+    fn a_block_with_variants_and_no_position_or_no_genotypes_is_refused() {
+        let mut filter = LdFilter::new(0.5, 5000).unwrap();
+        let mut with_no_position = block_of_the_r2_example(&[0, 1]);
+        with_no_position.chrom = None;
+        with_no_position.pos = None;
+        let error = filter
+            .filter_block(&mut with_no_position)
+            .expect_err("the block was refused");
+        assert!(
+            matches!(
+                error,
+                Error::FieldsNotInTheBlock {
+                    fields: Needs::CHROM_POS
+                }
+            ),
+            "{error}"
+        );
+
+        let mut with_no_genotypes = block_of_the_r2_example(&[0, 1]);
+        with_no_genotypes.gts = Vec::new();
+        with_no_genotypes.num_individuals = 0;
+        let error = filter
+            .filter_block(&mut with_no_genotypes)
+            .expect_err("the block was refused");
+        assert!(
+            matches!(error, Error::FieldsNotInTheBlock { fields: Needs::GTS }),
+            "{error}"
+        );
+        assert_eq!(filter.stats(), FilteringStats::default());
+    }
+
+    /// The counts are of every block the filter was given, a filter just
+    /// built has counted nothing, and a block of no variants is left as it
+    /// is and counted as nothing.
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the threshold comes back as it was written and is not the end of any arithmetic"
+    )]
+    fn the_counts_of_the_filter_add_up_over_the_blocks_it_was_given() {
+        let mut filter = LdFilter::new(0.5, 5000).unwrap();
+        assert_eq!(filter.stats(), FilteringStats::default());
+        assert_eq!(filter.max_allowed_r2(), 0.5);
+        assert_eq!(filter.max_dist(), 5000);
+
+        let mut empty = block_of_the_r2_example(&[]);
+        filter.filter_block(&mut empty).expect("the empty block");
+        assert_eq!(filter.stats(), FilteringStats::default());
+
+        let blocks = vec![
+            block_of_the_r2_example(&[0, 1]),
+            block_of_the_r2_example(&[2, 3]),
+            block_of_the_r2_example(&[4]),
+        ];
+        let kept = kept_of_the_blocks(&mut filter, blocks).expect("the blocks");
+        assert_eq!(kept, [1000, 5000]);
+        assert_eq!(filter.stats(), pair(5, 2));
+    }
+
+    /// The reader of the filter by linkage disequilibrium, of the worked
+    /// example of the r², over the blocks a reader of the tests gives.
+    fn ld_reader_of(blocks: Vec<Block>) -> LdFilteredReader<GivenBlocks> {
+        LdFilteredReader::new(
+            GivenBlocks::of_the_r2_example(blocks),
+            LdFilter::new(0.5, 5000).expect("the filter"),
+        )
+        .expect("the reader over the blocks")
+    }
+
+    /// A block that the filter emptied is not given: the reader takes the
+    /// next block of its source, and the variants of the block it dropped
+    /// are in its counts. Here the first and the last block hold a variant
+    /// of one dosage, which the filter drops wherever it is, and the middle
+    /// one v5, which has no variant of its window to be compared with.
+    #[test]
+    fn a_block_the_ld_filter_left_with_no_variant_is_not_given_and_the_next_one_is_taken() {
+        let (_, one_dosage) = THE_WORKED_EXAMPLE_OF_THE_R2[3];
+        let mut filtered = ld_reader_of(vec![
+            block_of_the_chromosomes(&[(0, 1000, one_dosage.as_slice())], 6, 2),
+            block_of_the_r2_example(&[4]),
+            block_of_the_chromosomes(&[(0, 6000, one_dosage.as_slice())], 6, 2),
+        ]);
+
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(positions_of_blocks(&blocks), [5000]);
+        assert_eq!(filtered.filtering_stats(), vec![("ld", pair(3, 1))]);
+        // And there is no block after the last one.
+        assert!(filtered.next_block().expect("no more blocks").is_none());
+    }
+
+    /// After an error of its source the reader gives no block and does not
+    /// call its source again, as every reader over a reader of
+    /// `docs/specs/block.md` does.
+    #[test]
+    fn after_an_error_of_the_source_the_ld_reader_gives_no_block_and_does_not_call_it_again() {
+        let source = GivenBlocks {
+            fails_at: Some(2),
+            ..GivenBlocks::of_the_r2_example(vec![
+                block_of_the_r2_example(&[0]),
+                block_of_the_r2_example(&[4]),
+            ])
+        };
+        let calls = source.calls();
+        let mut filtered =
+            LdFilteredReader::new(source, LdFilter::new(0.5, 5000).unwrap()).unwrap();
+
+        let first = filtered.next_block().expect("the first block");
+        assert_eq!(first.map(|block| positions_of(&block)), Some(vec![1000]));
+        let error = filtered.next_block().expect_err("the source failed");
+        assert!(matches!(error, Error::Io(_)), "{error}");
+
+        assert!(
+            filtered
+                .next_block()
+                .expect("no block after the error")
+                .is_none()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// After an error of its filter the reader gives no block and does not
+    /// call its source again either: the variants that follow the one the
+    /// filter refused would otherwise come out as if nothing had happened,
+    /// and the window of every variant after it is the one the wrong order
+    /// broke.
+    #[test]
+    fn after_an_error_of_the_ld_filter_there_is_no_block_and_the_source_is_not_called_again() {
+        let (_, v1) = THE_WORKED_EXAMPLE_OF_THE_R2[0];
+        let (_, v2) = THE_WORKED_EXAMPLE_OF_THE_R2[1];
+        let source = GivenBlocks::of_the_r2_example(vec![
+            block_of_the_chromosomes(&[(0, 3000, v1.as_slice())], 6, 2),
+            block_of_the_chromosomes(&[(0, 2000, v2.as_slice())], 6, 2),
+        ]);
+        let calls = source.calls();
+        let mut filtered =
+            LdFilteredReader::new(source, LdFilter::new(0.5, 5000).unwrap()).unwrap();
+
+        let first = filtered.next_block().expect("the first block");
+        assert_eq!(first.map(|block| positions_of(&block)), Some(vec![3000]));
+        let error = filtered.next_block().expect_err("the block was refused");
+        assert!(
+            matches!(
+                error,
+                Error::LdFilterVariantOutOfOrder {
+                    variant: 2,
+                    chrom: TheChromOfTheVariant::Named(_),
+                    problem: TheOrderOfTheVariants::ThePositionFalls {
+                        pos: 2000,
+                        pos_before: 3000,
+                    },
+                }
+            ),
+            "{error}"
+        );
+        // The reader has the table of its source, so the message names the
+        // chromosome as the file does and not by its number.
+        assert!(error.to_string().contains("the chromosome chr1"), "{error}");
+
+        assert!(
+            filtered
+                .next_block()
+                .expect("no block after the error")
+                .is_none()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A source that gives a block of no variants has a defect and is the
+    /// error of that, and it is not asked again: over a source that always
+    /// gives one, a reader that asked again would never come back.
+    #[test]
+    fn a_source_that_gives_the_ld_reader_a_block_of_no_variants_is_an_error_and_is_not_called_again()
+     {
+        let source = GivenBlocks::of_the_r2_example(vec![
+            block_of_the_r2_example(&[]),
+            block_of_the_r2_example(&[0]),
+        ]);
+        let calls = source.calls();
+        let mut filtered =
+            LdFilteredReader::new(source, LdFilter::new(0.5, 5000).unwrap()).unwrap();
+
+        let error = filtered.next_block().expect_err("the block was refused");
+        assert!(
+            matches!(error, Error::ReaderGaveABlockOfNoVariants),
+            "{error}"
+        );
+        assert!(
+            filtered
+                .next_block()
+                .expect("no block after the error")
+                .is_none()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// The reader has no individuals, no ploidy and no chromosome names of
+    /// its own: it gives those of its source, whose ploidy here is 4 and
+    /// not the 2 of the blocks of the other tests. A filter that has taken
+    /// no block yet counts 0 given and 0 kept.
+    #[test]
+    fn the_ld_reader_gives_the_individuals_the_ploidy_and_the_chromosomes_of_its_source() {
+        let source = GivenBlocks {
+            ploidy: 4,
+            ..GivenBlocks::of_the_r2_example(Vec::new())
+        };
+        let filtered = LdFilteredReader::new(source, LdFilter::new(0.5, 5000).unwrap()).unwrap();
+
+        assert_eq!(filtered.individuals().len(), 6);
+        assert_eq!(
+            filtered.individuals().first().map(String::as_str),
+            Some("ind1")
+        );
+        assert_eq!(filtered.ploidy(), 4);
+        assert_eq!(filtered.chroms().name(0), Some("chr1"));
+        assert_eq!(filtered.filtering_stats(), vec![("ld", pair(0, 0))]);
+    }
+
+    /// The filter reads the genotypes, the chromosome and the position of
+    /// every variant, so the blocks the reader gives hold the three also
+    /// when the consumer asked for none of them, and they hold no column
+    /// that nobody asked for. The consumer here asks for the qualities
+    /// alone, over the 500 variants of `many.vcf`.
+    #[test]
+    fn the_blocks_of_the_ld_reader_hold_the_chromosome_and_the_position_the_filter_reads() {
+        let reader = many_vcf_reader(Some(7), Needs::ALL);
+        let mut filtered =
+            LdFilteredReader::new(reader, LdFilter::new(0.1, 10_000).unwrap()).unwrap();
+        filtered.set_needs(Needs::QUAL);
+
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+
+        assert!(!blocks.is_empty());
+        for block in &blocks {
+            assert!(
+                block
+                    .fields()
+                    .contains(Needs::GTS | Needs::CHROM_POS | Needs::QUAL)
+            );
+            assert!(!block.gts.is_empty());
+            assert!(block.id.is_none());
+            assert!(block.alleles.is_none());
+        }
+        let stats = filtered.filtering_stats();
+        assert_eq!(
+            stats
+                .first()
+                .map(|(kind, stats)| (*kind, stats.vars_processed)),
+            Some(("ld", 500))
+        );
+    }
+
+    /// The three counts of the worked example of the filter by linkage
+    /// disequilibrium in "How it is verified" of `docs/specs/filters.md`: a
+    /// missing data filter at 1 before it and an observed heterozygosity
+    /// filter at 1 after it give 5 and 5, 5 and 2, and 2 and 2.
+    ///
+    /// Neither of the two filters at 1 drops anything, v3 having one
+    /// missing genotype of six and the most heterozygous variant three of
+    /// six, so the counts of the three say where each of them stands in the
+    /// chain and what the one in the middle took out.
+    #[test]
+    fn the_chain_of_the_worked_example_gives_the_three_pairs_of_counts_of_the_spec() {
+        let source =
+            GivenBlocks::of_the_r2_example(vec![block_of_the_r2_example(&[0, 1, 2, 3, 4])]);
+        let mut chain = chain_of(
+            Box::new(source),
+            &steps_of(&[
+                MaxMissingRate(1.0),
+                MaxLdR2 {
+                    max_allowed_r2: 0.5,
+                    max_dist: 5000,
+                },
+                MaxObsHet(1.0),
+            ]),
+        )
+        .expect("the chain of the three criteria");
+
+        let blocks = blocks_of(&mut chain).expect("the blocks");
+
+        assert_eq!(positions_of_blocks(&blocks), [1000, 5000]);
+        assert_eq!(
+            chain.filtering_stats(),
+            vec![
+                ("obs_het", pair(2, 2)),
+                ("ld", pair(5, 2)),
+                ("missing_data", pair(5, 5)),
+            ]
+        );
+    }
+
+    /// The chain of a maf filter and the filter by linkage disequilibrium,
+    /// which is what a user writes in place of pyNei's one call to
+    /// `filter_by_ld_and_maf`: the maf filter at 0.8 drops v4, whose
+    /// major allele frequency is 1, and the filter at 0.5 and 5000 bp keeps
+    /// v1 and v5 of the four variants left. The counts of both reach the
+    /// user apart, the outermost filter first, which is the last step.
+    #[test]
+    fn a_chain_of_a_maf_filter_and_the_ld_filter_keeps_two_variants_and_gives_the_counts_of_both() {
+        let source =
+            GivenBlocks::of_the_r2_example(vec![block_of_the_r2_example(&[0, 1, 2, 3, 4])]);
+        let mut chain = chain_of(
+            Box::new(source),
+            &steps_of(&[
+                MaxMaf(0.8),
+                MaxLdR2 {
+                    max_allowed_r2: 0.5,
+                    max_dist: 5000,
+                },
+            ]),
+        )
+        .expect("the chain of the two criteria");
+
+        let blocks = blocks_of(&mut chain).expect("the blocks");
+
+        assert_eq!(positions_of_blocks(&blocks), [1000, 5000]);
+        assert_eq!(
+            chain.filtering_stats(),
+            vec![("ld", pair(4, 2)), ("maf", pair(5, 4))]
+        );
+    }
+
+    /// A second criterion by linkage disequilibrium is refused where the
+    /// chain is built, among the criteria of one call and over a chain that
+    /// holds one already, which is what a binding crate builds over a
+    /// chain. The message names the `max_allowed_r2` that was written.
+    #[test]
+    fn chain_of_a_second_criterion_by_linkage_disequilibrium_is_refused() {
+        let ld = |max_allowed_r2| MaxLdR2 {
+            max_allowed_r2,
+            max_dist: 5000,
+        };
+        let source = Box::new(GivenBlocks::of_the_r2_example(Vec::new()));
+
+        let error = chain_of(source, &steps_of(&[ld(0.1), ld(0.3)]))
+            .err()
+            .expect("the chain was refused");
+        let message = error.to_string();
+        assert!(
+            matches!(error, Error::VarFilterOfAKindThatIsSet { kind: "ld", .. }),
+            "{message}"
+        );
+        assert!(message.contains("0.3"), "{message}");
+
+        let holds_one = chain_of(
+            Box::new(GivenBlocks::of_the_r2_example(Vec::new())),
+            &steps_of(&[ld(0.1)]),
+        )
+        .expect("the chain of one criterion");
+        let error = chain_of(holds_one, &steps_of(&[MaxMaf(0.8), ld(0.3)]))
+            .err()
+            .expect("the chain over it was refused");
+        assert!(
+            matches!(error, Error::VarFilterOfAKindThatIsSet { kind: "ld", .. }),
+            "{error}"
+        );
+    }
+
+    /// The two arguments of the filter by linkage disequilibrium are
+    /// refused where the chain is built, as the threshold of the three
+    /// filters that compare one number of a variant is, and the errors are
+    /// those of `LdFilter::new`.
+    #[test]
+    fn chain_of_the_arguments_of_the_ld_filter_out_of_range_is_the_error_of_the_filter() {
+        let refused = |criterion| {
+            let source = Box::new(GivenBlocks::of_the_r2_example(Vec::new()));
+            chain_of(source, &steps_of(&[MaxMissingRate(0.04), criterion]))
+                .err()
+                .expect("the chain was refused")
+        };
+
+        let error = refused(MaxLdR2 {
+            max_allowed_r2: 1.5,
+            max_dist: 5000,
+        });
+        assert!(
+            matches!(
+                error,
+                Error::VarFilterThresholdOutOfRange { kind: "ld", .. }
+            ),
+            "{error}"
+        );
+
+        let error = refused(MaxLdR2 {
+            max_allowed_r2: 0.5,
+            max_dist: 0,
+        });
+        assert!(
+            matches!(error, Error::LdFilterMaxDistTooSmall { max_dist: 0 }),
+            "{error}"
+        );
+    }
+
+    /// The kind of the filter by linkage disequilibrium is looked for among
+    /// the criteria that are set as every other kind is, which is what a
+    /// binding crate calls when a user adds the filter to a `Variants`, and
+    /// the message names both thresholds: the one that is set and the one
+    /// that was written.
+    #[test]
+    fn refuse_a_second_filter_of_a_kind_refuses_a_second_one_by_linkage_disequilibrium() {
+        let set = steps_of(&[
+            MaxMaf(0.8),
+            MaxLdR2 {
+                max_allowed_r2: 0.1,
+                max_dist: 10_000,
+            },
+        ]);
+
+        assert!(
+            refuse_a_second_filter_of_a_kind(&set, &PassStep::VarFilter(MaxObsHet(0.5))).is_ok()
+        );
+        let error = refuse_a_second_filter_of_a_kind(
+            &set,
+            &PassStep::VarFilter(MaxLdR2 {
+                max_allowed_r2: 0.3,
+                max_dist: 50_000,
+            }),
+        )
+        .expect_err("the second filter by linkage disequilibrium was refused");
+
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                Error::VarFilterOfAKindThatIsSet {
+                    kind: "ld",
+                    threshold_that_is_set: Some(_),
+                    ..
+                }
+            ),
+            "{message}"
+        );
+        assert!(message.contains("0.3"), "{message}");
+        assert!(message.contains("0.1"), "{message}");
+    }
+
+    /// The four rows of the table of "How it is verified" of the item "The
+    /// filter by linkage disequilibrium" of `docs/specs/filters.md`, run on
+    /// `tests/reference/ld/ld.vcf.gz`: the window in base pairs, the
+    /// largest r² a kept variant may have against a variant of its window,
+    /// that threshold as `tests/reference/ld/ld.filtered.tsv` writes it,
+    /// the variants kept of the 500, and the first five kept by position.
+    const THE_TABLE_OF_THE_LD_FILTER: [(u64, f64, &str, u64, [&str; 5]); 4] = [
+        (
+            10_000,
+            0.1,
+            "0.1",
+            84,
+            [
+                "chr1:1000",
+                "chr1:10000",
+                "chr1:16000",
+                "chr1:22000",
+                "chr1:27000",
+            ],
+        ),
+        (
+            10_000,
+            0.3,
+            "0.3",
+            133,
+            [
+                "chr1:1000",
+                "chr1:5000",
+                "chr1:7000",
+                "chr1:11000",
+                "chr1:15000",
+            ],
+        ),
+        (
+            50_000,
+            0.3,
+            "0.3",
+            85,
+            [
+                "chr1:1000",
+                "chr1:5000",
+                "chr1:7000",
+                "chr1:11000",
+                "chr1:15000",
+            ],
+        ),
+        (
+            250_000,
+            0.3,
+            "0.3",
+            85,
+            [
+                "chr1:1000",
+                "chr1:5000",
+                "chr1:7000",
+                "chr1:11000",
+                "chr1:15000",
+            ],
+        ),
+    ];
+
+    /// The chromosome and the position of each variant that a filter
+    /// kept, in the order the blocks gave them.
+    type TheVariantsKept = Vec<(String, u64)>;
+
+    /// `tests/reference/ld/`, where `make_reference.py` writes the dataset
+    /// of `docs/specs/ld.md` and the numbers plink2 gives for it, at the
+    /// root of the repository and not inside this crate.
+    fn the_ld_reference_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference/ld")
+            .join(name)
+    }
+
+    /// A reader over `tests/reference/ld/ld.vcf.gz`, the 500 variants of
+    /// 100 diploid individuals on two chromosomes of `docs/specs/ld.md`,
+    /// read as plink2 read them, with the variants that failed their FILTER
+    /// among them, in blocks of `num_vars_per_block` variants.
+    fn the_ld_dataset(num_vars_per_block: Option<usize>) -> VcfReader<BufReader<File>> {
+        let path = the_ld_reference_path("ld.vcf.gz");
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block,
+        };
+        VcfReader::from_path(&path, options)
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = path.display()))
+    }
+
+    /// The chromosome and the position of every variant that
+    /// `tests/reference/ld/ld.filtered.tsv` holds for that setting, in the
+    /// order of the file. `make_reference.py` works that set out from the
+    /// r² that plink2 wrote for `ld.vcf.gz` and from the rule of the spec,
+    /// so it says which variants are kept without any arithmetic of popnei,
+    /// and it is where the three properties of "How it is verified" were
+    /// checked, in `tests/reference/ld/ld.filter.properties.txt`.
+    fn the_kept_of_the_reference(max_dist: u64, max_allowed_r2: &str) -> TheVariantsKept {
+        let path = the_ld_reference_path("ld.filtered.tsv");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = path.display()));
+        let of_the_dist = max_dist.to_string();
+        let mut kept = Vec::new();
+        for line in text.lines().skip(1) {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let [dist, r2, chrom, pos] = fields[..] else {
+                panic!("`{line}` has not the four columns of ld.filtered.tsv");
+            };
+            if dist != of_the_dist || r2 != max_allowed_r2 {
+                continue;
+            }
+            let pos = pos
+                .parse()
+                .unwrap_or_else(|error| panic!("`{line}`: {error}"));
+            kept.push((chrom.to_owned(), pos));
+        }
+        assert!(
+            !kept.is_empty(),
+            "ld.filtered.tsv holds no variant of {max_dist} bp and {max_allowed_r2}"
+        );
+        kept
+    }
+
+    /// The chromosome and the position of every variant that the filter by
+    /// linkage disequilibrium keeps of `ld.vcf.gz`, read in blocks of
+    /// `num_vars_per_block` variants, with the counts of the filter after
+    /// the last block.
+    fn the_kept_of_the_ld_dataset(
+        max_allowed_r2: f64,
+        max_dist: u64,
+        num_vars_per_block: Option<usize>,
+    ) -> (TheVariantsKept, Vec<(&'static str, FilteringStats)>) {
+        let filter = LdFilter::new(max_allowed_r2, max_dist).expect("the filter");
+        let mut filtered = LdFilteredReader::new(the_ld_dataset(num_vars_per_block), filter)
+            .expect("the reader over the VCF");
+        filtered.set_needs(Needs::GTS | Needs::CHROM_POS);
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+        let mut kept = Vec::new();
+        for block in &blocks {
+            assert!(block.num_vars > 0, "a block with no variant was given");
+            assert!(
+                block.check().is_ok(),
+                "a block whose arrays are not of its size"
+            );
+            let chroms = block.chrom.as_ref().expect("the chromosomes of the block");
+            let positions = block.pos.as_ref().expect("the positions of the block");
+            for (number, position) in chroms.iter().zip(positions) {
+                let name = filtered
+                    .chroms()
+                    .name(*number)
+                    .unwrap_or_else(|| panic!("the chromosome {number} has no name"));
+                kept.push((name.to_owned(), *position));
+            }
+        }
+        (kept, filtered.filtering_stats())
+    }
+
+    /// The four rows of the table of the spec, in blocks of 7 variants, of
+    /// 64 and of the size the VCF reader chooses: each keeps the variants
+    /// the table gives, which are the ones the rule of the spec keeps when
+    /// it is run over plink2's r² in `make_reference.py`, and the counts of
+    /// the filter are the 500 variants of the file and the ones it kept.
+    /// The first variant kept of chr2 is `chr2:1000` at every setting,
+    /// which is where the window stops at the end of a chromosome.
+    #[test]
+    fn the_ld_filter_keeps_the_variants_of_ld_vcf_that_the_table_of_the_spec_gives() {
+        for (max_dist, max_allowed_r2, of_the_reference, kept_of_500, first_five) in
+            THE_TABLE_OF_THE_LD_FILTER
+        {
+            let of_the_reference = the_kept_of_the_reference(max_dist, of_the_reference);
+            for num_vars_per_block in [Some(7), Some(64), None] {
+                let (kept, stats) =
+                    the_kept_of_the_ld_dataset(max_allowed_r2, max_dist, num_vars_per_block);
+                let what = format!(
+                    "at {max_dist} bp and {max_allowed_r2}, in blocks of {num_vars_per_block:?}"
+                );
+
+                assert_eq!(
+                    u64::try_from(kept.len()).expect("the variants kept"),
+                    kept_of_500,
+                    "{what}"
+                );
+                let five: Vec<String> = kept
+                    .iter()
+                    .take(5)
+                    .map(|(chrom, pos)| format!("{chrom}:{pos}"))
+                    .collect();
+                assert_eq!(five, first_five.map(String::from).to_vec(), "{what}");
+                assert_eq!(
+                    kept.iter().find(|(chrom, _)| chrom == "chr2"),
+                    Some(&("chr2".to_owned(), 1000)),
+                    "{what}"
+                );
+                assert_eq!(kept, of_the_reference, "{what}");
+                assert_eq!(stats, vec![("ld", pair(500, kept_of_500))], "{what}");
+            }
+        }
+    }
+
+    /// The filter keeps the same variants of `ld.vcf.gz` on a pool of one
+    /// thread and on one of four, at 10000 bp and 0.3, where it keeps 133
+    /// of the 500.
+    ///
+    /// The r² of the filter is worked out by the products of the linear
+    /// algebra, which on the faer backend run on the pool that is
+    /// installed, so the kept set is asserted on two pools as the matrix of
+    /// `docs/specs/ld.md` and the three filters that compare one number
+    /// are. The pools are built here and are not rayon's global one, which
+    /// has one thread per core of the machine; rayon is a dependency of the
+    /// targets that are not wasm, so this test is compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_variants_the_ld_filter_keeps_are_the_same_on_one_thread_and_on_several() {
+        let kept = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| the_kept_of_the_ld_dataset(0.3, 10_000, Some(64)))
+        };
+        let (on_one, counts_of_one) = kept(1);
+        let (on_four, counts_of_four) = kept(4);
+        assert_eq!(on_one.len(), 133);
+        assert_eq!(on_one, on_four);
+        assert_eq!(counts_of_one, counts_of_four);
+    }
+
+    /// The three names of "How it is verified" of the filter of individuals
+    /// of `docs/specs/filters.md`, in the order a user writes them, which
+    /// is not the order of the individuals of `many.vcf`.
+    const THE_THREE_NAMES: [&str; 3] = ["ind05", "ind00", "ind49"];
+
+    /// Those names as the filter takes them.
+    fn the_three_names() -> Vec<String> {
+        THE_THREE_NAMES.map(str::to_owned).to_vec()
+    }
+
+    /// The 50 individuals of `many.vcf`, `ind00` to `ind49`.
+    fn the_individuals_of_many_vcf() -> Vec<String> {
+        many_vcf_reader(None, Needs::GTS).individuals().to_vec()
+    }
+
+    /// The three names give the indices 5, 0 and 49, in the order they were
+    /// named: `resolve_individuals` gives the individuals in the order of
+    /// the argument and not in the order of the source, which is what lets
+    /// a user put their populations together.
+    #[test]
+    fn resolve_individuals_gives_the_index_of_each_name_in_the_order_of_the_names() {
+        let individuals = the_individuals_of_many_vcf();
+        assert_eq!(individuals.len(), 50);
+
+        let kept = resolve_individuals(&the_three_names(), &individuals)
+            .expect("the indices of the three names");
+
+        assert_eq!(kept, [5, 0, 49]);
+    }
+
+    /// A name that is not an individual of the source is the error that
+    /// names it. pyNei drops it in silence and gives a `Variants` of the
+    /// names it did find.
+    #[test]
+    fn resolve_individuals_refuses_a_name_that_is_not_an_individual() {
+        let individuals = the_individuals_of_many_vcf();
+
+        let error = resolve_individuals(&["ind05".to_owned(), "nope".to_owned()], &individuals)
+            .expect_err("the name that is not an individual was refused");
+
+        let message = error.to_string();
+        let Error::IndividualNotInTheSource { ref name } = error else {
+            panic!("the error is {message}");
+        };
+        assert_eq!(name, "nope");
+        assert!(message.contains("nope"), "{message}");
+    }
+
+    /// A name that is there twice is the error that names it: the same
+    /// individual kept twice would be two columns of one individual's
+    /// genotypes. pyNei keeps it once.
+    #[test]
+    fn resolve_individuals_refuses_a_name_that_is_there_twice() {
+        let individuals = the_individuals_of_many_vcf();
+        let names = ["ind49".to_owned(), "ind05".to_owned(), "ind49".to_owned()];
+
+        let error =
+            resolve_individuals(&names, &individuals).expect_err("the name twice was refused");
+
+        let message = error.to_string();
+        let Error::IndividualNamedTwice { ref name } = error else {
+            panic!("the error is {message}");
+        };
+        assert_eq!(name, "ind49");
+        assert!(message.contains("ind49"), "{message}");
+    }
+
+    /// No name at all is the error: the variants of nobody are not a
+    /// dataset popnei holds.
+    #[test]
+    fn resolve_individuals_refuses_no_name_at_all() {
+        let individuals = the_individuals_of_many_vcf();
+
+        let error = resolve_individuals(&[], &individuals).expect_err("no name was refused");
+
+        assert!(
+            matches!(error, Error::NoIndividualNamed),
+            "the error is {error}"
+        );
+    }
+
+    /// The tests of the reader of the filter of individuals. The module is
+    /// named after the type, and not `individuals_reader`, so that
+    /// `cargo test -- IndividualsReader` runs them.
+    #[expect(
+        non_snake_case,
+        reason = "the module is named after the type it tests, IndividualsReader, so that \
+                  the tests of the reader of the filter of individuals are the ones \
+                  cargo test -- IndividualsReader runs"
+    )]
+    mod IndividualsReader {
+        use std::fs::File;
+        use std::io::BufReader;
+
+        // The struct is named as the module is, so it is taken from the
+        // crate and not from the parent, where the two names would be one
+        // name of the type namespace.
+        use crate::filters::IndividualsReader;
+        use crate::io::vcf::VcfReader;
+
+        use super::{
+            Block, BlockReader, Error, FilteredReader, GivenBlocks, MaxMaf, MaxMissingRate, Needs,
+            PassStep, VarFilter, block_of_the_worked_example, blocks_of, chain_of, many_vcf_reader,
+            pair, positions_of_blocks, refuse_a_second_filter_of_a_kind, steps_of, the_three_names,
+        };
+
+        /// The reader of the three individuals of "How it is verified" over
+        /// `many.vcf`, with the blocks of the source at `num_vars_per_block`
+        /// variants and asked for `needs`.
+        fn of_the_three_names(
+            num_vars_per_block: Option<usize>,
+            needs: Needs,
+        ) -> IndividualsReader<VcfReader<BufReader<File>>> {
+            let source = many_vcf_reader(num_vars_per_block, needs);
+            IndividualsReader::new(source, &the_three_names()).expect("the reader of the three")
+        }
+
+        /// The genotypes of the blocks, one row per variant.
+        fn rows_of(blocks: &[Block]) -> Vec<Vec<i8>> {
+            blocks
+                .iter()
+                .flat_map(|block| {
+                    let width = block
+                        .num_individuals
+                        .max(1)
+                        .saturating_mul(block.ploidy.max(1));
+                    block
+                        .gts
+                        .chunks(width)
+                        .map(<[i8]>::to_vec)
+                        .collect::<Vec<Vec<i8>>>()
+                })
+                .collect()
+        }
+
+        /// Every variant of `many.vcf` comes out, of the three individuals
+        /// alone, named in the order of the argument, and the reader has no
+        /// counts of its own: it takes no variant out.
+        #[test]
+        fn the_blocks_hold_the_three_individuals_in_the_order_of_the_argument() {
+            let mut reader = of_the_three_names(Some(7), Needs::GTS | Needs::CHROM_POS);
+
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+
+            assert_eq!(reader.individuals(), the_three_names().as_slice());
+            assert_eq!(reader.ploidy(), 2);
+            assert!(reader.filtering_stats().is_empty());
+            assert_eq!(positions_of_blocks(&blocks).len(), 500);
+            for block in &blocks {
+                assert_eq!(block.num_individuals, 3);
+                block.check().expect("the block is of its size");
+            }
+        }
+
+        /// The genotypes of each kept individual are the column of the
+        /// source at every variant: the same file read whole gives, at the
+        /// individuals 5, 0 and 49, what the blocks of the reader give at
+        /// the three columns. The two literals are the genotypes "How it is
+        /// verified" gives at the positions 1000 and 1074, `1|1 1/1 1/1`
+        /// and `0/1 2|1 1|2`.
+        #[test]
+        fn the_genotypes_of_the_three_are_the_columns_of_the_source() {
+            let mut whole = many_vcf_reader(Some(7), Needs::GTS);
+            let blocks_of_the_source = blocks_of(&mut whole).expect("the blocks of the source");
+            // The width of a genotype is read from the block and not
+            // written here as well: a ploidy of the reader that is not the
+            // one of the file would cut the columns of the source at the
+            // same wrong place as the compaction under test.
+            let ploidy = blocks_of_the_source
+                .first()
+                .expect("a block of the source")
+                .ploidy;
+            let of_the_source = rows_of(&blocks_of_the_source);
+            let mut reader = of_the_three_names(Some(7), Needs::GTS);
+
+            let kept = rows_of(&blocks_of(&mut reader).expect("the blocks"));
+
+            assert_eq!(kept.len(), 500);
+            assert_eq!(of_the_source.len(), 500);
+            for (row, of_the_source) in kept.iter().zip(&of_the_source) {
+                let gathered: Vec<i8> = [5_usize, 0, 49]
+                    .iter()
+                    .flat_map(|individual| {
+                        let start = individual.saturating_mul(ploidy);
+                        of_the_source
+                            .get(start..start.saturating_add(ploidy))
+                            .unwrap_or_default()
+                            .to_vec()
+                    })
+                    .collect();
+                assert_eq!(*row, gathered);
+            }
+            // The first variant, at the position 1000, and the one at 1074.
+            assert_eq!(
+                kept.first().map(Vec::as_slice),
+                Some([1, 1, 1, 1, 1, 1].as_slice())
+            );
+            assert_eq!(
+                kept.get(2).map(Vec::as_slice),
+                Some([0, 1, 2, 1, 1, 2].as_slice())
+            );
+        }
+
+        /// The missing data filter at 0 over the three individuals keeps the
+        /// 423 variants that bcftools 1.24 and pyNei keep, the first five at
+        /// the positions of the spec, with the 500 variants it was given in
+        /// its counts.
+        #[test]
+        fn the_missing_data_filter_over_the_three_keeps_the_423_variants() {
+            let reader = of_the_three_names(Some(7), Needs::GTS | Needs::CHROM_POS);
+            let filter = VarFilter::new(MaxMissingRate(0.0)).expect("the filter");
+            let mut filtered = FilteredReader::new(reader, filter).expect("the filter over it");
+
+            let blocks = blocks_of(&mut filtered).expect("the blocks");
+
+            let positions = positions_of_blocks(&blocks);
+            assert_eq!(positions.len(), 423);
+            assert_eq!(
+                positions.get(..5),
+                Some([1000, 1037, 1074, 1111, 1148].as_slice())
+            );
+            assert_eq!(
+                filtered.filtering_stats(),
+                vec![("missing_data", pair(500, 423))]
+            );
+        }
+
+        /// The same filter under the reader counts over the 50 individuals
+        /// of the file and keeps 26 variants: where the step sits among the
+        /// steps is what a user's numbers turn on.
+        #[test]
+        fn the_missing_data_filter_under_the_three_keeps_the_26_variants() {
+            let source = many_vcf_reader(Some(7), Needs::GTS | Needs::CHROM_POS);
+            let filter = VarFilter::new(MaxMissingRate(0.0)).expect("the filter");
+            let filtered = FilteredReader::new(source, filter).expect("the filter over the file");
+            let mut reader =
+                IndividualsReader::new(filtered, &the_three_names()).expect("the reader");
+
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+
+            let positions = positions_of_blocks(&blocks);
+            assert_eq!(positions.len(), 26);
+            assert_eq!(
+                positions.get(..5),
+                Some([1259, 2110, 2480, 3072, 3257].as_slice())
+            );
+            // The counts of the filter under it come up through the reader,
+            // which has none of its own.
+            assert_eq!(
+                reader.filtering_stats(),
+                vec![("missing_data", pair(500, 26))]
+            );
+        }
+
+        /// The blocks are the size of the source's, worked out from the
+        /// individuals of the source: the reader keeps every variant and
+        /// does not ask its source for bigger blocks now that the rows are
+        /// shorter.
+        #[test]
+        fn the_blocks_are_the_size_of_the_blocks_of_the_source() {
+            let mut reader = of_the_three_names(Some(7), Needs::GTS);
+
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+
+            let sizes: Vec<usize> = blocks.iter().map(|block| block.num_vars).collect();
+            // 500 variants in blocks of 7: 71 blocks of 7 and one of 3.
+            assert_eq!(sizes.len(), 72);
+            assert_eq!(sizes.first(), Some(&7));
+            assert_eq!(sizes.last(), Some(&3));
+        }
+
+        /// The reader always needs the genotypes: it asks its source for
+        /// them with whatever its consumer asked for, so the blocks it gives
+        /// hold them although the consumer wanted the positions alone.
+        #[test]
+        fn the_reader_asks_its_source_for_the_genotypes_with_the_fields_of_its_consumer() {
+            let source = many_vcf_reader(Some(7), Needs::CHROM_POS);
+            let mut reader =
+                IndividualsReader::new(source, &the_three_names()).expect("the reader");
+            reader.set_needs(Needs::CHROM_POS);
+
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+
+            let first = blocks.first().expect("a block");
+            assert_eq!(first.num_individuals, 3);
+            assert!(!first.gts.is_empty());
+            assert_eq!(first.fields(), Needs::GTS | Needs::CHROM_POS);
+        }
+
+        /// After an error the reader gives `None` at every call and does not
+        /// ask its source again, which is the rule of a reader of
+        /// `docs/specs/block.md`.
+        #[test]
+        fn after_an_error_it_gives_no_block_and_does_not_ask_its_source_again() {
+            let source = GivenBlocks::failing_at(
+                vec![
+                    block_of_the_worked_example(&[0, 1]),
+                    block_of_the_worked_example(&[2, 3]),
+                ],
+                2,
+            );
+            let calls = source.calls();
+            let mut reader = IndividualsReader::new(source, &["ind5".to_owned()])
+                .expect("the reader of one individual");
+
+            assert!(reader.next_block().expect("the first block").is_some());
+            assert!(reader.next_block().is_err());
+            assert!(
+                reader
+                    .next_block()
+                    .expect("no block after the error")
+                    .is_none()
+            );
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        }
+
+        /// A block the compaction refuses is the reader's own error, and
+        /// after it the reader gives `None` and does not ask its source
+        /// again: a source of two blocks with no genotypes is asked once.
+        #[test]
+        fn a_block_the_compaction_refuses_is_the_error_and_the_source_is_not_asked_again() {
+            let with_no_genotypes = || {
+                let mut block = block_of_the_worked_example(&[0, 1]);
+                block.gts = Vec::new();
+                block
+            };
+            let source = GivenBlocks::of(vec![with_no_genotypes(), with_no_genotypes()]);
+            let calls = source.calls();
+            let mut reader = IndividualsReader::new(source, &["ind5".to_owned()])
+                .expect("the reader of one individual");
+
+            let error = reader
+                .next_block()
+                .expect_err("the block with no genotypes");
+
+            let Error::FieldsNotInTheBlock { fields } = error else {
+                panic!("the error is {error}");
+            };
+            assert_eq!(fields, Needs::GTS);
+            assert!(
+                reader
+                    .next_block()
+                    .expect("no block after the error")
+                    .is_none()
+            );
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+
+        /// A source that gives a block of no variants has a defect, and the
+        /// reader gives the error of it and does not ask the source again.
+        #[test]
+        fn a_source_that_gives_a_block_of_no_variants_is_the_error_of_a_defect() {
+            let source = GivenBlocks::of(vec![block_of_the_worked_example(&[])]);
+            let mut reader = IndividualsReader::new(source, &["ind1".to_owned()])
+                .expect("the reader of one individual");
+
+            let error = reader.next_block().expect_err("the block of no variants");
+
+            assert!(
+                matches!(error, Error::ReaderGaveABlockOfNoVariants),
+                "the error is {error}"
+            );
+            assert!(
+                reader
+                    .next_block()
+                    .expect("no block after the error")
+                    .is_none()
+            );
+        }
+
+        /// The chain of a pass builds the reader from the step of the
+        /// filter of individuals, and a threshold filter after it in the
+        /// steps counts over the kept individuals: the 423 variants again,
+        /// through `chain_of` alone.
+        #[test]
+        fn chain_of_builds_the_reader_from_the_step_of_the_filter() {
+            let source = Box::new(many_vcf_reader(Some(7), Needs::GTS | Needs::CHROM_POS));
+            let steps = vec![
+                PassStep::KeepIndividuals(the_three_names()),
+                PassStep::VarFilter(MaxMissingRate(0.0)),
+            ];
+
+            let mut chain = chain_of(source, &steps).expect("the chain of the two steps");
+
+            assert_eq!(chain.individuals(), the_three_names().as_slice());
+            let blocks = blocks_of(&mut chain).expect("the blocks");
+            assert_eq!(positions_of_blocks(&blocks).len(), 423);
+            assert_eq!(
+                chain.filtering_stats(),
+                vec![("missing_data", pair(500, 423))]
+            );
+        }
+
+        /// A second filter of individuals is refused, by the chain and by
+        /// the function a binding crate calls when a user adds the step:
+        /// two lists keep the individuals that are in both, which is one
+        /// list. The error names the kind and no threshold, which a list of
+        /// individuals has none of.
+        #[test]
+        fn a_second_filter_of_individuals_is_refused_with_its_kind() {
+            let steps = vec![
+                PassStep::KeepIndividuals(the_three_names()),
+                PassStep::VarFilter(MaxMaf(0.8)),
+                PassStep::KeepIndividuals(vec!["ind05".to_owned()]),
+            ];
+            let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
+
+            let of_the_chain = chain_of(source, &steps)
+                .err()
+                .expect("the chain was refused");
+            let of_the_refusal = refuse_a_second_filter_of_a_kind(
+                steps.get(..2).unwrap_or_default(),
+                steps.get(2).expect("the step"),
+            )
+            .expect_err("the second filter of individuals was refused");
+
+            for error in [of_the_chain, of_the_refusal] {
+                let message = error.to_string();
+                assert!(
+                    matches!(
+                        error,
+                        Error::FilterOfIndividualsThatIsSet {
+                            kind: "individuals"
+                        }
+                    ),
+                    "{message}"
+                );
+                assert!(message.contains("individuals"), "{message}");
+            }
+
+            // One filter of individuals among the steps is taken, and the
+            // threshold filters beside it are of other kinds.
+            assert!(
+                refuse_a_second_filter_of_a_kind(
+                    &steps_of(&[MaxMaf(0.8)]),
+                    &PassStep::KeepIndividuals(the_three_names())
+                )
+                .is_ok()
+            );
+        }
+
+        /// What the chain refuses of the names, which is what
+        /// `resolve_individuals` refuses: it is read against the individuals
+        /// of the reader the step is put over, and no block was read when it
+        /// comes.
+        #[test]
+        fn chain_of_refuses_a_name_that_is_not_an_individual_of_the_source() {
+            let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
+            let steps = vec![PassStep::KeepIndividuals(vec![
+                "ind05".to_owned(),
+                "nope".to_owned(),
+            ])];
+
+            let error = chain_of(source, &steps)
+                .err()
+                .expect("the chain was refused");
+
+            let message = error.to_string();
+            assert!(
+                matches!(error, Error::IndividualNotInTheSource { .. }),
+                "{message}"
+            );
+            assert!(message.contains("nope"), "{message}");
+        }
+    }
+
+    /// The tests of [`PassStep`] and of the chain of readers built from a
+    /// list of them. The module is named after the type, and not
+    /// `pass_steps`, so that `cargo test -- PassStep` runs them.
+    #[expect(
+        non_snake_case,
+        reason = "the module is named after the type it tests, PassStep, so that the \
+                  tests of the steps of a pass are the ones cargo test -- PassStep runs"
+    )]
+    mod PassSteps {
+        use super::{
+            GivenBlocks, MaxMaf, MaxMissingRate, MaxObsHet, PassStep, block_of_the_worked_example,
+            blocks_of, chain_of, individuals_of, pair, positions_of_blocks, steps_of,
+        };
+
+        /// The kind of each step is the name a Python and a TypeScript user
+        /// reads for it: the three of the threshold filters, which are the
+        /// keys their counts have, and `individuals` for the filter of
+        /// individuals.
+        #[test]
+        fn the_kind_of_each_step_is_the_name_the_user_reads() {
+            assert_eq!(
+                PassStep::VarFilter(MaxMissingRate(0.04)).kind(),
+                "missing_data"
+            );
+            assert_eq!(PassStep::VarFilter(MaxMaf(0.8)).kind(), "maf");
+            assert_eq!(PassStep::VarFilter(MaxObsHet(0.5)).kind(), "obs_het");
+            assert_eq!(
+                PassStep::KeepIndividuals(vec!["ind05".to_owned()]).kind(),
+                "individuals"
+            );
+        }
+
+        /// The individuals the next pass gives are the ones the filter of
+        /// individuals keeps, in the order they were named, and those of the
+        /// source when no step is that filter. Both binding crates read
+        /// this, so it is the one place the rule is written.
+        #[test]
+        fn the_individuals_of_the_next_pass_are_the_kept_ones_or_the_source_s() {
+            let of_the_source: Vec<String> = (0..3).map(|number| format!("ind0{number}")).collect();
+            let kept = vec!["ind02".to_owned(), "ind00".to_owned()];
+
+            assert_eq!(
+                individuals_of(&steps_of(&[MaxMaf(0.8)]), &of_the_source),
+                of_the_source
+            );
+            assert_eq!(individuals_of(&[], &of_the_source), of_the_source);
+            // The names come in the order they were given, which is not the
+            // order of the source, and a threshold filter on either side of
+            // the step changes none of them.
+            assert_eq!(
+                individuals_of(
+                    &[
+                        PassStep::VarFilter(MaxMissingRate(0.1)),
+                        PassStep::KeepIndividuals(kept.clone()),
+                        PassStep::VarFilter(MaxObsHet(0.5)),
+                    ],
+                    &of_the_source
+                ),
+                kept
+            );
+        }
+
+        /// The chain built from a list of steps is the chain of the filters
+        /// of those steps, in their order: the three threshold filters at
+        /// the thresholds of the worked example of "How it is verified" of
+        /// `docs/specs/filters.md`, 0.4, 0.88 and 0.25, leave variant 5 of
+        /// its six, which is what the filters put one over another by hand
+        /// leave, with the counts of each filter.
+        #[test]
+        fn the_chain_of_the_three_threshold_filters_keeps_variant_5_of_the_worked_example() {
+            let source = GivenBlocks::of(vec![block_of_the_worked_example(&[0, 1, 2, 3, 4, 5])]);
+            let steps = steps_of(&[MaxMissingRate(0.4), MaxMaf(0.88), MaxObsHet(0.25)]);
+
+            let mut chain = chain_of(Box::new(source), &steps).expect("the chain of the steps");
+
+            let blocks = blocks_of(&mut chain).expect("the blocks");
+            // The missing data filter keeps the variants 1, 2, 3 and 5 of
+            // the six; the maf filter keeps 2, 3 and 5 of those four, since
+            // the 8/9 of variant 1 is above 0.88; and the observed
+            // heterozygosity filter keeps 5 of those three, since the 1/3 of
+            // variant 2 and the 4/4 of variant 3 are above 0.25.
+            assert_eq!(positions_of_blocks(&blocks), [5]);
+            assert_eq!(
+                chain.filtering_stats(),
+                vec![
+                    ("obs_het", pair(3, 1)),
+                    ("maf", pair(4, 3)),
+                    ("missing_data", pair(6, 4)),
+                ]
+            );
+        }
     }
 }

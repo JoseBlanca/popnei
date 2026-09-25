@@ -90,7 +90,11 @@ rest leaves a sentence that still says nothing.
 ### A number comes with what it was measured on
 
 The dataset, the machine, the threads, the program that was run, and the
-date when the measurement is not from the work being reported. A
+date when the measurement is not from the work being reported. The date is
+the one the session was told, not one worked out from the dates already in
+the file: on 24 September 2026 sixteen dates one day ahead were found across
+two suites, a package and two specs, written by sessions that had each
+inferred the same wrong day. A writer who does not know it asks. A
 comparison has both of its sides in the same units, and says which side
 is the better one when the reader could doubt it. A number carried over
 from another document keeps all of this.
@@ -166,6 +170,18 @@ traps found on the way" and "Measured and not taken", in `rust_core.md`,
 are both. They stay where the next person will look for them, the document
 or the issue about that subject. A trap of the wasm build does not belong
 in a reply about which linear algebra library to use.
+
+A few texts have a second reader as well as their own, and then the form
+says so. The work report of a plan is read by the owner, to decide whether
+to merge it and to learn what the work found, and by whoever next revises a
+skill or writes a plan. What the second reader needs goes in one place at
+the end, its heading says who it is for, and the first reader is told there
+that they can stop. Naming the second reader is what separates this from
+keeping the story of the work: material that serves nobody in particular
+still goes out, and every rule of this skill holds inside that section as
+it does everywhere else, so a number there carries what it is measured
+against like any other number. A section that a reader cannot use and that
+does not say who it is for is a fault of the text, whichever reader met it.
 
 ### Everything at its true strength
 

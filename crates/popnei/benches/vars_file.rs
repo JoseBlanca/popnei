@@ -55,8 +55,26 @@
 //! starts empty, so its growth is inside the clock, as it is for a caller
 //! who writes a vars file into memory.
 //!
-//! The reader and the writer of a vars file run on the thread that calls
-//! them: neither uses rayon, so this benchmark has no `--threads`.
+//! The threads. The reader of a vars file decompresses several batches at
+//! once on the threads of rayon, and everything else a pass does, the checks
+//! of each batch and the building of each block, runs on the thread that
+//! calls it, as does the whole of the write. The threads are those of a pool
+//! this benchmark builds, of as many threads as `--threads` says, and every
+//! timed section runs inside its `install`, so `--threads 1` is a pass with
+//! no thread but the caller's.
+//!
+//! The digest. A pass has to give the same blocks, in the same order,
+//! whatever the threads: the numbers of the chromosomes are handed out in
+//! the order in which the names are first seen, and nine places of popnei
+//! index their results by a running count of the variants, so a block out of
+//! order is a wrong result and not a slower one. The sum of the genotypes
+//! that each run prints is the same whatever order the blocks come in, so it
+//! cannot see that. The untimed first pass, which asks for every field,
+//! therefore also feeds a 64 bit FNV-1a with the place of each block, its
+//! counts and the bytes of every column it holds, and then the names of the
+//! chromosome table in the order of their numbers, and prints it: two passes
+//! that give the same values in another order do not agree on it. Nothing of
+//! it is inside a clock.
 //!
 //! How the file is made. The VCF of 1000 individuals and 20000 variants of
 //! that panel, and the vars file popnei writes from it, with the size of
@@ -123,24 +141,29 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use popnei::block::BlockReader;
+use popnei::block::{Block, BlockReader};
 use popnei::io::vars::{VarsReader, VarsWriter};
-use popnei::variant::Needs;
+use popnei::variant::{ChromTable, Needs};
 
 /// How many times each of the three is timed when the command line does not
 /// say.
 const DEFAULT_RUNS: usize = 5;
 
+/// How many threads the pool has when the command line does not say: one,
+/// the number the 21 ms of `docs/specs/io_vars.md` are stated on.
+const DEFAULT_THREADS: usize = 1;
+
 /// What the command line asked for.
 struct Arguments {
     path: PathBuf,
+    threads: usize,
     runs: usize,
 }
 
 /// What the benchmark does and what its command line takes, which is what
 /// an argument it does not know and `--help` are answered with.
 const USAGE: &str = "\
-vars_file <path to a vars file> [--runs n]
+vars_file <path to a vars file> [--threads n] [--runs n]
 
 It times three things on that file, each of them with the file already in
 memory: a pass over it with the genotypes alone asked for, a pass with
@@ -152,8 +175,15 @@ pass that is not timed comes before the three, because the first touch
 of the memory a pass works in costs page faults that a process pays
 once, and it fails when a block holds a column that nobody asked for.
 
-  --runs n   how many times each of the three is timed, 5 by default
-  --help     this
+  --threads n  how many threads the pool it runs in has, 1 by default
+  --runs n     how many times each of the three is timed, 5 by default
+  --help       this
+
+It also prints, from the first pass and outside every clock, a digest of
+the whole pass that depends on the order of the blocks: the place of each
+block, its counts and the bytes of its columns, and the names of the
+chromosomes in the order of their numbers. Two runs of the same file at
+different numbers of threads have to print the same digest.
 
 It prints the wall time of each run and then the best, the median and the
 worst of them. The best of the pass with the genotypes alone is what
@@ -164,17 +194,19 @@ and 20000 variants; the header of this file says how that file is made.";
 /// been.
 fn arguments() -> Result<Arguments, String> {
     let mut path: Option<PathBuf> = None;
+    let mut threads = DEFAULT_THREADS;
     let mut runs = DEFAULT_RUNS;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
+        let mut number = |name: &str| {
+            args.next()
+                .ok_or_else(|| format!("{name} takes a number and none came after it"))?
+                .parse::<usize>()
+                .map_err(|_| format!("{name} takes a number"))
+        };
         match arg.as_str() {
-            "--runs" => {
-                runs = args
-                    .next()
-                    .ok_or_else(|| "--runs takes a number and none came after it".to_owned())?
-                    .parse::<usize>()
-                    .map_err(|_| "--runs takes a number".to_owned())?;
-            }
+            "--threads" => threads = number("--threads")?,
+            "--runs" => runs = number("--runs")?,
             // `cargo bench` adds this to the command line of every bench,
             // to tell a harness that has tests too to run its benchmarks.
             // This one has only this benchmark and takes it as nothing.
@@ -196,10 +228,14 @@ fn arguments() -> Result<Arguments, String> {
     let Some(path) = path else {
         return Err(format!("no vars file was given\n\n{USAGE}"));
     };
-    if runs == 0 {
-        return Err("--runs is 1 or more".to_owned());
+    if threads == 0 || runs == 0 {
+        return Err("--threads and --runs are 1 or more".to_owned());
     }
-    Ok(Arguments { path, runs })
+    Ok(Arguments {
+        path,
+        threads,
+        runs,
+    })
 }
 
 /// One run of one of the three: how long it took and the line that says
@@ -253,6 +289,164 @@ fn the_fields_are(fields: Needs, asked_for: Needs) -> Result<(), String> {
     ))
 }
 
+/// What a 64 bit FNV-1a starts from, and what each byte multiplies it by.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// A digest of a whole pass that depends on the order of its blocks: a 64
+/// bit FNV-1a fed with the place of each block, its counts and the bytes of
+/// every column it holds, and then with the names of the chromosome table in
+/// the order of their numbers.
+///
+/// It is what says that a pass on many threads gives the blocks a pass on one
+/// thread gives, in the same order. The sum of the genotypes each run prints
+/// cannot say it: addition does not care in which order the blocks came, and
+/// neither does the count of the variants. Here the place of a block goes
+/// into the hash before its values, so two passes that give the same values
+/// in another order do not agree; and the names of the chromosomes go in by
+/// their numbers, so a pass that numbered them in another order does not
+/// agree either, which is what a batch decoded out of order would do.
+///
+/// FNV-1a is six lines and needs no dependency. Its multiplication wraps by
+/// design, which is what `wrapping_mul` says here: this is a hash and not a
+/// count.
+struct Digest {
+    hash: u64,
+}
+
+impl Digest {
+    /// A digest that nothing has been fed to.
+    fn new() -> Digest {
+        Digest {
+            hash: FNV_OFFSET_BASIS,
+        }
+    }
+
+    /// One byte.
+    fn byte(&mut self, byte: u8) {
+        self.hash = (self.hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME);
+    }
+
+    /// Every byte, in the order they lie in.
+    fn bytes(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.byte(*byte);
+        }
+    }
+
+    /// A number, as its eight bytes, so that 1 and 256 differ.
+    fn number(&mut self, number: u64) {
+        self.bytes(&number.to_le_bytes());
+    }
+
+    /// A count of this machine, which a pass of this machine is digested on.
+    fn count(&mut self, count: usize) {
+        self.number(u64::try_from(count).unwrap_or(u64::MAX));
+    }
+
+    /// A text, its length first, so that "ab" and "a" then "b" differ.
+    fn text(&mut self, text: &str) {
+        self.count(text.len());
+        self.bytes(text.as_bytes());
+    }
+
+    /// Whether a column is there, before its bytes, so that a block without
+    /// a column and a block whose column is empty differ.
+    fn there(&mut self, there: bool) {
+        self.byte(u8::from(there));
+    }
+
+    /// The block that is the `place`th of its pass, counted from 1: its
+    /// place, its three counts and the bytes of each of its columns.
+    ///
+    /// Every field of the block is named here, as `Block::fields` names them
+    /// all, so that a column added later does not fall out of the digest
+    /// without the compiler saying so.
+    fn block(&mut self, place: u64, block: &Block) {
+        let Block {
+            num_vars,
+            num_individuals,
+            ploidy,
+            gts,
+            chrom,
+            pos,
+            id,
+            alleles,
+            qual,
+        } = block;
+        self.number(place);
+        self.count(*num_vars);
+        self.count(*num_individuals);
+        self.count(*ploidy);
+        self.count(gts.len());
+        for allele in gts {
+            // An allele is -1 up to the last alternative one, and the byte it
+            // lies in is what the digest takes: no `as` narrows anything.
+            self.bytes(&allele.to_le_bytes());
+        }
+        self.there(chrom.is_some());
+        if let Some(chrom) = chrom {
+            self.count(chrom.len());
+            for number in chrom {
+                self.number(u64::from(*number));
+            }
+        }
+        self.there(pos.is_some());
+        if let Some(pos) = pos {
+            self.count(pos.len());
+            for position in pos {
+                self.number(*position);
+            }
+        }
+        self.there(id.is_some());
+        if let Some(id) = id {
+            self.count(id.len());
+            for of_a_variant in id {
+                self.text(of_a_variant);
+            }
+        }
+        self.there(alleles.is_some());
+        if let Some(alleles) = alleles {
+            self.count(alleles.num_vars());
+            for var in 0..alleles.num_vars() {
+                self.count(alleles.num_alleles(var));
+                for allele in 0..alleles.num_alleles(var) {
+                    self.text(alleles.allele(var, allele));
+                }
+            }
+        }
+        self.there(qual.is_some());
+        if let Some(qual) = qual {
+            self.count(qual.len());
+            for quality in qual {
+                // The bits, because a quality that no variant has is NaN and
+                // NaN is equal to nothing, itself included.
+                self.number(u64::from(quality.to_bits()));
+            }
+        }
+    }
+
+    /// The names of the chromosome table, in the order of their numbers,
+    /// which is the order in which the pass first saw them.
+    fn chroms(&mut self, chroms: &ChromTable) {
+        self.count(chroms.len());
+        for number in 0..chroms.len() {
+            let name = u32::try_from(number)
+                .ok()
+                .and_then(|number| chroms.name(number));
+            self.there(name.is_some());
+            if let Some(name) = name {
+                self.text(name);
+            }
+        }
+    }
+
+    /// What was fed, as the sixteen hexadecimal digits a run prints.
+    fn printed(&self) -> String {
+        format!("{hash:016x}", hash = self.hash)
+    }
+}
+
 /// One pass with every field asked for, before anything is timed and with
 /// no clock on it: which fields the blocks of the file hold, and the line
 /// that says what it read.
@@ -262,28 +456,40 @@ fn the_fields_are(fields: Needs, asked_for: Needs) -> Result<(), String> {
 /// ran first; the header of this file has the numbers. What it gives is
 /// what the pass with every field is then checked against, since a file
 /// whose source had no alleles to give has no such column.
+///
+/// It is also where the digest of the pass is taken, which is why it asks
+/// for every field: a digest of the genotypes alone would not see the
+/// chromosomes, whose numbers are what an inter-batch renumbering shows in.
 fn the_first_pass(bytes: &[u8]) -> Result<(Needs, String), String> {
     let mut reader = VarsReader::new(Cursor::new(bytes)).map_err(|problem| problem.to_string())?;
     reader.set_needs(Needs::ALL);
     let mut of_the_file: Option<Needs> = None;
     let mut num_vars: u64 = 0;
     let mut sum: i64 = 0;
+    let mut digest = Digest::new();
+    let mut num_blocks: u64 = 0;
     while let Some(block) = reader.next_block().map_err(|problem| problem.to_string())? {
         match of_the_file {
             Some(fields) => the_fields_are(block.fields(), fields)?,
             None => of_the_file = Some(block.fields()),
         }
+        // A file of more blocks than a u64 counts cannot be written.
+        num_blocks = num_blocks.saturating_add(1);
+        digest.block(num_blocks, &block);
         // A file of more variants than a u64 counts cannot be written.
         num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
         sum = genotypes_added_up(&block.gts, sum);
     }
+    digest.chroms(reader.chroms());
     // A file of no variants gives no block, and then the fields of the file
     // are the ones every vars file has.
     let of_the_file = of_the_file.unwrap_or(Needs::GTS);
     Ok((
         of_the_file,
         format!(
-            "{num_vars} variants, the genotypes add up to {sum}, the blocks hold {of_the_file}"
+            "{num_vars} variants in {num_blocks} blocks, the genotypes add up to {sum}, \
+             the blocks hold {of_the_file}, the digest of the pass is {digest}",
+            digest = digest.printed()
         ),
     ))
 }
@@ -430,8 +636,9 @@ fn what_the_file_is(bytes: &[u8]) -> Result<String, String> {
     ))
 }
 
-/// The benchmark reads a file of the disc, and wasm has no disc. This is
-/// what `cargo check --target wasm32-unknown-unknown --all-targets`
+/// The benchmark builds a pool of threads and reads a file of the disc, and
+/// wasm has neither; rayon is not a dependency of the wasm targets either.
+/// This is what `cargo check --target wasm32-unknown-unknown --all-targets`
 /// compiles of it, so that the command which checks that nothing of the
 /// crate has left wasm behind can check the benchmarks too.
 #[cfg(target_family = "wasm")]
@@ -460,12 +667,23 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let pool = match rayon::ThreadPoolBuilder::new()
+        .num_threads(arguments.threads)
+        .build()
+    {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("the pool of {} threads: {error}", arguments.threads);
+            return ExitCode::FAILURE;
+        }
+    };
     println!(
-        "{path}: {said}, {runs} runs of each",
+        "{path}: {said}, {threads} threads, {runs} runs of each",
         path = arguments.path.display(),
+        threads = arguments.threads,
         runs = arguments.runs,
     );
-    let of_the_file = match the_first_pass(&bytes) {
+    let of_the_file = match pool.install(|| the_first_pass(&bytes)) {
         Ok((of_the_file, said)) => {
             println!("the first pass, which is not timed: {said}");
             of_the_file
@@ -476,14 +694,18 @@ fn main() -> ExitCode {
         }
     };
     let timed = time_it("the genotypes alone", arguments.runs, || {
-        read_the_file(&bytes, Needs::GTS, Needs::GTS)
+        pool.install(|| read_the_file(&bytes, Needs::GTS, Needs::GTS))
     })
     .and_then(|()| {
         time_it("every field", arguments.runs, || {
-            read_the_file(&bytes, Needs::ALL, of_the_file)
+            pool.install(|| read_the_file(&bytes, Needs::ALL, of_the_file))
         })
     })
-    .and_then(|()| time_it("the write", arguments.runs, || write_the_blocks(&bytes)));
+    .and_then(|()| {
+        time_it("the write", arguments.runs, || {
+            pool.install(|| write_the_blocks(&bytes))
+        })
+    });
     if let Err(problem) = timed {
         eprintln!("{path}: {problem}", path = arguments.path.display());
         return ExitCode::FAILURE;

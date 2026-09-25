@@ -4,28 +4,123 @@ The TypeScript package of popnei, a population genetics library whose
 calculations are written in Rust: the core crate compiled to WebAssembly,
 the code that a browser or node calls it through, and the functions and
 the result objects an application uses. What the package exports today is
-`init`, which loads the WebAssembly, `version`, the version of the core
-crate, `openVcf`, which reads the header of a VCF held as bytes and
-gives a `Variants`, the handle whose `iterBlocks` gives the genotypes block
-by block, `writeVars`, which gives back the bytes of a vars file with every
-variant of a `Variants`, and `openVars`, which opens such bytes as another
-`Variants`. A vars file is one arrow IPC file, also called feather v2,
-which pandas, R and polars open as a table with no popnei installed: it is
-where a user keeps their variants once the VCF has been read. Each of the
-two consumers, `iterBlocks` and `writeVars`, gives back the counts of the
-pass it made over the source, in a `passStats`: how many variants it took,
-and how many each filter of the `Variants` was given and kept. A filter is
-a step, a method of the `Variants` that `steps` then lists, and there are
-three of them: `filterByMissingData`, which keeps the variants whose missing
-genotypes divided by all the individuals are at most the threshold it is
-given, `filterByMaf`, over the count of the commonest allele of a variant
-divided by its called alleles, and `filterByObsHet`, over its heterozygous
-genotypes divided by its called ones.
+`init`, which loads the WebAssembly and is awaited before anything else is
+called, and `version`, the version of the core crate; `openVcf`, which
+reads the header of a VCF, held as bytes or as the file the user picked in
+the page, and gives a `Variants`, the handle whose `iterBlocks` gives the
+genotypes block by block; `writeVars`, which
+gives back the bytes of a vars file with every variant of a `Variants`, and
+`openVars`, which opens such a file, its bytes or the file of the page, as
+another `Variants`. A vars file is
+one arrow IPC file, also called feather v2, which pandas, R and polars open
+as a table with no popnei installed: it is where a user keeps their
+variants once the VCF has been read. `numPassesOf` and the `onProgress` of
+a `Variants` are for an application that shows how far a calculation has
+got and lets its user stop it, and "A file of the page, in a web worker"
+below has both.
+
+Ten calculations read the variants of a `Variants`.
+`calcPairwiseKosmanDists` gives, in a `Distances`, the Kosman distance of
+every pair of individuals, how many alleles the two do not share at a
+variant averaged over the variants at which both were called, which runs
+from 0 for two individuals with the same genotype everywhere to 1 for two
+that share no allele anywhere, and which is what a tree or a principal
+coordinate analysis of individuals is built from.
+`calcRogersHuffR2Matrix` gives, in an `R2Matrix` with the chromosome and
+the position of each variant, r² for every pair of variants, the square of
+the correlation between their dosages over the individuals called at both,
+where the dosage of a genotype is how many of its alleles are not the major
+allele of its variant: it is 1 when the dosage at one variant fixes the
+dosage at the other and 0 when knowing one says nothing about the other.
+`doPcaFromVariants` gives, in a `VariantsPcaResult`, the principal
+components of the individuals over those same dosages, where each of them
+is a direction along which the individuals differ most: the projection of
+every individual on the first ones, how much of the variance each holds and
+the weight every variant has in them. `calcPerVarDistribs` gives, for each
+population a user names in `pops` and each of five statistics of a variant,
+the mean over the variants that had a value and a histogram of them. The
+five are the observed heterozygosity, the major allele frequency, the
+expected heterozygosity, plain and unbiased, and the polymorphism ratio,
+which is three counts and two ratios per population and not a distribution.
+`calcPerIndividualStats` gives two numbers for each individual instead of
+one for each population: the share of the variants at which its genotype is
+missing, `missingGtRate`, and the share of its called genotypes at which it
+is heterozygous, `obsHetRate`. The second says which individuals are more
+heterozygous than the rest, a sign of a mixed sample or of an outcrossed
+individual among inbred ones, and it is NaN for an individual that called
+no genotype. `calcPopDiversity` gives, in a `PopDiversity` and for each
+population a user names in `pops`, how much variety it holds: how many
+alleles its individuals called, how many of those no other population
+called at the same variant, how many of the variants vary in it, and F_IS,
+how far its genotypes are from the proportions its allele frequencies would
+give if its individuals paired at random. Given a `numCalledAlleles` it
+gives those first three again standardized to a draw of that many called
+alleles, so that a population of 20 individuals and one of 200 can be
+compared, and the folded site frequency spectrum of the draw, how the
+variants of the population are spread over the count of their rarer allele.
+`calcLdAndDistPerPop` gives, for each population, how r² falls off as the
+two variants of a pair move apart on a chromosome: the pairs are put into
+bins of distance, each bin carrying how many pairs it holds and the mean
+and the standard deviation of their r², and beside the bins a curve fitted
+to every pair of the population, which carries the distance at which r² has
+fallen to half. How fast it falls is a property of the population, two
+variants that sit close together having had fewer recombinations between
+them than two that sit far apart.
+
+The other three read the same variants. `calcPopDists` gives how far apart
+every pair of the populations a user names is: two populations are far apart
+when the alleles of their individuals are not the same alleles in the same
+proportions, and there are seven measures of how far, Hudson's F_ST, f_2,
+the chord distance, Nei's D_A, Jost's D, Nei's G_ST and the standardized
+G''_ST, each answering a different question. One pass gives the ones that
+were asked for, in a `PopDists` with a `Distances` for each measure and the
+standard error of every pair beside its value. `calcKinship` gives, in a
+`Kinship`, how much more of their genome each pair of individuals shares
+than two individuals drawn at random from the same panel do: it is the
+matrix of VanRaden 2008, which plink2's `--make-rel` computes, where an
+entry off the diagonal is about 0.5 for full sibs or for a parent and a
+child and near 0 for two individuals with no recent ancestor in common, and
+an entry on the diagonal is 1 plus the inbreeding of that individual.
+`calcGwas` says, in a `GwasResult`, which variants are associated with a
+trait the user hands it as one number for each individual: it tests one
+variant at a time over the dosages of the individuals, with the covariates
+the user gives, and, when it is given a `Kinship`, with the relatedness of
+the panel as a random effect, so that a variant which only marks the
+ancestry of the panel does not look associated. `doPca`, which is not a
+consumer of a `Variants`, gives the components of a table of individuals and
+traits handed to it as numbers, which is the same analysis over values an
+application holds and not over a source of variants.
+
+Each of the twelve consumers of a `Variants`, `iterBlocks`, `writeVars`,
+`calcPairwiseKosmanDists`, `calcPopDists`, `calcPopDiversity`,
+`calcRogersHuffR2Matrix`, `calcLdAndDistPerPop`, `calcKinship`,
+`doPcaFromVariants`, `calcGwas`, `calcPerVarDistribs` and
+`calcPerIndividualStats`, gives back the counts of the pass it made over the
+source, in a `passStats`: how many variants it
+took, and how many each filter of the `Variants` was given and kept. A
+filter is a step, a method of the `Variants` that `steps` then lists, and
+there are five of them. Four take variants out: `filterByMissingData`,
+which keeps the variants whose missing genotypes divided by all the
+individuals are at most the threshold it is given, `filterByMaf`, over the
+count of the commonest allele of a variant divided by its called alleles,
+`filterByObsHet`, over its heterozygous genotypes divided by its called
+ones, and `filterByLd`, which keeps the variants whose r² against every
+variant kept within a window behind them on their chromosome is at most the
+threshold, so that what is left does not repeat what a variant near it
+already said. The fifth, `filterIndividuals`, keeps individuals and not
+variants: it takes the genotypes of the individuals a user names, at every
+variant, in the order they named them, and after it `individuals` and
+`numIndividuals` are the kept ones.
+
 Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
 the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
-`docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md` and
-`docs/specs/filters.md` say what they give.
+`docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md`,
+`docs/specs/filters.md`, `docs/specs/dists.md`, `docs/specs/pca.md`,
+`docs/specs/kinship.md`, `docs/specs/gwas.md`, `docs/specs/ld.md`,
+`docs/specs/diversity.md` and `docs/specs/stats.md` say what they give.
+`docs/specs/js_sources.md` has what a source of this package is read from and
+what it tells the page while it reads.
 
 ## Building it
 
@@ -44,13 +139,14 @@ function exported from Rust; and the TypeScript compiler, which writes
 `wasm/` nor `dist/` nor `node_modules/` is in git.
 
 The `wasm-bindgen` command line is given `--remove-name-section`, which
-takes out of the wasm file the section that holds the name of every
-function of it: `js/popnei/wasm/popnei_bg.wasm` is 1242562 bytes with the
-flag and 1687938 bytes without, 443209 bytes of names that every user of
-the package downloads. What they are for is the stack of a trap, a panic
-of Rust among the causes, which with the flag names the functions by their
-number and without it by their name. To read one, build again without the
-flag and make the trap happen there.
+takes out of the wasm file the section that holds the name of every function
+of it: `js/popnei/wasm/popnei_bg.wasm` is 2021550 bytes with the flag and
+2621987 bytes without, 600437 bytes of names that every user of the package
+downloads. Both are of the build of 24 September 2026, on macOS on aarch64,
+and they grow with the code of the crates. What they are for is the stack of
+a trap, a panic of Rust among the causes, which with the flag names the
+functions by their number and without it by their name. To read one, build
+again without the flag and make the trap happen there.
 
 The version of the `wasm-bindgen` crate, in the `Cargo.toml` of the
 workspace, has to be the version of the `wasm-bindgen` command line that
@@ -99,8 +195,9 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
 - `#[wasm_bindgen]` on a `pub const` does not compile: "will not work on
   constants unless you are defining a
   `#[wasm_bindgen(typescript_custom_section)]`". So the defaults of the
-  API, the ploidy of 2 and the filter of `docs/specs/io_vcf.md`, cross as
-  two functions that return the constants of the core.
+  API, the ploidy of 2 and the filter of `docs/specs/io_vcf.md` and the
+  five of `calcPerVarDistribs` among them, cross as functions that return
+  the constants of the core.
 - A number of JavaScript that goes in as a `usize` is a float64 turned
   into an integer of 32 bits with no error: the fraction is thrown away
   and what is left is kept modulo 2^32. A ploidy of 2.5 and one of
@@ -144,6 +241,14 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   is what an application that runs out of memory lowers, and it is the
   size of the block that is read as well as the size of the batch that is
   written.
+- A `Blob`, which the `File` of a page is one of, crosses as a handle and
+  costs no copy: what goes into the memory of wasm is the number of the
+  entry of a table of the binding crate that holds the `Blob`, the
+  `FileReaderSync` that reads its ranges and the function the page is told
+  the progress with. They stay in JavaScript because a reader of the core
+  has to be `Send`, movable to another thread, which no handle of JavaScript
+  is. Each range popnei reads crosses once, copied out of the `ArrayBuffer`
+  that `FileReaderSync` fills.
 - A panic of Rust in wasm is a trap: the call ends where it is, the memory
   of wasm keeps what it held, and an object that was borrowed at that
   moment stays borrowed, so a later `free()` of it throws "attempted to
@@ -164,6 +269,16 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   in a `finally` hides the error on its way out. The iteration of blocks
   counts its pass inside the generator for the first, and throws what the
   free says only when nothing else is being thrown, for the second.
+
+## The timing
+
+`bench/time_pca.mjs` is not a test and `npm test` does not run it: it times
+`doPcaFromVariants` under node over the bytes of a vars file, on the `wasm/`
+that is there, and it is what task 4.2 of `docs/plans/pca.md` measured this
+package with. `docs/reports/pca-measurement.md` has its numbers and the
+files it read them on.
+
+    node bench/time_pca.mjs <path to a vars file> [--runs n] [--num-prin-comps n]
 
 ## The tests
 
@@ -200,8 +315,36 @@ are bcftools 1.24's and pyNei's: 26 variants kept by the missing data filter
 at 0, 35 by the maf filter at 0.5 and 22 by the observed heterozygosity one
 at 0.1, each with the first five positions it keeps, and 106 by the three of
 them chained at 0.04, 0.8 and 0.5, which count 500 and 215, 215 and 163, and
-163 and 106. The comparison with pyNei itself is the one of the Python
-tests; node runs neither library. Several of the tests
+163 and 106. `test/filter_individuals.test.ts` keeps `ind05`, `ind00` and
+`ind49` of that file, in that order, which is what `bcftools view -s
+ind05,ind00,ind49` gives, and asserts the 500 variants that come out with
+their genotypes, the 423 that the missing data filter at 0 after the step
+keeps where the same filter over the 50 individuals keeps 26, and the
+`Error` of a name the file does not have, of a name given twice, of no name
+and of a second filter of individuals. `test/stats.test.ts` reads the panel of
+`tests/reference/stats/`, 1200 variants of 200 individuals in the three
+populations of `panel_pops_bcftools.txt`, and asserts through
+`calcPerVarDistribs` the literals of `p0`, the population of `s000`, that
+`docs/specs/stats.md` gives. Over the whole file: 1112 of its 1200 variants
+are polymorphic in `p0`, 1173 are variable and 1200 have a major allele
+frequency there, and the two ratios are 0.926666666667 and
+0.947996589940. Over its first variant alone, `var0000`, which the test
+writes as a VCF of its own so that the mean of the pass is the value of
+that variant: an observed heterozygosity of 0.166667, a major allele
+frequency of 0.895833 and a plain expected heterozygosity of 0.186632, each
+within 1e-6 of what plink2 prints, and the unbiased expected heterozygosity
+of `p1`, 0.502750, which is the only population a number is known for. A
+name that is not an individual of the pass and a key of `histKwargs` that
+popnei does not know are each an `Error` there. Through
+`calcPerIndividualStats` the same file asserts the two rates of `s000`, 34
+missing genotypes of 1200 variants and 426 heterozygous of 1166 called, and
+of `s001`, 44 and 397 of 1156, and those of `ind00` and `ind01` of
+`many.vcf`, 29 of 500 and 201 of 471 and 25 and 195 of 475, which the same
+plink2 reports give with `--vcf-half-call m`; the NaN of an individual that
+called no genotype; the names coming in the order a `filterIndividuals`
+named them in; and the `Error` of a source with no variant and of steps that
+kept none. The comparison with pyNei itself is
+the one of the Python tests; node runs neither library. Several of the tests
 watch the memory of the WebAssembly, which they reach through the loader
 `wasm/popnei.js` generates: that a block, and the bytes of a vars file,
 kept while enough more is read for that memory to grow still hold what
@@ -212,6 +355,35 @@ writes a vars file of 12 MB and asks that the write stay under twice the
 file, and then opens twelve passes over it at once and asks that they
 grow the memory by less than one copy of it, which a reader that copied
 the bytes for each pass would not.
+`test/blob_outside_a_worker.test.ts` asserts the one thing about the
+reading of a file of the page that node can: node has `Blob` and `File` and
+no `FileReaderSync`, which is the case of the main thread of a page, so
+`openVcf` and `openVars` of a `Blob` and of a `File` are refused there with
+a message that names the reader and the worker, and the same bytes open.
+
+What a range of a real file gives is asserted in a browser:
+
+    npm run test:browser
+
+It runs Playwright, which drives a browser from a script, over Chromium
+headless. A page served from the repository starts a module web worker, the
+worker loads the WebAssembly of `wasm/` through `dist/web.js`, and the
+assertions are made in there, on the literals the tests under node assert.
+Chromium is downloaded once, with `npx playwright install chromium`, and
+Playwright says so when it is missing. Firefox and WebKit are not run: the
+owner decided on 24 September 2026 to start with Chromium and to add them
+when an application needs them.
+
+## Where it runs
+
+The package needs the vector instructions of WebAssembly, the ones that
+work on sixteen bytes at a time, which popnei's calculations use, so it
+runs in Chrome and Edge from 91, of May 2021, Firefox from 89, of June
+2021, Safari from 16.4, of March 2023, and node from 16.4, of June 2021.
+On an iPhone or an iPad that means iOS 16.4, since every browser there is
+WebKit whatever its name. An older browser fails when the module is
+loaded, not with a wrong number. Goal 3 of `docs/objectives.md` has the
+decision and the option that was not taken.
 
 ## node and a page, from one build
 
@@ -308,10 +480,11 @@ a second call gives the same promise as the first.
 
 `openVcf` takes the bytes of the file, plain or gzipped, and reads its
 header, so bytes that are not a VCF throw there and not at the first block.
-A `File` that a user picked in a page is read inside a web worker, which
-section 11 of `docs/architecture.md` has and this package does not do yet.
-Every call of `iterBlocks` reads the bytes again from their start, so the
-same `Variants` can be given to one calculation after another.
+It takes the `File` a user picked in a page where it takes those bytes, and
+then it reads the header out of the file itself, which "A file of the page,
+in a web worker" below has. Every call of `iterBlocks` reads the source
+again from its start, so the same `Variants` can be given to one calculation
+after another.
 
 The variants of that handle are written into a vars file, and read back,
 with the two functions of `docs/specs/io_vars.md`:
@@ -350,6 +523,97 @@ A `Variants` of a vars file is a source like the one of a VCF: it goes to
 `iterBlocks` and back to `writeVars`, which writes the file again with
 another size of batch.
 
+The first calculation over such a handle is the Kosman distance of every
+pair of individuals, `docs/specs/dists.md`:
+
+```ts
+import { calcPairwiseKosmanDists, init, openVcf } from "popnei";
+
+await init();
+const variants = openVcf(new Uint8Array(await readFile("panel.vcf.gz")));
+try {
+  // A pair called at fewer than 100 variants gets no distance, and is NaN
+  // in the vector; without `minNumSnps` every pair called at one variant
+  // at least gets one.
+  const distances = calcPairwiseKosmanDists(variants, { minNumSnps: 100 });
+  // The distance of every pair, in the order (0, 1), (0, 2), ..., (1, 2),
+  // ...: 19900 values for the 200 individuals of that file.
+  console.log(distances.distVector.length, distances.distVector[0]);
+  // The names of the individuals, in the order the source has them, and
+  // the counts of the pass the distances were calculated over.
+  console.log(distances.names[0], distances.passStats.numVars);
+  // The same distances as the 200 x 200 matrix, row by row, with 0 on the
+  // diagonal: the distance of the individuals i and j is at i * 200 + j.
+  console.log(distances.squareDists().length);
+} finally {
+  variants.free();
+}
+```
+
+It reads the source once, through the filters that are on the `Variants`,
+and leaves it as it was, so the same handle goes to the next calculation.
+A pass that gives no variant is an `Error` that says whether the source
+held none or the steps kept none, and for the steps how many variants each
+filter was given and kept.
+
+One pass gives the five statistics of every variant and every population:
+
+```ts
+import { calcPerVarDistribs, init, openVcf } from "popnei";
+
+await init();
+const panel = openVcf(new Uint8Array(await readFile("panel.vcf.gz")));
+const distribs = calcPerVarDistribs(panel, {
+  // The five when `stats` is left out. The populations are looked up among
+  // the individuals the pass gives, which are the ones a
+  // `filterIndividuals` kept when the variants carry one, and with no
+  // `pops` there is one population, `pop`, of every individual.
+  stats: ["maf", "poly_vars_ratio"],
+  pops: { p0: ["s000", "s001"], p1: ["s002", "s003"] },
+  // How many called genotypes a population needs at a variant to have a
+  // value there, 20 when it is left out.
+  minNumIndividuals: 2,
+  histKwargs: { range: [0, 1], numBins: 40, binType: "linear" },
+});
+// ["p0", "p1"], the order the keys of `pops` iterate in, which is the
+// order of every array below, and NaN for a population in which no variant
+// had a value.
+console.log(distribs.pops, distribs.maf?.mean);
+// The 41 edges of the bins, and the counts of `p0` and then those of `p1`:
+// the count of the bin b of the population p is at p * numBins + b.
+console.log(distribs.maf?.histBinEdges, distribs.maf?.histCounts);
+// The polymorphic variants of each population, those that vary at all, and
+// the ones that have a major allele frequency there.
+console.log(distribs.polyVarsRatio?.numPoly, distribs.passStats.numVars);
+panel.free();
+```
+
+A statistic that was not asked for is `null`, and asking for fewer is a
+saving of work that changes no value. A variant has no value of a statistic
+in a population when the population has too little data at it, and such a
+variant is out of the mean and in no bin, so the histograms of two
+populations can count different numbers of variants.
+
+Another pass gives the two rates of every individual:
+
+```ts
+import { calcPerIndividualStats } from "popnei";
+
+const stats = calcPerIndividualStats(panel);
+// The names of the individuals the pass gave, in its order, which is the
+// order of the two arrays: the rate of `individuals[i]` is at `i` in each.
+console.log(stats.individuals, stats.missingGtRate, stats.obsHetRate);
+```
+
+The heterozygosity rate divides by the called genotypes of the individual,
+where pyNei's `calc_per_sample_stats` divides by every variant, so an
+individual with more missing data looks less heterozygous there: `s000` of
+the panel is heterozygous at 426 of its 1166 called genotypes, 0.365352,
+and at 426 of the 1200 variants, 0.355. popnei's number is what plink2's
+`--het` gives, and the missing rate beside it says what pyNei's one number
+said. An individual that called no genotype has a missing rate of 1 and a
+heterozygosity rate of NaN.
+
 A file written here is larger than the same one written by popnei outside
 the browser: `many.vcf` of `tests/reference/vcf/`, every variant of it in
 batches of 100, is 53650 bytes written in wasm and 49426 bytes written
@@ -359,20 +623,143 @@ finds other repetitions. Both files hold the same table and each library
 reads both, and no test compares the two sizes.
 
 The arguments are checked before they reach the core, and each of these is
-an `Error` that says what was given: a `source` that is not a
-`Uint8Array`, a `ploidy` or a `numVarsPerBlock` that is not a whole number
+an `Error` that says what was given: a `source` that is neither a
+`Uint8Array` nor a `File` or a `Blob`, a `Uint8Array` whose buffer was
+transferred, to a web worker or elsewhere, which leaves it with no bytes to
+read, a `File` or a `Blob` given where there is no `FileReaderSync`, a
+`ploidy` or a `numVarsPerBlock` that is not a whole number
 of 1 or more and at most 4294967295, an `onlyPassed` that is not a
 boolean, a `fields` that is not an array of names, a name that is not one
 of the five columns, a `variants` that is not what `openVcf` or `openVars`
-gave, and a threshold of a filter that is not a number, which a call with
-no threshold gives. Whether that number is one a filter takes, from 0 to 1,
+gave, a `minNumSnps` that is not a whole number of 0 or more and at most
+4294967295, which a negative one is, a threshold of a filter that is not a
+number, which a call with no threshold gives, and, of
+`calcPerVarDistribs`, a `stats` that is not an
+array of names or that names no statistic, a `pops` that is not an object
+of population name to an array of names, a `minNumIndividuals`, a `ploidy`
+or a `numBins` that is not a whole number of 0 or more, a `range` that is
+not two numbers, a `binType` that is not a name, a `polyThreshold` that is
+not a number, and a key of `histKwargs` that is none of the three, which
+pyNei ignores. Whether that number is one a filter takes, from 0 to 1,
 is a rule of the core, which holds for the threshold of every pass and not
 of that call alone; an `Error` of it names the argument the user wrote and
 the value as they wrote it, `95` and not `95.0`. A second filter of a kind
-the variants carry already is an `Error` too, which names that kind, the
-threshold it is set with and the one that was refused. In TypeScript
-`fields` takes the five names and nothing
+the variants carry already is an `Error` too, which names that kind and, for
+a threshold filter, the threshold it is set with and the one that was
+refused. The names given to `filterIndividuals` are read against the
+individuals of the source at the call, so a name that is not one of them, a
+name that is there twice and a call with no name are each an `Error` there
+and not when a pass runs. Which names the core knows is the core's to
+refuse: a statistic that is none of the five and a kind of bins that is
+neither `linear` nor `logarithmic` are an `Error` of the binding crate,
+whose message writes the names there are. In TypeScript
+`fields` and `stats` take their names and nothing
 else, so a typo does not compile.
+
+## A file of the page, in a web worker
+
+An application in a browser tab gets a `File` when its user picks a file in
+a form or drops one on it: a handle that carries the name and the size of
+the file and gives any range of its bytes, and that costs nothing to hold or
+to send to a web worker, the thread of the page that cannot touch what the
+page shows, because it is a handle and not the bytes. `openVcf` and
+`openVars` take that `File` where they take a `Uint8Array`, and a `Blob`,
+the piece of bytes of a page that a `File` is one of, is read the same way:
+
+```ts
+// In a module web worker. The page sends it the File its user picked and
+// reads what comes back with worker.onmessage.
+import { calcPerIndividualStats, init, numPassesOf, openVcf } from "popnei";
+
+self.onmessage = async (picked: MessageEvent<File>) => {
+  await init();
+  const variants = openVcf(picked.data);
+  try {
+    // The bar of the page covers the whole run. How many passes that is,
+    // one for this calculation, is the `numPasses` of every call below and
+    // is asked here for the bar that is drawn before a byte is read.
+    const passesOfTheRun = numPassesOf("calcPerIndividualStats");
+    self.postMessage({ done: 0, numPasses: passesOfTheRun });
+    variants.onProgress(({ bytesRead, numBytes, pass, numPasses }) => {
+      self.postMessage({
+        done: (pass - 1 + bytesRead / numBytes) / numPasses,
+      });
+    });
+    self.postMessage(calcPerIndividualStats(variants).obsHetRate);
+  } finally {
+    variants.free();
+  }
+};
+```
+
+What that pass holds in the memory of wasm is one range of the file, of a
+few MiB, the block it is building and, over a vars file, the batch it is
+reading, which at the size popnei writes is about 10 MB of genotypes for
+1000 individuals. The file itself is never there: popnei asks the `File` for
+the ranges it needs, one at a time, through `FileReaderSync`, the reader
+that returns when it has the bytes of a range. So the size of a file a user
+opens stops being bounded by the memory of the tab, where a `Uint8Array`
+costs a copy of the whole file inside wasm that stays there for as long as
+the page lives, which "What crosses between Rust and JavaScript" above
+measures. Which size of range
+popnei reads by has not been measured yet, nor what a pass over a `File`
+costs against a pass over the same file in memory: both are the measurement
+that "Speed" of `docs/specs/js_sources.md` asks for.
+
+A browser gives `FileReaderSync` only inside a web worker. `openVcf` and
+`openVars` of a `File` or a `Blob` on the main thread of a page, and under
+node, throw an `Error` at the call that names the reader and says to open
+the file inside a worker or to give its bytes; a `Uint8Array` is read
+wherever it is given. A range that comes back shorter than the one popnei
+asked for, inside a file of that size, is an `Error` in the middle of the
+pass and not the end of the file: a browser gives a short range when the
+file changed on disk after the page got its handle, and a reader that took
+it for the end would give the variants it had and say nothing.
+
+Every pass reads the file again from its start, as a pass over bytes does,
+so one `Variants` goes to one calculation after another. What it holds until
+its `free()` is the handle of the file, and a pass that is still reading
+when `free()` is called reads on to its end.
+
+`onProgress` sets the function that is told how far every pass over that
+source has got, with four numbers: how many bytes the pass has read, how
+many the file holds, which pass of the run is reading and how many passes
+the run makes. While a calculation runs the worker is inside wasm and reads
+no message of the page, so this is how the page learns that the run is going
+forward.
+
+Three things make a call: the first read of a pass, which says it has read
+nothing; a read that brings the bytes read since the last call to the few
+MiB of a range; and the end of the run, which makes one call for each of its
+passes, in the order of their numbers, with the bytes that pass read. The
+last of the three is what says that a pass is over, because no read does: a
+pass over a vars file stops after its last batch, and a run that fails stops
+where it failed. That last call is not always `bytesRead === numBytes`, so an
+application that waits for those two to meet waits for ever over a vars file,
+which popnei does not read whole: it reads its last ten bytes, then its
+footer, then each batch, and never the schema message at the head of the
+file, since the footer carries the schema too.
+
+What that function throws ends the pass where it was reading
+and the calculation throws that same value back, which is how an application
+cancels a run without ending its worker and recognises its own cancel with
+`===`; the `Variants` is then the one it was, and the next run over it reads
+the file from its start. `numPassesOf` answers that fourth number before a
+run starts, so that a bar covers the run and not each pass from the moment
+it is drawn: every consumer makes one pass, except two. `doPcaFromVariants`
+makes two when its `numPrinComps` is above 0, which is what asks for the
+weight of every variant: a weight needs the components, and those are known
+when the first pass ends. `calcGwas` makes two when its
+`useGrammarGammaApprox` is true, which stands the approximation in for the
+denominator of the test of a mixed model, the factor of that approximation
+being estimated from the first block of the second pass; with the false it
+has by default, the study reads the file once.
+
+Where an application sets the function that is told the progress is not
+settled. `docs/specs/js_sources.md` leaves it open between the method of
+`Variants` that is written here, an option of `openVcf` and `openVars` that
+would hold for the life of the source, and an argument of every consumer;
+the method is what this package gives until the owner decides.
 
 ## What has to be freed
 
@@ -380,25 +767,32 @@ The objects of the core live in the memory of the WebAssembly, which the
 garbage collector of JavaScript does not see, so they are given back by
 hand:
 
-- The `Variants` of `openVcf` and of `openVars` holds the bytes of the
-  file and its steps until its `free()` is called, which `using variants =
-  openVcf(bytes)` does at the end of its block. Its names and its ploidy
-  are in JavaScript and answer after that; `iterBlocks`, `writeVars` and
-  `steps` throw.
-- One pass over the variants holds the reader and the block being built.
-  What `iterBlocks` gives back gives it back when the iteration ends, when
-  it is left with a `break` and when a block throws. An iterator that is
-  made and never iterated keeps it until the garbage collector reaches it:
-  wasm-bindgen registers what it generates in a `FinalizationRegistry`,
-  which frees it at a moment nobody chooses. The `finally` that frees it
-  cannot do that one, because a generator that never ran its first line
-  never runs its last either. Its `passStats` is read after the pass is
-  over all the same: the counts are taken out of the pass just before it
-  is freed, and they are numbers of JavaScript.
+- The `Variants` of `openVcf` and of `openVars` holds its steps until its
+  `free()` is called, which `using variants = openVcf(bytes)` does at the
+  end of its block, and with it the bytes of the file when it was opened
+  over a `Uint8Array`. Opened over a `File` it holds the handle of the file,
+  its name and its size, and the memory of wasm keeps nothing of the file
+  between two ranges. Its names and its ploidy are in JavaScript and answer
+  after that; `iterBlocks`, `writeVars` and `steps` throw.
+- One pass over the variants holds the reader, the block being built and,
+  over a `File`, the range it is reading. What `iterBlocks` gives back gives
+  it back when the iteration ends, when it is left with a `break` and when a
+  block throws. An iterator that is made and never iterated keeps it until
+  the garbage collector reaches it: wasm-bindgen registers what it generates
+  in a `FinalizationRegistry`, which frees it at a moment nobody chooses.
+  The `finally` that frees it cannot do that one, because a generator that
+  never ran its first line never runs its last either. Its `passStats` is
+  read after the pass is over all the same: the counts are taken out of the
+  pass just before it is freed, and they are numbers of JavaScript.
 - The `Uint8Array` of `writeVars` is the user's own, in the heap of
   JavaScript: the file is read out of the memory of wasm in pieces, each
   of them freed there as it is copied, so nothing of it is left to free by
   hand.
+- What `calcPerVarDistribs` gives holds nothing of the memory of wasm: the
+  means, the edges of the bins and the counts are copies, in the heap of
+  JavaScript, and the object of the core they were read out of is freed
+  before the call returns. What `calcPerIndividualStats` gives is the same:
+  the names of the individuals and the two rates are copies.
 - Each block is freed as soon as its columns are copied out, which is
   before it reaches the loop of the user. What the user holds are the
   copies: an `Int8Array` of genotypes, a `Float64Array` of positions and

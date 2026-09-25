@@ -73,6 +73,45 @@ is heterozygous when it is called and its alleles are not all the same.
 **called alleles.** How many alleles of a population at a variant are not
 missing, the denominator of its allele frequencies.
 
+**expected heterozygosity.** Of a variant in a population, one minus the
+sum over the alleles of the frequency of each to the power of the ploidy:
+the chance that as many gene copies as a genotype holds, taken at random
+from the population, are not all alike. The unbiased one corrects it for
+the frequencies being estimated from the copies it is computed over, Nei's
+c/(c - 1) at ploidy 2 with c the called alleles, and is a statistic of its
+own.
+`exp_het` and `unbiased_exp_het` in identifiers. `docs/specs/stats.md`.
+
+**polymorphic variant.** In a population, a variant whose major allele
+frequency is below the polymorphism threshold, 0.95 by default, strictly;
+a variable one has it below 1. `poly` in identifiers, as in pyNei's
+`poly_threshold` and `num_poly`.
+
+**private allele.** An allele that one population of a call called at a
+variant and no other population of that call called there. `private` in
+identifiers. `docs/specs/diversity.md`.
+
+**rarefaction.** Taking a count of alleles down to what a draw of a stated
+number of the called alleles would be expected to show, without
+replacement, so that populations of different sizes can be compared: a
+population of more individuals finds more alleles for no reason but its
+size. `num_called_alleles` is the number drawn. The same draw applied to
+the site frequency spectrum is called a projection. `docs/specs/diversity.md`.
+
+**folded site frequency spectrum.** How many variants of a population show
+each count of their rarer allele, in a draw of a stated number of called
+alleles. Folded because nothing says which allele is ancestral, so the
+counts j and (the number drawn - j) are one bin. `sfs` in identifiers.
+`docs/specs/diversity.md`. Not used: the allele frequency spectrum.
+
+**F_IS.** How far the genotypes of a population are from the proportions
+its allele frequencies would give if its individuals paired at random: one
+minus the mean observed heterozygosity over the mean unbiased expected
+heterozygosity. Positive when the population holds fewer heterozygous
+genotypes than that. `fis` in identifiers. `docs/specs/diversity.md`. Not
+used: the inbreeding coefficient alone, which also names the entry on the
+diagonal of a kinship.
+
 **major allele.** The allele of a variant with the highest frequency among
 the called alleles of the individuals considered. How a tie is broken is for
 the spec of the calculation to say.
@@ -87,6 +126,193 @@ allele of the variant, from 0 to the ploidy, every allele other than the
 major one counting the same. The dosage matrix is the variants x
 individuals array of them. pyNei: `to_012` and "the 012 matrix".
 
+**fall-off curve.** The r² that two variants of a population are expected
+to be in, against the recombination between them: Hill and Weir (1988)
+with the correction of Weir and Hill (1986) for r² being measured on a
+sample of individuals and not on the whole population. popnei fits it to
+the pairs of each population, and the one number it fits is the ρ per
+base pair below, the individuals of the population entering it as they
+are. `decay` in identifiers, as in `fit_ld_decay` and `decay_per_pop`,
+and "the fall-off curve" or "the fitted curve" in prose.
+`docs/specs/ld.md`. Not used: the LD decay curve, the decay model.
+
+**ρ per base pair.** The one number popnei fits to the fall-off of r²
+with distance: 4Nr, four times the effective size of the population times
+the recombination per base pair, so that two variants d base pairs apart
+are separated by a scaled recombination ρ of d times it. `rho_per_bp` in
+identifiers, and "the ρ per base pair" in prose. popnei cannot tell the
+effective size and the recombination apart and gives their product.
+`docs/specs/ld.md`. Not used: C, which is the letter the papers give it,
+and decay rate.
+
+**r² at distance 0.** The value of the fall-off curve where the two
+variants are 0 base pairs apart, its own ceiling: two variants that never
+recombine still do not reach an r² of 1, because their allele frequencies
+drift apart. How many individuals the population has fixes it on its own,
+0.46198347107438015 at 100 of them, and no pair of the dataset moves it.
+It is what the half distance below is half of. `r2_at_zero` in
+identifiers. `docs/specs/ld.md`. Not used: intercept, plateau, which is
+what a reader may call the 1 over the individuals the curve falls towards
+instead.
+
+**half distance.** The distance at which the fall-off curve above has
+fallen to half of its r² at distance 0. It is the fall-off of linkage
+disequilibrium of a population as one number, and the one a web
+application plots. It is read off the curve, so it can be beyond every
+distance the fit was given. `half_dist` in identifiers.
+`docs/specs/ld.md`. Not used: half life, LD decay distance.
+
+**component.** A principal component: one of the directions, at right
+angles to each other, along which the individuals of a standardized table
+vary most, the first the one with the largest variance. "PC" in the names
+of a result, `PC0`, and `comps` in identifiers. Not used: axis, eigenvector,
+which is how a component is computed and not what it is.
+
+**projection.** Where an individual falls along a component, the
+coordinate a user plots. pyNei: `projections`. Not used: score, which is
+R's word, coordinate.
+
+**princomps.** The weights of each variant, or of each trait, in each
+component, components x variants, a field of the result of a PCA under
+the name pyNei gives it. "Weight" in prose. Not used: loading, rotation,
+which is R's word.
+
+**Kosman distance.** The distance between two individuals of Kosman and
+Leonard (2005): at a variant, the alleles of the two genotypes that do
+not pair with an equal allele of the other, over the ploidy, which for
+diploids is 0 for the same genotype, 1 for two genotypes with no allele
+in common and 0.5 otherwise, averaged over the variants at which both
+genotypes are called. `docs/specs/dists.md`.
+
+**Hudson's F_ST.** The distance between two populations that says how
+much of the diversity the two hold together lies between them rather than
+within them, estimated as Bhatia et al. (2013) recommend for SNPs: the
+sum over the variants of the between population heterozygosity minus the
+within one, over the sum of the between one. `fst` in identifiers.
+`docs/specs/dists.md`. Not used: the fixation index, and F_ST alone where
+a text could mean Nei's G_ST, which popnei also gives and which is a
+different number.
+
+**f_2.** The distance between two populations that is how far their allele
+frequencies have drifted apart, the numerator of Hudson's F_ST over the
+variants that counted, with the sampling bias taken out. It adds up along
+a tree, which is what f_3 and f_4 are built on. `f2` in identifiers.
+`docs/specs/dists.md`.
+
+**chord distance.** The distance between two populations of Cavalli-Sforza
+and Edwards: the square root of every allele frequency puts each
+population on a sphere of radius 1, and the distance is the straight line
+between them. It is Euclidean, so a principal coordinate analysis of a
+matrix of them has no negative eigenvalues. Its square is Nei's D_A.
+`chord` and `da` in identifiers. `docs/specs/dists.md`.
+
+**Jost's D.** The distance between two populations that says how much of
+their allelic variety is not shared, 0 when they have the same alleles at
+the same frequencies and 1 when they share none. It answers a different
+question from F_ST, and it is the one to read on markers with many
+alleles. pyNei: `calc_jost_dest_pop_dists`, and `dest` in identifiers,
+after the D_est the literature writes. `docs/specs/dists.md`.
+
+**G_ST.** Nei's fixation measure between two populations, the share of the
+diversity of the two that lies between them, from the expected
+heterozygosities corrected for the sample as Nei and Chesser do. It cannot
+reach 1 when the populations are diverse: with two of them its ceiling is
+(1 - H_S)/(1 + H_S). `gst` in identifiers. `docs/specs/dists.md`. Not used:
+F_ST for it, which in popnei is Hudson's and a different number.
+
+**G''_ST.** G_ST rescaled so that it reaches 1 when the two populations
+share no allele, whatever their diversity, as Meirmans and Hedrick (2011)
+define it. `gst_standardized` in identifiers, since the literature's name
+is not an identifier. Hedrick's earlier G'_ST, which divides G_ST by its
+ceiling, is a different number and popnei does not give it.
+`docs/specs/dists.md`.
+
+**resampling group.** The variants that a standard error leaves out
+together: a stretch of one chromosome, or one variant. The literature
+calls it a block and calls the method the block jackknife; popnei says
+group, because a block here is the run of variants a reader gives.
+`jackknife_group` in identifiers. `docs/specs/dists.md`. Not used: block,
+window.
+
+**distance vector.** The distances of every pair of N individuals or
+populations as one array, in the order (0, 1), (0, 2), ..., (0, N-1),
+(1, 2), ..., the upper triangle of the square matrix row by row.
+`dist_vector` in identifiers, as in pyNei. Not used: condensed matrix,
+the name scipy gives the same order.
+
+**standardized dosage.** The dosage of a genotype with the mean dosage of
+its variant taken from it and the result divided by
+`sqrt(ploidy * p * (1 - p))`, where p is the mean dosage over the ploidy:
+the spread the allele frequency of the variant gives it under Hardy
+Weinberg. It is what the kinship is built from, and it is not the dosage
+divided by its own standard deviation, which is what a PCA of the variants
+standardizes with. `z` in the formulas, as in the literature.
+
+**kinship.** The genomic relationship matrix of VanRaden (2008), which GCTA
+and plink2's `--make-rel` also compute: for every pair of individuals, the
+standardized dosages of the two multiplied together and summed over the
+variants, divided by the per pair denominator. An entry off the diagonal is
+twice the coancestry of the pair and one on the diagonal is 1 plus the
+inbreeding of that individual. `docs/specs/kinship.md`. Not used: GRM,
+relationship matrix, K, which is what the formulas call it.
+
+**per pair denominator.** How many variants have a called genotype in both
+individuals of a pair, which is what that pair's entry of the kinship is
+divided by. With no missing genotype it is the same number for every pair.
+`num_vars_per_pair` in pyNei. `docs/specs/kinship.md`.
+
+**trait.** What a user measured on each individual and wants the variants
+tested against: **continuous**, a measurement, or **binomial**, 0 or 1.
+`trait` in the arguments and `TraitType` in the types. The value itself,
+one number per individual, is the **phenotype**, as in pyNei, which is the
+argument a user passes. `docs/specs/gwas.md`.
+
+**covariate.** A number per individual whose effect on the trait has to be
+taken out but is not what is being tested, such as the sex or the field a
+plant grew in. `covariates` in the arguments, a frame indexed by
+individual. Not used: fixed effect, which is R's word and which in a mixed
+model also covers the variant.
+
+**design.** The matrix of one row per tested individual and one column per
+number a model fits: a column of ones for the intercept and one for each
+covariate. `design` in the core crate, and `d` in the formulas.
+
+**null model.** The model of the trait fitted once with the covariates and
+the kinship in it and no variant, which every variant is then tested
+against. `NullModel` in the results. `docs/specs/gwas.md`.
+
+**mixed model.** A model with the kinship in it as the covariance of a
+random effect, so that related individuals are expected to resemble each
+other before any variant is looked at. The two of popnei are the linear
+mixed model, `lmm`, and the logistic one, `glmm`, two of the four values of
+`GWASModel`.
+
+**working trait.** The continuous trait that a logistic mixed model fits in
+place of the 0 and 1 of the phenotype: one number per individual that says
+where the fit so far puts it, each individual carrying a weight that says
+how much its 0 or 1 tells us there. It is made again from every new fit.
+`working_trait` in the core crate, `working` in pyNei's `_fit_pql_for_tau`.
+`docs/specs/gwas.md`.
+
+**penalized quasi-likelihood.** How a logistic mixed model is fitted, the
+likelihood of a 0 and 1 trait having no closed form once the random effect
+of the kinship is in it: at a fixed variance of that effect a weighted
+linear mixed model is fitted to the working trait, the working trait and the
+weights are made again from that fit, and so on. One pass of it is a
+**linearization**. `docs/specs/gwas.md`. Not used: PQL.
+
+**Wald test.** The test of a variant that fits the model again with the
+variant in it and asks how many of its own standard errors the effect is
+away from 0. `TestType.WALD`.
+
+**score test.** The test of a variant that never fits the model with the
+variant in it: it asks how steeply the fit would improve if the effect were
+let off 0, measured at the null model. `TestType.SCORE`.
+
+**heritability.** The variance of the kinship effect over the sum of it and
+the residual variance: the share of the trait's variance the kinship
+explains. A field of `NullModel`, and only the linear mixed model has one.
+
 ## How the data moves
 
 **block.** Consecutive variants held as contiguous arrays, the `Block`
@@ -100,8 +326,21 @@ pyNei: chunk, `VariantsChunk`. "Chunk" is used only for pyNei's own. What
 the Python `Variants` of popnei gives from `iter_blocks` is a block. Not
 used: batch, which is written for two other things, arrow's unit of the
 vars file, and the lines that the VCF reader reads and parses together,
-several to a block; and window. A vars file is written
-with one batch for each block, and read back in blocks of any size.
+several to a block; and window, which has a meaning of its own below. A
+vars file is written with one batch for each block, and read back in
+blocks of any size.
+
+**window.** The variants that a calculation or a filter compares one
+variant with: those on its chromosome whose position is no more than a
+stated distance from it. It is never a run of blocks nor a number of
+variants: a window is a stretch of a chromosome in base pairs, and how
+many variants fall in it is whatever the dataset has there. The filter by
+linkage disequilibrium of `docs/specs/filters.md` holds the variants it
+has kept inside the window of the variant it is looking at, and the curve
+of linkage disequilibrium against distance of `docs/specs/ld.md` compares
+each variant with the ones inside its own. Not used: window for a block
+or for a run of blocks, which is what a reader holds and not what a
+calculation compares.
 
 **member.** One gzip stream of a gzipped file. A file that bgzip wrote is
 many of them one after another, each with 64 KiB of text at most and each
@@ -139,7 +378,8 @@ JavaScript in it, where every calculation is.
 **binding crate.** A crate that translates between another language and
 the core crate and holds no calculation. There are two, and a text that
 **step.** One entry of the list that a `Variants` holds besides its
-source, a filter with its threshold. A step is added with a method of the
+source, a filter with its threshold or the filter of individuals with
+its names. A step is added with a method of the
 `Variants`, which returns nothing, it is run in every pass that starts
 after it was added, and `variants.steps` lists them.
 
@@ -159,11 +399,25 @@ through the steps that its `Variants` had when it started. A consumer
 makes as many as its algorithm needs, each with readers and filters of its
 own.
 
+**run.** One call of one consumer, with the passes it makes: the first pass
+of a run is its pass 1. The word is needed where several passes over one
+source are alive at once, which is what the progress of the wasm package
+counts inside, `docs/specs/js_sources.md`.
+
 could mean either says which. "The binding crate" alone is used for what
 holds for both.
 
 **Python binding crate.** `crates/popnei-python`, written with pyo3. Its
 Python module is `popnei._core`.
+
+**linalg crate.** `crates/popnei-linalg`, the linear algebra of popnei,
+its products and decompositions, with two backends behind one interface:
+BLAS and LAPACK natively, and faer, a library written in Rust, in wasm,
+where there is no BLAS, and natively too when the cargo feature `blas`
+of the crate is off. It is the one crate of popnei with `unsafe` in it,
+the calls to BLAS and LAPACK. The core crate calls it.
+`docs/specs/linalg.md`. Not used: backend for the crate itself, which is
+the word for each of its two libraries.
 
 **JavaScript binding crate.** `crates/popnei-js`, written with
 wasm-bindgen, the Rust tool that generates the JavaScript that calls the

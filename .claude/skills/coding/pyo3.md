@@ -50,16 +50,23 @@ converted element by element.
 ## Arrays
 
 - In: `PyReadonlyArray3<'py, i8>` for genotypes, and the like. Get the
-  data with `as_slice()`, which fails when the array is not C contiguous,
-  or with `as_array()`. Both are safe on a readonly array. The same
-  methods on a `Bound<PyArray>` are `unsafe`, because Python can change
-  the data meanwhile, and are not used.
+  data with `as_slice()`, or with `as_array()`. Both are safe on a readonly
+  array. The same methods on a `Bound<PyArray>` are `unsafe`, because
+  Python can change the data meanwhile, and are not used.
+- `is_c_contiguous()` is asked first, and the slice is taken only when it
+  is true. `as_slice` of the numpy crate 0.29.0 gives the slice for an
+  array that is C contiguous **or** Fortran contiguous, and the values of a
+  Fortran contiguous array lie column after column: a function that trusts
+  `as_slice` to refuse one reads the table transposed and gives numbers for
+  a table nobody has, with no error. It is not a corner case. A pandas
+  frame of one dtype, which is what `do_pca` is given, is Fortran
+  contiguous in `to_numpy()`.
 - The Python package makes the array right before the call,
   `numpy.ascontiguousarray(gts, dtype=numpy.int8)`, and checks the number
   of dimensions, because numpy 0.29.0 reports a wrong dtype with a message
   that says "'ndarray' is not an instance of 'ndarray'". The binding crate
-  still turns a failed `as_slice` into a `ValueError` that names the
-  argument.
+  still turns an array that is not C contiguous into a `ValueError` that
+  names the argument.
 - Out: `vec.into_pyarray(py)` and `array.into_pyarray(py)` hand the Rust
   allocation to numpy without a copy. `to_pyarray` and `from_slice` copy,
   and are for small things only. The return type is
@@ -82,6 +89,9 @@ What goes into the closure has to be `Send`. `Python`, `Bound` and
 only that in:
 
 ```rust
+if !gts.is_c_contiguous() {
+    return Err(not_contiguous("gts"));
+}
 let gts = gts.as_slice().map_err(|_| not_contiguous("gts"))?;
 let result = py.detach(|| popnei::stats::exp_het(gts, ...))?;
 ```
@@ -117,13 +127,17 @@ builds the frozen dataclasses.
 `impl From<popnei::Error> for PyErr` cannot be written in this crate,
 because neither type is ours. So the crate has an error type of its own,
 `enum PyPopneiError`, with a `From<popnei::Error>`, a `From<PyErr>` and one
-`From<PyPopneiError> for PyErr`. Its eight cases are the error of the core;
+`From<PyPopneiError> for PyErr`. Its nine cases are the error of the core;
 that same error with the file it happened in, which the core was not given;
 an argument that says how many of something there are and counts nothing,
-which this crate refuses before the core sees it; the threshold of a filter
+which this crate refuses before the core sees it; a pass that gave a
+calculation no variant, with what each filter of it was given and kept,
+which this crate reads from the chain it holds and the core does not have;
+the threshold of a filter
 that is not a number from 0 to 1, under the name of the argument the user
 wrote it in, which the core does not know, since it names a filter by its
-kind, `maf`, and a user wrote `max_allowed_maf`; a path that a file is
+kind, `maf`, and a user wrote `max_allowed_maf`; an array that does not lie
+row after row, under the name of the argument as well; a path that a file is
 already at, given to a call that writes one, which this crate also refuses
 before the core sees it; another of those errors with the file that the
 call was writing and could not take away afterwards, which becomes a note

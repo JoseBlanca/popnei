@@ -6,5 +6,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["test"]
+  "include": ["test", "playwright.config.ts"]
 }

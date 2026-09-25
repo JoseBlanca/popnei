@@ -37,6 +37,83 @@ pub const MIN_NUM_VARS_PER_BLOCK: usize = 100;
 /// `MAX_NUM_VARS_PER_CHUNK`, measured for popnei by nobody.
 pub const MAX_NUM_VARS_PER_BLOCK: usize = 10_000;
 
+/// How many rows of a block one chunk of a pass reads, in the statistics of
+/// [`stats`](crate::stats) and in the pass over the populations of
+/// [`pop_dists`](crate::pop_dists).
+///
+/// The rows of a block are added up chunk by chunk and the chunks are added
+/// together in the order of the block, so the sum of a statistic does not
+/// depend on how many threads read the block, which rayon's own `sum` would
+/// make it: it joins the parts in an order it chooses at run time. The
+/// number is fixed for the same reason, and 64 rows of 1000 diploid
+/// individuals are 128000 genotypes, enough work for one task of rayon.
+pub(crate) const ROWS_PER_CHUNK: usize = 64;
+
+/// How many alleles one variant of a block holds, its individuals times its
+/// ploidy, which is how the rows of the block are cut, after the checks
+/// that the passes of [`stats`](crate::stats) and the pass over the
+/// populations of [`pop_dists`](crate::pop_dists) make of every block their
+/// reader gives them.
+///
+/// `num_individuals` and `ploidy` are what the reader says its source has.
+/// A pass reads the rows of every block as rows of one run over the
+/// variants, so each block has to be of those individuals and of that
+/// ploidy: a block of others is read one individual at the place of
+/// another, or counted whole for a population of every individual of the
+/// reader, and the numbers that come out say nothing about themselves.
+///
+/// # Errors
+///
+/// An array of the block that is not of the size the block states; a block
+/// of no variant; a block that holds the genotypes of no individual,
+/// because it has no individual or because its ploidy is 0, which is told
+/// apart from the genotypes that nobody asked the reader for, since a block
+/// is empty of them in the same way; a block the genotypes are not in,
+/// which a pass asked its reader for; and a block of other individuals or
+/// of another ploidy than the reader says its source has. Each of them is a
+/// defect of the reader that gave the block.
+pub(crate) fn alleles_per_var_of(
+    block: &Block,
+    num_individuals: usize,
+    ploidy: usize,
+) -> Result<usize> {
+    // The rows are cut out of the genotypes by the sizes the block states,
+    // so those sizes are checked before anything is read.
+    block.check()?;
+    if block.num_vars == 0 {
+        return Err(Error::ReaderGaveABlockOfNoVariants);
+    }
+    let alleles_per_var = block.alleles_per_var()?;
+    if alleles_per_var == 0 {
+        return Err(Error::BlockWithNoGenotypeOfAVariant {
+            num_individuals: block.num_individuals,
+            ploidy: block.ploidy,
+        });
+    }
+    if block.gts.is_empty() {
+        return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
+    }
+    if block.num_individuals != num_individuals || block.ploidy != ploidy {
+        return Err(Error::BlocksDoNotFitTogether {
+            num_individuals,
+            ploidy,
+            found_num_individuals: block.num_individuals,
+            found_ploidy: block.ploidy,
+        });
+    }
+    Ok(alleles_per_var)
+}
+
+/// How many alleles one chunk of a pass holds: [`ROWS_PER_CHUNK`] rows of
+/// `alleles_per_var` alleles, and one allele at least, because a cut of 0
+/// is what the standard library refuses with a panic.
+pub(crate) fn alleles_of_a_chunk(alleles_per_var: usize) -> usize {
+    // A block of more alleles than a `usize` counts is refused before this,
+    // and a chunk that saturated would be the whole block, which is a
+    // chunking that gives the right numbers and no threads.
+    ROWS_PER_CHUNK.saturating_mul(alleles_per_var).max(1)
+}
+
 /// Which of the three sizes of a block a reader is working with.
 ///
 /// What a caller does about a block the machine cannot give the memory for
@@ -742,6 +819,82 @@ impl Block {
         Ok(())
     }
 
+    /// It keeps the genotypes of the individuals `keep`, indices into the
+    /// individuals of the block, in that order, within the array of the
+    /// block, and sets `num_individuals`: it is what the filter of
+    /// individuals of `docs/specs/filters.md` compacts every block it takes
+    /// with.
+    ///
+    /// Every variant stays, and so does every column of the block. The kept
+    /// individuals come in the order of `keep`, which is the order the user
+    /// named them in, so the genotypes are gathered in two passes over the
+    /// array: first the kept genotypes of each row are gathered to the front
+    /// of that row, at the width the row has now, because a genotype cannot
+    /// be moved over one that is still to be read when i5 comes before i1;
+    /// then the shortened rows are packed to the front of the array, one
+    /// after another, because where a row will start is inside the row
+    /// before it. Nothing is allocated for a variant, and the block keeps
+    /// the capacity of its array.
+    ///
+    /// # Errors
+    ///
+    /// When `keep` holds an index at or beyond the individuals of the
+    /// block, an index twice, or no index at all. Those three are a defect
+    /// of the caller: the filter of individuals gets its indices from
+    /// `resolve_individuals` of the `filters` module, which refuses the
+    /// name behind each of them. When the block has variants and no
+    /// genotypes, which is the error of a field that is not in the block.
+    /// And when the arrays of the block are not of its size, which
+    /// [`Block::check`] finds, since the rows are cut out of the genotypes
+    /// by the sizes the block states. After any of them the block is as it
+    /// was.
+    pub fn retain_individuals(&mut self, keep: &[usize]) -> Result<()> {
+        if keep.is_empty() {
+            return Err(Error::NoIndividualToKeep);
+        }
+        // One value for each individual of the block, which says whether it
+        // has been asked for: it is one array per block and none per
+        // variant, and it finds the index that is there twice in one walk
+        // over `keep`.
+        let mut asked_for = vec![false; self.num_individuals];
+        for individual in keep {
+            let Some(asked_for) = asked_for.get_mut(*individual) else {
+                return Err(Error::IndividualToKeepNotInTheBlock {
+                    individual: *individual,
+                    num_individuals: self.num_individuals,
+                });
+            };
+            if *asked_for {
+                return Err(Error::IndividualToKeepTwice {
+                    individual: *individual,
+                });
+            }
+            *asked_for = true;
+        }
+        // The rows are cut out of the genotypes by the sizes the block
+        // states, so those sizes are checked before anything is moved.
+        self.check()?;
+        if self.gts.is_empty() && self.num_vars > 0 {
+            return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
+        }
+        if !self.gts.is_empty() {
+            // `check` passed and the genotypes are not empty, so they are
+            // the variants of the block times this number and it is one
+            // allele at least: the rows are cut by it, and a cut of 0 is
+            // what the standard library refuses with a panic.
+            let alleles_per_var = self.alleles_per_var()?.max(1);
+            // `keep` holds at most one index for each individual of the
+            // block, so the individuals it keeps are at most the ones the
+            // block has and this product is at most `alleles_per_var`,
+            // which did not overflow.
+            let kept_alleles_per_var = keep.len().saturating_mul(self.ploidy);
+            gather_the_kept_genotypes(&mut self.gts, keep, self.ploidy, alleles_per_var)?;
+            pack_the_rows(&mut self.gts, alleles_per_var, kept_alleles_per_var)?;
+        }
+        self.num_individuals = keep.len();
+        Ok(())
+    }
+
     /// That `gts` holds `num_vars` x `num_individuals` x `ploidy` alleles,
     /// or none, and that every column that is there holds `num_vars`
     /// entries.
@@ -806,6 +959,185 @@ impl Block {
         }
         Ok(())
     }
+}
+
+/// The genotypes of the individuals `keep` gathered to the front of the row
+/// of each variant of `gts`, at the width the rows have now,
+/// `alleles_per_var` alleles each: the first of the two passes of
+/// [`Block::retain_individuals`].
+///
+/// The rows are disjoint and no row reads another, so natively they are
+/// gathered on the threads of rayon, as section 3 of
+/// `docs/architecture.md` asks, and every row gives the same alleles
+/// wherever it was gathered. The threads are those of the pool the caller
+/// is running in, and rayon's global pool only when the caller is in none.
+///
+/// Each job gathers through a buffer of its own, the kept individuals times
+/// the ploidy, which it hands to one row after another: a genotype cannot
+/// be written over one that is still to be read, since the kept individuals
+/// come in the order the user named them in.
+///
+/// `alleles_per_var` is 1 or more and `gts` holds a whole number of rows of
+/// it, which [`Block::check`] said.
+///
+/// # Errors
+///
+/// What [`gather_the_row`] refuses, a row that does not hold the genotype of
+/// one of `keep`.
+#[cfg(not(target_family = "wasm"))]
+fn gather_the_kept_genotypes(
+    gts: &mut [i8],
+    keep: &[usize],
+    ploidy: usize,
+    alleles_per_var: usize,
+) -> Result<()> {
+    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+    use rayon::slice::ParallelSliceMut;
+
+    let kept_alleles_per_var = keep.len().saturating_mul(ploidy);
+    gts.par_chunks_mut(alleles_per_var)
+        // The buffer of `for_each_init` is built once for each job, and
+        // with no floor rayon splits the rows into jobs of two or three.
+        .with_min_len(ROWS_PER_GATHER_JOB)
+        .try_for_each_init(
+            || Vec::with_capacity(kept_alleles_per_var),
+            |buffer, row| gather_the_row(row, keep, ploidy, buffer),
+        )
+}
+
+/// How many rows of a block one job of the gather takes at least, which is
+/// how many rows the buffer of a job is built for.
+///
+/// rayon splits the rows of a block until a job is one it does not split
+/// further, and it builds the buffer of [`gather_the_kept_genotypes`] once
+/// per job. With no floor a block of 5000 variants of 1000 individuals, 500
+/// of them kept, was split into 1861, 2011 and 2245 jobs in three runs on
+/// the owner's M5 Pro, 18 threads, macOS 27.0, on 22 September 2026: one
+/// buffer for every two or three rows. With this floor the same block was
+/// split into 63 jobs in each of three runs, which leaves 3 or 4 jobs for
+/// each of the 18 threads to balance the rows with.
+///
+/// It is a floor and not a size: a block of fewer rows than this is one job.
+/// What the gather costs with this floor and with another has not been
+/// measured.
+#[cfg(not(target_family = "wasm"))]
+const ROWS_PER_GATHER_JOB: usize = 64;
+
+/// The same gather, with the rows read one after another, which is what
+/// wasm does: it has no threads.
+///
+/// # Errors
+///
+/// What [`gather_the_row`] refuses, a row that does not hold the genotype of
+/// one of `keep`.
+#[cfg(target_family = "wasm")]
+fn gather_the_kept_genotypes(
+    gts: &mut [i8],
+    keep: &[usize],
+    ploidy: usize,
+    alleles_per_var: usize,
+) -> Result<()> {
+    let mut buffer = Vec::with_capacity(keep.len().saturating_mul(ploidy));
+    for row in gts.chunks_mut(alleles_per_var) {
+        gather_the_row(row, keep, ploidy, &mut buffer)?;
+    }
+    Ok(())
+}
+
+/// The genotypes of the individuals `keep` of one row, in the order of
+/// `keep`, gathered through `buffer` to the front of the row.
+///
+/// # Errors
+///
+/// When the row does not hold the genotype of one of `keep`, which is the
+/// error [`Block::check`] gives for genotypes that are not of the size of
+/// the block, with the alleles of this row in the place of theirs: the rows
+/// are cut out of the genotypes by the size the block states, so a row that
+/// is short is a block whose genotypes are. No call reaches it, since
+/// [`Block::retain_individuals`] runs that check before it moves an allele,
+/// and a row that was gathered by a genotype of another individual would
+/// give a user the genotypes of the wrong individuals with nothing to show
+/// it.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "an index of `keep` is below the individuals of the block and the row holds \
+              those individuals times the ploidy, which `Block::check` said before the \
+              first row was touched, so the product and the sum are at most the alleles \
+              of one row, which are a part of an array that was allocated"
+)]
+fn gather_the_row(
+    row: &mut [i8],
+    keep: &[usize],
+    ploidy: usize,
+    buffer: &mut Vec<i8>,
+) -> Result<()> {
+    buffer.clear();
+    for individual in keep {
+        let start = individual * ploidy;
+        let end = start + ploidy;
+        let genotype = row.get(start..end).ok_or(Error::BlockArrayOfAnotherSize {
+            array: "gts",
+            found: row.len(),
+            expected: end,
+        })?;
+        buffer.extend_from_slice(genotype);
+    }
+    let alleles_of_the_row = row.len();
+    let front = row
+        .get_mut(..buffer.len())
+        .ok_or(Error::BlockArrayOfAnotherSize {
+            array: "gts",
+            found: alleles_of_the_row,
+            expected: buffer.len(),
+        })?;
+    front.copy_from_slice(buffer);
+    Ok(())
+}
+
+/// The rows of `gts`, each of them gathered to the front of the
+/// `alleles_per_var` alleles it lies in, packed one after another into
+/// `kept_alleles_per_var` alleles each: the second of the two passes of
+/// [`Block::retain_individuals`].
+///
+/// Where a row is written is inside the row before it, so this pass is one
+/// thread's, as [`Block::retain_vars`] is. `kept_alleles_per_var` is at most
+/// `alleles_per_var`, so no row is written over one that is still to be
+/// read.
+///
+/// # Errors
+///
+/// When a row of `kept_alleles_per_var` alleles is not there where one
+/// starts, which is the error [`Block::check`] gives for genotypes that are
+/// not of the size of the block. No call reaches it, for the reason
+/// [`gather_the_row`] gives.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "`gts` holds a whole number of rows of `alleles_per_var` alleles, which \
+              `Block::check` said, and `kept_alleles_per_var` is at most `alleles_per_var`, \
+              so neither place passes the length of an array that was allocated"
+)]
+fn pack_the_rows(
+    gts: &mut Vec<i8>,
+    alleles_per_var: usize,
+    kept_alleles_per_var: usize,
+) -> Result<()> {
+    let mut read = 0usize;
+    let mut write = 0usize;
+    while read < gts.len() {
+        let end = read + kept_alleles_per_var;
+        if end > gts.len() {
+            return Err(Error::BlockArrayOfAnotherSize {
+                array: "gts",
+                found: gts.len(),
+                expected: end,
+            });
+        }
+        gts.copy_within(read..end, write);
+        write += kept_alleles_per_var;
+        read += alleles_per_var;
+    }
+    gts.truncate(write);
+    Ok(())
 }
 
 /// The entries of one column whose `keep` is true, in their order, and the
@@ -1283,6 +1615,315 @@ impl<R: BlockReader> fmt::Debug for Reblock<R> {
     }
 }
 
+/// The blocks of `reader` read one block ahead of `body`, which is what
+/// section 3 of `docs/architecture.md` asks for between a reader and its
+/// consumer.
+///
+/// A pass asks its reader for a block and then works on it, so the read of
+/// the next block and the work on the one in hand never overlap, although
+/// the read is the disc and the decompression and the work is the
+/// arithmetic. This lends `reader` to a thread of its own for as long as
+/// `body` runs: that thread builds the next block while `body` works on the
+/// one it was given, and `body` reads the blocks off a [`OneBlockAhead`],
+/// which is a [`BlockReader`] like any other. It is one block ahead and not
+/// more: the handover is a rendezvous, so the reading thread holds at most
+/// one block that is built and not yet given, and the memory of the pass
+/// grows by that one block.
+///
+/// `reader` is lent and not given away. Whoever built the chain of readers
+/// keeps it, and when this returns the thread is over and the chain can be
+/// asked for [`BlockReader::chroms`] and
+/// [`BlockReader::filtering_stats`], which is how a pass reads the names
+/// of the chromosomes and the counts of its filters when it ends, as
+/// `docs/specs/filters.md` has it.
+///
+/// It is worth its thread where the read of a block and the work on it are
+/// of the same order, and what it saves a pass is the smaller of the two.
+/// Over 100000 variants of 1000 individuals of a vars file on 18 cores, the
+/// read of a block is 0.027 s of the panel since the reader of that format
+/// began decoding its batches on the threads of rayon, which
+/// `docs/reports/perf-vars-threads-2026-09-25.md` measured, and 0.112 s
+/// before it; the nine passes that were measured against this reader work
+/// for 0.004 s to 0.211 s on the same blocks.
+/// `docs/reports/perf-read-ahead-2026-09-25.md` has what it gave each of
+/// them, and eight of the nine keep it.
+///
+/// In wasm there is no thread: `body` is given `reader` itself and reads
+/// the blocks one after another, as everything else of popnei does there.
+///
+/// # Errors
+///
+/// What `body` fails with, and what `reader` fails with, which reaches
+/// `body` through [`BlockReader::next_block`] after the blocks that came
+/// before it, as the trait promises. A reader that fails on its 251st
+/// variant with blocks of 100 gives two blocks and then the error.
+///
+/// # Panics
+///
+/// When the reading thread panics, which is a defect of the reader: the
+/// panic is raised again here, where a caller of popnei sees it, and the
+/// blocks that were read are dropped. Nothing of popnei panics, and a
+/// reader of a caller of the core crate can.
+pub fn with_one_block_ahead<R: BlockReader, T>(
+    reader: &mut R,
+    body: impl FnOnce(&mut dyn BlockReader) -> Result<T>,
+) -> Result<T> {
+    #[cfg(target_family = "wasm")]
+    {
+        // No thread in a browser, and so no block read ahead: the chain of
+        // readers is what the body reads, and the only cost of going
+        // through here is one dynamic call per block.
+        body(reader)
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let individuals = reader.individuals().to_vec();
+        let ploidy = reader.ploidy();
+        // A rendezvous and not a queue: the reading thread builds one block
+        // while the body works on the one it holds, and waits with it until
+        // the body asks. That is "one block ahead", and a queue of two
+        // would hold a second block for no more overlap.
+        let (built, blocks) = std::sync::mpsc::sync_channel::<ABlockRead>(0);
+        let (asked, needs) = std::sync::mpsc::channel::<Needs>();
+        std::thread::scope(|threads| {
+            threads.spawn(move || read_one_block_ahead(reader, built, needs));
+            let mut ahead = OneBlockAhead {
+                blocks,
+                asked,
+                individuals,
+                ploidy,
+                chroms: ChromTable::new(),
+                filtering_stats: Vec::new(),
+                finished: false,
+            };
+            let given = body(&mut ahead);
+            // The handle holds the end of the channel the reading thread
+            // sends on, and dropping it is what stops a thread that is
+            // waiting with a block nobody will ask for, which a body that
+            // returned an error in the middle of the pass leaves. The end
+            // of this closure would drop it, since the scope joins the
+            // thread after the closure returns and not before; it is
+            // dropped here so that what makes the thread end is a line and
+            // not the place where the closure happens to finish.
+            drop(ahead);
+            given
+        })
+    }
+}
+
+/// What the reading thread of [`with_one_block_ahead`] sends for each call
+/// it makes on the chain of readers.
+#[cfg(not(target_family = "wasm"))]
+enum ABlockRead {
+    /// A block, and what the chain had to say when it gave it.
+    Block(Block, TheChainNow),
+    /// The chain has no more blocks, and its last word.
+    NoMore(TheChainNow),
+    /// The chain failed. Nothing comes after this one.
+    Failed(Error),
+}
+
+/// What the chain of readers says of itself beside a block, which the
+/// handle keeps so that it answers [`BlockReader::chroms`] and
+/// [`BlockReader::filtering_stats`] with what the chain said when it gave
+/// the last block and not with nothing.
+#[cfg(not(target_family = "wasm"))]
+struct TheChainNow {
+    /// The names of the chromosomes the chain interned since the block
+    /// before, in the order it interned them, which the handle interns in
+    /// that same order so that a name has the same number on both sides.
+    /// It is the new names and not the table, so that a genome of many
+    /// contigs is not copied once per block.
+    new_chroms: Vec<String>,
+    /// The counts of the filters of the chain as they stand, which are a
+    /// few numbers per filter and are sent whole.
+    filtering_stats: Vec<(&'static str, FilteringStats)>,
+}
+
+/// What the chain says of itself now, with the names it has already sent
+/// left out and `sent` moved on by the ones that go now.
+#[cfg(not(target_family = "wasm"))]
+fn the_chain_now<R: BlockReader>(reader: &R, sent: &mut usize) -> TheChainNow {
+    let chroms = reader.chroms();
+    let mut new_chroms = Vec::new();
+    let mut number = *sent;
+    while number < chroms.len() {
+        if let Some(name) = u32::try_from(number).ok().and_then(|at| chroms.name(at)) {
+            new_chroms.push(name.to_owned());
+        }
+        number = number.saturating_add(1);
+    }
+    *sent = chroms.len();
+    TheChainNow {
+        new_chroms,
+        filtering_stats: reader.filtering_stats(),
+    }
+}
+
+/// The reading thread of [`with_one_block_ahead`]: every block of `reader`
+/// sent to the handle, then either the word that there are no more or the
+/// error the chain failed with.
+///
+/// It ends when the chain is over, when the chain fails, and when the
+/// handle is dropped, which is what a pass that returns early does: the
+/// send fails then, and the block that was built is dropped with the
+/// thread. The chain is left where it stopped and is not read again, which
+/// is what the caller of [`with_one_block_ahead`] then asks for its
+/// counts.
+#[cfg(not(target_family = "wasm"))]
+fn read_one_block_ahead<R: BlockReader>(
+    reader: &mut R,
+    built: std::sync::mpsc::SyncSender<ABlockRead>,
+    needs: std::sync::mpsc::Receiver<Needs>,
+) {
+    let mut chroms_sent = 0_usize;
+    loop {
+        // Every `set_needs` the handle was given since the last block was
+        // built, in the order it was given them. A block that is already
+        // built keeps the columns it was built with, which is what the
+        // trait says of a change of `Needs` in the middle of a pass.
+        while let Ok(fields) = needs.try_recv() {
+            reader.set_needs(fields);
+        }
+        let read = match reader.next_block() {
+            Ok(Some(block)) => ABlockRead::Block(block, the_chain_now(reader, &mut chroms_sent)),
+            Ok(None) => ABlockRead::NoMore(the_chain_now(reader, &mut chroms_sent)),
+            Err(error) => ABlockRead::Failed(error),
+        };
+        let more_may_follow = matches!(read, ABlockRead::Block(_, _));
+        // A send that fails is a handle that was dropped, so nobody will
+        // ask for another block and the thread is done. The error of the
+        // send holds the block, which goes with it.
+        if built.send(read).is_err() {
+            return;
+        }
+        if !more_may_follow {
+            return;
+        }
+    }
+}
+
+/// The blocks of a chain of readers that a thread of its own is reading,
+/// one block ahead of whoever asks for them, which
+/// [`with_one_block_ahead`] builds and lends.
+///
+/// It is a [`BlockReader`] and gives what the chain gives: the same blocks
+/// in the same order, the error of the chain after the blocks that came
+/// before it, and nothing after that error. What it answers of the chain
+/// itself, the names of the chromosomes and the counts of the filters, is
+/// what the chain had to say when it gave the last block, and after the
+/// last block it is the chain's last word. Whoever built the chain reads
+/// the same two from the chain itself when [`with_one_block_ahead`]
+/// returns.
+#[cfg(not(target_family = "wasm"))]
+pub struct OneBlockAhead {
+    /// Where the reading thread sends what it read.
+    blocks: std::sync::mpsc::Receiver<ABlockRead>,
+    /// Where a [`BlockReader::set_needs`] goes, which the reading thread
+    /// gives the chain before it builds its next block.
+    asked: std::sync::mpsc::Sender<Needs>,
+    /// The individuals of the chain, copied once when the thread was
+    /// started: they do not change while a source is read.
+    individuals: Vec<String>,
+    /// The ploidy of the chain, which does not change either.
+    ploidy: usize,
+    /// The names of the chromosomes, as they were when the last block was
+    /// given. The numbers are the chain's own, because the names are
+    /// interned here in the order the chain interned them.
+    chroms: ChromTable,
+    /// The counts of the filters of the chain, as they were when the last
+    /// block was given.
+    filtering_stats: Vec<(&'static str, FilteringStats)>,
+    /// Whether the chain is over or failed. After either there is no
+    /// block, and the reading thread has ended.
+    finished: bool,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl OneBlockAhead {
+    /// What the chain said of itself, kept for [`BlockReader::chroms`] and
+    /// [`BlockReader::filtering_stats`].
+    fn took(&mut self, now: TheChainNow) {
+        for name in &now.new_chroms {
+            self.chroms.intern(name);
+        }
+        self.filtering_stats = now.filtering_stats;
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl BlockReader for OneBlockAhead {
+    /// The next block of the chain, which the reading thread built while
+    /// the caller was working on the block before it.
+    ///
+    /// # Errors
+    ///
+    /// What the chain failed with, after the blocks it gave before it.
+    /// After it there is no block.
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        if self.finished {
+            return Ok(None);
+        }
+        match self.blocks.recv() {
+            Ok(ABlockRead::Block(block, now)) => {
+                self.took(now);
+                Ok(Some(block))
+            }
+            Ok(ABlockRead::NoMore(now)) => {
+                self.took(now);
+                self.finished = true;
+                Ok(None)
+            }
+            Ok(ABlockRead::Failed(error)) => {
+                self.finished = true;
+                Err(error)
+            }
+            // The thread ended without saying why, which nothing but a
+            // panic in the chain of readers does, and a panic of a thread
+            // of the scope is raised again where `with_one_block_ahead`
+            // was called, so what this returns is thrown away there. There
+            // is no block either way.
+            Err(_) => {
+                self.finished = true;
+                Ok(None)
+            }
+        }
+    }
+
+    fn individuals(&self) -> &[String] {
+        &self.individuals
+    }
+
+    fn ploidy(&self) -> usize {
+        self.ploidy
+    }
+
+    /// The names of the chromosomes the chain had interned when it gave the
+    /// last block, which are the ones the variants of that block can name,
+    /// and all of its names once it has no more blocks.
+    fn chroms(&self) -> &ChromTable {
+        &self.chroms
+    }
+
+    /// What the chain is asked to fill from its next block on. The block
+    /// that was read ahead was built before this was said and keeps the
+    /// columns it was built with, so a change reaches the caller one block
+    /// later than it does over a chain that is read on one thread.
+    fn set_needs(&mut self, needs: Needs) {
+        // A send that fails is a reading thread that has ended, and then
+        // there is no next block for the fields to be filled in.
+        let _ = self.asked.send(needs);
+    }
+
+    /// The counts of the filters of the chain as they were when it gave the
+    /// last block, and all of them once it has no more blocks. Whoever
+    /// built the chain reads them from the chain itself when
+    /// [`with_one_block_ahead`] returns.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.filtering_stats.clone()
+    }
+}
+
 /// `values` after what `column` holds, with the memory asked of the machine
 /// first. A column that is in neither block, or in one of them alone, is
 /// left as it is: `Reblock` joins blocks of the same columns.
@@ -1408,7 +2049,7 @@ mod tests {
         AllelesColumn, Block, BlockReader, BlockSize, FIELD_NAMES, FIELDS_OF_THE_NAMES,
         GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK, Reblock,
         check_the_size_of_a_block, default_num_vars_per_block, needs_of_the_fields,
-        size_of_the_blocks,
+        size_of_the_blocks, with_one_block_ahead,
     };
     use crate::error::{Error, Result};
     use crate::filters::FilteringStats;
@@ -2430,6 +3071,348 @@ mod tests {
         }
     }
 
+    /// The six variants of five diploid individuals of the worked example
+    /// of "How it is verified" of `docs/specs/filters.md`, each at the
+    /// position of the number that table gives it, so that a test names a
+    /// variant by that number. `MISSING` is an allele that was not called,
+    /// the `.` of a VCF.
+    const OF_FIVE_INDIVIDUALS: [[i8; 10]; 6] = [
+        // 0/0 0/1 0/0 0/0 0/.
+        [0, 0, 0, 1, 0, 0, 0, 0, 0, MISSING],
+        // 0/0 0/1 0/0 ./. 0/.
+        [0, 0, 0, 1, 0, 0, MISSING, MISSING, 0, MISSING],
+        // 0/1 2/3 0/1 2/3 ./.
+        [0, 1, 2, 3, 0, 1, 2, 3, MISSING, MISSING],
+        // ./. ./. ./. ./. ./.
+        [MISSING; 10],
+        // 0/0 0/0 0/0 0/0 1/1
+        [0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+        // 0/. ./. ./. ./. ./.
+        [
+            0, MISSING, MISSING, MISSING, MISSING, MISSING, MISSING, MISSING, MISSING, MISSING,
+        ],
+    ];
+
+    /// The block of those six variants, with the chromosome and the
+    /// position of each, the columns a test reads to see that the filter of
+    /// individuals left them alone.
+    fn of_five_individuals() -> Block {
+        Block {
+            num_vars: 6,
+            num_individuals: 5,
+            ploidy: 2,
+            gts: OF_FIVE_INDIVIDUALS.concat(),
+            chrom: Some(vec![0; 6]),
+            pos: Some(vec![1, 2, 3, 4, 5, 6]),
+            id: None,
+            alleles: None,
+            qual: None,
+        }
+    }
+
+    /// The genotypes of the block cut into one row per variant, by the size
+    /// the block states.
+    fn rows_of(block: &Block) -> Vec<Vec<i8>> {
+        let alleles_per_var = block.alleles_per_var().expect("the alleles of a variant");
+        block
+            .gts
+            .chunks(alleles_per_var)
+            .map(<[i8]>::to_vec)
+            .collect()
+    }
+
+    /// The worked example with the fifth individual and the first kept, in
+    /// that order, which is the case "How it is verified" of
+    /// `docs/specs/filters.md` gives: the row of variant 1 is `0/. 0/0` and
+    /// the row of variant 3 is `./. 0/1`.
+    ///
+    /// The kept individuals come in the order they were asked for and not
+    /// in the order of the source, so this gathers the last individual over
+    /// the first, which is what the first of the two passes of the
+    /// compaction is for.
+    #[test]
+    fn retain_individuals_keeps_the_two_individuals_of_the_worked_example_in_the_order_asked_for() {
+        let mut block = of_five_individuals();
+        let capacity = block.gts.capacity();
+
+        block
+            .retain_individuals(&[4, 0])
+            .expect("the individuals to keep");
+
+        assert_eq!(block.num_individuals, 2);
+        assert_eq!(block.num_vars, 6);
+        block.check().expect("the block is of its size");
+        assert_eq!(
+            rows_of(&block),
+            [
+                // variant 1: 0/. 0/0
+                vec![0, MISSING, 0, 0],
+                // variant 2: 0/. 0/0
+                vec![0, MISSING, 0, 0],
+                // variant 3: ./. 0/1
+                vec![MISSING, MISSING, 0, 1],
+                // variant 4: ./. ./.
+                vec![MISSING, MISSING, MISSING, MISSING],
+                // variant 5: 1/1 0/0
+                vec![1, 1, 0, 0],
+                // variant 6: ./. 0/.
+                vec![MISSING, MISSING, 0, MISSING],
+            ]
+        );
+        // Every variant stays, with the columns it had, and the block was
+        // compacted inside its own array: nothing was allocated for it.
+        assert_eq!(block.pos.as_deref(), Some([1, 2, 3, 4, 5, 6].as_slice()));
+        assert_eq!(block.chrom.as_deref(), Some([0; 6].as_slice()));
+        assert_eq!(block.gts.capacity(), capacity);
+    }
+
+    /// The genotypes are gathered by the ploidy of the block and not by 2:
+    /// a triploid block of four individuals, of which the third and the
+    /// second are kept.
+    #[test]
+    fn retain_individuals_moves_the_alleles_of_a_genotype_of_the_ploidy_of_the_block() {
+        let mut block = Block {
+            num_vars: 2,
+            num_individuals: 4,
+            ploidy: 3,
+            gts: vec![
+                // 0/0/1 0/1/2 2/2/. 1/1/1
+                0, 0, 1, 0, 1, 2, 2, 2, MISSING, 1, 1, 1, //
+                // 1/0/0 ./0/0 3/3/3 0/0/0
+                1, 0, 0, MISSING, 0, 0, 3, 3, 3, 0, 0, 0,
+            ],
+            chrom: None,
+            pos: Some(vec![10, 20]),
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+
+        block
+            .retain_individuals(&[2, 1])
+            .expect("the individuals to keep");
+
+        assert_eq!((block.num_individuals, block.ploidy), (2, 3));
+        block.check().expect("the block is of its size");
+        assert_eq!(
+            rows_of(&block),
+            [vec![2, 2, MISSING, 0, 1, 2], vec![3, 3, 3, MISSING, 0, 0]]
+        );
+    }
+
+    /// An index at or beyond the individuals of the block is a defect of
+    /// whoever wrote it, since `resolve_individuals` of
+    /// `docs/specs/filters.md` refuses the name that would give it, and the
+    /// block is left as it was: the error names the index and the
+    /// individuals of the block.
+    #[test]
+    fn retain_individuals_refuses_an_index_at_or_beyond_the_individuals() {
+        let mut block = of_five_individuals();
+        let genotypes = block.gts.clone();
+
+        for asked_for in [&[5_usize][..], &[0, 99][..]] {
+            let error = match block.retain_individuals(asked_for) {
+                Ok(()) => panic!("the block kept the individuals {asked_for:?}"),
+                Err(error) => error,
+            };
+            let Error::IndividualToKeepNotInTheBlock {
+                individual,
+                num_individuals,
+            } = error
+            else {
+                panic!("the error is {error}");
+            };
+            assert_eq!(num_individuals, 5);
+            assert_eq!(Some(individual), asked_for.last().copied());
+            let message = error.to_string();
+            assert!(message.contains(&individual.to_string()), "{message}");
+            assert!(message.contains('5'), "{message}");
+        }
+
+        assert_eq!((block.num_individuals, block.num_vars), (5, 6));
+        assert_eq!(block.gts, genotypes);
+    }
+
+    /// One individual asked for twice would be two columns of the genotypes
+    /// of one individual, which no consumer can tell apart, so it is
+    /// refused with the index it is, and the block is left as it was.
+    #[test]
+    fn retain_individuals_refuses_an_index_that_is_there_twice() {
+        let mut block = of_five_individuals();
+        let genotypes = block.gts.clone();
+
+        let error = match block.retain_individuals(&[3, 0, 3]) {
+            Ok(()) => panic!("the block kept the individual 3 twice"),
+            Err(error) => error,
+        };
+
+        let Error::IndividualToKeepTwice { individual } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(individual, 3);
+        let message = error.to_string();
+        assert!(message.contains('3'), "{message}");
+        assert_eq!((block.num_individuals, block.num_vars), (5, 6));
+        assert_eq!(block.gts, genotypes);
+    }
+
+    /// No index at all would leave a block of nobody's genotypes, which no
+    /// source of popnei gives, and the block is left as it was.
+    #[test]
+    fn retain_individuals_refuses_no_index_at_all() {
+        let mut block = of_five_individuals();
+        let genotypes = block.gts.clone();
+
+        let error = match block.retain_individuals(&[]) {
+            Ok(()) => panic!("the block kept no individual"),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(error, Error::NoIndividualToKeep),
+            "the error is {error}"
+        );
+        assert_eq!((block.num_individuals, block.num_vars), (5, 6));
+        assert_eq!(block.gts, genotypes);
+    }
+
+    /// A block that has variants and no genotypes is one whose reader was
+    /// not asked for them: there is nothing to gather, and it is the error
+    /// of a field that is not in the block, which `VarFilter::filter_block`
+    /// gives for the same block.
+    #[test]
+    fn retain_individuals_refuses_a_block_with_variants_and_no_genotypes() {
+        let mut block = of_five_individuals();
+        block.gts = Vec::new();
+
+        let error = match block.retain_individuals(&[4, 0]) {
+            Ok(()) => panic!("the block with no genotypes was compacted"),
+            Err(error) => error,
+        };
+
+        let Error::FieldsNotInTheBlock { fields } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(fields, Needs::GTS);
+        assert_eq!((block.num_individuals, block.num_vars), (5, 6));
+    }
+
+    /// The rows of a block are cut out of its genotypes by the size it
+    /// states, so `retain_individuals` checks the block before it moves an
+    /// allele: a block whose genotypes are short would be gathered with the
+    /// genotypes of the wrong individuals in every row from the fault on.
+    #[test]
+    fn retain_individuals_refuses_a_block_whose_arrays_are_not_of_its_size() {
+        let mut block = of_five_individuals();
+        block.gts.pop();
+
+        let error = match block.retain_individuals(&[4, 0]) {
+            Ok(()) => panic!("the block was compacted"),
+            Err(error) => error,
+        };
+
+        let Error::BlockArrayOfAnotherSize {
+            array,
+            found,
+            expected,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((array, found, expected), ("gts", 59, 60));
+        // The block is left as it was: its five individuals and the allele
+        // it was short.
+        assert_eq!((block.num_individuals, block.num_vars), (5, 6));
+        assert_eq!(block.gts.len(), 59);
+    }
+
+    /// A block of no variants holds no genotype, and the individuals it
+    /// states are the ones the blocks of its reader hold: it is left with
+    /// the individuals that were kept and its `gts` empty.
+    #[test]
+    fn retain_individuals_leaves_a_block_of_no_variants_with_the_kept_individuals() {
+        let mut block = of_five_individuals();
+        block
+            .retain_vars(&[false; 6])
+            .expect("the variants to keep");
+
+        block
+            .retain_individuals(&[4, 0])
+            .expect("the individuals to keep");
+
+        assert_eq!((block.num_vars, block.num_individuals), (0, 2));
+        assert!(block.gts.is_empty());
+        block.check().expect("the block is of its size");
+    }
+
+    /// The rows are gathered on the threads of the pool the caller is in,
+    /// so the genotypes are the same on one thread and on several, over a
+    /// block of 300 variants, which a pool of four shares out in several
+    /// chunks.
+    ///
+    /// The pools are built here and are not rayon's global one, which has
+    /// one thread per core of the machine. rayon is a dependency of the
+    /// targets that are not wasm, so this test is compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn retain_individuals_gathers_the_same_genotypes_on_one_thread_and_on_several() {
+        // 300 variants of 10 diploid individuals, 6000 alleles. The
+        // genotype of the individual `k` of the variant `v` is
+        // `(k + v) % 5 - 1` over `(k / 5 + v) % 5 - 1`, so no two
+        // individuals of one variant hold the same genotype, since `k % 5`
+        // and `k / 5` make a different pair for each of the ten, and the
+        // row of a variant is the row of the one before it with both
+        // alleles moved on by one, so no row is the row of its neighbours.
+        // A gather that read the row of another variant, or the columns of
+        // the wrong individuals, gives other alleles than the ones asserted
+        // below.
+        let of_ten_individuals = || Block {
+            num_vars: 300,
+            num_individuals: 10,
+            ploidy: 2,
+            gts: (0..300)
+                .flat_map(|variant| {
+                    (0..10).flat_map(move |individual: usize| {
+                        [individual, individual / 5].map(|of_the_allele| {
+                            i8::try_from((of_the_allele + variant) % 5).unwrap_or(MISSING) - 1
+                        })
+                    })
+                })
+                .collect(),
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+        let kept = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            let mut block = of_ten_individuals();
+            pool.install(|| block.retain_individuals(&[7, 0, 3]))
+                .expect("the individuals to keep");
+            block.gts
+        };
+
+        let on_one = kept(1);
+        assert_eq!(on_one.len(), 1800);
+        assert_eq!(on_one, kept(4));
+        // At the variant 0 the individual 7 is `1/0`, the individual 0
+        // `./.` and the individual 3 `2/.`, and at the variant 299, where
+        // both alleles have moved on by 299, they are `0/.`, `3/3` and
+        // `1/3`.
+        assert_eq!(
+            on_one.get(..6),
+            Some([1, 0, MISSING, MISSING, 2, MISSING].as_slice())
+        );
+        assert_eq!(
+            on_one.get(1794..),
+            Some([0, MISSING, 3, 3, 1, 3].as_slice())
+        );
+    }
+
     /// A reader of blocks written for these tests: it gives the blocks it
     /// was built with, keeps the address of the genotypes of each one, so
     /// that a test sees whether a block was copied, and counts the calls,
@@ -3136,5 +4119,155 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every block a reader gives when it is read one block ahead, until it
+    /// has no more or it fails.
+    fn blocks_given_one_ahead(reader: &mut impl BlockReader) -> Result<Vec<Block>> {
+        with_one_block_ahead(reader, |ahead| {
+            // A `&mut dyn BlockReader` is a reader of blocks itself, which
+            // is what lets the helper the other tests use read it.
+            let mut ahead = ahead;
+            blocks_given(&mut ahead)
+        })
+    }
+
+    /// The error of a reader read one block ahead arrives after the blocks
+    /// that came before it and not before them, which is what section 7 of
+    /// `docs/architecture.md` promises and what a thread between the reader
+    /// and its consumer is most able to break.
+    ///
+    /// It is the case of `a_wrong_line_after_two_hundred_and_fifty_
+    /// variants_leaves_twenty_eight_blocks_of_seven` above, in the shape
+    /// the task of the read ahead states: 250 good lines, a wrong one after
+    /// them, blocks of 100, two blocks and then the error.
+    #[test]
+    fn a_wrong_line_after_two_hundred_and_fifty_variants_read_one_block_ahead_leaves_two_blocks() {
+        let mut lines: Vec<String> = (1..=250)
+            .map(|variant| format!("chr1 {variant}00 rs{variant} A T . PASS . GT 0/0 0/1 1/1"))
+            .collect();
+        // The genotype of the 251st variant is of the ploidy 4 under a
+        // reader of the ploidy 2.
+        lines.push("chr1 25100 rs251 A T . PASS . GT 0/0 0/1 0/0/1/1".to_string());
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let vcf = vcf_of(&lines);
+
+        let mut source = reader_over_text(&vcf, VcfOptions::default(), Needs::CHROM_POS, Some(100));
+        let mut blocks = Vec::new();
+        let error = with_one_block_ahead(&mut source, |ahead| {
+            loop {
+                match ahead.next_block() {
+                    Ok(Some(block)) => blocks.push(block),
+                    // The error has to come before the reader runs out, or
+                    // the pass would have taken 250 variants of a file that
+                    // is malformed for a whole file.
+                    Ok(None) => return Ok(None),
+                    Err(error) => {
+                        // Nothing comes after the error, and the caller is
+                        // the one that stops asking.
+                        assert!(ahead.next_block().expect("no block").is_none());
+                        return Ok(Some(error));
+                    }
+                }
+            }
+        })
+        .expect("the reader was read")
+        .expect("the reader failed");
+        assert_eq!(num_vars_of(&blocks), [100, 100]);
+        assert!(
+            matches!(error, Error::VcfGenotypePloidy { .. }),
+            "the error is {error}"
+        );
+    }
+
+    /// A reader read one block ahead gives the blocks of the reader, in the
+    /// order of the file and holding the same variants, which is what says
+    /// that the thread changed nothing a consumer sees. It is the 475
+    /// variants `many.vcf` gives under the default options, in blocks of 7,
+    /// so that a block of the source is cut and the last one is shorter.
+    #[test]
+    fn the_blocks_read_one_block_ahead_are_the_blocks_of_the_reader_in_the_order_of_the_file() {
+        let of_one_thread = {
+            let source = source_over("many.vcf", VcfOptions::default(), Needs::ALL, Some(100));
+            let mut reblock = Reblock::new(source, Some(7)).expect("the reblock");
+            blocks_given(&mut reblock).expect("the blocks")
+        };
+        let source = source_over("many.vcf", VcfOptions::default(), Needs::ALL, Some(100));
+        let mut reblock = Reblock::new(source, Some(7)).expect("the reblock");
+        let read_ahead = blocks_given_one_ahead(&mut reblock).expect("the blocks");
+
+        assert_eq!(num_vars_of(&of_one_thread), num_vars_of(&read_ahead));
+        let expected = variants_of(&of_one_thread);
+        let given = variants_of(&read_ahead);
+        assert_eq!(given.len(), 475, "how many variants were read one ahead");
+        for (index, (given, expected)) in given.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                given, expected,
+                "the variant {index}, counted from 0, read one block ahead"
+            );
+        }
+    }
+
+    /// The chain of readers is lent to the thread and not given away: what
+    /// is asked of it reaches it, and when the read ahead is over its
+    /// counts and its names are read from the chain itself, which is what
+    /// the pass of a study does when it ends.
+    ///
+    /// The handle answers the same two while the pass runs, as of the last
+    /// block it gave, so a consumer that has only the handle is not left
+    /// with nothing.
+    #[test]
+    fn the_chain_read_one_block_ahead_is_lent_and_its_counts_are_read_from_it_after() {
+        let mut reader =
+            GivenBlocks::reporting(vec![cases_block(&[0, 1]), cases_block(&[2])], two_counts());
+        let blocks = with_one_block_ahead(&mut reader, |ahead| {
+            ahead.set_needs(Needs::GTS);
+            let mut ahead = ahead;
+            let blocks = blocks_given(&mut ahead)?;
+            // The handle knows the counts of the chain and the one
+            // chromosome of `cases.vcf`, and knows them from the chain and
+            // not from a table of its own.
+            assert_eq!(ahead.filtering_stats(), two_counts());
+            assert_eq!(ahead.chroms().name(0), Some("chr1"));
+            assert_eq!(ahead.individuals().len(), 3);
+            assert_eq!(ahead.ploidy(), 2);
+            Ok(blocks)
+        })
+        .expect("the blocks");
+        assert_eq!(num_vars_of(&blocks), [2, 1]);
+        assert_eq!(reader.needs, Needs::GTS);
+        assert_eq!(reader.filtering_stats(), two_counts());
+        assert!(reader.left.is_empty());
+    }
+
+    /// A pass that stops in the middle, which is what a study whose test of
+    /// a block fails does and what the Ctrl-C of a Python user comes out
+    /// as, gets its own error back and leaves no thread reading: this test
+    /// ending is what says so, since a thread still waiting with a block
+    /// nobody asked for would hold the read ahead open for ever.
+    ///
+    /// The reader is left with the blocks it had not given, which is what
+    /// says that it stopped and was not read to the end.
+    #[test]
+    fn a_pass_that_stops_after_one_block_leaves_no_thread_reading_the_rest() {
+        let mut reader = GivenBlocks::of_one_variant_each();
+        let stopped: Result<()> = with_one_block_ahead(&mut reader, |ahead| {
+            let first = ahead.next_block()?;
+            assert_eq!(first.map(|block| block.num_vars), Some(1));
+            Err(Error::PassGaveNoVariant {
+                num_vars_of_the_source: 0,
+                filters: Vec::new(),
+            })
+        });
+        assert!(
+            matches!(stopped, Err(Error::PassGaveNoVariant { .. })),
+            "the pass stopped with {stopped:?}"
+        );
+        // Four blocks of one variant, one given and at most one more read
+        // ahead of it, so the reader has not been read to the end.
+        assert!(
+            !reader.left.is_empty(),
+            "the reader was read to the end although the pass stopped"
+        );
     }
 }

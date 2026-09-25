@@ -15,18 +15,70 @@
 //! giving blocks implements and the reader that puts blocks back to a size;
 //! `io` the VCF reader, which parses the lines of a file into the rows of a
 //! block; `variant` what the other modules say about one variant: which
-//! fields a consumer wants, the table of the chromosome names and the view
-//! of one variant of a block; and `filters` the variants that a user keeps
-//! by a threshold, with the counts of what each filter was given and kept.
-//! The modules that calculate over blocks are being written, and
-//! `docs/architecture.md` has their order.
+//! fields a consumer wants, the table of the chromosome names, the view of
+//! one variant of a block, and the row helpers over it, which count its
+//! alleles and its genotypes and turn it into one standardized dosage per
+//! individual; `filters` the variants that a user keeps
+//! by a threshold, with the counts of what each filter was given and kept;
+//! and `stats` the populations a statistic is calculated for, each a named
+//! set of individuals, with the pass over the variants that gives, for each
+//! population, the mean and the histogram of five statistics of a variant:
+//! the observed heterozygosity, the major allele frequency, the expected
+//! heterozygosity, plain and unbiased, and how many variants vary. `pca`
+//! gives the principal components of a table of numbers, individuals by
+//! traits, and of the variants of a reader; `dists` holds the Kosman
+//! distance of every pair of individuals over the variants of a reader,
+//! counted from the genotypes of each block as sets of bits; `ld` reads
+//! the genotypes as dosages, how many alleles of a genotype are not the
+//! major allele of its variant, which is what r², how much the genotype of
+//! one variant says about the genotype of another, is worked out from;
+//! `pop_dists` the seven measures of how far apart two populations are,
+//! which one pass over the variants gives from the counts of each
+//! population at each of them; `kinship` gives how much more of their
+//! genome every pair of individuals shares than two drawn at random from
+//! the same panel would, which is the matrix a mixed model of an
+//! association study takes as the covariance of its random effect; and
+//! `gwas` tests every variant against a trait of the individuals, giving
+//! the effect of each variant on the trait, the uncertainty of that effect
+//! and its p-value, of which three of the four models are written, the
+//! linear one and the linear mixed one of a continuous trait and the
+//! logistic one of a binomial trait with no kinship. `diversity` gives,
+//! out of one pass and for each population, how many alleles it called and
+//! how many of those no other population called, how many of the variants
+//! vary in it, how its variants are spread over the frequency of their
+//! rarer allele, and how far its genotypes are from the proportions its
+//! allele frequencies would give. The
+//! modules that follow them are being written, and `docs/architecture.md`
+//! has their order.
+//!
+//! `phases` is not a calculation but the two clocks of one turn of a pass
+//! over the blocks, how long it was inside its reader and how long working
+//! on the block the reader gave. It is behind the cargo feature
+//! `bench-phases`, which no build popnei ships turns on, and it is what
+//! says whether a pass is worth the thread of
+//! [`block::with_one_block_ahead`].
+//!
+//! The linear algebra those modules need, the products of matrices and
+//! the eigendecomposition, is not a module here but a crate beside this
+//! one, `popnei-linalg`, because the calls it makes to BLAS and LAPACK
+//! are `unsafe` and this crate forbids that. `docs/specs/linalg.md` says
+//! what it gives and which backend runs where.
 
 #![forbid(unsafe_code)]
 
 pub mod block;
+pub mod dists;
+pub mod diversity;
 pub mod error;
 pub mod filters;
+pub mod gwas;
 pub mod io;
+pub mod kinship;
+pub mod ld;
+pub mod pca;
+pub mod phases;
+pub mod pop_dists;
+pub mod stats;
 pub mod variant;
 
 pub use error::{Error, Result};

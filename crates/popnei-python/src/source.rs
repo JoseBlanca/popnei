@@ -71,6 +71,11 @@ pub(crate) trait OpenSource: Sync {
     /// The file the source reads, which the errors of a pass over it name.
     fn path(&self) -> &Path;
 
+    /// How many alleles the genotype of one individual holds in the blocks
+    /// of every pass over the source, which a calculation that counts
+    /// genotypes out of called alleles is built with.
+    fn ploidy(&self) -> usize;
+
     /// The reader of one pass over the source, which opens the file again.
     ///
     /// `num_vars_per_block` is the size the caller will ask the blocks for,
@@ -108,8 +113,8 @@ pub(crate) fn source_of<'a>(
     // The type is named and no article is put before it: `a int` and `a
     // NoneType` are what one written here would give.
     Err(PyTypeError::new_err(format!(
-        "`source` is of the type `{what}`, and the variants to write come from a source \
-         that popnei opened: give what `open_vcf` or `open_vars` gives",
+        "`source` is of the type `{what}`, and the variants a pass reads come from a \
+         source that popnei opened: give what `open_vcf` or `open_vars` gives",
         what = object.get_type().name()?
     ))
     .into())
@@ -424,32 +429,150 @@ impl Pass {
 /// to convert to C long", which names neither the argument nor what is
 /// wrong with it, and it does so before any code of ours runs.
 ///
+/// The smallest this count can be is 1, which is what every argument that
+/// says how many of something there are takes but the components the
+/// weights are given for, and `count_of_at_least` is where that one goes.
+///
 /// # Errors
 ///
 /// When the object is a whole number that counts nothing, a negative one or
 /// one above what this machine counts, which is the error that names the
-/// argument and the value. An object that is not a whole number at all,
-/// `2.5` or `"two"`, keeps the `TypeError` of pyo3, which says what it was
-/// given.
+/// argument and the value. An object that is no whole number at all, `2.5`,
+/// `"two"` or a truth value, is a `TypeError` that names the argument and
+/// what was given, as the threshold of a filter is.
 pub(crate) fn count_of(
     name: &'static str,
     value: &Bound<'_, PyAny>,
 ) -> Result<usize, PyPopneiError> {
+    count_of_at_least(name, 1, value)
+}
+
+/// The `value` that was given for the argument `name`, as a number of
+/// things of which `smallest` is the fewest it can be: what
+/// [`count_of`] does, for the arguments that take 0 as well.
+///
+/// `smallest` is what the messages say and not what they refuse: an
+/// argument that counts something is refused by the core, which says of
+/// each one what is wrong with the number, and a bound written here beside
+/// it would give a user two limits for one argument. The one argument the
+/// core has no message for is the `max_num_vars` of
+/// `calc_rogers_huff_r2_matrix`, which it takes and then stops the pass at
+/// the first variant, so `ld.rs` refuses the 0 of that one itself.
+///
+/// # Errors
+///
+/// Those of [`count_of`].
+pub(crate) fn count_of_at_least(
+    name: &'static str,
+    smallest: usize,
+    value: &Bound<'_, PyAny>,
+) -> Result<usize, PyPopneiError> {
+    // A truth value is a whole number in Python, so `True` would be the
+    // count 1 and `False` the count 0, with nothing said, as `True` would
+    // be the threshold 1. Neither says how many of anything there are.
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_count(name, smallest, value));
+    }
     match value.extract::<usize>() {
         Ok(count) => Ok(count),
         Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
             Err(PyPopneiError::Count {
                 name,
+                smallest,
                 value: value.to_string(),
             })
         }
-        Err(error) => Err(error.into()),
+        // The `TypeError` of pyo3 for a `2.5` or a `"two"` says what it was
+        // given and not which argument it was given for, and a user of a
+        // call of five arguments needs that first.
+        Err(_) => Err(no_count(name, smallest, value)),
     }
 }
 
-/// The `value` that was given for the argument `name`, as the threshold of
-/// a filter: the one place where the number a user compares their variants
-/// with crosses from Python.
+/// The `value` that was given for the argument `name`, as a distance along
+/// a chromosome in base pairs: what [`count_of`] does for a number that the
+/// core takes as a `u64` and not as a `usize`.
+///
+/// The two do not go through one function because the number a distance is
+/// held in is the same on every platform, where a `usize` is 32 bits in
+/// WebAssembly and 64 natively: a window of base pairs is a number of the
+/// dataset and not a size of memory, so what a user may write for it cannot
+/// depend on where popnei runs.
+///
+/// # Errors
+///
+/// When the object is a whole number below 0, which is the `ValueError`
+/// that names the argument and the value and not the `OverflowError` that
+/// pyo3 raises when a negative number is asked of an unsigned one, or one
+/// above what a `u64` holds. An object that is no whole number at all,
+/// `2.5`, `"two"` or a truth value, is a `TypeError` that names the
+/// argument and what was given, as the threshold of a filter is.
+///
+/// `smallest` is the smallest distance the argument takes, which the
+/// messages say and do not refuse: 1 for the window of `filter_by_ld`,
+/// which is no stretch of a chromosome at 0, and 0 for the `min_dist` and
+/// the `max_dist` of the fall-off of r² with distance, where a `min_dist`
+/// of 0 counts the pairs of two variants at one position. It is the same
+/// number `distanceInBasePairs` of `js/popnei/src/arguments.ts` takes.
+///
+/// A distance of `smallest` or more is given on, as a count of 0 is: what
+/// is wrong with it is the core's to say, so that a user is given one limit
+/// for the argument and not two.
+pub(crate) fn distance_of(
+    name: &'static str,
+    smallest: u64,
+    value: &Bound<'_, PyAny>,
+) -> Result<u64, PyPopneiError> {
+    // A truth value is a whole number in Python, so `True` would be a
+    // window of 1 base pair with nothing said.
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_distance(name, smallest, value));
+    }
+    match value.extract::<u64>() {
+        Ok(distance) => Ok(distance),
+        // A negative whole number and one above 1.8e19 are both this: pyo3
+        // raises the `OverflowError` of a number that no `u64` holds for
+        // either, and what a user has to be told is which argument it was
+        // and what they wrote there.
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyPopneiError::Distance {
+                name,
+                smallest,
+                value: value.to_string(),
+            })
+        }
+        Err(_) => Err(no_distance(name, smallest, value)),
+    }
+}
+
+/// What a user is told when they gave something that is no distance along a
+/// chromosome for `name`, which names the argument and what was given, as
+/// the refusal of a count that is no number does.
+fn no_distance(name: &'static str, smallest: u64, value: &Bound<'_, PyAny>) -> PyPopneiError {
+    PyTypeError::new_err(format!(
+        "`{name}` says a distance along a chromosome in base pairs, and {given} was \
+         given: a whole number of {smallest} or more",
+        given = written_as(value)
+    ))
+    .into()
+}
+
+/// What a user is told when they gave something that is no number of things
+/// for `name`, which names the argument and what was given, as the refusal
+/// of a threshold that is no number does.
+fn no_count(name: &'static str, smallest: usize, value: &Bound<'_, PyAny>) -> PyPopneiError {
+    PyTypeError::new_err(format!(
+        "`{name}` says how many of something there are, and {given} was given: a whole \
+         number of {smallest} or more",
+        given = written_as(value)
+    ))
+    .into()
+}
+
+/// The `value` that was given for the argument `name`, as a threshold: the
+/// one place where a number that a count of a variant is compared with
+/// crosses from Python, the threshold of a filter and the major allele
+/// frequency below which a variant counts as polymorphic in a population.
 ///
 /// The object is taken as it is and converted here, and not by the
 /// signature, because the conversion of pyo3 answers before any rule of
@@ -501,7 +624,7 @@ fn no_number(name: &'static str, value: &Bound<'_, PyAny>) -> PyPopneiError {
 
 /// What `value` is, as a user reads it: what Python prints for it, `'0.5'`
 /// or `True`, and the name of its type where its own `repr` raised.
-fn written_as(value: &Bound<'_, PyAny>) -> String {
+pub(crate) fn written_as(value: &Bound<'_, PyAny>) -> String {
     if let Ok(printed) = value.repr() {
         return printed.to_string();
     }
@@ -511,9 +634,11 @@ fn written_as(value: &Bound<'_, PyAny>) -> String {
     }
 }
 
-/// The array, which nothing writes into any more: a block is frozen, and
-/// its arrays hold the memory the core filled.
-fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiError> {
+/// The array, which nothing writes into any more: a block is frozen and so
+/// is the result of a calculation, and their arrays hold the memory the core
+/// filled; the edges of the bins of a pass are one array that the four
+/// distributions of its result share.
+pub(crate) fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiError> {
     array
         .as_any()
         .getattr("flags")?
@@ -521,23 +646,33 @@ fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiErro
     Ok(array)
 }
 
-/// The chromosomes of the variants of one block: the name of each
-/// chromosome the block holds, once, and which of those names each variant
-/// has.
-struct ChromColumn {
+/// The chromosomes of a run of variants, of one block or of a whole pass:
+/// the name of each chromosome they hold, once, and which of those names
+/// each variant has.
+pub(crate) struct ChromColumn {
     names: Vec<String>,
     /// One index into `names` for each variant of the block.
     of_each_variant: Vec<usize>,
 }
 
 impl ChromColumn {
-    /// The chromosomes that `numbers`, the column of a block, names in
-    /// `chroms`, the table of the reader that filled it.
+    /// The chromosomes that `numbers`, the column of a block or the
+    /// chromosome of each variant of a result, names in `chroms`, the table
+    /// of the reader that filled it.
     ///
     /// The table of a de novo assembly holds 10^4 scaffolds or more and a
     /// block holds a few of them, so what is copied is the name of every
-    /// chromosome of the block and not the table.
-    fn of(numbers: &[u32], chroms: &ChromTable, path: &Path) -> Result<ChromColumn, PyPopneiError> {
+    /// chromosome those variants are on and not the table.
+    ///
+    /// # Errors
+    ///
+    /// [`PyPopneiError::Broken`] when a number is not in the table, which is
+    /// a defect of whatever filled the column.
+    pub(crate) fn of(
+        numbers: &[u32],
+        chroms: &ChromTable,
+        path: &Path,
+    ) -> Result<ChromColumn, PyPopneiError> {
         let mut names = Vec::new();
         let mut of_each_variant = Vec::with_capacity(numbers.len());
         let mut where_each_number_went: HashMap<u32, usize> = HashMap::new();
@@ -569,8 +704,14 @@ impl ChromColumn {
     }
 }
 
-/// The name of the chromosome of every variant of a block.
-fn chrom_column<'py>(
+/// The name of the chromosome of every variant of a block or of a result.
+///
+/// # Errors
+///
+/// [`PyPopneiError::Broken`] when a variant holds a chromosome that
+/// [`ChromColumn::of`] found no name for, and what Python raised when the
+/// tuple could not be built.
+pub(crate) fn chrom_column<'py>(
     py: Python<'py>,
     chroms: &ChromColumn,
     path: &Path,
@@ -598,9 +739,12 @@ fn chrom_column<'py>(
     Ok(PyTuple::new(py, of_each_variant)?)
 }
 
-/// The id of every variant of a block, `None` for a variant that has none,
-/// which the core gives as an empty id.
-fn id_column<'py>(py: Python<'py>, ids: &[String]) -> Result<Bound<'py, PyTuple>, PyPopneiError> {
+/// The id of every variant of a block or of the rows of a result, `None`
+/// for a variant that has none, which the core gives as an empty id.
+pub(crate) fn id_column<'py>(
+    py: Python<'py>,
+    ids: &[String],
+) -> Result<Bound<'py, PyTuple>, PyPopneiError> {
     Ok(PyTuple::new(
         py,
         ids.iter().map(|id| (!id.is_empty()).then_some(id.as_str())),

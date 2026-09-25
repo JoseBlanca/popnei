@@ -64,6 +64,17 @@ subagent knows nothing of the session:
   `docs/glossary.md`, which it reads itself;
 - the skills to follow: `coding`, and `writing` for its doc comments and
   its commit message;
+- today's date, and that every date it writes is that one unless it is
+  somebody else's earlier measurement. A subagent has no clock and works
+  the date out from the dates already in the files, so a file that is a
+  day ahead makes the next writer a day ahead. On 24 September 2026 two
+  sessions carrying out two plans wrote 28 dates that were a day in the
+  future, every one of them ahead and none behind, and 14 of those came
+  from one subagent working through one list of fixes: it worked the date
+  out once and was wrong 14 times. Nine of the 28 dated a measurement,
+  where the cost is worst, because a reader checking whether a bound still
+  holds meets a date that has not happened and doubts the number rather
+  than the date;
 - what is already there from earlier tasks that it builds on;
 - what the orchestrator knows and the code does not show: an open point
   the owner answered, a decision taken two tasks ago;
@@ -187,16 +198,28 @@ After each work package, a short section:
 - What the owner should know: something learned about pyNei, a number
   that surprised, a part of the spec that proved thin, a risk for what
   comes next.
-- How the work went: a task that had to be sent twice, a skill that was
-  unclear or wrong, and the tokens each task's subagent used, which the
-  result of the `Agent` tool gives. This is what improves the skills and
-  the next plan: the tokens are how the right size of a task gets known.
+- How the work went. This one is not for the owner but for whoever next
+  revises a skill or writes a plan, which the `writing` skill allows when
+  the heading says so and the owner is told there that they can stop. What
+  goes in it is what would change a skill, the shape of a plan or the size
+  of a task: a task that had to be sent twice and what made it fail the
+  first time, a skill that was unclear or wrong with the sentence that
+  misled, a way of working that cost something. Not a log of what happened.
+  Every number in it carries what it is measured against, as every number
+  in popnei does. The tokens a task's subagent used, which the result of
+  the `Agent` tool gives, say nothing on their own; set beside the tokens
+  the review and the fixes of that same task cost, they say what a task of
+  that size really costs, and that is what sizes the tasks of the next
+  plan.
 
 When the plan is done, the top of the report gets what the owner reads
 first: whether the plan is done, what exists now that did not, what is
 left open, and what is asked of them, which is at least the merge. Every
 number in the report comes from a command that was run, and the report
-goes to the `first-reader` before the owner is told.
+goes to the `first-reader` before the owner is told. It is briefed with
+the owner as its reader and told that the last section is for somebody
+else, so that what comes back is whether that signpost works, and not
+whether a section serves a reader it was never written for.
 
 ## When the plan is done
 

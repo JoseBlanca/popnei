@@ -1,15 +1,29 @@
 // Loads pyodide under node, installs into it the wheel that
-// scripts/build_pyodide_wheel.sh left in dist/, and checks four things:
+// scripts/build_pyodide_wheel.sh left in dist/, and checks eight things:
 // that the version popnei answers with is the one of the core crate, which
 // is in [workspace.package] of the Cargo.toml of the repository; that
 // `open_vcf` reads tests/reference/vcf/cases.vcf and cases.vcf.gz there as
 // the table of "How it is verified" of docs/specs/io_vcf.md says; that
 // `write_vars` writes those variants into a vars file and `open_vars`
 // reads the four of them back out of it, which is what says that arrow-rs
-// was linked into this wheel and that it writes and decompresses there; and
+// was linked into this wheel and that it writes and decompresses there;
 // that a VCF whose blocks of the size popnei chooses would not fit in what
-// a wasm build counts is opened all the same. It exits with an error when
-// anything differs.
+// a wasm build counts is opened all the same; that
+// `calc_per_var_distribs` and `calc_per_individual_stats` give the numbers
+// of the worked example of docs/specs/stats.md; that
+// `calc_pairwise_kosman_dists` gives the distances that the diploid worked
+// example of "How it is verified" of docs/specs/dists.md has; and that
+// `calc_pop_diversity` gives, over the two populations of that same worked
+// example of docs/specs/stats.md, the alleles each population called, the
+// private ones among them, the variants that vary in it, F_IS and, in a
+// draw of four called alleles, those three standardized and the folded
+// spectrum, which "How it is verified" of each item of
+// docs/specs/diversity.md gives, with the variants of each pass, the
+// statistics the result holds a value for and the counts of the rarer
+// allele the spectrum is indexed by. Those four calculations are the ones
+// that say that popnei reaches the same values where there is one thread
+// and the build is not the native one. It exits with an error when anything
+// differs.
 //
 // README.md, beside this file, says how to run it.
 
@@ -180,6 +194,511 @@ def what_a_header_of_many_individuals_gives(vcf_path, num_individuals, ploidy):
     return json.dumps(what)
 `;
 
+// The worked example of "How it is verified" of the per variant
+// distributions and of the per individual statistics of
+// docs/specs/stats.md: six variants of five diploid individuals named `i1`
+// to `i5`. popnei has no `Variants.from_gt_array`, so the genotypes are
+// written as a VCF, as tests/test_stats.py writes the worked examples it
+// runs natively. Every variant is given three alternative alleles, because
+// the third of the six holds the alleles 2 and 3.
+const THE_WORKED_EXAMPLE = `
+import json
+import math
+
+import popnei
+
+INDIVIDUALS = ("i1", "i2", "i3", "i4", "i5")
+
+THE_SIX_VARIANTS = (
+    "0/0 0/1 0/0 0/0 0/.",
+    "0/0 0/1 0/0 ./. 0/.",
+    "0/1 2/3 0/1 2/3 ./.",
+    "./. ./. ./. ./. ./.",
+    "0/0 0/0 0/0 0/0 1/1",
+    "0/. ./. ./. ./. ./.",
+)
+
+
+def write_the_worked_example(vcf_path):
+    lines = [
+        "##fileformat=VCFv4.4",
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
+        "#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\tFORMAT\\t"
+        + "\\t".join(INDIVIDUALS),
+    ]
+    for position, genotypes in enumerate(THE_SIX_VARIANTS, start=1):
+        columns = ["chr1", str(position), ".", "A", "C,G,T", ".", "PASS", ".", "GT"]
+        lines.append("\\t".join(columns + genotypes.split(" ")))
+    with open(vcf_path, "w") as vcf:
+        vcf.write("\\n".join(lines) + "\\n")
+
+
+def value_of(number):
+    return None if math.isnan(float(number)) else float(number)
+
+
+def per_var_distribs_of_the_worked_example(vcf_path, pops_json):
+    distribs = popnei.calc_per_var_distribs(
+        popnei.open_vcf(vcf_path),
+        pops=json.loads(pops_json),
+        min_num_individuals=1,
+        hist_kwargs={"num_bins": 4},
+    )
+    what = {
+        "num_vars": distribs.pass_stats.num_vars,
+        "pops": [str(pop) for pop in distribs.obs_het.mean.index],
+        "hist_bin_edges": [float(edge) for edge in distribs.obs_het.hist_bin_edges],
+    }
+    for stat in ("obs_het", "maf", "exp_het", "unbiased_exp_het"):
+        distrib = getattr(distribs, stat)
+        what[stat] = {
+            "mean": [value_of(mean) for mean in distrib.mean],
+            "hist": [
+                [int(count) for count in distrib.hist_counts[pop]]
+                for pop in distrib.hist_counts.columns
+            ],
+        }
+    poly = distribs.poly_vars_ratio
+    what["poly_vars_ratio"] = {
+        "num_poly": [int(count) for count in poly.num_poly],
+        "num_variable": [int(count) for count in poly.num_variable],
+        "tot_num_variants_with_data": [
+            int(count) for count in poly.tot_num_variants_with_data
+        ],
+        "poly_ratio": [value_of(ratio) for ratio in poly.poly_ratio],
+        "poly_ratio_over_variables": [
+            value_of(ratio) for ratio in poly.poly_ratio_over_variables
+        ],
+    }
+    return json.dumps(what)
+
+
+def per_individual_stats_of_the_worked_example(vcf_path):
+    stats = popnei.calc_per_individual_stats(popnei.open_vcf(vcf_path))
+    return json.dumps(
+        {
+            "num_vars": stats.pass_stats.num_vars,
+            "individuals": [str(name) for name in stats.missing_gt_rate.index],
+            "missing_gt_rate": [value_of(rate) for rate in stats.missing_gt_rate],
+            "obs_het_rate": [value_of(rate) for rate in stats.obs_het_rate],
+        }
+    )
+`;
+
+// The diploid worked example of "How it is verified" of docs/specs/dists.md,
+// 4 variants of 3 individuals, as the VCF that tests/test_dists.py writes for
+// it: the header of the `write_vcf` fixture of tests/conftest.py, which names
+// the individuals ind1, ind2 and ind3, and the four data lines of its
+// WORKED_EXAMPLE_LINES. The third variant holds the half called genotype
+// `0/.`, which is a missing genotype, and the fourth a missing one.
+const WORKED_EXAMPLE_VCF =
+  [
+    "##fileformat=VCFv4.4",
+    '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tind1\tind2\tind3",
+    "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+    "chr1\t20\t.\tA\tT,C\t.\tPASS\t.\tGT\t0/1\t0/1\t1/2",
+    "chr1\t30\t.\tA\tT,C\t.\tPASS\t.\tGT\t0/0\t0/.\t2/2",
+    "chr1\t40\t.\tA\tT\t.\tPASS\t.\tGT\t./.\t1/1\t1/1",
+  ].join("\n") + "\n";
+
+// The individuals of that VCF, in the order the source has them, and how many
+// variants the calculation takes from it, which are the names and the count
+// of the pass that the result carries. tests/test_dists.py calls the
+// variants at which each pair was called together WORKED_EXAMPLE_NUM_VARS,
+// which is another number, [2, 3, 3].
+const WORKED_EXAMPLE_NAMES = ["ind1", "ind2", "ind3"];
+const WORKED_EXAMPLE_VARS_OF_THE_PASS = 4;
+
+// The distance of each of its three pairs, (ind1, ind2), (ind1, ind3) and
+// (ind2, ind3), which is the ploidy times the sum of d over the ploidy times
+// n of the spec's table: 1 over 2 x 2, 5 over 2 x 3 and 2 over 2 x 3. The
+// calculation divides those two whole numbers once, and the division of two
+// whole numbers is rounded the same in JavaScript as in Rust, so these are
+// compared exactly, as tests/test_dists.py compares them; that file writes
+// the third as 1 / 3, which is the same float64.
+const WORKED_EXAMPLE_DISTS = [1 / 4, 5 / 6, 2 / 6];
+// Its pairs were called together at 2, 3 and 3 variants, so asking for 3
+// leaves the first pair without a distance and leaves the other two theirs.
+// A pair with no distance is NaN, which JSON has not, so it travels as null.
+const A_MIN_NUM_SNPS = 3;
+const WORKED_EXAMPLE_DISTS_AT_THREE = [null, 5 / 6, 2 / 6];
+
+// What `calc_pairwise_kosman_dists` gives inside pyodide for a VCF at a path
+// of the file system of emscripten: the distance of each pair, the names of
+// the individuals, which a result holds as a tuple, and the counts of the
+// pass, how many variants the calculation took and the kind of each filter it
+// went through, of which a source with no filter has none.
+const THE_KOSMAN_DISTANCES = `
+import json
+import math
+
+import popnei
+
+
+def kosman_dists_of(vcf_path, min_num_snps):
+    dists = popnei.calc_pairwise_kosman_dists(
+        popnei.open_vcf(vcf_path), min_num_snps=min_num_snps
+    )
+    return json.dumps(
+        {
+            "dists": [
+                None if math.isnan(dist) else float(dist)
+                for dist in dists.dist_vector
+            ],
+            "names": list(dists.names),
+            "num_vars": dists.pass_stats.num_vars,
+            "filters": list(dists.pass_stats.filtering),
+        }
+    )
+`;
+
+// What `calc_pop_diversity` gives inside pyodide for the six variants of the
+// worked example: every field of the result, as lists in the order of the
+// populations. A value that no draw was taken for is NaN, which JSON has
+// not, so it travels as null; a statistic the call did not ask for is null
+// in its place, which the plain call leaves the spectrum as. The two calls
+// are different things to check: one takes the default `stats`, the four
+// statistics that need no draw, and the other names the five and a draw.
+//
+// A statistic that is null is carried across and not read past, and
+// `with_a_value` names the statistics the result holds one for, read off
+// `popnei.PopDiversityStat` so that a statistic added to the module is in
+// it. Without those two a wheel whose default `stats` was another set died
+// inside Python with `'NoneType' object is not subscriptable`, and node
+// printed the stack of minified pyodide instead of a sentence.
+//
+// `value_of` is the one of the worked example above, which runs in this same
+// interpreter before this does, as `rows_of` is.
+const THE_POP_DIVERSITY = `
+import json
+
+import popnei
+
+
+def diversity_as_lists(diversity):
+    what = {
+        "pops": [str(pop) for pop in diversity.pops],
+        "num_vars": {
+            column: [int(count) for count in diversity.num_vars[column]]
+            for column in ("with_data", "in_draw")
+        },
+        "num_vars_every_pop": int(diversity.num_vars_every_pop),
+        "num_vars_every_pop_in_draw": int(diversity.num_vars_every_pop_in_draw),
+        "num_vars_of_the_pass": int(diversity.pass_stats.num_vars),
+        "with_a_value": sorted(
+            str(stat)
+            for stat in popnei.PopDiversityStat
+            if getattr(diversity, str(stat)) is not None
+        ),
+        "fis": None
+        if diversity.fis is None
+        else [value_of(value) for value in diversity.fis],
+        "folded_sfs": None
+        if diversity.folded_sfs is None
+        else {
+            str(pop): [value_of(value) for value in diversity.folded_sfs[pop]]
+            for pop in diversity.folded_sfs.columns
+        },
+        "folded_sfs_bins": None
+        if diversity.folded_sfs is None
+        else [int(count) for count in diversity.folded_sfs.index],
+    }
+    for stat, over_the_variants in (
+        ("num_alleles", "mean"),
+        ("private_alleles", "mean"),
+        ("variable_vars_ratio", "ratio"),
+    ):
+        frame = getattr(diversity, stat)
+        what[stat] = (
+            None
+            if frame is None
+            else {
+                "total": [int(count) for count in frame["total"]],
+                over_the_variants: [
+                    value_of(value) for value in frame[over_the_variants]
+                ],
+                "in_draw": [value_of(value) for value in frame["in_draw"]],
+            }
+        )
+    return json.dumps(what)
+
+
+def pop_diversity_of_the_worked_example(vcf_path, pops_json, min_num_individuals):
+    return diversity_as_lists(
+        popnei.calc_pop_diversity(
+            popnei.open_vcf(vcf_path),
+            pops=json.loads(pops_json),
+            min_num_individuals=min_num_individuals,
+        )
+    )
+
+
+def pop_diversity_in_a_draw_of_the_worked_example(
+    vcf_path, pops_json, min_num_individuals, num_called_alleles
+):
+    return diversity_as_lists(
+        popnei.calc_pop_diversity(
+            popnei.open_vcf(vcf_path),
+            pops=json.loads(pops_json),
+            stats=tuple(popnei.PopDiversityStat),
+            num_called_alleles=num_called_alleles,
+            min_num_individuals=min_num_individuals,
+        )
+    )
+`;
+
+// How many variants the worked example has, which both passes give.
+const THE_WORKED_EXAMPLE_NUM_VARS = 6;
+
+// The populations of the worked example, pop1 of i1 and i2 and pop2 of i3,
+// i4 and i5, and the one population of every individual, named `pop`, that
+// a call with no `pops` gives.
+const THE_TWO_POPS = { pop1: ["i1", "i2"], pop2: ["i3", "i4", "i5"] };
+const EVERY_INDIVIDUAL = null;
+
+// The edges of the four bins from 0 to 1 that the example asks for.
+const HIST_BIN_EDGES = [0, 0.25, 0.5, 0.75, 1];
+
+// The mean and the four histogram counts of each statistic over the two
+// populations, pop1 first, from the second table of "How it is verified" of
+// the per variant distributions, and the three counts and two ratios of the
+// polymorphism ratio from the worked example of its own item.
+const OVER_THE_TWO_POPS = {
+  pops: ["pop1", "pop2"],
+  obs_het: {
+    mean: [0.5, 0.25],
+    hist: [
+      [1, 0, 2, 1],
+      [3, 0, 0, 1],
+    ],
+  },
+  maf: {
+    mean: [0.6875, 0.729167],
+    hist: [
+      [0, 1, 0, 3],
+      [0, 1, 1, 2],
+    ],
+  },
+  exp_het: {
+    mean: [0.375, 0.298611],
+    hist: [
+      [1, 2, 0, 1],
+      [2, 1, 0, 1],
+    ],
+  },
+  unbiased_exp_het: {
+    mean: [0.5, 0.383333],
+    hist: [
+      [1, 0, 2, 1],
+      [2, 0, 1, 1],
+    ],
+  },
+  poly_vars_ratio: {
+    num_poly: [3, 2],
+    num_variable: [3, 2],
+    tot_num_variants_with_data: [4, 4],
+    poly_ratio: [0.75, 0.5],
+    poly_ratio_over_variables: [1, 1],
+  },
+};
+
+// The same numbers over the five individuals as one population, which the
+// same two paragraphs of the spec give for a call with no `pops`.
+const OVER_EVERY_INDIVIDUAL = {
+  pops: ["pop"],
+  obs_het: { mean: [0.395833], hist: [[1, 2, 0, 1]] },
+  maf: { mean: [0.699008], hist: [[0, 1, 0, 3]] },
+  exp_het: { mean: [0.378107], hist: [[2, 1, 0, 1]] },
+  unbiased_exp_het: { mean: [0.430159], hist: [[1, 2, 0, 1]] },
+  poly_vars_ratio: {
+    num_poly: [4],
+    num_variable: [4],
+    tot_num_variants_with_data: [4],
+    poly_ratio: [1],
+    poly_ratio_over_variables: [1],
+  },
+};
+
+// The four statistics that have a mean and a histogram, and the counts of
+// the polymorphism ratio that are whole numbers, which are compared exactly
+// while its two ratios are compared as the means are.
+const DISTRIBS = ["obs_het", "maf", "exp_het", "unbiased_exp_het"];
+const POLY_COUNTS = ["num_poly", "num_variable", "tot_num_variants_with_data"];
+
+// The two rates of each of the five individuals, from "How it is verified"
+// of the per individual statistics: i5 has two half called genotypes, which
+// are missing, and one called genotype, which is not heterozygous.
+const PER_INDIVIDUAL = {
+  individuals: ["i1", "i2", "i3", "i4", "i5"],
+  missing_gt_rate: [2 / 6, 2 / 6, 2 / 6, 3 / 6, 5 / 6],
+  obs_het_rate: [1 / 4, 3 / 4, 1 / 4, 1 / 3, 0],
+};
+
+// How many called genotypes a population needs at a variant for the variant
+// to count for it, which the worked example of docs/specs/diversity.md is
+// stated at, and the called alleles every population is brought down to in
+// the second call, the `g` of the draw.
+const A_MIN_NUM_INDIVIDUALS = 1;
+const A_DRAW_OF_FOUR = 4;
+
+// What `calc_pop_diversity` gives for pop1 and pop2 over those six variants,
+// from the worked example of "How it is verified" of each item of
+// docs/specs/diversity.md. Four of the six variants count for each
+// population: the fourth has nothing called, and the sixth has one called
+// allele in pop1, half a genotype, below a min_num_individuals of 1.
+//
+// This is the call a user makes first: no `stats`, so the default is the
+// four statistics that need no draw, and no `num_called_alleles`. So there
+// is no spectrum, the three standardized values are missing, and the two
+// counts of the variants in a draw are 0.
+const WITHOUT_A_DRAW = {
+  pops: ["pop1", "pop2"],
+  with_a_value: ["fis", "num_alleles", "private_alleles", "variable_vars_ratio"],
+  num_vars: { with_data: [4, 4], in_draw: [0, 0] },
+  num_vars_every_pop: 4,
+  num_vars_every_pop_in_draw: 0,
+  num_alleles: { total: [9, 8], mean: [2.25, 2], in_draw: [null, null] },
+  private_alleles: { total: [2, 1], mean: [0.5, 0.25], in_draw: [null, null] },
+  variable_vars_ratio: {
+    total: [3, 2],
+    ratio: [0.75, 0.5],
+    in_draw: [null, null],
+  },
+  fis: [0, 0.347826087],
+  folded_sfs: null,
+  folded_sfs_bins: null,
+};
+
+// The same six variants with a draw of 4 called alleles and every statistic
+// named, which is what a spectrum needs: it is given only when it is asked
+// for. pop1 keeps its four variants and pop2 three of them, since at the
+// second it called 3 copies in all, below the draw. The totals, the means,
+// the ratios and F_IS read no draw and are the ones above. The spectrum has
+// one row per count of the rarer allele, 0 to 4 // 2, and each column sums
+// to the variants of its population in the draw.
+const IN_A_DRAW_OF_FOUR = {
+  pops: ["pop1", "pop2"],
+  with_a_value: [
+    "fis",
+    "folded_sfs",
+    "num_alleles",
+    "private_alleles",
+    "variable_vars_ratio",
+  ],
+  num_vars: { with_data: [4, 4], in_draw: [4, 3] },
+  num_vars_every_pop: 4,
+  num_vars_every_pop_in_draw: 3,
+  num_alleles: {
+    total: [9, 8],
+    mean: [2.25, 2],
+    in_draw: [2.25, 2.3111111111],
+  },
+  private_alleles: {
+    total: [2, 1],
+    mean: [0.5, 0.25],
+    in_draw: [0.3333333333, 0.3111111111],
+  },
+  variable_vars_ratio: {
+    total: [3, 2],
+    ratio: [0.75, 0.5],
+    in_draw: [0.75, 0.6444444444],
+  },
+  fis: [0, 0.347826087],
+  folded_sfs: { pop1: [1, 3, 0], pop2: [1.0666666667, 1.5333333333, 0.4] },
+  folded_sfs_bins: [0, 1, 2],
+};
+
+// The counts of the rarer allele that the rows of the spectrum are, 0 to
+// `num_called_alleles // 2`, which `python/popnei/diversity.py` documents as
+// its index. Only the columns of that frame, which are the populations, were
+// compared before.
+const FOLDED_SFS_BINS = "the counts of the rarer allele of the spectrum";
+
+// The three statistics that come as a frame of three columns, each with the
+// name of its middle column: beside the total over the variants that counted
+// and the standardized value, the two counts of alleles have their mean over
+// those variants and the variable variants have their ratio.
+const DIVERSITY_STATS = [
+  ["num_alleles", "mean"],
+  ["private_alleles", "mean"],
+  ["variable_vars_ratio", "ratio"],
+];
+
+// How far a number popnei gives may be from the one the spec prints. The
+// spec prints the means that are not exact to six digits after the point,
+// 0.729167 for the major allele frequency of pop2, whose value is
+// 0.7291666...
+const DIGITS_OF_THE_SPEC = 1e-6;
+
+/**
+ * The values of `found` that are further than that from the ones the spec
+ * gives, each as a sentence that names where it is, and one sentence when
+ * there are not as many values as the spec gives. A value popnei has no
+ * number for travels as null, and one is a difference unless the spec says
+ * that there is none there either.
+ */
+function numbersThatDiffer(what, found, expected) {
+  if (found.length !== expected.length) {
+    return [
+      `${what} has ${found.length} values and the spec gives ${expected.length}`,
+    ];
+  }
+  const differences = [];
+  for (const [index, value] of found.entries()) {
+    const theirs = expected[index];
+    // JavaScript takes a null in arithmetic for 0, so a 0 where the spec
+    // says that nothing was drawn would pass a subtraction: a missing value
+    // is compared against a missing one and against nothing else.
+    const differs =
+      value === null || theirs === null
+        ? value !== theirs
+        : !(Math.abs(value - theirs) <= DIGITS_OF_THE_SPEC);
+    if (differs) {
+      differences.push(
+        `${what} is ${value} at ${index} and the spec says ${theirs}`,
+      );
+    }
+  }
+  return differences;
+}
+
+/**
+ * The same for whole numbers and for names, which are compared exactly: one
+ * sentence with both lists when they are not equal, and nothing when they
+ * are.
+ */
+function countsThatDiffer(what, found, expected) {
+  if (JSON.stringify(found) === JSON.stringify(expected)) {
+    return [];
+  }
+  return [
+    `${what} is ${JSON.stringify(found)} and the spec says` +
+      ` ${JSON.stringify(expected)}`,
+  ];
+}
+
+/**
+ * The names of `expected` that `found` has not, and the ones of `found` that
+ * the spec does not name, one sentence each, so that a wheel whose set of
+ * statistics differs names which ones rather than dying where one of them is
+ * read.
+ */
+function namesThatDiffer(what, found, expected) {
+  const differences = [];
+  for (const name of expected) {
+    if (!found.includes(name)) {
+      differences.push(`${what} has no ${name}, and the spec gives it`);
+    }
+  }
+  for (const name of found) {
+    if (!expected.includes(name)) {
+      differences.push(`${what} has ${name}, and the spec does not give it`);
+    }
+  }
+  return differences;
+}
+
 const failures = [];
 
 const expectedVersion = versionOfTheCore(
@@ -195,18 +714,23 @@ console.log(`pyodide ${pyodide.version}, installing ${wheel.name}`);
 // the `emfs:` prefix that asks micropip for a local file.
 const wheelInPyodide = `/tmp/${wheel.name}`;
 pyodide.FS.writeFile(wheelInPyodide, await readFile(wheel.path));
-// The genotypes of a block are a numpy array, so popnei cannot be imported
-// before numpy is in pyodide. numpy is a package of pyodide itself and is
-// loaded from there; micropip would fetch it for the dependency of the
-// wheel anyway, and asking for it here says which numpy answers.
-await pyodide.loadPackage(["micropip", "numpy"]);
+// The genotypes of a block are a numpy array, the values of a statistic per
+// population are a pandas series and the square matrix of a `Distances` is a
+// pandas frame, which `popnei/dists.py` imports when popnei is imported, so
+// popnei cannot be imported before the two of them are in pyodide. Both are
+// `dependencies` of pyproject.toml, so micropip installs them with the
+// wheel; both are packages of pyodide itself and are loaded from here, which
+// says which numpy and which pandas answer.
+await pyodide.loadPackage(["micropip", "numpy", "pandas"]);
 const micropip = pyodide.pyimport("micropip");
 await micropip.install(`emfs:${wheelInPyodide}`);
 
 const foundVersion = pyodide.runPython("import popnei\npopnei.__version__");
 const numpyVersion = pyodide.runPython("import numpy\nnumpy.__version__");
+const pandasVersion = pyodide.runPython("import pandas\npandas.__version__");
 console.log(
-  `popnei.__version__ is ${foundVersion}, on numpy ${numpyVersion}`,
+  `popnei.__version__ is ${foundVersion}, on numpy ${numpyVersion} and` +
+    ` pandas ${pandasVersion}`,
 );
 if (foundVersion !== expectedVersion) {
   failures.push(
@@ -314,6 +838,260 @@ if (
     `${whatWasAsked}: opened, no block of 10, and 100 needs more memory than` +
       " this build gives",
   );
+}
+
+pyodide.runPython(THE_WORKED_EXAMPLE);
+const workedExampleVcf = "/vcf/stats_worked_example.vcf";
+pyodide.runPython(`write_the_worked_example("${workedExampleVcf}")`);
+
+for (const [asked, pops, expected] of [
+  ["the two populations", THE_TWO_POPS, OVER_THE_TWO_POPS],
+  ["no pops", EVERY_INDIVIDUAL, OVER_EVERY_INDIVIDUAL],
+]) {
+  // The populations cross as JSON, whose double quotes the call puts
+  // between single ones, and a `pops` of null is Python's `None`.
+  const call =
+    `per_var_distribs_of_the_worked_example("${workedExampleVcf}",` +
+    ` '${JSON.stringify(pops)}')`;
+  const found = JSON.parse(pyodide.runPython(call));
+  const what = `the worked example of calc_per_var_distribs with ${asked}`;
+  const differences = [
+    ...countsThatDiffer(
+      `${what}: the variants of the pass`,
+      found.num_vars,
+      THE_WORKED_EXAMPLE_NUM_VARS,
+    ),
+    ...countsThatDiffer(`${what}: the populations`, found.pops, expected.pops),
+    ...numbersThatDiffer(
+      `${what}: the edges of the bins`,
+      found.hist_bin_edges,
+      HIST_BIN_EDGES,
+    ),
+  ];
+  for (const stat of DISTRIBS) {
+    differences.push(
+      ...numbersThatDiffer(
+        `${what}: the mean of ${stat}`,
+        found[stat].mean,
+        expected[stat].mean,
+      ),
+      ...countsThatDiffer(
+        `${what}: the histogram of ${stat}`,
+        found[stat].hist,
+        expected[stat].hist,
+      ),
+    );
+  }
+  for (const [name, values] of Object.entries(expected.poly_vars_ratio)) {
+    const ofThePolymorphism = `${what}: ${name} of the polymorphism ratio`;
+    const differ = POLY_COUNTS.includes(name)
+      ? countsThatDiffer
+      : numbersThatDiffer;
+    differences.push(
+      ...differ(ofThePolymorphism, found.poly_vars_ratio[name], values),
+    );
+  }
+  if (differences.length > 0) {
+    failures.push(...differences);
+  } else {
+    console.log(
+      `${what}: the five statistics over ${expected.pops.length} of them, as` +
+        " the spec says",
+    );
+  }
+}
+
+const perIndividual = JSON.parse(
+  pyodide.runPython(
+    `per_individual_stats_of_the_worked_example("${workedExampleVcf}")`,
+  ),
+);
+const ofTheIndividuals = "the worked example of calc_per_individual_stats";
+const perIndividualDifferences = [
+  ...countsThatDiffer(
+    `${ofTheIndividuals}: the variants of the pass`,
+    perIndividual.num_vars,
+    THE_WORKED_EXAMPLE_NUM_VARS,
+  ),
+  ...countsThatDiffer(
+    `${ofTheIndividuals}: the individuals`,
+    perIndividual.individuals,
+    PER_INDIVIDUAL.individuals,
+  ),
+  ...numbersThatDiffer(
+    `${ofTheIndividuals}: the missing rate`,
+    perIndividual.missing_gt_rate,
+    PER_INDIVIDUAL.missing_gt_rate,
+  ),
+  ...numbersThatDiffer(
+    `${ofTheIndividuals}: the heterozygosity rate`,
+    perIndividual.obs_het_rate,
+    PER_INDIVIDUAL.obs_het_rate,
+  ),
+];
+if (perIndividualDifferences.length > 0) {
+  failures.push(...perIndividualDifferences);
+} else {
+  console.log(
+    `${ofTheIndividuals}: the two rates of the` +
+      ` ${PER_INDIVIDUAL.individuals.length} individuals, as the spec says`,
+  );
+}
+
+pyodide.runPython(THE_KOSMAN_DISTANCES);
+const workedExamplePath = "/vcf/kosman_worked_example.vcf";
+pyodide.FS.writeFile(
+  workedExamplePath,
+  new TextEncoder().encode(WORKED_EXAMPLE_VCF),
+);
+for (const [askedFor, expected] of [
+  ["None", WORKED_EXAMPLE_DISTS],
+  [`${A_MIN_NUM_SNPS}`, WORKED_EXAMPLE_DISTS_AT_THREE],
+]) {
+  const call = `kosman_dists_of("${workedExamplePath}", ${askedFor})`;
+  const found = JSON.parse(pyodide.runPython(call));
+  const what = `the worked example with min_num_snps=${askedFor}`;
+  if (JSON.stringify(found.dists) !== JSON.stringify(expected)) {
+    failures.push(
+      `${what} gives the distances ${JSON.stringify(found.dists)} and the` +
+        ` spec says ${JSON.stringify(expected)}, null being a pair that has` +
+        " no distance",
+    );
+  } else if (
+    JSON.stringify(found.names) !== JSON.stringify(WORKED_EXAMPLE_NAMES) ||
+    found.num_vars !== WORKED_EXAMPLE_VARS_OF_THE_PASS ||
+    JSON.stringify(found.filters) !== "[]"
+  ) {
+    failures.push(
+      `${what} gives the names ${JSON.stringify(found.names)} and a pass of` +
+        ` ${found.num_vars} variants through the filters` +
+        ` ${JSON.stringify(found.filters)}, and that VCF has the individuals` +
+        ` ${JSON.stringify(WORKED_EXAMPLE_NAMES)},` +
+        ` ${WORKED_EXAMPLE_VARS_OF_THE_PASS} variants and no filter`,
+    );
+  } else {
+    console.log(`${what}: ${JSON.stringify(found.dists)}, as the spec says`);
+  }
+}
+
+pyodide.runPython(THE_POP_DIVERSITY);
+const thePopsAsJson = JSON.stringify(THE_TWO_POPS);
+for (const [asked, call, expected] of [
+  [
+    "no statistic named and no draw",
+    `pop_diversity_of_the_worked_example("${workedExampleVcf}",` +
+      ` '${thePopsAsJson}', ${A_MIN_NUM_INDIVIDUALS})`,
+    WITHOUT_A_DRAW,
+  ],
+  [
+    `every statistic in a draw of ${A_DRAW_OF_FOUR}`,
+    `pop_diversity_in_a_draw_of_the_worked_example("${workedExampleVcf}",` +
+      ` '${thePopsAsJson}', ${A_MIN_NUM_INDIVIDUALS}, ${A_DRAW_OF_FOUR})`,
+    IN_A_DRAW_OF_FOUR,
+  ],
+]) {
+  const found = JSON.parse(pyodide.runPython(call));
+  const what = `the worked example of calc_pop_diversity with ${asked}`;
+  const differences = [
+    ...countsThatDiffer(`${what}: the populations`, found.pops, expected.pops),
+    ...namesThatDiffer(
+      `${what}: the statistics the result holds a value for`,
+      found.with_a_value,
+      expected.with_a_value,
+    ),
+    ...countsThatDiffer(
+      `${what}: the variants of the pass`,
+      found.num_vars_of_the_pass,
+      THE_WORKED_EXAMPLE_NUM_VARS,
+    ),
+    ...countsThatDiffer(
+      `${what}: the variants with data`,
+      found.num_vars.with_data,
+      expected.num_vars.with_data,
+    ),
+    ...countsThatDiffer(
+      `${what}: the variants in the draw`,
+      found.num_vars.in_draw,
+      expected.num_vars.in_draw,
+    ),
+    ...countsThatDiffer(
+      `${what}: the variants every population counted, with data and in the draw`,
+      [found.num_vars_every_pop, found.num_vars_every_pop_in_draw],
+      [expected.num_vars_every_pop, expected.num_vars_every_pop_in_draw],
+    ),
+  ];
+  for (const [stat, overTheVariants] of DIVERSITY_STATS) {
+    // A statistic the wheel gave no value for is null here, and its three
+    // columns are not read: the sentence above has already named it.
+    if (found[stat] === null || found[stat] === undefined) {
+      continue;
+    }
+    differences.push(
+      ...countsThatDiffer(
+        `${what}: the total of ${stat}`,
+        found[stat].total,
+        expected[stat].total,
+      ),
+      ...numbersThatDiffer(
+        `${what}: the ${overTheVariants} of ${stat}`,
+        found[stat][overTheVariants],
+        expected[stat][overTheVariants],
+      ),
+      ...numbersThatDiffer(
+        `${what}: the standardized ${stat}`,
+        found[stat].in_draw,
+        expected[stat].in_draw,
+      ),
+    );
+  }
+  if (found.fis !== null && found.fis !== undefined) {
+    differences.push(
+      ...numbersThatDiffer(`${what}: F_IS`, found.fis, expected.fis),
+    );
+  }
+  if (expected.folded_sfs === null) {
+    if (found.folded_sfs !== null) {
+      differences.push(
+        `${what} gives the spectrum ${JSON.stringify(found.folded_sfs)}, and` +
+          " the four statistics that need no draw have none",
+      );
+    }
+  } else if (found.folded_sfs === null) {
+    differences.push(
+      `${what} gives no spectrum, and the spec says` +
+        ` ${JSON.stringify(expected.folded_sfs)}`,
+    );
+  } else {
+    differences.push(
+      ...countsThatDiffer(
+        `${what}: ${FOLDED_SFS_BINS}`,
+        found.folded_sfs_bins,
+        expected.folded_sfs_bins,
+      ),
+    );
+    for (const [pop, values] of Object.entries(expected.folded_sfs)) {
+      differences.push(
+        ...numbersThatDiffer(
+          `${what}: the folded spectrum of ${pop}`,
+          found.folded_sfs[pop] ?? [],
+          values,
+        ),
+      );
+    }
+  }
+  if (differences.length > 0) {
+    failures.push(...differences);
+  } else {
+    console.log(
+      `${what}: the alleles ${JSON.stringify(found.num_alleles.total)}, the` +
+        ` private ones ${JSON.stringify(found.private_alleles.total)} and the` +
+        ` variable variants ${JSON.stringify(found.variable_vars_ratio.total)}` +
+        ` of ${JSON.stringify(found.num_vars.with_data)} variants, F_IS` +
+        ` ${JSON.stringify(found.fis)}, the alleles of the draw` +
+        ` ${JSON.stringify(found.num_alleles.in_draw)} and the spectrum` +
+        ` ${JSON.stringify(found.folded_sfs)}, as the spec says`,
+    );
+  }
 }
 
 for (const failure of failures) {

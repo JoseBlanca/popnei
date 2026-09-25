@@ -92,9 +92,22 @@ variants of 10000 samples, has 1e10 genotypes, which does not fit in a
 ## Floats
 
 - Results are `f64`. An `f32` appears only where a file format has one.
-- A missing value is `Option<f64>` or an explicit enum inside the core,
-  and becomes NaN only at the boundary with Python, where pandas expects
-  it. NaN that travels through Rust arithmetic hides where it was born.
+- A missing value that goes on to be computed with is `Option<f64>` or an
+  explicit enum inside the core, and becomes NaN only at the boundary with
+  Python, where pandas expects it. NaN that travels through Rust
+  arithmetic hides where it was born, and that is what the rule is for. A
+  value the core has finished with, which a caller only reads, may be NaN
+  inside the core when its doc comment says every reason it can be one:
+  `f64` is the type of the thing, the caller tests `is_nan` once, and an
+  `Option` there would either say nothing the doc does not or nest inside
+  the `Option` that already says whether the caller asked for the value at
+  all. The owner decided this on 24 September 2026 over `fis` of
+  `docs/specs/diversity.md`, which is one number per population behind an
+  accessor that is already an `Option`, so keeping NaN out of it needed
+  `Option<Option<f64>>` or a new enum for a number nothing computes with.
+  The per variant and per pair columns of `gwas` and `kinship` are the same
+  case for a second reason: an `Option<f64>` per entry is sixteen bytes
+  where a `f64` is eight, and those columns are as long as the dataset.
   The quality of a variant is the exception, which the owner decided on 21
   September 2026: the column of a block is `Vec<f32>` with NaN for a
   variant that has no quality, inside the core as in Python and in
@@ -248,9 +261,11 @@ compiler drop the bounds checks.
   literal -1.
 - Every `pub` item has a doc comment as the `writing` skill describes it,
   with `# Errors` when it returns a `Result`.
-- No `unsafe` in the core crate, `#![forbid(unsafe_code)]`. In the binding
-  crate an `unsafe` block carries a `// SAFETY:` comment that names each
-  condition and why it holds there.
+- No `unsafe` in the core crate, `#![forbid(unsafe_code)]`. The linalg
+  crate is the one place where `unsafe` is, the calls to BLAS and LAPACK,
+  each block with a `// SAFETY:` comment. In the binding crate an
+  `unsafe` block carries a `// SAFETY:` comment that names each condition
+  and why it holds there.
 - A lint is silenced with `#[expect(lint, reason = "...")]` on the
   smallest item, never with a bare `#[allow]`.
 - A new dependency of the core crate is pure Rust, builds for
@@ -271,17 +286,38 @@ compiler drop the bounds checks.
   from outside rayon. The library never builds the global pool of rayon.
 - Everything builds and runs with one thread, because wasm has no
   threads. Code that needs threads is behind
-  `#[cfg(not(target_family = "wasm"))]` with a serial version beside it,
-  and the choice of the linear algebra backend is a `cfg` on the target,
-  not a pair of cargo features that exclude each other.
-- Linear algebra goes through the `linalg` module and nowhere else.
+  `#[cfg(not(target_family = "wasm"))]` with a serial version beside it.
+  The linear algebra backend is faer on the two wasm targets, by a `cfg`
+  on the target family, and natively it is BLAS and LAPACK with the cargo
+  feature `blas`, which is on by default, and faer with it off. The
+  feature only adds: it turns on the crates that link BLAS, so it is one
+  feature and not a pair that exclude each other.
+- Linear algebra goes through the linalg crate, `crates/popnei-linalg`,
+  and nowhere else: no code of the core crate does its own.
 - Readers take `impl Read` or `impl BufRead`, so that a test feeds them
   bytes from memory.
 
 ## The binding crate and the Python package
 
 The binding crate translates and holds no logic. If a function there has
-an `if` about genetics, it is in the wrong crate. Before touching it read
+an `if` about genetics, it is in the wrong crate. A binding that works out
+a number for itself is a sign the core threw one away: put it on what the
+core returns instead. The kinship counted the variants its reader gave,
+read the count once to refuse a pass that gave none, and left it out of its
+result; both bindings then wrapped the reader chain in a `BlockReader` of
+their own to count the same variants again, about 60 lines each, written at
+the same time without sight of each other. The duplication was the half
+that showed. The other half is that the core counted with `checked_add` and
+raised where the count would not fit, and both wrappers used
+`saturating_add` and stopped counting in silence, so the three layers
+refused different datasets and nobody had decided that. Before writing a
+counter in a binding crate, or a reader that wraps the chain to work one
+out, look for the number in the core's result, and if it is not there, add
+it there. A reader that wraps the chain for something other than a number,
+to notice that the user pressed Ctrl-C between two blocks, is a different
+thing and belongs where it is.
+
+Before touching it read
 `pyo3.md`, beside this file: the current names of pyo3, which are not the
 ones of a year ago, how arrays cross without a copy, releasing the
 interpreter around long work with `py.detach`, classes that are `frozen`,
@@ -333,19 +369,62 @@ calculation. `ruff format` and `ruff check` clean.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo test -p popnei --no-default-features
+cargo wasm-check
+cargo wasm-check-js
 uv run ruff format --check && uv run ruff check
 uv run maturin develop && uv run pytest
 ```
 
-The three cargo commands run for every change. The two Python ones run
+The six cargo commands run for every change. The two Python ones run
 from the moment the binding crate and the package exist, also for a change
 in the core alone, because the pytest tests are the ones that compare with
 pyNei. A layer that does not exist yet is reported as not there, not as
 passed.
 
+`cargo test -p popnei --no-default-features` runs the calculations on faer,
+which is the linear algebra a browser runs: the `blas` feature is on by
+default and `cargo test --workspace` therefore only ever ran them on BLAS
+and LAPACK. A tolerance, or a sum whose order the backend chooses, can hold
+on one and fail on the other. It was added on 24 September 2026, when the
+kinship's comparison with plink2 was found red on faer and green on
+Accelerate for two days: the bound was 1e-12 of each entry, the two backends
+are 3.6e-16 and 3.3e-15 of the matrix from plink2, and nothing in any list
+ran the second one. `cargo test -p popnei-linalg --no-default-features`,
+which the plans ask for, tests the backend itself and not the calculations
+over it.
+
+`cargo wasm-check` compiles the core for the two wasm targets with the
+lints denied, and it takes seconds. It is in the list because a change
+behind `cfg(not(target_family = "wasm"))` leaves the other side
+uncompiled by the four commands above: on 22 September 2026 the
+parallel building of the sets of bits of the `dists` module left a
+constant that only the native side uses, and the wasm build warned about
+it in a commit whose other checks were green.
+
+`cargo wasm-check-js` compiles the JavaScript binding crate for
+`wasm32-unknown-unknown`, the one target it ships to, and it is an alias
+of its own because a cargo alias is one command and one command gives
+every crate it names the same targets: that crate does not build for
+emscripten, where the other two do. Nothing else builds it until `npm run
+build` in `js/popnei`, and it calls into JavaScript through `js-sys` and
+`web-sys`, so a call that does not compile would otherwise be found work
+packages later.
+
 When the change touches what wasm builds differently, threads, the linear
 algebra backend, a dependency, the wasm wheel is built as well, with the
-steps the walking skeleton leaves in the repository.
+steps the walking skeleton leaves in the repository, and so is the
+package of TypeScript, `npm run build && npm test` in `js/popnei`.
+
+A change of `crates/popnei-js` or of `js/popnei` also runs `npm run
+test:browser` there, which is the only thing that runs popnei in a
+browser: `FileReaderSync`, which reads a range of a file the user picked,
+exists only inside a web worker, so what node tests of a `File` is
+nothing. It starts Chromium through Playwright, and Playwright says so
+when the browser is not downloaded, `npx playwright install chromium`. It
+builds the wasm and the TypeScript before it runs, since a browser test
+over a binding crate that was not rebuilt is green whatever the crate now
+says.
 
 Report what each command printed when it failed and that it passed when it
 passed. Speed is not claimed without a measurement, with the dataset and

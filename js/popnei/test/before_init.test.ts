@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Variants } from "popnei";
-import { openVars, openVcf, version, writeVars } from "popnei";
+import { numPassesOf, openVars, openVcf, version, writeVars } from "popnei";
 
 import { vcfOf } from "./reference.ts";
 
@@ -31,6 +31,16 @@ test("openVcf throws before init was awaited", () => {
 
 test("openVars throws before init was awaited", () => {
   assert.throws(() => openVars(new Uint8Array([65, 82, 82, 79, 87, 49])), {
+    name: "Error",
+    message: /await init\(\)/,
+  });
+});
+
+test("numPassesOf throws before init was awaited", () => {
+  // It reads the default of `numPrinComps` from the core, as
+  // `doPcaFromVariants` does, so that the passes it counts for a call that
+  // says nothing are the passes that call makes.
+  assert.throws(() => numPassesOf("calcKinship"), {
     name: "Error",
     message: /await init\(\)/,
   });

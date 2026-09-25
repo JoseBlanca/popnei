@@ -1,0 +1,199 @@
+{
+  "what_it_is": [
+    "The calls of an association study that Python and TypeScript both",
+    "refuse, the values that neither refuses because both read them as a",
+    "number, the values that mean no phenotype in both, and the two that",
+    "TypeScript alone refuses. It is the one file",
+    "of this directory that no reference program wrote: the others are what",
+    "plink2, GMMAT and rrBLUP answered, and this is a list the two test",
+    "suites read so that neither layer can refuse something the other",
+    "accepts without this file saying that it does.",
+    "",
+    "`case` is the call, which each suite writes in its own language over",
+    "the worked example of `docs/specs/gwas.md`; a case that a suite has no",
+    "call for fails that suite, which is what makes the file bind. `match`",
+    "is a regular expression that the message of both layers has to hold, so",
+    "it is written out of the words the two share and not out of one of",
+    "them: the names of the arguments differ between the two languages, and",
+    "so does the quoting of a name in a message.",
+    "",
+    "`refusals` are the calls both layers refuse. Each of them is a",
+    "`ValueError` in Python unless the case says otherwise in",
+    "`python_raises`, which is `TypeError` where what the user wrote is of",
+    "the wrong type altogether; JavaScript has one `Error` for all of them.",
+    "A case whose refusal comes from the machinery of its own language, and",
+    "not from words popnei wrote, has `match_in_python` and",
+    "`match_in_typescript` in place of `match`: what binds there is that",
+    "both layers refuse the call, since neither message can hold the",
+    "other's words.",
+    "",
+    "`coercions` are the calls where a value that is not a number reaches",
+    "the study as one: each of them is the worked example written another",
+    "way, so each suite asserts the null model that example gives and no",
+    "case there has a `match`.",
+    "",
+    "`no_phenotype_in_both_layers` are the values that mean an individual",
+    "with no phenotype, which is left untested rather than refused. The rule",
+    "the spec settled on 23 September 2026 is by the oracle: a value means",
+    "no phenotype exactly where Python's `float` of it gives NaN, which NaN",
+    "itself and the string `nan` both do. Each suite asserts a study of the",
+    "five individuals that `i2` is not among.",
+    "",
+    "`refused_in_typescript_alone` is the divergence that is left. Python",
+    "says that an individual has no phenotype with a name the series has",
+    "not, with `None` and with the missing value of pandas, which `dropna`",
+    "drops; TypeScript has neither, and `float(None)` raises, so `null` and",
+    "`undefined` are refused there. Each suite asserts its own half: the",
+    "TypeScript one the refusal of `match`, and the Python one a study of",
+    "the five individuals that `i2` is not among."
+  ],
+  "refusals": [
+    {
+      "case": "a kinship that is not a kinship",
+      "match": "`kinship` is .*, and the kinship a mixed model takes is a `Kinship`",
+      "python_raises": "TypeError"
+    },
+    {
+      "case": "the grammar gamma approximation with no kinship",
+      "match": "a study with no kinship has no such denominator"
+    },
+    {
+      "case": "a first block in which no variant varies",
+      "match": "no variant of that block varies among the 6 tested individuals"
+    },
+    {
+      "case": "a factor of the approximation that is not above 0",
+      "match": "the 2 variants of the first block that vary gave and which is not a number above 0"
+    },
+    {
+      "case": "a tested individual the kinship has not",
+      "match": "`?.i2.`? is tested and is not one of the 5 individuals of the"
+    },
+    {
+      "case": "the score test",
+      "match": "only test is the t test of the effect it fitted"
+    },
+    {
+      "case": "a test of another name",
+      "match": "`wald`.*`score`.*`rao`"
+    },
+    {
+      "case": "a trait of another name",
+      "match": "`continuous`.*`binomial`.*`quantitative`"
+    },
+    {
+      "case": "the wald test of a binomial trait with a kinship",
+      "match": "one mixed model for every variant"
+    },
+    {
+      "case": "a kinship the logistic mixed model cannot factor",
+      "match": "so the kinship is not a covariance"
+    },
+    {
+      "case": "a binomial trait that is neither 0 nor 1",
+      "match": "the phenotype of the tested individual at the position 0 is 2, and a binomial trait is 0 or 1"
+    },
+    {
+      "case": "a binomial null model that walks towards an infinite coefficient",
+      "match": "did not settle in the \\d+ rounds it was fitted in"
+    },
+    {
+      "case": "a binomial null model with a kinship that runs away",
+      "match": "a binomial trait with a kinship is a logistic mixed model, and its null model did not settle"
+    },
+    {
+      "case": "a covariate named intercept",
+      "match": "a covariate is named .intercept."
+    },
+    {
+      "case": "a covariate that has no value for a tested individual",
+      "match": "the covariate .cov. has no value for .i5."
+    },
+    {
+      "case": "a covariate that is not finite",
+      "match": "the value of the covariate .cov. at .i2. is \\S+, and a study is fitted on numbers"
+    },
+    {
+      "case": "a covariate that is a copy of another",
+      "match": "3 columns, the intercept among them, and only 2 of them are"
+    },
+    {
+      "case": "an individual of the phenotype that the variants have not",
+      "match": ".i9. has a phenotype and is not one of the 6 individuals"
+    },
+    {
+      "case": "fewer individuals than the design has columns plus two",
+      "match": "individuals are tested and the design has"
+    },
+    {
+      "case": "a trait that is the same in every individual",
+      "match": "every tested individual has the phenotype .*, and a study looks for the variants that go with how a trait differs"
+    },
+    {
+      "case": "a phenotype that is a name",
+      "match": "the phenotype of .i2. is .*tall.*, and a trait is a number"
+    },
+    {
+      "case": "a phenotype that is the empty string",
+      "match": "the phenotype of .i2. is .*, and a trait is a number"
+    },
+    {
+      "case": "a covariate that is a name",
+      "match": "the value of the covariate .cov. at .i2. is .*north.*, and a covariate is a number"
+    },
+    {
+      "case": "a phenotype that is an infinity",
+      "match": "the phenotype of .i2. is [Ii]nf\\w*, and a study is fitted on numbers"
+    },
+    {
+      "case": "a covariate that has no value at an individual",
+      "match": "the value of the covariate .cov. at .i2. is missing, and a covariate holds a number for every individual"
+    },
+    {
+      "case": "the covariates explaining the whole of the trait",
+      "match": "the covariates explain the whole of the trait"
+    },
+    {
+      "case": "a kinship that is not symmetric",
+      "match": "and a kinship is symmetric"
+    },
+    {
+      "case": "an approximation that is not a boolean",
+      "match_in_python": "is not an instance of 'bool'",
+      "match_in_typescript": "`useGrammarGammaApprox` is true or false",
+      "python_raises": "TypeError"
+    }
+  ],
+  "coercions": [
+    {
+      "case": "a phenotype written as strings"
+    },
+    {
+      "case": "a covariate written as strings"
+    },
+    {
+      "case": "a covariate written as booleans"
+    },
+    {
+      "case": "a phenotype written in full width digits"
+    }
+  ],
+  "no_phenotype_in_both_layers": [
+    {
+      "case": "a phenotype that is NaN"
+    },
+    {
+      "case": "a phenotype that is the string nan"
+    }
+  ],
+  "refused_in_typescript_alone": [
+    {
+      "case": "a phenotype that is null",
+      "match": "the phenotype of .i2. is null"
+    },
+    {
+      "case": "a phenotype that is undefined",
+      "match": "the phenotype of .i2. is undefined"
+    }
+  ]
+}

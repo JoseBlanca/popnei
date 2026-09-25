@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/popnei", "crates/popnei-python", "crates/popnei-js"]
+members = [
+  "crates/popnei",
+  "crates/popnei-linalg",
+  "crates/popnei-python",
+  "crates/popnei-js",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,7 +24,113 @@ repository = "https://github.com/JoseBlanca/popnei"
 license = "MIT"
 
 [workspace.dependencies]
-popnei = { path = "crates/popnei", version = "0.1.0" }
+# The crates of popnei itself. Their default features are off here and
+# each crate that depends on one turns on what it wants, because cargo
+# refuses a `default-features = false` on a member's line when the
+# workspace's line does not have it, and the feature `blas`, which the
+# linear algebra crate has and the two crates above it pass on, is one a
+# build has to be able to turn off. Every crate that wants it has
+# `default = ["blas"]` of its own, so the default build is unchanged.
+popnei = { path = "crates/popnei", version = "0.1.0", default-features = false }
+popnei-linalg = { path = "crates/popnei-linalg", version = "0.1.0", default-features = false }
+# The six routines of BLAS and LAPACK that crates/popnei-linalg calls
+# natively, dsyrk, dsyevd, dgemm, dpotrf, dpotrs and dpotri: the product
+# of a matrix with itself, the eigendecomposition of a symmetric matrix,
+# the product of two matrices, the Cholesky factorization of a symmetric
+# positive definite matrix and the solve and the inverse that come off
+# that factorization, which docs/specs/linalg.md names one by one. `blas` and
+# `lapack` hold the declaration of each routine and nothing else, one
+# `unsafe fn` over slices whose lengths nothing checks against the
+# dimensions, which is why those calls live in a crate of their own and
+# the core crate keeps its `forbid(unsafe_code)`. What they give is not a
+# few lines of our own: dsyevd is a reduction to tridiagonal form, a
+# divide and conquer solver and the back transformation of the
+# eigenvectors, tuned for the caches and the vector instructions of the
+# machine, and it is the routine numpy's `eigh` calls, so popnei and numpy
+# compute the same eigendecomposition by the same path. Decision 5 of
+# docs/rust_core.md chose the library of the system for this, and
+# docs/specs/linalg.md states what the crate gives over it.
+blas = "0.23"
+lapack = "0.20"
+# The two crates that say which library holds those routines. Neither
+# ships an implementation: with the feature `accelerate` each emits the
+# linker argument `-framework Accelerate`, the library of the system that
+# numpy also calls on macOS, which ships nothing to build.
+#
+# These two lines are for macOS and for no other system: the crate that
+# `accelerate` brings emits that argument whatever the target is, so a
+# Linux build with these lines would ask its linker for a framework it
+# has not. The Linux and Windows wheels link OpenBLAS through these same
+# two crates with the feature `openblas`, and the plan that first builds
+# them moves both lines under a target table, one entry per system, and
+# settles what OpenBLAS needs on the machine that builds. Until then
+# popnei is built on this Mac, and a machine that has no BLAS builds it
+# with the feature `blas` of the core crate off. Both are native only:
+# the wasm targets have no BLAS and run on faer, and the linear algebra
+# crate takes these two as optional dependencies of the targets that are
+# not wasm.
+blas-src = { version = "0.14", features = ["accelerate"] }
+lapack-src = { version = "0.13", features = ["accelerate"] }
+# The other backend of crates/popnei-linalg, and the only one in
+# WebAssembly, where there is no BLAS and no library of the system to
+# link: a linear algebra library written in Rust, which builds for the two
+# wasm targets and gives the same three operations, the triangular product
+# and the general one of `linalg::matmul` and `self_adjoint_eigen`. What
+# it gives is what BLAS and LAPACK give, a blocked product that uses the
+# vector instructions of the target and a symmetric eigendecomposition
+# with its reduction to tridiagonal form, so it is not a few lines of our
+# own either: written by hand, the product of a block of 5000 variants x
+# 1000 individuals would run at the speed of a triple loop, and the
+# eigendecomposition is the harder half. It is also a native backend,
+# behind the cargo feature of that crate, which is how the open question
+# of docs/rust_core.md, whether faer is level with OpenBLAS on x86, gets
+# measured: the same binary built twice. 0.24.4 is the version of the
+# spike of section 3.2 of that document, which built it for emscripten.
+# Of its features only `std` and `linalg` are on, and `rayon`, which does
+# not build for emscripten, only off the wasm targets.
+faer = { version = "0.24.4", default-features = false, features = [
+  "std",
+  "linalg",
+] }
+# The crate that does faer's products, which faer 0.24.4 brings by itself:
+# `cargo tree -p popnei-linalg -i gemm` finds this one version under it and
+# no other. crates/popnei-linalg names it again, for the wasm targets
+# alone, to turn on the feature `wasm-simd128-enable`, without which its
+# products do not use the 128 bit vector instructions of WebAssembly. This
+# feature is what puts them in: gemm's kernels carry their own annotation,
+# so the flag `-C target-feature=+simd128` adds nothing to the products,
+# which docs/reports/pca-measurement.md measured on 22 September 2026. That
+# flag is set for both wasm targets by .cargo/config.toml, where the dists
+# module needs it and not these products; "The wasm builds and the vector
+# instructions" of docs/specs/linalg.md has the whole of it. With the
+# feature the analysis of 100000 variants x 1000 individuals takes 4.500 s
+# under node 26 and without it 7.066 s.
+#
+# Its default features are off, as they are where faer declares it. They
+# are `std`, `rayon` and `f16`, and turning them on here would put rayon
+# in the two wasm trees, where there are no threads and where "Threads" of
+# docs/specs/linalg.md has faer running on one, and 11 crates with it.
+gemm = { version = "0.19.0", default-features = false, features = [
+  "wasm-simd128-enable",
+] }
+# The mathematical functions that Rust's standard library has not, of which
+# the association study calls two. `erfc`, the complementary error function,
+# which gives how much of a normal distribution lies further from 0 than a
+# point and which every p-value of a chi square with one degree of freedom
+# is; and `lgamma`, the logarithm of the gamma function, which the front
+# factor of the regularized incomplete beta is built from and which every
+# p-value of a Student t goes through. Both are in "The two distributions"
+# of docs/specs/gwas.md. It is the
+# port to Rust of the mathematical library of musl, with no C in it and no
+# dependency, so it builds for the two wasm targets, and it is the crate
+# Rust's own `std` uses for the same functions on a target with no system
+# library. What it gives is not a few lines of our own: `erfc` is a pair of
+# rational approximations with their coefficients, and pyNei takes it from
+# Python's `math`, which is C's, so pyNei is no precedent for writing one
+# either. Measured against scipy 1.18.1 over 65 points from 1e-6 to 200, its
+# `erfc` puts `chi2.sf(x, 1)` within 2.9e-14 of itself, and the spec asks
+# for 1e-12.
+libm = "0.2"
 # The gzip of the VCF reader, with its default backend, miniz_oxide, which
 # is written in Rust and so builds for the two wasm targets.
 flate2 = "1"
@@ -107,6 +218,34 @@ numpy = "0.29"
 # one is pinned to the command line installed on the machine that builds,
 # 0.2.128. Both move together: a new command line needs this line changed.
 wasm-bindgen = "=0.2.128"
+# The types of JavaScript itself that the binding crate names: the function
+# an application is told the progress of a pass with, which the crate holds
+# and calls, and the array of its arguments. It is written by the authors of
+# wasm-bindgen, it moves with it, and it carries the `unsafe` of a call into
+# JavaScript, which the lints of the workspace deny in the crates of popnei.
+js-sys = "0.3"
+# The two types of the browser the binding crate names, which js-sys does
+# not have: the `Blob` a page gets when the user picks a file, of which a
+# `File` is one, and which gives any range of its bytes; and the
+# `FileReaderSync` that reads such a range and returns when it has the
+# bytes, which is what Rust's `Read` and `Seek` need and which a browser
+# has only inside a web worker. It is written by the authors of
+# wasm-bindgen and moves with js-sys and wasm-bindgen. Every type of the
+# browser is behind a feature of its own and nothing of a feature that is
+# off is compiled, so these two lines are the whole of what the crate
+# brings in.
+#
+# What it costs the download of an application has not been measured on its
+# own. The commit that brought it in also took the read of `openVcf` and
+# `openVars` that opens a file through the same pass every other read goes
+# through, which left one reader of a VCF and one of a vars file in the
+# build where there had been two of each, and the two changes together took
+# the wasm of the package from 2034662 to 2021550 bytes and from 657075 to
+# 650486 gzipped, measured with `npm run build:wasm` and `gzip -9` on the
+# owner's Apple M5 Pro on 24 September 2026. The spike of
+# docs/specs/js_sources.md measured these two crates by themselves at 3020
+# bytes of wasm and 776 gzipped.
+web-sys = { version = "0.3", features = ["Blob", "FileReaderSync"] }
 
 # The table of .claude/skills/coding/lints.toml, with the reasons for each
 # lint in .claude/skills/coding/SKILL.md. Every crate takes it with
@@ -163,3 +302,27 @@ opt-level = 2 # numerical tests; overflow checks stay on
 
 [profile.release]
 overflow-checks = false # the code does not rely on them: see the coding skill
+debug = "line-tables-only" # so that a sampling profile has function names
+
+# The benchmarks are what a sampling profile of popnei is taken on, and
+# `cargo bench` builds them with this profile, which inherits release. A
+# release binary with no debug info gives a profile whose frames have no
+# function name, so `sample` cannot say where the time went; the line
+# tables are what it needs and they cost only the size of the binary,
+# leaving the code the same as release. The methodology checklist of
+# .claude/skills/performance-review has it.
+[profile.bench]
+debug = "line-tables-only"
+
+# The release build with the debug information kept, for a sampling
+# profiler. `sample` and the profilers of Instruments read it to name the
+# frames that the compiler inlined, which in the principal component
+# analysis is the whole of what standardizes a row. It changes no code
+# generation: cargo passes `-C debuginfo=2` and nothing else, and the
+# machine code of the closure that standardizes a row, 1664 instructions,
+# is the same under this profile as under `release`, checked with `cargo
+# asm -p popnei --lib` on 22 September 2026. A build under it is made with
+# `cargo build --profile profiling` and lands in `target/profiling/`.
+[profile.profiling]
+inherits = "release"
+debug = true
