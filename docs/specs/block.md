@@ -11,8 +11,8 @@ sections 1 and 2 of that document. It depends on `docs/specs/variant.md`,
 which has the `Needs` that say which fields are wanted, the `ChromTable` of
 the chromosome names and `VariantRef`, the view of one variant of a block.
 It covers the block, the trait of everything that gives blocks, `reblock`,
-which puts blocks back to a size, and `iter_blocks` in Python and
-TypeScript.
+which puts blocks back to a size, the reader that reads one block ahead of
+the pass that consumes it, and `iter_blocks` in Python and TypeScript.
 
 There is code, built from the first version of this spec, in which a
 collector built blocks by copying the variants that a reader gave one at a
@@ -200,8 +200,10 @@ the row it starts at: so a block of 10000 variants cut into blocks of 100
 copies each row once and not once for every cut before it, and a block
 that is given holds the memory of its own rows and not of the block it was
 cut from, which is what a Python user keeps when they hold its genotypes.
-One memcpy per block given and none per variant. The read ahead thread of
-section 3 of the architecture is not in this item.
+One memcpy per block given and none per variant. The thread that reads one
+block ahead of the pass is the item after this one, and a `reblock` goes
+under it, not over it: the chain of readers the thread is given is the one
+that cuts and joins the blocks.
 
 Two things the rules above leave to this item. `retain_vars` runs `check`
 before it moves a row, since it moves the rows by their place in the
@@ -274,6 +276,123 @@ arguments the package refuses, a `source` that is not a `Uint8Array`, a
 ploidy and a `numVarsPerBlock` that are not whole numbers of 1 or more,
 an `onlyPassed` that is not a boolean, and a `fields` that is one name
 and not an array of names.
+
+## The reader one block ahead
+
+### What it gives
+
+A pass over the variants asks its reader for a block and then works on it,
+and then asks for the next one: on one thread the read of a block and the
+work on the block before it never overlap, although the read is the disc and
+the decompression and the work is the arithmetic. `with_one_block_ahead`
+lends the chain of readers to a thread of its own for as long as one pass
+runs. That thread builds the next block while the pass works on the one it
+holds, and the pass reads its blocks off a **handle**, which is a reader like
+any other, so a pass takes it by wrapping the loop it already has.
+
+It is one block ahead and not more. The handover is a rendezvous: the
+reading thread holds at most one block that is built and not yet given, so
+the memory of a pass grows by one block and by nothing else. On the panel
+of 100000 variants of 1000 individuals, whose blocks are 5000 variants,
+that block is 10.0 MB of genotypes; at 10000 individuals, where a block of
+the same number of genotypes holds 250 variants, it is 5.0 MB.
+
+What the pass sees does not change, which is what lets a pass take it
+without changing a number:
+
+- The blocks arrive in the order the chain gave them, holding the variants
+  the chain put in them.
+- An error of the chain reaches the pass through `next_block` after every
+  block that came before it, and nothing follows it, which is what the
+  reader trait promises of any reader.
+- The names of the chromosomes travel with each block, so a pass that reads
+  the table of names while it walks a block has every name the variants of
+  that block added. The counts of the filters travel the same way, as of the
+  last block the handle gave.
+- The chain is lent and not given away. Whoever built it keeps it, and when
+  `with_one_block_ahead` returns the thread is over and the chain itself can
+  be asked for its names and for the counts of its filters, which is what a
+  pass does when it ends, as `docs/specs/filters.md` has it.
+- A change of which fields the pass asks for crosses to the chain and
+  reaches it before its next block, so it takes effect one block later than
+  it would on one thread. Section 1 of `docs/architecture.md` already
+  promises no more than that.
+
+In wasm there is no thread: the pass is given the chain itself and reads the
+blocks one after another, as everything else of popnei does there.
+
+### Which passes take it
+
+A pass takes it where a measurement of that pass shows its wall time fall,
+and not otherwise, because each one costs a thread that a browser does not
+have and one more block of memory. The owner set the rule on 25 September
+2026: it is kept in a pass where the best of 5 runs falls by more than 5 per
+cent of that pass's wall time and by more than the spread of its runs.
+
+Nine passes over the blocks were measured against it on 100000 variants of
+1000 individuals with every genotype called, the owner's Apple M5 Pro of 18
+cores, and `docs/reports/perf-read-ahead-2026-09-25.md` has the two clocks
+and the wall times of each. Eight of them keep it: the association study of
+`docs/specs/gwas.md`, the kinship, the two passes of the principal
+components of the variants, the Kosman distance of every pair of
+individuals, the distances between populations, the diversity of every
+population, and the two passes of the stats module. The r² matrix of
+`docs/specs/ld.md` does not: it reads for 0.006 s and works on the blocks
+for 0.004 s of a run of 0.452 s, because the matrix it then computes is
+quadratic in the variants it was given, so the most the thread could hide is
+1 per cent of that run.
+
+The Kosman distance is the one pass that gave something up for it. It
+dropped the sets of bits of a block and the block itself before asking for
+the next one, so that the memory of two blocks was never held at once, and
+the reading thread holds one more block by what it is.
+
+### How it runs
+
+One thread, spawned inside a `std::thread::scope` so that the chain can be
+lent to it by reference and is back with its owner when the scope ends. One
+channel of capacity zero carries what the thread read, a block with the
+names and the counts the chain then had, or the word that there are no more,
+or the error the chain failed with, and nothing follows either of the last
+two. A second channel, from the pass to the thread, carries a change of the
+fields the pass asks for.
+
+A pass that returns in the middle, which a calculation whose block fails
+does and which the Ctrl-C of a Python user comes out as, drops the handle;
+the thread is then waiting to hand over a block nobody will ask for, its
+send fails, and the thread ends with that block. Nothing joins it by hand
+and no thread is left reading: the scope joins it after the pass returns.
+
+The counts of the phases behind the cargo feature `bench-phases`, which
+`crates/popnei/Cargo.toml` describes, are what decides whether a pass is
+worth the thread: a sampling profile cannot separate the read of a block
+from the work on it while the two run on one thread.
+
+### How it is verified
+
+There is no reference program: the reader gives the blocks its chain gives
+and changes no number. The cargo tests, over the VCFs of
+`docs/specs/io_vcf.md`:
+
+- `many.vcf` read in blocks of 7 through `reblock`, once on one thread and
+  once one block ahead, gives the same 475 variants in the same order, every
+  field of every one of them equal.
+- A VCF written in the test whose line 251 of variants has a tetraploid
+  genotype, read in blocks of 100, gives two blocks, then that error, and
+  then nothing.
+- A reader written in the test that reports the counts of two filters is
+  asked for the fields the pass wants and read to its end; the handle
+  answers with the counts of the chain, the one chromosome of `cases.vcf`,
+  the three individuals and the ploidy 2 while the pass runs, and the chain
+  itself answers with them after `with_one_block_ahead` returns.
+- A pass that reads one block of four and then returns an error gets that
+  error back, leaves the reader with blocks it never gave, and the test ends,
+  which a thread still waiting with a block would not let it do.
+
+That the passes give what they gave is checked over a whole panel, at one
+thread and at eighteen, by `crates/popnei/benches/the_numbers_of_every_pass.py`,
+which writes every number of every pass at seventeen digits so that two
+commits can be compared byte for byte.
 
 ## The Rust interface
 
@@ -408,6 +527,32 @@ pub const MIN_NUM_VARS_PER_BLOCK: usize = 100;
 pub const MAX_NUM_VARS_PER_BLOCK: usize = 10_000;
 ```
 
+The reader one block ahead. `reader` is lent for as long as `body` runs and
+is back with its caller when this returns, so the counts of the filters and
+the names of the chromosomes are read from it after the pass. `body` is
+given a reader like any other, which is the handle in the native build and
+`reader` itself in wasm, where there is no thread.
+
+```rust
+/// # Errors
+///
+/// What `body` fails with, and what `reader` fails with, which reaches
+/// `body` through `next_block` after the blocks that came before it.
+///
+/// # Panics
+///
+/// When the reading thread panics, which is a defect of a reader: the panic
+/// is raised again here, where a caller of popnei sees it.
+pub fn with_one_block_ahead<R: BlockReader, T>(
+    reader: &mut R,
+    body: impl FnOnce(&mut dyn BlockReader) -> Result<T>,
+) -> Result<T>;
+```
+
+A pass that is generic over a reader with no size, which four of the
+calculations are, lends `&mut &mut R`: `&mut R` is a reader of its own
+whatever `R` is, and it is what travels to the thread.
+
 The name of each column in Python and in TypeScript, and the fields that
 those names ask for. Both binding crates take the names from their user
 and call this, so that one list serves the two languages and a column
@@ -465,7 +610,6 @@ built the blocks from single variants.
 
 - Taking individuals out of a block, which the filter of individuals
   needs: with that filter, in `docs/specs/filters.md`.
-- The read ahead thread: with the first calculation that consumes blocks.
 - Giving a block back to its reader to be filled again, which section 2
   of the architecture leaves until a measurement asks for it.
 - The dosages, the masks and the counts of a block: the row helpers of
