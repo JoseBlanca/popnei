@@ -15,7 +15,8 @@ alone asked for takes 27.23 ms where it took 112.21 ms, and every block it
 gives is identical to the block it gives on one thread. The study over the
 vars file now takes 0.112 s against the VCF's 0.111 s, the missing data
 filter over the same panel 0.040 s where it took 0.128 s, and the Kosman
-distance of every pair of individuals 0.128 s where it took 0.217 s. What is
+distance of every pair of individuals, which counts for each pair the alleles
+they do not share, 0.128 s where it took 0.217 s. What is
 left for the owner is at the end of section 2, and the largest of those
 decisions is the memory: the reader now holds up to eight batches at once
 where `docs/specs/io_vars.md` says a pass holds one block.
@@ -121,10 +122,14 @@ The reader decodes a window of batches on the threads of the pool it is
 called in, the window being eight or the threads of that pool, whichever is
 fewer. The bytes of each batch are still read from the source one after
 another, and every block is still built on the calling thread in the order of
-the file, because the chromosome table hands out its numbers in the order the
-names are first seen and nine places of popnei index their results by a
-running count of the variants: a block out of order is a wrong result and not
-a slower one.
+the file, for two reasons. The table of chromosome names hands out its numbers
+in the order the names are first seen, so a block built out of order renumbers
+the chromosomes. And four of the twelve consumers place their results by a
+running count of the variants they have seen: the kinship adds each block into
+one matrix, the principal components write each block's weights into columns
+chosen by that count, the association study indexes its answers by it, and the
+diversity adds into its totals. A block out of order is a wrong result there
+and not a slower one.
 
 Best of 10 runs of `cargo bench --bench vars_file`, the pass with the
 genotypes alone asked for, interleaved with a binary built from the commit
@@ -184,14 +189,19 @@ s against 0.880 s over three interleaved pairs.
 
 1. **The memory, which is the price of this change.** The window holds about
    6 MB more of peak resident set for each batch in it on this panel, measured
-   with `/usr/bin/time -l`: 499.8 MB before against 623.0 MB after at 18
-   threads, where the benchmark's own write section sets the 500 MB by holding
-   20 blocks at once. So the reader's own cost is up to eight times the 3.9 MB
-   of compressed bytes and the 11.4 MB of decoded buffers of a batch, about 120
-   MB at 18 threads on this panel, and the same at any shape of dataset,
-   because a batch holds about the same number of genotypes whatever the
-   individuals, 5 million: 250 variants of 10000 individuals there against
-   5000 variants of 1000 here.
+   with `/usr/bin/time -l`, and the two series that measured it do not agree on
+   how much. In the sweep of section 6.2, one series, the peak rose from 527.3
+   MB at a window of one batch to 577.2 MB at eight and 620.5 MB at 18, so about
+   6 MB for each batch in the window. In the before and after pair, another
+   series, it was 499.8 MB before the change and 623.0 MB after at 18 threads,
+   123.2 MB more. The upper bound from the bytes is the one to plan with: a
+   batch holds 3.9 MB of compressed bytes and 11.4 MB of decoded buffers, so a
+   window of eight is at most 122 MB, and that number is the same at any shape
+   of dataset, because a batch holds about the same count of genotypes whatever
+   the individuals, 5 million, which is 250 variants of 10000 individuals
+   against the 5000 variants of 1000 here. The benchmark's own write section,
+   which holds all 20 blocks at once, is what sets the 500 MB that both series
+   start from.
    `docs/specs/io_vars.md` says the memory of a pass is one block, and
    `docs/architecture.md` says two or three blocks are alive with the read
    ahead. Both sentences are now wrong for a native build, and what replaces
@@ -205,10 +215,13 @@ s against 0.880 s over three interleaved pairs.
    the measurement that closed it, if it is not. Its "Speed" section keeps its
    21 ms on one thread and gains the 18 thread number above.
 3. **Whether the window should follow the pool upwards as well as downwards.**
-   At 18 threads a window of 18 read the panel in 24.2 ms against 27.8 ms at
-   eight, 11 per cent better on the best time and no better on the median,
-   26.8 to 30.7 ms against 28.7 to 29.9 ms over four sets, for 43.3 MB more
-   peak resident set, 620.5 against 577.2 MB. Eight was chosen as the knee. What was not
+   At 18 threads a window of 18 read the panel in 26.23 ms against 27.79 ms at
+   eight in the sweep of section 6.2, and 24.23 against 29.09 ms in the second
+   series, taken with `/usr/bin/time -l`; over four sets its median was 26.8 to
+   30.7 ms against 28.7 to 29.9 ms at eight. So it is 6 to 17 per cent better on
+   the best time and no better on the median, for 43.3 MB more peak resident
+   set, 620.5 against 577.2 MB. Eight was chosen because that is where the curve
+   of section 6.2 flattens. What was not
    measured is the knee for a consumer that reads the genotypes: every number
    of that sweep came from the benchmark whose consumer only adds them up, and
    the cache argument of the regression above says the knee could sit lower for
@@ -230,15 +243,16 @@ s against 0.880 s over three interleaved pairs.
 5. **`+simd128` has no guard, and it is worth 30 per cent of the wasm read.**
    `.cargo/config.toml` sets that flag for both wasm targets, and it is what
    vectorizes the decompression:
-   `docs/reports/perf-dists-kosman-2026-09-22.md` measured the wasm read
-   falling from 0.162 s to 0.113 s with it, and the wasm reviewer counted 48
+   `docs/reports/perf-dists-kosman-2026-09-22.md` measured the wasm read of a panel
+   of 100000 variants of 1000 individuals under node falling from 0.162 s to
+   0.113 s with it, and the wasm reviewer counted 48
    wasm vector instructions in `lz4_flex`'s frame decoder with the flag and
    none without it, for both targets. A `RUSTFLAGS` in the environment of a
    build **replaces** what that file sets, rather than adding to it, and
    nothing in the repository would say so: both wasm reads would simply get
    slower. The fix is a `#[cfg(not(target_feature = "simd128"))] compile_error!`
-   in the JavaScript binding crate and the same under the pyodide wheel's build
-   script. Recommendation: do it; it is finding L3 of section 5.
+   in the JavaScript binding crate and the same under the build script of the
+   wheel that runs popnei inside a notebook in a browser. Recommendation: do it; it is finding L3 of section 5.
 6. **Whether the branch is merged.** Three commits, every check of the coding
    skill clean at the head, 1017 cargo tests of the core, 150 of the linear
    algebra crate and 556 pytest tests passing, and the digest of every block of
@@ -250,8 +264,9 @@ What this review built, which the next one starts from:
 
 1. **`--threads n` and a digest of the pass in `crates/popnei/benches/vars_file.rs`.**
    Every timed section now runs inside a rayon pool of the size the command
-   line gives, as `read_vcf.rs` does, and the untimed first pass prints a 64
-   bit FNV-1a hash fed, block after block, the place of the block, its counts,
+   line gives, as `read_vcf.rs` does, and the untimed first pass prints a 64 bit
+   hash, one multiplication and one exclusive or per byte, fed block after
+   block the place of the block, its counts,
    the bytes of every column it holds, and the names of the chromosome table in
    the order of their numbers. The sum of the genotypes that the benchmark
    printed before cannot see a reordering, and the digest can: reversing the
@@ -390,8 +405,9 @@ that frame allow. It would also skip the bitmap of H2, decompress straight
 into the block's own vector, which removes the copy of H1, and let the frames
 be written with a checksum, which is item 4 of section 2. Against it: popnei
 would parse the lz4 frame header and build the arrays of a batch itself, with
-a fallback to arrow for any frame it does not recognise, so `what_the_buffers_hold`
-becomes load-bearing rather than a check, and it needs `lz4_flex` as a direct
+a fallback to arrow for any frame it does not recognise, so the function that works out what
+each buffer of a batch should hold, `what_the_buffers_hold`, becomes what the
+read depends on rather than a check on it, and it needs `lz4_flex` as a direct
 dependency with its default features off, since cargo unifies features and the
 defaults would turn `safe-decode` on for arrow's path as well. The window of
 section 2 already scales past 2.41 times with none of that. Worth running only
@@ -539,6 +555,6 @@ look like 300 MB per pass, are 0.2 ms of 4.76 per buffer, section 6.1.
   adopts the block's vector and `Buffer::from(bytes)` adopts the batch's, as
   the spec claims.
 - **The scan for an allele below the missing one is as vectorized as it
-  gets**: `cargo asm` prints the fold over `i8::min` as four NEON
-  accumulators, 64 bytes an iteration, with no bounds check, and the fold is
+  gets**: `cargo asm` prints the fold over `i8::min` as four accumulators in the vector
+  registers of this machine, 64 bytes an iteration, with no bounds check, and the fold is
   order-free so a parallel or vectorized form gives the same answer.
