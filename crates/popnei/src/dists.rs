@@ -22,8 +22,9 @@
 
 use std::num::NonZeroUsize;
 
-use crate::block::{Block, BlockReader, BlockSize};
+use crate::block::{Block, BlockReader, BlockSize, with_one_block_ahead};
 use crate::error::{Error, Result};
+use crate::phases::{Phase, timed};
 use crate::variant::{MISSING_ALLELE, Needs};
 
 /// How many variants one word of a set of bits holds, the bits of a `u64`.
@@ -797,41 +798,63 @@ pub fn calc_kosman_sums<R: BlockReader + ?Sized>(reader: &mut R) -> Result<Kosma
     reader.set_needs(Needs::GTS);
     let num_individuals = reader.individuals().len();
     let ploidy = reader.ploidy();
-    // The two counts of every pair are asked of the machine once, when the
-    // first block is there: at 10000 individuals they are 400 MB, which a
-    // reader with no variant would have asked for and given back.
-    let Some(block) = reader.next_block()? else {
-        let filters = reader.filtering_stats();
-        return Err(Error::PassGaveNoVariant {
-            // The filter nearest the source was given what the source
-            // gave; with no filter the pass gave what the source gave,
-            // which is nothing.
-            num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
-            filters,
-        });
-    };
-    let mut sums = KosmanSums::at_zero(num_individuals, ploidy)?;
-    let mut next = Some(block);
-    while let Some(block) = next.take() {
-        // Every variant of the block counts here, called in a pair or not:
-        // `num_vars` is what a user reads as the variants of the pass. A
-        // `usize` is 64 bits natively and 32 in wasm, so the conversion
-        // holds; the sum stops at the largest `u64`, which is more variants
-        // than any source holds, and the sums of a pair are refused long
-        // before it.
-        sums.num_vars = sums
-            .num_vars
-            .saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
-        let bits = KosmanBits::of_block(&block)?;
-        add_the_block(&mut sums, &bits)?;
-        // The sets of the block and the block itself are given back before
-        // the reader is asked for the next one, so that the memory of two
-        // blocks and of two sets of bits is never held at once.
-        drop(bits);
-        drop(block);
-        next = reader.next_block()?;
-    }
-    Ok(sums)
+    // The blocks are read on a thread of its own, one block ahead, so that
+    // the read of the next block and the counting of the pairs of the one in
+    // hand overlap. Over 100000 variants of 1000 individuals of a vars file,
+    // `docs/reports/perf-read-ahead-2026-09-25.md` measured this calculation
+    // at 0.123 s without this and 0.110 s with it on 18 cores, and 0.852 s
+    // against 0.764 s on one thread, against 0.103 s of counting.
+    // It is the one pass that gave up something for it: the sets of bits and
+    // the block were dropped before the reader was asked for the next one so
+    // that the memory of two blocks was never held at once, and the reading
+    // thread holds one more block by what it is. In wasm there is no thread
+    // and the blocks come one after another as they did.
+    // The chain is lent through a reborrow of its own, because
+    // `with_one_block_ahead` moves the reader it is given to its thread and
+    // this pass is generic over a reader that may have no size: `&mut R` is
+    // a reader of its own whatever `R` is, and it is the one that travels.
+    let mut lent = &mut *reader;
+    with_one_block_ahead(&mut lent, |blocks| {
+        // The two counts of every pair are asked of the machine once, when
+        // the first block is there: at 10000 individuals they are 400 MB,
+        // which a reader with no variant would have asked for and given
+        // back.
+        let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? else {
+            let filters = blocks.filtering_stats();
+            return Err(Error::PassGaveNoVariant {
+                // The filter nearest the source was given what the source
+                // gave; with no filter the pass gave what the source gave,
+                // which is nothing.
+                num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
+                filters,
+            });
+        };
+        let mut sums = KosmanSums::at_zero(num_individuals, ploidy)?;
+        let mut next = Some(block);
+        while let Some(block) = next.take() {
+            timed(Phase::Work, || -> Result<()> {
+                // Every variant of the block counts here, called in a pair
+                // or not: `num_vars` is what a user reads as the variants of
+                // the pass. A `usize` is 64 bits natively and 32 in wasm, so
+                // the conversion holds; the sum stops at the largest `u64`,
+                // which is more variants than any source holds, and the sums
+                // of a pair are refused long before it.
+                sums.num_vars = sums
+                    .num_vars
+                    .saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+                let bits = KosmanBits::of_block(&block)?;
+                add_the_block(&mut sums, &bits)?;
+                // The sets of the block and the block itself are given back
+                // before the reader is asked for the next one, so that the
+                // memory of two sets of bits is never held at once.
+                drop(bits);
+                drop(block);
+                Ok(())
+            })?;
+            next = timed(Phase::NextBlock, || blocks.next_block())?;
+        }
+        Ok(sums)
+    })
 }
 
 /// For every pair of individuals, the ploidy times the sum of d over the

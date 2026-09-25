@@ -1441,6 +1441,8 @@ filter compares.
   all of them: pyNei does not have it. A user puts the filter of
   individuals before them.
 - A copy of a `Variants` with its steps: a user opens the source again.
-- The read ahead thread of section 3 of the architecture: with the first
-  calculation that consumes blocks. It takes the reader into its thread,
-  and it gives it back when the pass ends, so that the counts can be read.
+- The read ahead thread of section 3 of the architecture: "The reader one
+  block ahead" of `docs/specs/block.md`. It lends the chain of readers to
+  its thread and gives it back when the pass ends, so that the counts of
+  every filter of the chain are read from the chain itself; while the pass
+  runs, the handle answers with the counts as of the last block it gave.

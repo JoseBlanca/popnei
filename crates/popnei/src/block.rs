@@ -1638,10 +1638,15 @@ impl<R: BlockReader> fmt::Debug for Reblock<R> {
 /// `docs/specs/filters.md` has it.
 ///
 /// It is worth its thread where the read of a block and the work on it are
-/// of the same order. On 100000 variants of 1000 individuals of a vars
-/// file, `docs/reports/perf-gwas-2026-09-24.md` measured the reader at
-/// 0.112 s of an association study, against 0.091 s for the dosages and
-/// the test of the same blocks on 18 cores.
+/// of the same order, and what it saves a pass is the smaller of the two.
+/// Over 100000 variants of 1000 individuals of a vars file on 18 cores, the
+/// read of a block is 0.027 s of the panel since the reader of that format
+/// began decoding its batches on the threads of rayon, which
+/// `docs/reports/perf-vars-threads-2026-09-25.md` measured, and 0.112 s
+/// before it; the nine passes that were measured against this reader work
+/// for 0.004 s to 0.211 s on the same blocks.
+/// `docs/reports/perf-read-ahead-2026-09-25.md` has what it gave each of
+/// them, and eight of the nine keep it.
 ///
 /// In wasm there is no thread: `body` is given `reader` itself and reads
 /// the blocks one after another, as everything else of popnei does there.

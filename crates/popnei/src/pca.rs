@@ -30,8 +30,9 @@ use popnei_linalg::{
     Eigen, TheFirstOperand, TheSecondOperand, add_self_product_lower, eigh_lower, product,
 };
 
-use crate::block::{Block, BlockReader, Reblock};
+use crate::block::{Block, BlockReader, Reblock, with_one_block_ahead};
 use crate::error::{Error, Result};
+use crate::phases::{Phase, timed};
 use crate::variant::{DosageOptions, DosageScale, Needs, RowPositions};
 
 /// Whether the table is centered, which `do_pca` of pyNei does by default
@@ -637,76 +638,89 @@ fn the_weights_of_a_second_pass<R: BlockReader>(
     // How many variants that were used the passes before this block gave,
     // which is the column of `princomps` its first one goes into.
     let mut used_before = 0_usize;
-    while let Some(block) = reader.next_block()? {
-        let used = the_standardized_block(
-            &block,
-            num_individuals,
-            ploidy,
-            options,
-            num_cols,
-            &mut standardized,
-        )?;
-        let kept = the_variants_of_the_first_pass(&used, num_cols, used_before, after)?;
-        // The variants of a block that were used are at most all of the
-        // ones the first pass used, so this product is at most the values
-        // of the weights, which were counted above.
-        let needed = num_values_of(kept, after.num_prin_comps);
-        if of_the_block.len() < needed {
-            of_the_block.resize(needed, 0.0);
+    // The blocks of the second pass are read one block ahead of the product
+    // that gives the weights, for the reason the first pass has them. Ten
+    // weights over 100000 variants of 1000 individuals take 0.300 s without
+    // this and 0.280 s with it on 18 cores, and 0.627 s against 0.455 s on
+    // one thread: the two passes together wait 0.027 s on the handle against
+    // 0.211 s of work, which `docs/reports/perf-read-ahead-2026-09-25.md`
+    // has.
+    with_one_block_ahead(reader, |blocks| {
+        while let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? {
+            timed(Phase::Work, || -> Result<()> {
+                let used = the_standardized_block(
+                    &block,
+                    num_individuals,
+                    ploidy,
+                    options,
+                    num_cols,
+                    &mut standardized,
+                )?;
+                let kept = the_variants_of_the_first_pass(&used, num_cols, used_before, after)?;
+                // The variants of a block that were used are at most all of the
+                // ones the first pass used, so this product is at most the values
+                // of the weights, which were counted above.
+                let needed = num_values_of(kept, after.num_prin_comps);
+                if of_the_block.len() < needed {
+                    of_the_block.resize(needed, 0.0);
+                }
+                // The weight of each variant of the block in each component: the
+                // standardized rows of the block, which are the columns of Z of
+                // those variants, times the eigenvectors divided by sqrt(λ). A
+                // block whose rows all had no variance has no row here and writes
+                // nothing.
+                product(
+                    TheFirstOperand::ByTheRowsOfTheResult {
+                        values: &standardized,
+                        rows: kept,
+                    },
+                    num_individuals,
+                    TheSecondOperand::ByTheValuesSummedOver {
+                        values: after.scaled_vectors,
+                        cols: after.num_prin_comps,
+                    },
+                    &mut of_the_block,
+                )
+                .map_err(|source| Error::PcaLinalg {
+                    operation: "product that gives the weights of a block of variants",
+                    source,
+                })?;
+                // The product gives the weights variant after variant and the
+                // result holds them component after component, so each variant of
+                // the block writes its weights into its own column of every
+                // component. No copy of the whole matrix is made.
+                for (variant, of_the_variant) in of_the_block
+                    .chunks_exact(after.num_prin_comps)
+                    .take(kept)
+                    .enumerate()
+                {
+                    let column = used_before
+                        .checked_add(variant)
+                        .ok_or_else(the_variants_are_too_many)?;
+                    for (of_the_component, weight) in
+                        princomps.chunks_exact_mut(num_used).zip(of_the_variant)
+                    {
+                        // The column is below the variants the first pass used,
+                        // which this pass has been counting against them, so a
+                        // column that is not there is a defect of popnei and not
+                        // a weight to drop in silence.
+                        let Some(target) = of_the_component.get_mut(column) else {
+                            return Err(Error::PcaWeightOutOfPlace { column, num_used });
+                        };
+                        *target = *weight;
+                    }
+                }
+                used_before = used_before
+                    .checked_add(kept)
+                    .ok_or_else(the_variants_are_too_many)?;
+                num_cols = num_cols
+                    .checked_add(block.num_vars)
+                    .ok_or_else(the_variants_are_too_many)?;
+                Ok(())
+            })?;
         }
-        // The weight of each variant of the block in each component: the
-        // standardized rows of the block, which are the columns of Z of
-        // those variants, times the eigenvectors divided by sqrt(λ). A
-        // block whose rows all had no variance has no row here and writes
-        // nothing.
-        product(
-            TheFirstOperand::ByTheRowsOfTheResult {
-                values: &standardized,
-                rows: kept,
-            },
-            num_individuals,
-            TheSecondOperand::ByTheValuesSummedOver {
-                values: after.scaled_vectors,
-                cols: after.num_prin_comps,
-            },
-            &mut of_the_block,
-        )
-        .map_err(|source| Error::PcaLinalg {
-            operation: "product that gives the weights of a block of variants",
-            source,
-        })?;
-        // The product gives the weights variant after variant and the
-        // result holds them component after component, so each variant of
-        // the block writes its weights into its own column of every
-        // component. No copy of the whole matrix is made.
-        for (variant, of_the_variant) in of_the_block
-            .chunks_exact(after.num_prin_comps)
-            .take(kept)
-            .enumerate()
-        {
-            let column = used_before
-                .checked_add(variant)
-                .ok_or_else(the_variants_are_too_many)?;
-            for (of_the_component, weight) in
-                princomps.chunks_exact_mut(num_used).zip(of_the_variant)
-            {
-                // The column is below the variants the first pass used,
-                // which this pass has been counting against them, so a
-                // column that is not there is a defect of popnei and not
-                // a weight to drop in silence.
-                let Some(target) = of_the_component.get_mut(column) else {
-                    return Err(Error::PcaWeightOutOfPlace { column, num_used });
-                };
-                *target = *weight;
-            }
-        }
-        used_before = used_before
-            .checked_add(kept)
-            .ok_or_else(the_variants_are_too_many)?;
-        num_cols = num_cols
-            .checked_add(block.num_vars)
-            .ok_or_else(the_variants_are_too_many)?;
-    }
+        Ok(())
+    })?;
     if num_cols != after.num_cols {
         return Err(Error::PcaSecondPassDiffers {
             problem: VariantsOfTheSecondPass::Count {
@@ -845,33 +859,49 @@ fn the_first_pass<R: BlockReader>(
     // that a pass over a million variants allocates it once. The rows that
     // are not used are left as they were and nothing reads them.
     let mut standardized: Vec<f64> = Vec::new();
-    while let Some(block) = reader.next_block()? {
-        let used = the_standardized_block(
-            &block,
-            num_individuals,
-            ploidy,
-            options,
-            num_cols,
-            &mut standardized,
-        )?;
-        for (var, _) in used.iter().enumerate().filter(|(_, was_used)| **was_used) {
-            used_cols.push(
-                num_cols
-                    .checked_add(var)
-                    .ok_or_else(the_variants_are_too_many)?,
-            );
+    // The blocks are read on a thread of its own, one block ahead, so that
+    // the read of the next block and the product of the one in hand overlap.
+    // Over 100000 variants of 1000 individuals of a vars file with no
+    // weights asked for, `docs/reports/perf-read-ahead-2026-09-25.md`
+    // measured this analysis at 0.236 s without this and 0.221 s with it on
+    // 18 cores, and 0.433 s against 0.341 s on one thread, against 0.170 s
+    // of work on the same blocks. In wasm, where there is no thread, the
+    // blocks come one after another as they did, and the chain of readers is
+    // lent and not given away, so the caller still reads its counts when
+    // this returns.
+    with_one_block_ahead(reader, |blocks| {
+        while let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? {
+            timed(Phase::Work, || -> Result<()> {
+                let used = the_standardized_block(
+                    &block,
+                    num_individuals,
+                    ploidy,
+                    options,
+                    num_cols,
+                    &mut standardized,
+                )?;
+                for (var, _) in used.iter().enumerate().filter(|(_, was_used)| **was_used) {
+                    used_cols.push(
+                        num_cols
+                            .checked_add(var)
+                            .ok_or_else(the_variants_are_too_many)?,
+                    );
+                }
+                let kept = used.iter().filter(|was_used| **was_used).count();
+                add_self_product_lower(&standardized, kept, num_individuals, &mut gram).map_err(
+                    |source| Error::PcaLinalg {
+                        operation: "product of a block of variants with itself",
+                        source,
+                    },
+                )?;
+                num_cols = num_cols
+                    .checked_add(block.num_vars)
+                    .ok_or_else(the_variants_are_too_many)?;
+                Ok(())
+            })?;
         }
-        let kept = used.iter().filter(|was_used| **was_used).count();
-        add_self_product_lower(&standardized, kept, num_individuals, &mut gram).map_err(
-            |source| Error::PcaLinalg {
-                operation: "product of a block of variants with itself",
-                source,
-            },
-        )?;
-        num_cols = num_cols
-            .checked_add(block.num_vars)
-            .ok_or_else(the_variants_are_too_many)?;
-    }
+        Ok(())
+    })?;
     Ok(FirstPass {
         gram,
         used_cols,

@@ -47,6 +47,7 @@ use popnei_linalg::{TheFirstOperand, TheSecondOperand, product};
 use crate::block::Block;
 use crate::block::BlockReader;
 use crate::error::{Error, Result};
+use crate::phases::{Phase, timed};
 use crate::variant::{
     AlleleCounts, ChromTable, MISSING_ALLELE, Needs, count_alleles, the_major_allele,
     the_major_allele_frequency,
@@ -1196,44 +1197,48 @@ fn the_dosages_of_the_pass<R: BlockReader + ?Sized>(
     let mut num_vars = 0_usize;
     let mut chroms: Vec<u32> = Vec::new();
     let mut poss: Vec<u64> = Vec::new();
-    while let Some(block) = reader.next_block()? {
-        block.check()?;
-        let missing = (Needs::GTS | Needs::CHROM_POS).difference(block.fields());
-        if !missing.is_empty() {
-            return Err(Error::FieldsNotInTheBlock { fields: missing });
-        }
-        if block.num_individuals != tiles.num_individuals || block.ploidy != tiles.ploidy {
-            return Err(Error::BlocksDoNotFitTogether {
-                num_individuals: tiles.num_individuals,
-                ploidy: tiles.ploidy,
-                found_num_individuals: block.num_individuals,
-                found_ploidy: block.ploidy,
-            });
-        }
-        // The count is refused on the next line as soon as it passes the
-        // cap, so what saturates here is a pass that no machine gave: the
-        // message then names the largest number a `usize` holds.
-        let with_the_block = num_vars.saturating_add(block.num_vars);
-        if with_the_block > max_num_vars {
-            return Err(the_variants_pass_the_cap(with_the_block, max_num_vars));
-        }
-        num_vars = with_the_block;
-        // The block holds the two columns, which the fields above say.
-        let (Some(of_its_variants), Some(at_which_they_are)) = (&block.chrom, &block.pos) else {
-            return Err(Error::FieldsNotInTheBlock {
-                fields: Needs::CHROM_POS,
-            });
-        };
-        the_values_of_the_column(
-            &mut chroms,
-            of_its_variants,
-            "the chromosome of each variant",
-        )?;
-        the_values_of_the_column(&mut poss, at_which_they_are, "the position of each variant")?;
-        tiles.take_the_block(&block)?;
-        // The block is given back before the reader is asked for the next
-        // one, so the memory of two blocks is never held at once.
-        drop(block);
+    while let Some(block) = timed(Phase::NextBlock, || reader.next_block())? {
+        timed(Phase::Work, || -> Result<()> {
+            block.check()?;
+            let missing = (Needs::GTS | Needs::CHROM_POS).difference(block.fields());
+            if !missing.is_empty() {
+                return Err(Error::FieldsNotInTheBlock { fields: missing });
+            }
+            if block.num_individuals != tiles.num_individuals || block.ploidy != tiles.ploidy {
+                return Err(Error::BlocksDoNotFitTogether {
+                    num_individuals: tiles.num_individuals,
+                    ploidy: tiles.ploidy,
+                    found_num_individuals: block.num_individuals,
+                    found_ploidy: block.ploidy,
+                });
+            }
+            // The count is refused on the next line as soon as it passes the
+            // cap, so what saturates here is a pass that no machine gave: the
+            // message then names the largest number a `usize` holds.
+            let with_the_block = num_vars.saturating_add(block.num_vars);
+            if with_the_block > max_num_vars {
+                return Err(the_variants_pass_the_cap(with_the_block, max_num_vars));
+            }
+            num_vars = with_the_block;
+            // The block holds the two columns, which the fields above say.
+            let (Some(of_its_variants), Some(at_which_they_are)) = (&block.chrom, &block.pos)
+            else {
+                return Err(Error::FieldsNotInTheBlock {
+                    fields: Needs::CHROM_POS,
+                });
+            };
+            the_values_of_the_column(
+                &mut chroms,
+                of_its_variants,
+                "the chromosome of each variant",
+            )?;
+            the_values_of_the_column(&mut poss, at_which_they_are, "the position of each variant")?;
+            tiles.take_the_block(&block)?;
+            // The block is given back before the reader is asked for the next
+            // one, so the memory of two blocks is never held at once.
+            drop(block);
+            Ok(())
+        })?;
     }
     Ok(ThePassOfTheMatrix {
         num_vars,
