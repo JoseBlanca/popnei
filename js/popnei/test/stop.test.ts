@@ -13,6 +13,17 @@
  * `Variants`, the iteration of `iterBlocks` among them, as
  * `docs/glossary.md` has the three words.
  *
+ * Each of the twelve consumers is stopped in two ways, in the two loops
+ * over `THE_CONSUMERS` of `consumers.ts`: with a value of the application,
+ * which the consumer has to give back as it is, and with the `free()` of the
+ * variants that are being read, which popnei refuses and whose refusal then
+ * stops the pass as any other thrown value does. Both need every consumer to
+ * hold its source while its run reads: a consumer that hands the source to
+ * the core outside that hold lets a `free()` from the function through, and
+ * what the generated `free` does before the call it fails in is to zero the
+ * pointer of the handle and take it out of the `FinalizationRegistry`, so
+ * the source stays in the memory of wasm with no handle left to free it.
+ *
  * Which error the core gives for the failed read depends on the reader that
  * was reading: a plain VCF in the middle of a line, a gzipped one inside its
  * decompressor and a vars file inside the read of a batch, which the reader
@@ -46,6 +57,7 @@ import {
   writeVars,
 } from "popnei";
 
+import { THE_CONSUMERS, theConsumersTheCrateNames } from "./consumers.ts";
 import { manyVariantsVcf, referenceVcf } from "./reference.ts";
 
 await init();
@@ -65,6 +77,13 @@ const MANY_VCF_GZ = await referenceVcf("many.vcf.gz");
  * is the whole file, read again after the run that was stopped.
  */
 const VARIANTS_OF_MANY_VCF = 500;
+
+/**
+ * How many variants of `many.vcf` passed the filter the file itself records,
+ * which is what a pass over it gives with the `onlyPassed` the two loops
+ * over the consumers open it with.
+ */
+const VARIANTS_THAT_PASSED = 475;
 
 /** How many bytes `many.vcf` holds, which `docs/specs/io_vcf.md` gives. */
 const BYTES_OF_MANY_VCF = 117346;
@@ -117,6 +136,95 @@ function stoppedAt(variants: Variants, stopAt: number): Progress[] {
     }
   });
   return calls;
+}
+
+/**
+ * How many variants `variants` gives when they are read again, with no
+ * function set on them.
+ *
+ * It is what says that the `Variants` is the one it was: a source that was
+ * left half freed answers a read with the error of variants that were freed,
+ * and one whose handle was broken with a null pointer passed to Rust.
+ */
+function numVarsReadAgain(variants: Variants): number {
+  variants.onProgress();
+  let numVars = 0;
+  for (const block of variants.iterBlocks({ numVarsPerBlock: 100 })) {
+    numVars += block.numVars;
+  }
+  return numVars;
+}
+
+test("the twelve consumers the tests stop are the twelve the crate names", () => {
+  // The loops below are worth what their list holds: a consumer left out of
+  // it is never stopped and nothing says so. The crate's own list is what
+  // the message of a name that is of no consumer gives, and it is written in
+  // no file of TypeScript.
+  assert.deepEqual(
+    [...THE_CONSUMERS.map((consumer) => consumer.name)].sort(),
+    [...theConsumersTheCrateNames()].sort(),
+  );
+});
+
+for (const consumer of THE_CONSUMERS) {
+  test(`${consumer.name} stopped at its first read throws the value of the application`, () => {
+    const variants = openVcf(MANY_VCF);
+    const calls = stoppedAt(variants, 0);
+    try {
+      const thrown = whatWasThrownBy(() => {
+        consumer.run(variants);
+      });
+      assert.equal(thrown, THE_CANCEL);
+      assert.ok(
+        !(thrown instanceof Error),
+        `${consumer.name} gave an error of popnei: ${String(thrown)}`,
+      );
+      // The first read of the pass is the header of the VCF, read when the
+      // reader is built, so every one of the twelve was stopped before it
+      // was given a variant.
+      assert.equal(calls.length, 1);
+      assert.equal(calls.at(0)?.bytesRead, 0);
+      assert.equal(numVarsReadAgain(variants), VARIANTS_THAT_PASSED);
+    } finally {
+      variants.free();
+    }
+  });
+}
+
+for (const consumer of THE_CONSUMERS) {
+  test(`free from inside the function while ${consumer.name} reads is refused`, () => {
+    const variants = openVcf(MANY_VCF);
+    // While a consumer runs, wasm-bindgen holds the source for the length of
+    // that call, and the free of a value it holds throws inside wasm after
+    // the generated code has zeroed the pointer of the handle and taken it
+    // out of the `FinalizationRegistry`. So the package counts the run and
+    // refuses the free itself, with an `Error` of its own, and that error
+    // leaves the function as any other thrown value does and stops the pass.
+    // A consumer that hands the source to the core without counting its run
+    // gives wasm-bindgen's own sentence here and leaves a `Variants` that
+    // says it was freed over a source nothing can free.
+    let calls = 0;
+    variants.onProgress(() => {
+      calls += 1;
+      if (calls > 1) {
+        return;
+      }
+      variants.free();
+    });
+    try {
+      const thrown = whatWasThrownBy(() => {
+        consumer.run(variants);
+      });
+      assert.ok(
+        thrown instanceof Error,
+        `${consumer.name} threw ${String(thrown)}`,
+      );
+      assert.match(thrown.message, /a run is reading these variants/);
+      assert.equal(numVarsReadAgain(variants), VARIANTS_THAT_PASSED);
+    } finally {
+      variants.free();
+    }
+  });
 }
 
 test("a function that throws at the first read stops the run with its value", () => {

@@ -355,7 +355,10 @@ export function calcPopDiversity(
   options: CalcPopDiversityOptions = {},
 ): PopDiversity {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   const stats = theStats(options.stats);
   const pops = thePops(options.pops);
   // What is checked here is that the number arrives as the number the user
@@ -376,14 +379,16 @@ export function calcPopDiversity(
   // The steps of the pass are a copy of the list, made after every argument
   // was checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
-  const diversity = source.calc_pop_diversity(
-    steps.of_a_pass(),
-    stats,
-    pops.names,
-    pops.individuals,
-    pops.numIndividualsPerPop,
-    numCalledAlleles,
-    minNumIndividuals,
+  const diversity = whileTheRunReads(() =>
+    source.calc_pop_diversity(
+      steps.of_a_pass(),
+      stats,
+      pops.names,
+      pops.individuals,
+      pops.numIndividualsPerPop,
+      numCalledAlleles,
+      minNumIndividuals,
+    ),
   );
   // Every array is copied out of the memory of wasm as it is read, and the
   // result holds that memory until it is freed, which is here: what the
