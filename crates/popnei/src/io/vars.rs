@@ -1526,8 +1526,10 @@ struct BatchPlace {
     num_vars: usize,
 }
 
-/// How many batches of a vars file are decoded at once, on the threads of
-/// rayon.
+/// The most batches of a vars file that are decoded at once, on the threads
+/// of rayon: the window is this many or the threads of the pool the reader
+/// runs in, whichever is fewer, so a pool of one thread decodes one batch at
+/// a time and a pool of 18 decodes eight.
 ///
 /// The decompression of the buffers is what bounds a pass over a vars file:
 /// of the 5.5 ms a batch of 5000 variants of 1000 individuals takes, 4.99 ms
@@ -1555,6 +1557,27 @@ struct BatchPlace {
 /// 8. A window smaller than the pool leaves the threads above its size with
 /// nothing to do, which is what the 24.2 ms at 18 are: the report of the
 /// performance review of the vars reader has the whole sweep.
+///
+/// Why the pool bounds the window too: a window of eight decodes about 80 MB
+/// of arrow buffers before a consumer touches the first of them, and this
+/// machine has 128 KB of first level data cache for each performance core
+/// and one 16 MB second level shared by six of them, so with one thread
+/// every block has left the caches before its genotypes are read, where one
+/// batch at a time decoded each block and then had it consumed while it was
+/// still warm. Over `bigcalled.vars`, the Kosman distance of every pair of
+/// its 1000 individuals in a pool of one thread, the best of three runs of
+/// `cargo bench --bench kosman_dists`, went from 0.880 s with one batch at a
+/// time to 1.026 s with a window of eight, 17% more, where the pass of the
+/// `vars_file` benchmark, whose consumer only sums the genotypes, lost 1.1%.
+/// Bounding the window by the pool gives the one thread its 0.880 s back and
+/// keeps what the 18 threads won. The two binaries were run one after the other, four times
+/// over, because the load of this machine moves a median by a fifth; the
+/// three sets the load left alone read, on one thread, 0.885, 0.880 and
+/// 0.884 s with one batch at a time against 0.891, 0.883 and 0.882 s with the
+/// window bounded by the pool, and on 18 threads 0.218, 0.217 and 0.218 s
+/// against 0.134, 0.128 and 0.129 s. The fourth set was thrown away: the same
+/// calculation over blocks already in memory, which no reader is in, read
+/// 0.785 to 1.401 s within it.
 #[cfg(not(target_family = "wasm"))]
 const BATCHES_AT_ONCE: usize = 8;
 
@@ -1669,9 +1692,10 @@ impl<R: Read + Seek> VarsReader<R> {
     /// The next batch of the file as a block, the batches of no variant
     /// passed over, and `None` when there are no more.
     ///
-    /// The bytes of up to [`BATCHES_AT_ONCE`] batches are read from the
-    /// source, in the order of the file, and those batches are decoded on
-    /// the threads of the pool the caller is in; the blocks then come out of
+    /// The bytes of a window of batches, as many as [`BATCHES_AT_ONCE`] says
+    /// at the most, are read from the source, in the order of the file, and
+    /// those batches are decoded on the threads of the pool the caller is
+    /// in; the blocks then come out of
     /// that window one call at a time, in the order of the file, and the
     /// checks of each batch and the building of each block are made on the
     /// thread that asks for it. The chromosome table hands its numbers out
@@ -1705,9 +1729,15 @@ impl<R: Read + Seek> VarsReader<R> {
         }
     }
 
-    /// It reads the bytes of the next batches of the file, up to
-    /// [`BATCHES_AT_ONCE`] of them, decodes them on the threads of rayon and
-    /// puts what each gave into the queue, in the order of the file.
+    /// It reads the bytes of the next batches of the file, as many as the
+    /// window holds, decodes them on the threads of rayon and puts what each
+    /// gave into the queue, in the order of the file.
+    ///
+    /// The window is [`BATCHES_AT_ONCE`] or the threads of the pool this runs
+    /// in, whichever is fewer, for the reason that constant gives.
+    /// `rayon::current_num_threads` is the pool of the caller: 1 inside a
+    /// pool of one thread, and the threads of the global pool outside any
+    /// `install`, which is one for each core of the machine.
     ///
     /// The bytes are read one batch after another, because they come from one
     /// `Read + Seek`. The results are collected in the order of the file and
@@ -1724,7 +1754,8 @@ impl<R: Read + Seek> VarsReader<R> {
 
         let mut fetched: Vec<(usize, BatchPlace, BatchAt, Vec<u8>)> = Vec::new();
         let mut failed: Option<(usize, Error)> = None;
-        while fetched.len() < BATCHES_AT_ONCE {
+        let window = BATCHES_AT_ONCE.min(rayon::current_num_threads());
+        while fetched.len() < window {
             let Some(at) = self.blocks.get(self.next).copied() else {
                 break;
             };
@@ -7581,8 +7612,27 @@ mod tests {
     ///
     /// The blocks before the damaged batch are given, as they are today, and
     /// every call after the error gives none.
+    ///
+    /// Away from wasm the window is the smaller of [`BATCHES_AT_ONCE`] and
+    /// the threads of the pool, so the pool is built with as many threads as
+    /// that constant: a machine of one core would otherwise give a window of
+    /// one batch, and then the order of the errors of a window is not what is
+    /// being read. wasm has no threads and reads one batch at a time.
     #[test]
     fn the_first_damaged_batch_in_the_order_of_the_file_is_the_error_the_reader_gives() {
+        #[cfg(not(target_family = "wasm"))]
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(super::BATCHES_AT_ONCE)
+            .build()
+            .expect("the pool")
+            .install(the_error_of_the_first_damaged_batch);
+        #[cfg(target_family = "wasm")]
+        the_error_of_the_first_damaged_batch();
+    }
+
+    /// The body of the test above, which away from wasm is run in a pool of
+    /// as many threads as the window holds batches.
+    fn the_error_of_the_first_damaged_batch() {
         let bytes = a_file_of_many_batches(17);
         let the_sixth = a_batch_damaged(&bytes, 5);
         let the_sixth_and_the_eighth = a_batch_damaged(&the_sixth, 7);
@@ -7620,8 +7670,24 @@ mod tests {
     /// The five blocks before the damaged batch are given before the error,
     /// which is what says that a reader of a window of batches does not lose
     /// the blocks it decoded before the fault.
+    ///
+    /// Away from wasm the pool is built with as many threads as the window
+    /// holds batches, for the reason the test above gives.
     #[test]
     fn the_blocks_before_a_damaged_batch_are_given_before_the_error() {
+        #[cfg(not(target_family = "wasm"))]
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(super::BATCHES_AT_ONCE)
+            .build()
+            .expect("the pool")
+            .install(the_blocks_before_a_damaged_batch);
+        #[cfg(target_family = "wasm")]
+        the_blocks_before_a_damaged_batch();
+    }
+
+    /// The body of the test above, which away from wasm is run in a pool of
+    /// as many threads as the window holds batches.
+    fn the_blocks_before_a_damaged_batch() {
         let bytes = a_file_of_many_batches(17);
         let damaged = a_batch_damaged(&bytes, 5);
         let whole = the_whole_pass(&bytes);
