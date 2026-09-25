@@ -34,7 +34,7 @@ use popnei::diversity::{
 use popnei::stats::Pops;
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts};
+use crate::source::{Consumer, OpenSource, PassCounts, the_run_of};
 use crate::stats::{PopsGiven, pops_of_the_arrays};
 use crate::steps::{Steps, chain_of};
 
@@ -109,85 +109,87 @@ pub(crate) fn pop_diversity_of(
         min_num_individuals: asked.min_num_individuals,
     };
     let named = the_pops_given(asked)?;
-    let reader = source.reader(None)?;
-    let mut chain = chain_of(reader, steps.steps())?;
-    let pops = match named {
-        Some(named) => Pops::from_names(&named, chain.individuals())?,
-        None => Pops::all(chain.individuals().len()),
-    };
-    let pop_names: Vec<String> = (0..pops.len())
-        .map(|pop| pops.name(pop).to_owned())
-        .collect();
-    let of_each_pop: Vec<&[usize]> = (0..pops.len()).map(|pop| pops.individuals(pop)).collect();
-    let diversity = diversity_of_the_pops(&mut *chain, &of_each_pop, &options)?;
-    let counts = PassCounts::of(diversity.num_vars_of_the_pass(), &chain.filtering_stats());
-    let num_pops = diversity.num_pops();
-    // Every pass counts the variants of each of its populations, whatever
-    // statistics it was asked for, so a result with no such count is a
-    // defect and not a statistic nobody asked for.
-    let Some(num_vars_with_data) = of_every_pop(num_pops, |pop| diversity.num_vars(pop)) else {
-        return Err(JsPopneiError::Broken(format!(
-            "the pass counted the variants of no population, and it was over {num_pops} \
-             of them"
-        )));
-    };
-    let Some(num_vars_in_draw) = of_every_pop(num_pops, |pop| diversity.num_vars_in_draw(pop))
-    else {
-        return Err(JsPopneiError::Broken(format!(
-            "the pass counted the variants in the draw for no population, and it was \
-             over {num_pops} of them"
-        )));
-    };
-    // The package reads a statistic as the total and the standardized value
-    // together and refuses a result that holds one of the two, so the
-    // second is there exactly when the first is: the two accessors of the core
-    // answer with nothing for the same reason, that nobody asked for the
-    // statistic.
-    let num_alleles_total = total_for_javascript(
-        of_every_pop(num_pops, |pop| diversity.num_alleles(pop)),
-        "the alleles one population called",
-    )?;
-    let private_alleles_total = total_for_javascript(
-        of_every_pop(num_pops, |pop| diversity.private_alleles(pop)),
-        "the private alleles of one population",
-    )?;
-    let variable_vars_total = total_for_javascript(
-        of_every_pop(num_pops, |pop| diversity.num_variable_vars(pop)),
-        "the variable variants of one population",
-    )?;
-    let spectrum = the_spectrum_of_every_pop(num_pops, &diversity)?;
-    Ok(PopDiversityOfAPass {
-        pop_names: Some(pop_names),
-        num_vars_with_data: Some(for_javascript_each(
-            num_vars_with_data,
-            "the variants of one population",
-        )?),
-        num_vars_in_draw: Some(for_javascript_each(
-            num_vars_in_draw,
-            "the variants in the draw for one population",
-        )?),
-        num_vars_every_pop: for_javascript(
-            diversity.num_vars_every_pop(),
-            "the variants that counted for every population",
-        )?,
-        num_vars_every_pop_in_draw: for_javascript(
-            diversity.num_vars_every_pop_in_draw(),
-            "the variants every population reached the draw at",
-        )?,
-        num_alleles_in_draw: of_every_pop(num_pops, |pop| diversity.num_alleles_in_draw(pop)),
-        num_alleles_total,
-        private_alleles_in_draw: of_every_pop(num_pops, |pop| {
-            diversity.private_alleles_in_draw(pop)
-        }),
-        private_alleles_total,
-        variable_vars_in_draw: of_every_pop(num_pops, |pop| {
-            diversity.variable_vars_ratio_in_draw(pop)
-        }),
-        variable_vars_total,
-        num_sfs_bins: spectrum.num_bins,
-        folded_sfs: spectrum.bins_of_every_pop,
-        fis: of_every_pop(num_pops, |pop| diversity.fis(pop)),
-        counts,
+    the_run_of(source, &Consumer::PopDiversity, |run| {
+        let reader = source.reader(run, None)?;
+        let mut chain = chain_of(reader, steps.steps())?;
+        let pops = match named {
+            Some(named) => Pops::from_names(&named, chain.individuals())?,
+            None => Pops::all(chain.individuals().len()),
+        };
+        let pop_names: Vec<String> = (0..pops.len())
+            .map(|pop| pops.name(pop).to_owned())
+            .collect();
+        let of_each_pop: Vec<&[usize]> = (0..pops.len()).map(|pop| pops.individuals(pop)).collect();
+        let diversity = diversity_of_the_pops(&mut *chain, &of_each_pop, &options)?;
+        let counts = PassCounts::of(diversity.num_vars_of_the_pass(), &chain.filtering_stats());
+        let num_pops = diversity.num_pops();
+        // Every pass counts the variants of each of its populations, whatever
+        // statistics it was asked for, so a result with no such count is a
+        // defect and not a statistic nobody asked for.
+        let Some(num_vars_with_data) = of_every_pop(num_pops, |pop| diversity.num_vars(pop)) else {
+            return Err(JsPopneiError::Broken(format!(
+                "the pass counted the variants of no population, and it was over {num_pops} \
+                 of them"
+            )));
+        };
+        let Some(num_vars_in_draw) = of_every_pop(num_pops, |pop| diversity.num_vars_in_draw(pop))
+        else {
+            return Err(JsPopneiError::Broken(format!(
+                "the pass counted the variants in the draw for no population, and it was \
+                 over {num_pops} of them"
+            )));
+        };
+        // The package reads a statistic as the total and the standardized value
+        // together and refuses a result that holds one of the two, so the
+        // second is there exactly when the first is: the two accessors of the core
+        // answer with nothing for the same reason, that nobody asked for the
+        // statistic.
+        let num_alleles_total = total_for_javascript(
+            of_every_pop(num_pops, |pop| diversity.num_alleles(pop)),
+            "the alleles one population called",
+        )?;
+        let private_alleles_total = total_for_javascript(
+            of_every_pop(num_pops, |pop| diversity.private_alleles(pop)),
+            "the private alleles of one population",
+        )?;
+        let variable_vars_total = total_for_javascript(
+            of_every_pop(num_pops, |pop| diversity.num_variable_vars(pop)),
+            "the variable variants of one population",
+        )?;
+        let spectrum = the_spectrum_of_every_pop(num_pops, &diversity)?;
+        Ok(PopDiversityOfAPass {
+            pop_names: Some(pop_names),
+            num_vars_with_data: Some(for_javascript_each(
+                num_vars_with_data,
+                "the variants of one population",
+            )?),
+            num_vars_in_draw: Some(for_javascript_each(
+                num_vars_in_draw,
+                "the variants in the draw for one population",
+            )?),
+            num_vars_every_pop: for_javascript(
+                diversity.num_vars_every_pop(),
+                "the variants that counted for every population",
+            )?,
+            num_vars_every_pop_in_draw: for_javascript(
+                diversity.num_vars_every_pop_in_draw(),
+                "the variants every population reached the draw at",
+            )?,
+            num_alleles_in_draw: of_every_pop(num_pops, |pop| diversity.num_alleles_in_draw(pop)),
+            num_alleles_total,
+            private_alleles_in_draw: of_every_pop(num_pops, |pop| {
+                diversity.private_alleles_in_draw(pop)
+            }),
+            private_alleles_total,
+            variable_vars_in_draw: of_every_pop(num_pops, |pop| {
+                diversity.variable_vars_ratio_in_draw(pop)
+            }),
+            variable_vars_total,
+            num_sfs_bins: spectrum.num_bins,
+            folded_sfs: spectrum.bins_of_every_pop,
+            fis: of_every_pop(num_pops, |pop| diversity.fis(pop)),
+            counts,
+        })
     })
 }
 
