@@ -14,17 +14,16 @@
 //! The factor is estimated once, from the first block of a second pass over
 //! the same variants, and it is the mean over the first
 //! [`NUM_VARS_FOR_GAMMA`] variants of that block which vary of the exact
-//! denominator divided by the approximate one. A variant of those whose
-//! exact denominator is nothing but the rounding of a cancellation is left
-//! out of that mean, by the rule of **Open 2** of `docs/specs/gwas.md` and
-//! against the same scale the model's own score test judges a denominator
-//! by.
-
-use popnei_linalg::{TheFirstOperand, TheSecondOperand};
+//! denominator divided by the approximate one. A variant of those whose exact
+//! denominator is nothing but the rounding of a cancellation is left out of
+//! that mean, by the rule of "A variant there is nothing left to test" of
+//! `docs/specs/gwas.md` and against the same scale the model's own score test
+//! judges a denominator by.
 
 use crate::error::{Error, Result};
 
 use super::dosages::GwasDosages;
+use super::projection::TheProjection;
 use super::the_share_that_is_nothing;
 
 /// How many variants of the first block the factor is the mean of the
@@ -58,28 +57,24 @@ pub(crate) struct GrammarGamma {
 impl GrammarGamma {
     /// The factor estimated from the variants of `dosages` that vary, which
     /// are the rows of the first block of the second pass, against the
-    /// projection matrix `projection` of the null model that was fitted.
+    /// `projection` of the null model that was fitted.
     ///
-    /// `projection` holds `num_individuals` rows of `num_individuals`
-    /// values, row after row, and `dosages` holds one row of that many
-    /// values for each variant of the block that has variance. The first
+    /// `dosages` holds one row of one value per tested individual for each
+    /// variant of the block that has variance. The first
     /// [`NUM_VARS_FOR_GAMMA`] of those rows are taken, or all of them when
     /// they are fewer, and the factor is the mean over them of `x' p x`
     /// divided by the squared length of the variant's centered dosages.
     ///
     /// A variant of those whose `x' p x` is at most the tested individuals
     /// times 2.2e-16 of what there was is left out of the mean. What there
-    /// was is the variant's own squared length times
-    /// `largest_of_the_projection`, the largest value of the diagonal of
-    /// the projection matrix, which is the scale the score test of both
-    /// mixed models judges a denominator by and which the caller passes in
-    /// because it is the caller that holds it. Such a variant is one the
-    /// design explains, and what is left of it is the rounding of a
-    /// cancellation, which falls on either side of 0: averaging it in gives
-    /// a factor of about 1e-16 whenever the rounding falls positive, which
-    /// puts every denominator of the study under the threshold of
-    /// **Open 2** of `docs/specs/gwas.md` and leaves every variant with the
-    /// three NaNs and nothing said.
+    /// was is the variant's own squared length times the largest value of the
+    /// diagonal of the projection, which is the scale the score test of both
+    /// mixed models judges a denominator by. Such a variant is one the design
+    /// explains, and what the projection leaves of it is nothing: averaging
+    /// its ratio in gives a factor of about 1e-16, which puts every
+    /// denominator of the study under the threshold of "A variant there is
+    /// nothing left to test" of `docs/specs/gwas.md` and leaves every variant
+    /// with the three NaNs and nothing said.
     ///
     /// # Errors
     ///
@@ -92,15 +87,15 @@ impl GrammarGamma {
     /// what a block of variants the design explains gives.
     /// [`Error::GwasVariantsTooLarge`] when the values of
     /// those rows are more than a `usize` counts, and
-    /// [`Error::GwasLinalg`] when the product of them with the projection
-    /// matrix could not be done, which is where a block of other
+    /// [`Error::GwasLinalg`] when the solve of them against the factor of
+    /// the covariance could not be done, which is where a block of other
     /// individuals than the null model was fitted over is refused.
     pub(crate) fn of_the_first_block(
-        projection: &[f64],
-        num_individuals: usize,
-        largest_of_the_projection: f64,
+        projection: &mut TheProjection,
         dosages: &GwasDosages,
     ) -> Result<GrammarGamma> {
+        let num_individuals = projection.num_individuals();
+        let largest_of_the_projection = projection.largest_of_the_diagonal();
         let num_vars = dosages.num_with_variance().min(NUM_VARS_FOR_GAMMA);
         if num_vars == 0 {
             return Err(Error::GwasGrammarGammaWithoutAVariantThatVaries { num_individuals });
@@ -118,23 +113,8 @@ impl GrammarGamma {
             // variance, which is a defect of the dosages of this module.
             return Err(Error::GwasVariantsTooLarge);
         }
-        let mut projected = vec![0.0_f64; values];
-        popnei_linalg::product(
-            TheFirstOperand::ByTheRowsOfTheResult {
-                values: rows,
-                rows: num_vars,
-            },
-            num_individuals,
-            TheSecondOperand::ByTheValuesSummedOver {
-                values: projection,
-                cols: num_individuals,
-            },
-            &mut projected,
-        )
-        .map_err(|source| Error::GwasLinalg {
-            operation: "product of the first variants that vary with the projection matrix",
-            source,
-        })?;
+        let mut projected = Vec::new();
+        projection.through(rows, num_vars, &mut projected)?;
         // The share of what the variant was that the projection has to
         // leave of it for its ratio to be a ratio and not the rounding of a
         // cancellation over a squared length. It is the rule of the score
@@ -147,11 +127,7 @@ impl GrammarGamma {
             .chunks_exact(num_individuals.max(1))
             .zip(rows.chunks_exact(num_individuals.max(1)))
             .filter_map(|(row, of_the_variant)| {
-                let exact = row
-                    .iter()
-                    .zip(of_the_variant)
-                    .map(|(projected, dosage)| projected * dosage)
-                    .sum::<f64>();
+                let exact = row.iter().map(|through| through * through).sum::<f64>();
                 let of_the_dosages = of_the_variant
                     .iter()
                     .map(|dosage| dosage * dosage)
@@ -229,7 +205,7 @@ fn the_centered_squared_length_of(of_the_variant: &[f64]) -> f64 {
 /// the two blocks it cannot be estimated from.
 #[cfg(test)]
 mod tests {
-    use super::{GrammarGamma, NUM_VARS_FOR_GAMMA, the_centered_squared_length_of};
+    use super::{GrammarGamma, NUM_VARS_FOR_GAMMA, TheProjection, the_centered_squared_length_of};
     use crate::error::Error;
     use crate::gwas::dosages::{BlockOfThePass, GwasDosages};
     use crate::gwas::fixtures::{
@@ -279,9 +255,41 @@ mod tests {
     /// variant is its own squared length and every ratio can be worked out
     /// by hand.
     fn the_identity_of_eight() -> Vec<f64> {
-        (0..8)
-            .flat_map(|row| (0..8).map(move |col| f64::from(u8::from(row == col))))
+        the_identity_of(8)
+    }
+
+    /// The identity of `num_individuals` rows of that many values, row
+    /// after row.
+    fn the_identity_of(num_individuals: usize) -> Vec<f64> {
+        (0..num_individuals)
+            .flat_map(|row| (0..num_individuals).map(move |col| f64::from(u8::from(row == col))))
             .collect()
+    }
+
+    /// A projection that is the identity: the factor is the identity and
+    /// the one direction of the design is all zeros, so `m` is the
+    /// identity and `x' p x` is the variant's own squared length.
+    fn the_projection_that_is_the_identity(num_individuals: usize) -> TheProjection {
+        TheProjection::of_the_factor_and_the_directions(
+            the_identity_of(num_individuals),
+            vec![0.0_f64; num_individuals],
+            num_individuals,
+            1,
+            1.0,
+        )
+    }
+
+    /// A projection of all zeros: the factor is the identity and the
+    /// directions of the design are the whole of it, so `m` is `i - i` and
+    /// every exact denominator is exactly 0.
+    fn the_projection_that_is_zero(num_individuals: usize) -> TheProjection {
+        TheProjection::of_the_factor_and_the_directions(
+            the_identity_of(num_individuals),
+            the_identity_of(num_individuals),
+            num_individuals,
+            num_individuals,
+            0.0,
+        )
     }
 
     /// A study of dosages that are not centered has a squared length larger
@@ -369,11 +377,13 @@ mod tests {
             "the variants of the panel of eight that vary among all eight"
         );
 
-        let found =
-            match GrammarGamma::of_the_first_block(&the_identity_of_eight(), 8, 1.0, &dosages) {
-                Ok(estimated) => estimated.factor(),
-                Err(error) => panic!("the factor of the panel of eight: {error}"),
-            };
+        let found = match GrammarGamma::of_the_first_block(
+            &mut the_projection_that_is_the_identity(8),
+            &dosages,
+        ) {
+            Ok(estimated) => estimated.factor(),
+            Err(error) => panic!("the factor of the panel of eight: {error}"),
+        };
 
         let expected = 2.739_285_714_285_714_3;
         assert!(
@@ -382,9 +392,10 @@ mod tests {
              four ratios give {expected}"
         );
         let of_v1 = [0.0_f64, 0.0, 1.0, 0.0, 2.0, 0.0, 1.0, 0.0];
-        let den = GrammarGamma::of_the_first_block(&the_identity_of_eight(), 8, 1.0, &dosages)
-            .expect("the factor")
-            .den_of(&of_v1);
+        let den =
+            GrammarGamma::of_the_first_block(&mut the_projection_that_is_the_identity(8), &dosages)
+                .expect("the factor")
+                .den_of(&of_v1);
         assert!(
             (den - expected * 4.0).abs() <= OF_A_FACTOR * expected * 4.0,
             "the denominator of v1 is {den} and the factor times its centered squared \
@@ -425,8 +436,7 @@ mod tests {
             .expect("the dosages of the block");
         assert_eq!(dosages.num_with_variance(), 0, "nothing varies among four");
 
-        let projection = vec![0.0_f64; 16];
-        match GrammarGamma::of_the_first_block(&projection, 4, 0.0, &dosages) {
+        match GrammarGamma::of_the_first_block(&mut the_projection_that_is_zero(4), &dosages) {
             Err(Error::GwasGrammarGammaWithoutAVariantThatVaries { num_individuals }) => {
                 assert_eq!(num_individuals, 4);
             }
@@ -437,15 +447,15 @@ mod tests {
     /// A block of nothing but variants the projection leaves nothing of is
     /// refused, with the factor and how many variants it was the mean over.
     ///
-    /// The projection matrix of a null model whose design explains a
-    /// variant leaves that variant at the rounding of a cancellation, which
-    /// falls on either side of 0; the fixture is the extreme of that, a
-    /// projection of all zeros, which leaves every exact denominator
-    /// exactly 0. Every one of the four is at the threshold and is left out
-    /// of the mean, so the factor is the mean of no ratio at all, which is
-    /// NaN, and the study is refused. Unrefused with the rounding fallen
-    /// positive, the factor would be about 1e-16, every denominator of the
-    /// study would sit under the threshold of **Open 2** and the whole
+    /// The projection matrix of a null model whose design explains a variant
+    /// leaves that variant at the rounding of a cancellation, which falls on
+    /// either side of 0; the fixture is the extreme of that, a projection of
+    /// all zeros, which leaves every exact denominator exactly 0. Every one
+    /// of the four is at the threshold and is left out of the mean, so the
+    /// factor is the mean of no ratio at all, which is NaN, and the study is
+    /// refused. Unrefused with the rounding fallen positive, the factor would
+    /// be about 1e-16, every denominator of the study would sit under the
+    /// threshold of "A variant there is nothing left to test" and the whole
     /// column would be NaN with nothing to say why.
     ///
     /// The count in the message is the four variants the ratios were formed
@@ -454,9 +464,8 @@ mod tests {
     #[test]
     fn a_block_of_variants_the_projection_leaves_nothing_of_is_refused() {
         let dosages = the_dosages_of_the_panel_of_eight();
-        let projection = vec![0.0_f64; 64];
 
-        match GrammarGamma::of_the_first_block(&projection, 8, 0.0, &dosages) {
+        match GrammarGamma::of_the_first_block(&mut the_projection_that_is_zero(8), &dosages) {
             Err(Error::GwasGrammarGammaFactorNotAboveZero { factor, num_vars }) => {
                 assert!(
                     factor.is_nan(),
@@ -486,12 +495,24 @@ mod tests {
     #[test]
     fn a_factor_that_is_not_finite_is_refused() {
         let dosages = the_dosages_of_the_panel_of_eight();
-        let projection: Vec<f64> = the_identity_of_eight()
+        // The factor is solved against and not multiplied by, so a
+        // projection that overflows is a factor that has collapsed: the
+        // identity times 1e-160 leaves every value of `m x` at about
+        // 1e160, which is a finite number, and the sum of their squares
+        // is an infinity.
+        let of_a_factor_that_has_collapsed: Vec<f64> = the_identity_of_eight()
             .iter()
-            .map(|value| value * f64::MAX)
+            .map(|value| value * 1e-160)
             .collect();
+        let mut projection = TheProjection::of_the_factor_and_the_directions(
+            of_a_factor_that_has_collapsed,
+            vec![0.0_f64; 8],
+            8,
+            1,
+            1.0,
+        );
 
-        match GrammarGamma::of_the_first_block(&projection, 8, 1.0, &dosages) {
+        match GrammarGamma::of_the_first_block(&mut projection, &dosages) {
             Err(Error::GwasGrammarGammaFactorNotAboveZero { factor, num_vars }) => {
                 assert!(
                     !factor.is_finite() && factor > 0.0,
@@ -525,9 +546,10 @@ mod tests {
             32,
             "four variants of eight individuals"
         );
-        let projection = vec![0.0_f64; 81];
-
-        match GrammarGamma::of_the_first_block(&projection, 9, 1.0, &dosages) {
+        match GrammarGamma::of_the_first_block(
+            &mut the_projection_that_is_the_identity(9),
+            &dosages,
+        ) {
             Err(Error::GwasVariantsTooLarge) => {}
             other => panic!("a block of four rows of eight read as nine gave {other:?}"),
         }
@@ -562,7 +584,6 @@ mod tests {
         let of_ninety_nine: Vec<&[i8]> = std::iter::repeat_n(OF_EIGHT[1], 99)
             .chain(std::iter::once(OF_EIGHT[0]))
             .collect();
-        let identity = the_identity_of_eight();
         for (what, rows, expected) in [
             ("a hundred that vary", of_a_hundred, 1.5),
             ("more than a hundred", of_a_hundred_and_more, 1.5),
@@ -580,7 +601,10 @@ mod tests {
                     },
                 )
                 .expect("the dosages of the block");
-            let found = match GrammarGamma::of_the_first_block(&identity, 8, 1.0, &dosages) {
+            let found = match GrammarGamma::of_the_first_block(
+                &mut the_projection_that_is_the_identity(8),
+                &dosages,
+            ) {
                 Ok(estimated) => estimated.factor(),
                 Err(error) => panic!("the factor of {what}: {error}"),
             };

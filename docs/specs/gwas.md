@@ -248,18 +248,108 @@ the mean of nothing, which pyNei sets to 0.
 A variant of the logistic Wald test whose fit runs away also gets three
 NaNs, which the item for that model says.
 
-A third case exists and the spec did not describe it. The denominator of
-both score tests is `x' p x`, a quadratic form that is 0 or above in exact
-arithmetic and that can round just below 0 for a variant with almost no
-variance left after the covariates and the kinship are taken out. `beta` is
-then `num` over a tiny negative number, a large value of whichever sign the
-rounding chose, and the statistic `num² / den` is negative. What such a
-variant gets is **Open 2**, below.
+A third case gets the same three NaNs: a variant the design and the kinship
+leave nothing of, which the next section is about. pyNei has no rule for it
+and answers such a variant from the rounding of a cancellation.
 
-`test_monomorphic_and_missing_variants` of pyNei asserts exactly this on 50
-variants of 60 individuals where the first has one allele and the second has
-no called genotype: the first two p-values are NaN and the other 48 are
-between 0 and 1.
+`test_monomorphic_and_missing_variants` of pyNei asserts the first two cases
+on 50 variants of 60 individuals where the first has one allele and the
+second has no called genotype: the first two p-values are NaN and the other
+48 are between 0 and 1.
+
+### A variant there is nothing left to test
+
+One rule in four places, so it was one decision, which the owner took on 25
+September 2026. Each place has a quantity that is what is left of something,
+and a scale that is what there was before the covariates were taken out; the
+rule is that the first has fallen to `n` times 2.2e-16 of the second, with
+`n` the tested individuals, and the variant then gets the three NaNs of the
+section above.
+
+The table below is over the four models, each of which the part of this spec
+named in its first column describes; the symbols it uses are theirs and are
+gathered here so that the rule can be read in one place. `x` is the dosages
+of one variant over the tested individuals and `y` the trait, both one value
+per individual; `d` is the design, the intercept and one column per
+covariate; `w` is the weights of a logistic fit, how much a binomial trait
+of each individual's fitted chance varies; and `p` is the projection matrix
+of a mixed model's null, individuals by individuals, which takes the
+covariates out of anything it is applied to and weights it by the covariance
+of the trait. `num` is `x' p y` and `den` is `x' p x`, the variant against
+the trait through that matrix and against itself through it, and the effect
+the test gives the variant is `num / den`.
+
+| where | what is left | the scale it is against |
+|---|---|---|
+| the linear model | `xx`, the variant's dosages with the covariates taken out | the variant's squared length before that |
+| the logistic model's score test | `x' w x` less `(x' w d) (d' w d)⁻¹ (d' w x)` | `x' w x`, the weighted squared length |
+| both mixed models' score tests | `x' p x` | the variant's squared length times the largest value of the diagonal of `p` |
+| the linear mixed model's Wald test | `y' p y` less `num² / den` | `y' p y` |
+
+The fourth row is the odd one out and worth naming as such: it is what the
+variant leaves of the trait, where the other three are what the design
+leaves of the variant.
+
+**Every one of the four is formed and not subtracted.** Each is a sum of
+squares in the arithmetic popnei makes, so none of them can fall below 0,
+`se` is a real number for every variant, and the two arithmetic backends
+cannot part company on a sign. Written as the difference each one is in the
+algebra, it is a subtraction of two nearly equal numbers exactly where the
+rule has to act, so the guard would be reading a quantity whose error is
+larger than the thing it tests. The four are formed as follows, and the
+section of each model has its measurements: the first two from the residuals
+of the variant, the third as `‖m x‖²` with `m` the factor of the projection
+that "The linear mixed model" describes, and the fourth as
+`‖m y - beta m x‖²`, the trait through that factor less the variant through
+it times the variant's effect.
+
+Three of the four have been reached on data and measured, on 23, 24 and 25
+September 2026; the fourth, the mixed models' score tests, is the same
+arithmetic in another denominator and no dataset here has reached it.
+
+The linear model: eight individuals, a covariate marking two subpopulations
+of four and a variant fixed one way in each. popnei and pyNei agree to the
+bit at `beta` 5.36e13, `se` 6.95e14 and `p` 0.941, which reads as a variant
+that was tested and showed nothing. plink2 gives `NA`, `NA`, `NA` with
+`ERRCODE CORR_TOO_HIGH`.
+
+The logistic model's score test: a covariate that is the first variant's
+dosages in units a tenth of theirs, which is what a user gets by putting a
+genotype in as a covariate. With the denominator subtracted, as pyNei writes
+it, it came to 4.44e-16 on Accelerate and to exactly 0 on faer against a
+threshold of 4.19e-15, and unguarded that row was `beta` 0 with `se` 4.75e7
+and `p` 1 on one backend and a NaN or an infinity on the other. Formed, it
+is 1.891e-31 on Accelerate and 9.565e-31 on faer, measured on 24 September
+2026: still far below the threshold, so the variant is still one there is
+nothing left to test, and no longer of either sign.
+
+The linear mixed model's Wald test: six individuals, one covariate, an
+identity kinship and a trait built as `2 + 3*cov + 1*dosage`. The
+cancellation is hit exactly and not approached, because the projection
+annihilates the design, so any affine image of the trait gives
+`num² / den = y' p y` in exact arithmetic. Formed, what the variant leaves
+is 2.847e-30 of `y' p y` on Accelerate and 1.174e-29 on faer, against a
+threshold of 1.332e-15 of it, measured on 25 September 2026.
+
+**Two things were considered and not done.** Leaving the fourth row alone,
+which is what pyNei does, gives a finite `beta` beside a NaN `se` and a NaN
+`p_value`, a fourth kind of NaN this spec does not describe: a user
+filtering on a missing effect keeps the row and reads the effect as
+measured, with nothing to say how uncertain it is. And answering the band
+just above the rule, by squaring the share now that the quantity is a
+squared length rather than a length, was measured on the fixture of six on
+25 September 2026 and gives an `se` of 9.742e-16 on Accelerate against
+1.979e-15 on faer and a p-value of 2.039e-45 against 1.708e-44, a factor of
+2.0 and a factor of 8.4 between two builds of the same library. The nearest
+real variant of the panel with every genotype called leaves 0.919 of
+`y' p y`, thirteen orders above the threshold, so the band the second would
+open holds nothing either panel has come near.
+
+`docs/reports/gwas-exact-residual.md` has what the decision was taken on.
+The one exception to the rule is under the GRAMMAR-Gamma approximation,
+where the third row stops firing and the fourth falls back to the exact
+denominator; "Open 2's threshold under the approximation" of that section
+has both.
 
 ### How it runs
 
@@ -475,9 +565,10 @@ p-value under the `lmm`, at least 3 are among the 5 causal ones.
 In TypeScript, `calcGwas` is tested under node against the same six literals
 for each model **and each of its tests**, not one set per model: the score
 test of a model runs different per variant arithmetic from its Wald test,
-the threshold of Open 2 among it, and under WebAssembly rather than on the
-native backend. A tolerance of its own: WebAssembly has no fused multiply
-and add, so it rounds a sum of products differently from a native build.
+the threshold of "A variant there is nothing left to test" among it, and
+under WebAssembly rather than on the native backend. A tolerance of its own:
+WebAssembly has no fused multiply and add, so it rounds a sum of products
+differently from a native build.
 Measured on 23 September 2026 on the worked example, node sits 2.31e-15 from
 pyNei's numbers where native faer sits 1.24e-15.
 
@@ -547,10 +638,12 @@ subtracted. The two forms agree wherever pyNei's subtraction has not already
 cancelled, so no literal of this spec moves.
 
 The same subtraction is in the linear mixed model's Wald test, `y' p y`
-minus `num² / den`, where it cancels too and where the cheap repair is not
-available: forming the residual exactly there costs a product with the
-projection matrix per variant. That is **Open 2**, below, which is one rule
-over the four places a variant can be left with nothing to test.
+minus `num² / den`, where it cancels too and where the repair costs as
+little: that model holds a factor of the covariance rather than the
+projection matrix, so what the variant leaves of the trait is a squared
+length there too, and "A variant there is nothing left to test" of
+"What every model shares" is the one rule over the four places a variant can
+be left with nothing to test.
 
 ### How it is verified
 
@@ -742,6 +835,30 @@ variant, `num` is `x' p y` and `den` is `x' p x`, and then:
   square with one degree of freedom of `num² / den`. It holds both variances
   at the null, which is what GMMAT does.
 
+**popnei holds the projection as a factor and not as the matrix.** With `l`
+the lower triangular Cholesky factor of the covariance, so that `V = l l'`,
+and
+`q` a set of directions of length 1 at right angles to each other spanning
+what `l⁻¹` makes of the design, both worked out once for a study,
+`p = m' m` with `m = (i - q q') l⁻¹`. So `x' p x` is `‖m x‖²`, `x' p y` is
+`(m x)' (m y)`, `y' p y` is `‖m y‖²`, and what the Wald test's `se` is built
+from is `‖m y - beta m x‖²`. A block of variants is solved against `l` where
+it was multiplied by `p`, which is half the arithmetic, and the four
+quantities are squared lengths where they were differences, which is what
+"A variant there is nothing left to test" asks of them.
+
+The two are one change and not two, measured on 25 September 2026 on the
+fixture of six individuals of that section: with the factor in place and
+`y' p y` less `num² / den` still subtracted, the cancellation no longer
+falls below 0 and that variant is answered on both backends, with an `se` of
+2.980e-8 and a p-value of 5.837e-23 on Accelerate and 4.790e-8 and 2.424e-22
+on faer. Forming what the variant leaves is what refuses it again.
+
+`docs/reports/gwas-exact-residual.md` has the algebra checked against the
+matrix on both reference panels, worst 2.077e-15 of a denominator on
+Accelerate and 2.016e-15 on faer over the 1200 variants of each, and what
+the two together did to every column of both models.
+
 `y' p y` is the generalized residual sum of squares of the null over the
 genetic variance, and the restricted maximum likelihood makes it exactly
 `n - c`. A cargo test asserts that on the panel, 197 within 1e-6, which is
@@ -868,7 +985,8 @@ projection matrix of the mixed models, and nothing is inverted per variant.
 **`den` is formed and not subtracted**, which is the second place this spec
 departs from pyNei's arithmetic and it is the same departure as the linear
 model's. Written as `x' w x` minus what the covariates explain, it is a
-subtraction of two nearly equal numbers exactly where Open 2's threshold has
+subtraction of two nearly equal numbers exactly where the threshold of
+"A variant there is nothing left to test" has
 to act, so the guard would be reading a quantity whose error is larger than
 the thing it is testing. Measured on 24 September 2026 over six decades, on
 200 individuals with a covariate that is a variant's dosages plus noise: at
@@ -935,8 +1053,8 @@ Two more marks are popnei's own and are not pyNei's, and they give the same
 three NaNs: the solve that reads the variance of the effect refused as
 singular, and a variance that is not finite or is not above 0. pyNei gives a
 finite `beta` beside a NaN `se` and `p_value` in that case, which is the
-fourth kind of NaN that Open 2 exists to rule out, so popnei marks it
-instead. Neither reference panel reaches either.
+fourth kind of NaN that "A variant there is nothing left to test" rules out,
+so popnei marks it instead. Neither reference panel reaches either.
 
 plink2 does not give up on that variant. It falls back to a Firth penalized
 regression, which adds a term that pulls the estimate back from infinity and
@@ -1109,8 +1227,12 @@ that change are:
   for each individual. It is wanted once per step on `tau`, 7 to 9 times
   over a fit, not once per linearization.
 
-The inverse is formed once, at the end, because the score test wants the
-projection matrix as a matrix.
+No inverse of a matrix that size is formed at all. The score test wants
+`x' p x` of every variant and not the projection matrix, and the covariance
+is already factored when the fit ends, so what the pass keeps is that factor
+and the directions the design spans through it, as "The linear mixed model"
+describes. The inverse was formed once, at the end, while the pass kept the
+matrix.
 
 The two fits take the same steps in the same order and stop at the same
 place; only the arithmetic of each step differs. `tau` agrees with pyNei's
@@ -1226,15 +1348,18 @@ refused, each a `ValueError` in Python.
   nothing to say why. It names the file too, and carries the `gamma` the
   block gave.
 
-**Open 2's threshold under the approximation.** Two rows of Open 2's table
-are about a mixed model, and the approximation does something different to
-each. The third row is `x' p x`, the denominator of both mixed models'
+**Open 2's threshold under the approximation.** Two rows of the table of
+"A variant there is nothing left to test" of "What every model shares" are
+about a mixed model, and the approximation does something different to each.
+The heading keeps the name the rule had while it was open, because the
+decision of 24 September 2026 that this paragraph carries was taken under
+it. The third row is `x' p x`, the denominator of both mixed models'
 score tests, judged against the variant's squared length times the largest
 value of the diagonal of the projection matrix. The fourth is `y' p y` less
 `num² / den`, what the linear mixed model's Wald test finds the variant
 leaves of the trait, judged against `y' p y`. In both, the comparison is
 made against whichever of the two denominators the study formed, and the
-scale is the one Open 2 gives.
+scale is the one that section gives.
 
 **The third row stops firing.** The approximate denominator is a positive
 `gamma` times a sum of squares, so it holds no cancellation and it is above
@@ -1263,8 +1388,8 @@ and the rule refuses a variant the exact test answers.
 That failure names the variant, which is what makes the fallback possible:
 the remainder cannot go below 0 with the exact denominator, so a study that
 approximates and sees it go there has found a variant its one factor does
-not fit. The projection matrix is on the model for the whole pass, so one
-product of that one variant with it gives its exact `x' p x`. `beta`, the
+not fit. The factor of the covariance is on the model for the whole pass, so
+one solve of that one variant against it gives its exact `x' p x`. `beta`, the
 remainder and `se` are formed again from that, and the rule is applied to
 them as it is for a study that makes the exact denominator for every
 variant. So is the third row's rule, on that same denominator, and it
@@ -1283,9 +1408,10 @@ individual, and the exact denominator decides the same way anywhere in it;
 taking the rule as the trigger leaves the fourth row one behaviour under the
 approximation instead of two.
 
-What a variant that falls back costs is one product of one variant with the
-projection matrix, individuals by individuals, which is what a study that
-does not approximate pays for every variant of its pass. How often it is
+What a variant that falls back costs is one solve of one variant against the
+factor of the covariance, individuals by individuals and triangular, which
+is what a study that does not approximate pays for every variant of its
+pass. How often it is
 paid is bounded by how rare the regime is, and it takes both of two things:
 the variant's own ratio above `gamma`, and the variant explaining nearly all
 of what the null model left, which is the very strong hit. On the two panels
@@ -1299,9 +1425,9 @@ study costs with `use_grammar_gamma_approx` left alone.
 fifteen digits, with a numpy warning that a square root met an invalid
 value; there it is the square root of a negative number and not a rule that
 makes the NaN. What settled it against doing the same is that such a row is
-the fourth kind of NaN the recommendation of Open 2 argues against: a user
-who filters on a missing effect keeps the row and reads the effect as
-measured, with nothing to say how uncertain it is.
+the fourth kind of NaN that "A variant there is nothing left to test" rules
+out: a user who filters on a missing effect keeps the row and reads the
+effect as measured, with nothing to say how uncertain it is.
 
 Reproduced on 24 September 2026, by two reviewers on different fixtures and
 then on this one: twelve individuals, an identity kinship, one covariate
@@ -1382,7 +1508,8 @@ is why pyNei wrote both.
   is `erfc(sqrt(x / 2))`, the complementary error function, which gives how
   much of a normal distribution lies past a point. An `x` of 0 or below
   gives 1.0, as scipy's `chi2.sf` does, and not the NaN that the square root
-  of a negative number would give. Who may pass one is **Open 2**, below.
+  of a negative number would give. Who may pass one is
+  "A variant there is nothing left to test" of "What every model shares".
 - `t_sf_two_sided(t, df)`, the chance that a Student t with `df` degrees of
   freedom is further from 0 than `t`, which the linear model and the linear
   mixed model's Wald test need. It is the regularized incomplete beta
@@ -1630,11 +1757,17 @@ pub fn t_sf_two_sided(t: f64, df: f64) -> f64;
 ```
 
 What this module calls in `linalg`: the thin QR of the design and the solve
-against its upper triangular `r`; the Cholesky factorization and its solve,
-log determinant and inverse; `solve_triangular` reading the lower half, for
-the trace of the logistic mixed model; the rank of the design; the
-eigendecomposition of the kinship; and the product, in all four of its
-combinations.
+against its upper triangular `r`, and the thin QR again for the directions
+the design spans through the factor of a mixed model's covariance; the
+Cholesky factorization and its solve and log determinant;
+`solve_triangular` reading the lower half, for the trace of the logistic
+mixed model, for the inverse of that factor, and for a whole block of
+variants against it; the rank of the design; the eigendecomposition of the
+kinship; and the product, in all four of its combinations. No build popnei
+ships calls the inverse off a Cholesky factorization: the one caller it had
+was the projection matrix of the logistic mixed model, which is now that
+factor, and what calls it today is the cargo test that builds the matrix the
+factored form is read against.
 
 Three things about that crate the fits have to know. It refuses what it is
 given and not what it produced, so a solve or an inverse off a covariance
@@ -1673,17 +1806,44 @@ is 5.285 s and 5.13 s. So the fit and the test are of the same order once
 the individuals reach a few thousand, and `use_grammar_gamma_approx` is what
 addresses the test half.
 
-None of this has been measured for popnei; the measurements come when the
-code exists, on the panel and on the 100000 x 1000 dataset of
-`docs/rust_core.md`.
+**What popnei takes**, measured on 100000 variants x 1000 individuals of
+`/Users/jose/devel/popnei-bench/bigcalled.vars` with `cargo bench --bench
+gwas` on the owner's Apple M5 Pro, 18 cores, best of three runs after one
+that is not timed, on 25 September 2026:
+
+| model and test | popnei | the number to reach |
+|---|---|---|
+| `lm` | 0.124 s at 18 cores, 0.322 s on one | plink2's 0.10 s on one thread |
+| `glm`, score test | 0.118 s | none stated |
+| `glm`, Wald test | 0.579 s | none stated |
+| `lmm`, score test | 0.484 s | GMMAT's 1.6 s |
+| `lmm`, Wald test | 0.542 s | GMMAT's 1.6 s |
+| `glmm`, score test | 0.662 s | GMMAT's 1.6 s |
+| `lmm`, score, approximation on | 0.200 s | |
+| `glmm`, approximation on | 0.389 s | |
+
+So the three mixed model passes are inside GMMAT's number by 2.4 to 4.1
+times, and by 8.0 times with the approximation, and the linear model is 3.2
+times its own on the thread count that target was taken at. Nothing here ran
+GMMAT at this size. `docs/reports/perf-gwas-2026-09-24.md` is where the four
+unmixed numbers come from and where the time of each pass goes;
+`docs/reports/gwas-exact-residual.md` has the three mixed ones, which that
+report left at 0.561 s, 0.571 s and 0.753 s.
+
+Nothing is measured at the 10000 individuals of `docs/objectives.md`, where
+the fit and the pass are of the same order by the numbers above.
 
 ## Open points
 
-The owner decides these five, and until then the implementer follows the
-"meanwhile" of each. A third, what the two layers do with a phenotype that
-is not a number, was decided on 23 September 2026 and is in "Its Python
-function, and its TypeScript one" of "What every model shares", with the
-option that was not taken.
+The owner decides these four, and until then the implementer follows the
+"meanwhile" of each. Two more have been decided and are in the body, each
+with the options that were not taken: what the two layers do with a
+phenotype that is not a number, decided on 23 September 2026 and in "Its
+Python function, and its TypeScript one" of "What every model shares"; and
+what a variant there is nothing left to test gets, which was **Open 2**
+until 25 September 2026 and is now the section of that name in the same
+part. The numbers of the four below are the ones they have always had, so
+that a document or a commit that names one still finds it.
 
 **Open 1: a variant that separates the cases from the controls.** Its
 logistic effect is infinite and its Wald fit runs away. pyNei gives NaN for
@@ -1703,102 +1863,6 @@ variant vanish learns whether it had no variance or a runaway fit, which are
 different things to do something about. Meanwhile the implementer gives NaN
 with no reason, as pyNei does, since no literal of this spec moves either
 way and the column can be added without changing a number.
-
-**Open 2: a variant there is nothing left to test.** One rule in four
-places, so it is one decision. Each place has a quantity that is what is
-left, and a scale that is what there was before the covariates were taken
-out; the rule is that the first falls to `n` times 2.2e-16 of the second,
-with `n` the tested individuals.
-
-| where | what is left | the scale it is against |
-|---|---|---|
-| the linear model | `xx`, the variant's dosages with the covariates taken out | the variant's squared length before that |
-| the logistic model's score test | `x' w x` minus `(x' w d) (d' w d)⁻¹ (d' w x)` | `x' w x`, the weighted squared length |
-| both mixed models' score tests | `x' p x` | the scale `docs/plans/gwas-linear.md` chose for it, which the logistic mixed model uses too so that the two agree |
-| the linear mixed model's Wald test | `y' p y` minus `num² / den` | `y' p y` |
-
-The third row is the only one where the exact "before" is not free: for
-`x' p x` it would be `x' V⁻¹ x`, the same quantity before the covariates,
-and an upper bound of it serves. The fourth row is the odd one out and worth
-naming as such: it is what the variant leaves of the trait, where the other
-three are what the design leaves of the variant.
-
-In each, what is left can round to 0 or below and `beta` is then something
-divided by noise. Three of the four have been reached on data and measured,
-on 23 and 24 September 2026; the fourth, the mixed models' score tests, is
-the same arithmetic in another denominator and no dataset here has reached
-it.
-
-The linear model: eight individuals, a covariate marking two subpopulations
-of four and a variant fixed one way in each. popnei and pyNei agree to the
-bit at `beta` 5.36e13, `se` 6.95e14 and `p` 0.941, which reads as a variant
-that was tested and showed nothing. plink2 gives `NA`, `NA`, `NA` with
-`ERRCODE CORR_TOO_HIGH`.
-
-The logistic model's score test: a covariate that is the first variant's
-dosages in units a tenth of theirs, which is what a user gets by putting a
-genotype in as a covariate. With the denominator subtracted, as pyNei
-writes it, it came to 4.44e-16 on Accelerate and to exactly 0 on faer
-against a threshold of 4.19e-15, and unguarded that row was `beta` 0 with
-`se` 4.75e7 and `p` 1 on one backend and a NaN or an infinity on the other,
-which is the argument about the two builds arriving on data rather than in
-prose. Formed, as "The logistic model" now asks, it is 1.891e-31 on
-Accelerate and 9.565e-31 on faer, measured on 24 September 2026: still far
-below the threshold, so the variant is still one there is nothing left to
-test, and no longer of either sign. The formed denominator is a sum of
-terms that are not negative, so it cannot go below 0, and the threshold is
-what guards it rather than a comparison against 0 — which is not the same
-test, as a reviewer showed by replacing one with the other and watching it
-pass on faer alone, where the subtracted denominator was exactly 0.
-
-The linear mixed model's Wald test: six individuals, one covariate, an
-identity kinship and a trait built as `2 + 3*cov + 1*dosage`. It gives
-`beta` 1.00000 with `se` and `p_value` NaN, while the score test on the same
-call with one argument changed gives `se` 0.500 and `p` 0.0455. The
-cancellation is hit exactly and not approached, because the projection
-annihilates the design, so any affine image of the trait gives
-`num² / den = y' p y` in exact arithmetic. On `panel_called` it comes out
-8.53e-13 on Accelerate against 3.98e-13 on faer where 0 is exact, 46 per
-cent apart, so `se` would be 1.93e-8 on one build and 1.32e-8 on the other.
-
-Two options.
-
-Refuse, and give the three NaNs that "The variants that have no answer"
-already means: when what is left falls to `n` times 2.2e-16 of what there
-was, which is 1.8e-15 on the collinear fixture against 6.5e-32 measured, and
-8.5e-12 on the panel against 8.53e-13. It is one comparison in each of the
-four places and costs nothing per variant.
-
-Or form the residual exactly, which for the linear model is a pass over the
-block's dosages and is what "The linear model" already does, and for the
-mixed model's Wald test is `r' p r` per variant, a product with the
-projection matrix that roughly doubles that test and is the cost
-`use_grammar_gamma_approx` exists to avoid.
-
-Recommendation: refuse. Leaving it is not among the options any more, and it
-was until the NaN was reproduced: a row with a finite `beta` beside a NaN
-`se` and `p_value` is a fourth kind of NaN that this spec does not describe,
-so a user filtering on a missing effect keeps it and reads 1.0 as an effect
-that was measured. That is the argument that settled the linear model's
-subtraction, and the same evidence has now appeared one model along. The
-exact form is worth having where it is cheap, and it is already taken for
-the linear model; where it costs a matrix product per variant it buys only
-the band just above the floor, which needs a variant explaining 99.9999 per
-cent of the trait, and that is for the performance session to weigh once
-there are numbers. Meanwhile the implementer refuses at that threshold in
-all four places, because a meanwhile that returns NaN where the score test
-returns 0.0455 is not a safe thing to build on; no literal moves, since no
-variant of either panel comes near.
-
-The fourth place has one exception, which the owner decided on 24 September
-2026 and which "Open 2's threshold under the approximation" of the
-GRAMMAR-Gamma section carries: when the study approximates the denominator
-and the comparison fires, the variant is answered from the exact `x' p x`
-instead of being refused. What the rule was derived from, that
-`num² / den` cannot pass `y' p y`, is a guarantee the approximate
-denominator does not give, so the comparison firing there does not mean
-that there is nothing left to test; it names the one variant whose exact
-denominator is worth the product it costs.
 
 **Open 3: a kinship that does not identify the two variances.** For a
 kinship close to a multiple of the identity, the model is the ordinary
@@ -1885,7 +1949,8 @@ an effect it knows nothing about.
 
 Four ways out. Refuse a Cholesky pivot that has fallen to
 `the_share_that_is_nothing` of the largest, which is the rule this module
-already applies in the four places of Open 2 and which needs no new number.
+already applies in the four places of "A variant there is nothing left to
+test" and which needs no new number.
 Stop on the deviance, as R does, rather than on the largest change in a
 coefficient. Mark an `se` that is not small against the scale of the design.
 Or keep an LU where pyNei has one, which costs a second factorization of
