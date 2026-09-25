@@ -154,10 +154,15 @@ every variant; asking for it without `num_called_alleles` is a
 one allele shows one allele whatever the population holds.
 
 **A `num_called_alleles` above the individuals of the dataset times the
-ploidy is a `ValueError` too**, naming the largest draw the dataset allows.
-No variant of any population could reach it, since that product is every
-gene copy the dataset holds, so it is a user's mistake and not a fact about
-the data. The owner decided this on 24 September 2026, when task 3.4 found
+ploidy is a `ValueError` too**, naming the largest draw the dataset allows
+and, in Python, the file that was read. No variant of any population could
+reach it, since that product is every gene copy the dataset holds. The file
+is named because the bound is the pass's and not the call's: it is the
+individuals the reader gives times the ploidy it states, so a draw of 30 is
+taken over the whole of `tests/reference/stats/panel.vcf.gz` and refused
+after a filter of ten of its individuals, and only the file and the steps
+tell a user which of their passes they are looking at. The owner decided
+this on 24 September 2026, when task 3.4 found
 that nothing bounded the argument: the spectrum has one bin per count of
 the rarer allele up to half the draw, so a draw at the top of what a `u32`
 holds asks for 2147483648 bins for each population, 51 GB of result over

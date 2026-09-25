@@ -288,8 +288,12 @@ def calc_pop_diversity(
 
     A `num_called_alleles` above the individuals of the dataset times the
     ploidy is a ``ValueError`` too, and it names the largest draw the dataset
-    allows: that product is every gene copy the dataset holds, so no variant of
-    any population could reach it. It is a different case from the one above,
+    allows and the file that was read: that product is every gene copy the
+    dataset holds, so no variant of any population could reach it. The bound
+    is the pass's, the individuals the reader gives times the ploidy it
+    states, so the same draw is taken over one pass and refused over another
+    and the file is what says which pass it was. It is a different case from
+    the one above,
     the draw that this dataset's missing genotypes leave no population able to
     fill, which is no error.
 

@@ -587,15 +587,17 @@ def test_a_draw_no_population_can_fill_leaves_the_draw_missing_and_the_rest_alon
         assert of_every_copy.fis[pop] == with_no_draw.fis[pop]
 
 
-def test_a_draw_larger_than_the_dataset_holds_is_refused_and_names_no_file() -> None:
+def test_a_draw_larger_than_the_dataset_holds_is_refused_and_names_the_file() -> None:
     """One allele more than every gene copy the dataset holds is a draw no
-    variant of any population could reach, so it is a user's mistake and not a
-    fact about the data, and the message names the largest draw the dataset
-    allows.
+    variant of any population could reach, and the message names the largest
+    draw the dataset allows.
 
     The panel is 200 diploid individuals, so 400 is that largest draw and 401
-    is refused. The message names no file: what a user wrote is wrong whatever
-    variants are read.
+    is refused. The message names the file, because the bound is the pass's
+    and not the call's: it is the individuals the reader gives times the
+    ploidy it states, and the test below draws the same 30 alleles over two
+    passes over this one file, one of which takes it and one of which refuses
+    it.
     """
     with pytest.raises(ValueError, match="`num_called_alleles` is 401") as refusal:
         _of_the_panel(
@@ -606,8 +608,50 @@ def test_a_draw_larger_than_the_dataset_holds_is_refused_and_names_no_file() -> 
     message = str(refusal.value)
     assert "the largest draw this dataset allows is 400" in message
     assert "200 individuals at a ploidy of 2" in message
-    assert PANEL.name not in message
-    assert getattr(refusal.value, "filename", None) is None
+    assert PANEL.name in message
+
+
+def test_the_largest_draw_is_the_one_of_the_pass_and_not_of_the_file() -> None:
+    """A draw of 30 alleles over the 200 individuals of the panel is taken,
+    and the same draw after a filter that keeps ten of them is refused.
+
+    `filter_individuals` is a step of the pass, so the reader of the second
+    pass gives ten individuals and the largest draw it allows is 20. That is
+    why this refusal names the file and the steps that were on it: the number
+    a user wrote is the same in both calls, and only the pass tells them
+    apart.
+
+    The draw the first call takes is the case the spec keeps apart from this
+    refusal: 30 is at most the 400 gene copies of the 200 individuals the
+    reader gives, so it is taken, and the ten individuals of the population
+    never call that many at a variant, so no variant of it is in the draw.
+    """
+    ten = PANEL_POPS[PANEL_POP_NAMES[0]][:10]
+    taken = calc_pop_diversity(
+        _panel(),
+        pops={"ten": ten},
+        min_num_individuals=1,
+        stats=WITH_NO_SPECTRUM,
+        num_called_alleles=30,
+    )
+    assert taken.num_vars.loc["ten", "with_data"] == PANEL_NUM_VARS
+    assert taken.num_vars.loc["ten", "in_draw"] == 0
+
+    variants = _panel()
+    variants.filter_individuals(ten)
+    with pytest.raises(ValueError, match="`num_called_alleles` is 30") as refusal:
+        calc_pop_diversity(
+            variants,
+            pops={"ten": ten},
+            min_num_individuals=1,
+            stats=WITH_NO_SPECTRUM,
+            num_called_alleles=30,
+        )
+
+    message = str(refusal.value)
+    assert "the largest draw this dataset allows is 20" in message
+    assert "10 individuals at a ploidy of 2" in message
+    assert PANEL.name in message
 
 
 def test_the_two_counts_of_the_variants_in_a_draw_are_of_the_draw(write_vcf) -> None:
