@@ -240,6 +240,27 @@ up: 0.448 s, and its pass over the blocks reads 0.008 s and works 0.004 s, so
 the most the thread could hide is 1 per cent of the run. The parallel reader
 made its read cheaper still, so the refusal holds by more than it did.
 
+**Taken again on 25 September 2026 after `main` was merged into this branch**,
+which brought the exact residual of the association study at `294eacb`, on the
+four passes that have a cargo benchmark reading the panel, best of 5 runs and
+15 for the kinship, the two binaries alternating twice over:
+
+| pass | 18 cores | one thread |
+|---|---|---|
+| kinship | 0.199 s to 0.184 s | 0.391 s to 0.298 s |
+| principal components, no weights | 0.235 s to 0.221 s | 0.430 s to 0.335 s |
+| distances between populations | 0.043 s to 0.036 s | 0.263 s to 0.174 s |
+| Kosman distances | 0.124 s to 0.108 s | 0.851 s to 0.758 s |
+
+The same benchmarks over blocks already in memory, which read no file and so
+have no read for a thread to hide, are the control: the Kosman distance takes
+0.101 s to 0.099 s at 18 cores and 0.755 s to 0.758 s at one, both inside the
+spread of their runs.
+
+The numbers of every one of the eight passes were written again at seventeen
+digits on both sides of that merge, 4103933 of them over the panel at 18
+threads, and the two files are identical byte for byte.
+
 ## 5. What the reader was worth when the read was serial
 
 The first set of numbers, taken against `ae6a190`, where the reader of a vars
