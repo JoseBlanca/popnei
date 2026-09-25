@@ -417,11 +417,25 @@ from it, with ranges of the size popnei chose:
   is one pass.
 - Twelve `iterBlocks` over one source, opened together and read one after
   another, give calls of `pass` 1 and `numPasses` 1 for each of the twelve.
-- A function that throws on its first call: the consumer throws that same
-  value, checked with `===` and not by its message, and the same `Variants`
-  then gives its variants through `iterBlocks`, the 500 of `many.vcf` when
-  it was opened with `onlyPassed` false and the 475 that passed a filter
-  with the default.
+- For each of the twelve consumers, a function that throws on its first
+  call: the consumer throws that same value, checked with `===` and not by
+  its message, and the same `Variants` then gives its variants through
+  `iterBlocks`, the 475 of `many.vcf` that passed a filter of the file, or
+  the 500 it holds when it was opened with `onlyPassed` false.
+- For each of the twelve consumers, a function that calls the `free()` of
+  the variants the run is reading: the `free()` is refused with popnei's own
+  `Error`, that error leaves the function as any other thrown value does and
+  the consumer gives it back, and the same `Variants` then gives its
+  variants. The consumer has to hold its source over the call it hands it to
+  the core in for that to happen, and two of the twelve did not until 25
+  September 2026: `calcPopDiversity` and `calcLdAndDistPerPop` let the
+  `free()` through, and what a user got was wasm-bindgen's own sentence
+  about a value it holds, after the generated `free` had zeroed the pointer
+  of the handle and dropped its entry of the `FinalizationRegistry`, so the
+  source stayed in the memory of wasm with no handle left to free it. The
+  list of the twelve the two loops run over is held to the twelve the
+  binding crate names, which it writes in the message of a name that is of
+  no consumer.
 - A function that throws on the first call of the second pass: the PCA
   throws it, and what it threw is not popnei's error for a source that ended
   early.
@@ -445,9 +459,17 @@ from it, with ranges of the size popnei chose:
   call of pass 1 of 1, and passed that check while it gave popnei's error
   for the failed read in place of the value the application threw.
 - For each of the twelve consumers, the largest `pass` of the calls of one
-  run equals `numPassesOf` of it with the same options. The association
+  run equals `numPassesOf` of it with the same options, and the last call of
+  each of its passes says the 117346 bytes of `many.vcf`. The association
   study is run twice here, once with the GRAMMAR-Gamma approximation and
-  once without it, which are its two numbers of passes.
+  once without it, which are its two numbers of passes; the second pass of
+  the run that asks for it gives one block and is told of the whole file all
+  the same, the file being smaller than one range. The bytes of that last
+  call are what says the end-of-pass call was made, and no other test reads
+  them: a reader that outlives its run loses that call in silence, and a
+  `std::mem::forget` on the chain of the diversity took the calls of its run
+  from 0 and 117346 bytes to 0 alone with every other test of the package
+  passing, which is a page's bar for a finished run standing at 0 per cent.
 
 ## How many passes a consumer makes
 
@@ -500,9 +522,11 @@ Under node: `numPassesOf("doPcaFromVariants", { numPrinComps: 10 })` is 2,
 with `numPrinComps` 0 it is 1, and with no options it is 2, which is the
 default of 10 components; `numPassesOf("calcGwas", { useGrammarGammaApprox:
 true })` is 2, with it false it is 1, and with no options it is 1, which is
-the default of the exact denominator; each of the other eleven names gives 1;
-a name that is of no consumer throws, and so does a `numPrinComps` of -1 and a
-`useGrammarGammaApprox` that is not a boolean. The test of the item above
+the default of the exact denominator; each of the eleven names other than
+`doPcaFromVariants` gives 1 when it is asked with no options, `calcGwas`
+among them; a name that is of no consumer throws, and so does a
+`numPrinComps` of -1 and a `useGrammarGammaApprox` that is not a boolean.
+The test of the item above
 runs each of the twelve and compares the passes the calls showed with the
 number this function gives, which is what would catch a consumer that grew a
 pass and did not say so.
