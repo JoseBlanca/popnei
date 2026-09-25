@@ -36,6 +36,7 @@ import {
   calcPerIndividualStats,
   calcPerVarDistribs,
   calcPopDists,
+  calcPopDiversity,
   calcRogersHuffR2Matrix,
   doPcaFromVariants,
   init,
@@ -449,7 +450,7 @@ test("twelve iterations of blocks over one source are twelve runs of one pass", 
 });
 
 /**
- * The eleven consumers of the package, each with the options its run is made
+ * The twelve consumers of the package, each with the options its run is made
  * with and the ones `numPassesOf` is asked with, and the association study
  * twice, once for each number of passes its GRAMMAR-Gamma approximation
  * gives.
@@ -489,6 +490,12 @@ const THE_CONSUMERS: readonly {
         jackknifeGroup: null,
         minNumIndividuals: 1,
       });
+    },
+  },
+  {
+    name: "calcPopDiversity",
+    run: (variants) => {
+      calcPopDiversity(variants, { pops: THE_POPS, minNumIndividuals: 1 });
     },
   },
   {

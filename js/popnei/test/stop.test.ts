@@ -38,6 +38,7 @@ import type { Progress, Variants } from "popnei";
 import {
   calcPerIndividualStats,
   calcPerVarDistribs,
+  calcPopDiversity,
   doPcaFromVariants,
   init,
   openVars,
@@ -169,6 +170,39 @@ test("a function that throws in the middle of a VCF stops the run with its value
     // a pass stopped where no read follows would end the same way whether
     // the stop worked or not. It says 4194313 bytes read of 6188977, with
     // 1994664 left.
+    assert.ok(
+      (stoppedAtBytes?.bytesRead ?? 0) < (stoppedAtBytes?.numBytes ?? 0),
+      `the call that threw says the whole file, ${JSON.stringify(stoppedAtBytes)}`,
+    );
+  } finally {
+    variants.free();
+  }
+});
+
+test("a function that throws in the middle of a VCF stops the diversity with its value", () => {
+  // The same file and the same call of the two above, with the diversity of
+  // the populations as the consumer: a consumer that reads the source
+  // without opening a run of its own is told the progress of its first read
+  // and of nothing after it, and gives popnei's error for the failed read
+  // where the application is owed the value it threw. The populations are
+  // left out, which is one population of the three individuals of the file.
+  const variants = openVcf(manyVariantsVcf(150000));
+  const calls = stoppedAt(variants, 1);
+  try {
+    const thrown = whatWasThrownBy(() => {
+      calcPopDiversity(variants, { minNumIndividuals: 1 });
+    });
+    assert.equal(thrown, THE_CANCEL);
+    assert.ok(
+      !(thrown instanceof Error),
+      "the value of the application arrived as an error of popnei",
+    );
+    assert.equal(calls.length, 2);
+    const stoppedAtBytes = calls.at(1);
+    assert.ok(
+      (stoppedAtBytes?.bytesRead ?? 0) >= 4 * 1024 * 1024,
+      `the call that threw says ${stoppedAtBytes?.bytesRead} bytes read`,
+    );
     assert.ok(
       (stoppedAtBytes?.bytesRead ?? 0) < (stoppedAtBytes?.numBytes ?? 0),
       `the call that threw says the whole file, ${JSON.stringify(stoppedAtBytes)}`,

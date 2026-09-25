@@ -22,7 +22,7 @@ import type { ConsumerName } from "popnei";
 import { init, numPassesOf } from "popnei";
 
 /**
- * The ten consumers that read the source once when they are asked with no
+ * The eleven consumers that read the source once when they are asked with no
  * options, which is every one of them but the principal components of the
  * variants.
  *
@@ -35,6 +35,7 @@ const THE_CONSUMERS_OF_ONE_PASS: readonly ConsumerName[] = [
   "calcPerIndividualStats",
   "calcPairwiseKosmanDists",
   "calcPopDists",
+  "calcPopDiversity",
   "calcRogersHuffR2Matrix",
   "calcLdAndDistPerPop",
   "calcKinship",
@@ -44,7 +45,7 @@ const THE_CONSUMERS_OF_ONE_PASS: readonly ConsumerName[] = [
 ];
 
 /**
- * The eleven consumers of the package, which are the ten above and the
+ * The twelve consumers of the package, which are the eleven above and the
  * principal components of the variants.
  */
 const THE_CONSUMERS: readonly ConsumerName[] = [
@@ -121,12 +122,12 @@ function theNamesOfTheRefusal(): string[] {
 
 test("every name the refusal gives is a name numPassesOf takes", async () => {
   await init();
-  // The eleven names live twice in the binding crate, in the function that
+  // The twelve names live twice in the binding crate, in the function that
   // takes a name and in the list the message of a refused name is built
   // from, and nothing else holds the two together. A name that the message
   // gives and the function refuses fails the loop below; a name the
   // function takes and the message leaves out fails the comparison with the
-  // eleven of this file, which are the eleven of
+  // twelve of this file, which are the twelve of
   // `docs/specs/js_sources.md`.
   const names = theNamesOfTheRefusal();
   assert.deepEqual([...names].sort(), [...THE_CONSUMERS].sort());
