@@ -16,6 +16,7 @@ use popnei::block::BlockReader;
 use popnei::io::vcf::{VcfOptions, VcfReader};
 
 use crate::dists::{KosmanDistances, kosman_dists_of};
+use crate::diversity::{ArgumentsOfTheDiversity, PopDiversityOfAPass, pop_diversity_of};
 use crate::errors::JsPopneiError;
 use crate::gwas::{ArgumentsOfTheStudy, GwasOfVariants, gwas_of_the_variants};
 use crate::kinship::{KinshipOfVariants, kinship_of_the_variants};
@@ -457,6 +458,60 @@ impl VcfSource {
                 measures,
                 group_per_variant,
                 group_base_pairs,
+                min_num_individuals,
+            },
+        )
+    }
+
+    /// How much variety each population of `pop_names` holds, over one pass
+    /// over the file through the steps of `steps`.
+    ///
+    /// The arguments are those of `calcPopDiversity` of
+    /// `docs/specs/diversity.md`, as the package checked them and flat:
+    /// `stats` holds the name of each statistic to calculate; the
+    /// populations are their names, the names of the individuals of every
+    /// one of them one after another, and how many individuals each of them
+    /// holds, and `pop_names` is nothing when the user named no population,
+    /// which is one population of every individual of the pass;
+    /// `num_called_alleles` is how many called alleles every population is
+    /// brought down to, and nothing for a pass that takes no draw; and
+    /// `min_num_individuals` is how many called genotypes a population needs
+    /// at a variant for the variant to count for it.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`pop_diversity_of`]: a name that is of none of the five
+    /// statistics, the folded spectrum asked for with no draw, a draw of
+    /// fewer than two alleles, a population that names an individual the
+    /// pass does not give, names one twice or names none, `pops` with no
+    /// population, a source that cannot be read, a pass that gives no
+    /// variant, a variant of more alleles than a count of them holds, and a
+    /// count above what a JavaScript array of counts holds.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments of `calcPopDiversity` of `docs/specs/diversity.md`, \
+                  each one as the package checked it, and the populations flat: an \
+                  array of arrays is not one of the types wasm-bindgen carries"
+    )]
+    pub fn calc_pop_diversity(
+        &self,
+        steps: Steps,
+        stats: Vec<String>,
+        pop_names: Option<Vec<String>>,
+        pop_individuals: Vec<String>,
+        num_individuals_per_pop: Vec<u32>,
+        num_called_alleles: Option<u32>,
+        min_num_individuals: u32,
+    ) -> Result<PopDiversityOfAPass, JsPopneiError> {
+        pop_diversity_of(
+            self,
+            &steps,
+            &ArgumentsOfTheDiversity {
+                stats,
+                pop_names,
+                pop_individuals,
+                num_individuals_per_pop,
+                num_called_alleles,
                 min_num_individuals,
             },
         )

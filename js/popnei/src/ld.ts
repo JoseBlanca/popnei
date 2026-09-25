@@ -494,7 +494,10 @@ export function calcLdAndDistPerPop(
   options: CalcLdAndDistPerPopOptions = {},
 ): LdAndDistPerPop {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   // The populations cross flat, the names of the individuals of every one
   // of them in one array, and no name at all is one population of every
   // individual, which the core names `pop`.
@@ -531,15 +534,17 @@ export function calcLdAndDistPerPop(
   // The steps of the pass are a copy of the list, made after every argument
   // was checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
-  const calculated = source.calc_ld_and_dist_per_pop(
-    steps.of_a_pass(),
-    pops.names,
-    pops.individuals,
-    pops.numIndividualsPerPop,
-    minDist,
-    maxDist,
-    numBins,
-    maxAllowedMaf,
+  const calculated = whileTheRunReads(() =>
+    source.calc_ld_and_dist_per_pop(
+      steps.of_a_pass(),
+      pops.names,
+      pops.individuals,
+      pops.numIndividualsPerPop,
+      minDist,
+      maxDist,
+      numBins,
+      maxAllowedMaf,
+    ),
   );
   // Every array is copied out of the memory of wasm as it is read, and the
   // result holds that memory until it is freed, which is here: what the

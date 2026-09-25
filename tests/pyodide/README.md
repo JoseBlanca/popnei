@@ -15,7 +15,7 @@ From the root of the repository, from a clean checkout:
     node tests/pyodide/smoke.mjs
 
 The first command prints the path of the wheel it left in `dist/`. The
-third takes that wheel, installs it in pyodide and checks seven things, and
+third takes that wheel, installs it in pyodide and checks eight things, and
 exits with an error naming each one that differs:
 
 - `popnei.__version__` is the version in `[workspace.package]` of the
@@ -72,6 +72,32 @@ exits with an error naming each one that differs:
   the pass took, and that with `min_num_snps=3` the pair that was called
   at 2 variants has no distance and the other two keep theirs. The same
   example, with the same VCF, is a pytest test of `tests/test_dists.py`.
+- `popnei.calc_pop_diversity` gives, over those same six variants and
+  those same two populations with `min_num_individuals` 1, the numbers of
+  the worked example of "How it is verified" of each item of
+  `docs/specs/diversity.md`, which is the worked example of
+  `docs/specs/stats.md`. It is called twice, because the two calls
+  exercise different things. The plain call, with no statistic named and
+  no `num_called_alleles`, asks for the four statistics that need no draw
+  and gives the alleles `pop1` and `pop2` called, 9 and 8, the private
+  ones among them, 2 and 1, the variants that vary in each, 3 and 2 of the
+  4 that counted, and F_IS, 0 and 0.3478260870, with no spectrum and with
+  the three standardized values missing. The second names the five
+  statistics and a draw of 4 called alleles, which `pop1` reaches at its
+  four variants and `pop2` at three of them, and gives the three
+  standardized values and the folded spectrum, 1, 3 and 0 for `pop1` and
+  1.0666666667, 1.5333333333 and 0.4 for `pop2`, indexed by the counts of
+  the rarer allele 0, 1 and 2. Both calls give 6 variants of the pass, and
+  both are checked for which statistics the result holds a value for: the
+  four for the plain call and the five for the second, each one that is
+  missing and each one that is there and should not be named on its own
+  line. That is what says that the wheel's default `stats` is the four that
+  need no draw; a wheel whose default was narrower used to die inside
+  Python where the first missing statistic was read, after node had printed
+  1.2 MB of minified pyodide. Every number is in the test as a literal from
+  that spec, and the floats are compared within 1e-6, as the means of the
+  worked example above are. The same example is a cargo test of
+  `crates/popnei/src/diversity.rs`.
 
 Neither `dist/` nor `node_modules/` is in git.
 

@@ -10,6 +10,7 @@ signatures are those of pyNei, the Python library popnei succeeds.
 from popnei import _core
 from popnei.block import Block
 from popnei.dists import Distances, calc_pairwise_kosman_dists
+from popnei.diversity import PopDiversity, PopDiversityStat, calc_pop_diversity
 from popnei.filters import FilteringStats, Step
 from popnei.gwas import (
     GWASModel,
@@ -68,6 +69,8 @@ __all__ = [
     "PolyVarsStats",
     "PopDistMeasure",
     "PopDists",
+    "PopDiversity",
+    "PopDiversityStat",
     "R2Matrix",
     "StatsDistrib",
     "Step",
@@ -83,6 +86,7 @@ __all__ = [
     "calc_per_individual_stats",
     "calc_per_var_distribs",
     "calc_pop_dists",
+    "calc_pop_diversity",
     "calc_rogers_huff_r2_matrix",
     "do_pca",
     "do_pca_from_variants",

@@ -36,6 +36,7 @@ import {
   calcPerIndividualStats,
   calcPerVarDistribs,
   calcPopDists,
+  calcPopDiversity,
   calcRogersHuffR2Matrix,
   doPcaFromVariants,
   init,
@@ -45,6 +46,13 @@ import {
   writeVars,
 } from "popnei";
 
+import type { TheCallOfAConsumer } from "./consumers.ts";
+import {
+  THE_CONSUMERS as THE_TWELVE_CONSUMERS,
+  THE_POPS,
+  THE_TRAIT,
+  theConsumersTheCrateNames,
+} from "./consumers.ts";
 import {
   manyVariantsVcf,
   referenceVcf,
@@ -89,27 +97,6 @@ const BYTES_READ_OF_THE_VARS_FILE = 42552;
  * a bar drawn from the calls stopped there.
  */
 const BYTES_READ_OF_THE_LARGE_VARS_FILE = 12225584;
-
-/** The names of the 50 individuals of `many.vcf`, `ind00` to `ind49`. */
-const THE_INDIVIDUALS = Array.from(
-  { length: 50 },
-  (_unused, individual) => `ind${String(individual).padStart(2, "0")}`,
-);
-
-/**
- * A number for each individual, for the association study: the values run
- * from 0 to 6 and are not the same for everybody, which a trait a model can
- * be fitted to has to be.
- */
-const THE_TRAIT = Object.fromEntries(
-  THE_INDIVIDUALS.map((individual, at) => [individual, at % 7]),
-);
-
-/** Two populations of 25 individuals each, for the distances between them. */
-const THE_POPS = {
-  one: THE_INDIVIDUALS.slice(0, 25),
-  two: THE_INDIVIDUALS.slice(25),
-};
 
 /**
  * The kinship of the 50 individuals of `many.vcf`, for the study that asks
@@ -365,9 +352,9 @@ test("the two passes of the study asked for the approximation take their numbers
   // header of a VCF is read when its reader is built, so the two passes take
   // their numbers, 1 and then 2, at the two calls of 0 bytes. The second
   // pass gives the first block the factor of the approximation is estimated
-  // from and is then dropped, so it ends where the end of the run tells the
-  // page of it, below the whole file, while the first pass reads the file to
-  // its end.
+  // from and is then dropped, and it is told of the whole file all the same:
+  // `many.vcf` is smaller than one range, so the read that filled the first
+  // block took every byte of it.
   assert.deepEqual(
     calls.map((call) => call.pass),
     [1, 2, 1, 2],
@@ -449,86 +436,13 @@ test("twelve iterations of blocks over one source are twelve runs of one pass", 
 });
 
 /**
- * The eleven consumers of the package, each with the options its run is made
- * with and the ones `numPassesOf` is asked with, and the association study
- * twice, once for each number of passes its GRAMMAR-Gamma approximation
- * gives.
- *
- * `transformToBiallelic` is true where the calculation asks for it, because
- * `many.vcf` holds variants of more than two alleles and the core's default
- * refuses them.
+ * The runs of this file: the twelve consumers of `consumers.ts`, each with
+ * the options `numPassesOf` is asked with, and the association study a
+ * second time, asked for the GRAMMAR-Gamma approximation, which is its two
+ * passes.
  */
-const THE_CONSUMERS: readonly {
-  name: ConsumerName;
-  options?: object;
-  run: (variants: Variants) => void;
-}[] = [
-  {
-    name: "calcPerVarDistribs",
-    run: (variants) => {
-      calcPerVarDistribs(variants);
-    },
-  },
-  {
-    name: "calcPerIndividualStats",
-    run: (variants) => {
-      calcPerIndividualStats(variants);
-    },
-  },
-  {
-    name: "calcPairwiseKosmanDists",
-    run: (variants) => {
-      calcPairwiseKosmanDists(variants);
-    },
-  },
-  {
-    name: "calcPopDists",
-    run: (variants) => {
-      calcPopDists(variants, THE_POPS, {
-        measures: ["fst"],
-        jackknifeGroup: null,
-        minNumIndividuals: 1,
-      });
-    },
-  },
-  {
-    name: "calcRogersHuffR2Matrix",
-    run: (variants) => {
-      calcRogersHuffR2Matrix(variants);
-    },
-  },
-  {
-    name: "calcLdAndDistPerPop",
-    run: (variants) => {
-      calcLdAndDistPerPop(variants, { pops: THE_POPS });
-    },
-  },
-  {
-    name: "calcKinship",
-    run: (variants) => {
-      calcKinship(variants, { transformToBiallelic: true });
-    },
-  },
-  {
-    name: "doPcaFromVariants",
-    options: { numPrinComps: 10 },
-    run: (variants) => {
-      doPcaFromVariants(variants, {
-        numPrinComps: 10,
-        transformToBiallelic: true,
-      });
-    },
-  },
-  {
-    name: "calcGwas",
-    run: (variants) => {
-      calcGwas(variants, {
-        phenotype: THE_TRAIT,
-        trait: "continuous",
-        transformToBiallelic: true,
-      });
-    },
-  },
+const THE_CONSUMERS: readonly TheCallOfAConsumer[] = [
+  ...THE_TWELVE_CONSUMERS,
   {
     name: "calcGwas",
     options: { useGrammarGammaApprox: true },
@@ -542,21 +456,19 @@ const THE_CONSUMERS: readonly {
       });
     },
   },
-  {
-    name: "writeVars",
-    run: (variants) => {
-      writeVars(variants);
-    },
-  },
-  {
-    name: "iterBlocks",
-    run: (variants) => {
-      for (const _block of variants.iterBlocks()) {
-        // Every block is read, so the pass reads the file to its end.
-      }
-    },
-  },
 ];
+
+test("the twelve consumers the calls are read of are the twelve the crate names", () => {
+  // The loop below is worth what its list holds: a consumer left out of it
+  // is never run and nothing says so. Taking `calcPopDiversity` out of this
+  // list left all 417 tests of the package passing. The crate's own list is
+  // what the message of a name that is of no consumer gives, and it is
+  // written in no file of TypeScript.
+  assert.deepEqual(
+    [...new Set(THE_CONSUMERS.map((consumer) => consumer.name))].sort(),
+    [...theConsumersTheCrateNames()].sort(),
+  );
+});
 
 test("every consumer makes the passes numPassesOf says it makes", () => {
   for (const consumer of THE_CONSUMERS) {
@@ -578,6 +490,28 @@ test("every consumer makes the passes numPassesOf says it makes", () => {
       calls.every((call) => call.numPasses === numPasses),
       `a call of ${consumer.name} says another number of passes`,
     );
+    // Every pass is told that it is over, which is the call the end of the
+    // run makes with the bytes that pass read. No read says so, so a reader
+    // that outlives its run loses that call in silence and a page's bar for
+    // a finished run stands where the last read left it: with a
+    // `std::mem::forget` on the chain of the diversity, the calls of its run
+    // went from 0 and 117346 bytes to 0 alone, and every test of the package
+    // passed. Every pass here reads the whole of `many.vcf`, the second of
+    // the study asked for the approximation among them: the file is smaller
+    // than one range, so the first read of a pass gives its reader every
+    // byte of it, whether the pass then asks for one block or for all five.
+    for (let pass = 1; pass <= numPasses; pass += 1) {
+      const ofThePass = calls.filter((call) => call.pass === pass);
+      assert.ok(
+        ofThePass.length > 0,
+        `the pass ${pass} of ${consumer.name} told the page nothing`,
+      );
+      assert.equal(
+        ofThePass.at(-1)?.bytesRead,
+        BYTES_OF_MANY_VCF,
+        `the last call of the pass ${pass} of ${consumer.name}`,
+      );
+    }
   }
 });
 

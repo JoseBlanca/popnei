@@ -2132,6 +2132,190 @@ pub enum Error {
         num_pairs: usize,
     },
 
+    /// The folded site frequency spectrum was asked for and no
+    /// `num_called_alleles` was given. The spectrum counts the variants
+    /// whose rarer allele was called once, twice and so on up to half the
+    /// alleles drawn, so its bins need one number of called alleles for
+    /// every population and every variant; with none, a population of 40
+    /// called alleles and one of 400 would put their variants in bins that
+    /// mean different things. In Python it is a `ValueError`.
+    #[error(
+        "the folded site frequency spectrum was asked for and `num_called_alleles` was not given, and the bins of a spectrum are the counts of the rarer allele in a draw of that many alleles: either give `num_called_alleles`, or take folded_sfs out of `stats` and keep the statistics that need no draw, {the_four}",
+        the_four = the_four_that_need_no_draw()
+    )]
+    DiversitySfsWithoutADraw,
+
+    /// A user asked for a statistic of a population under a name that is
+    /// of none of the five. The names are those of the fields of the
+    /// result, and they are the table `diversity::DiversityStats::NAMES`,
+    /// which the message lists. In Python it is a `ValueError`.
+    #[error("`{name}` is not one of the statistics of a population, which are {the_five}", the_five = the_five_of_a_population())]
+    DiversityStatOfAnUnknownName {
+        /// The name the user wrote.
+        name: String,
+    },
+
+    /// A pass of the diversity was asked for no statistic at all. Such a
+    /// pass reads every variant of the source and computes nothing of
+    /// them, so it is refused at the call rather than after the dataset
+    /// has been read. In Python it is a `ValueError`.
+    #[error(
+        "`stats` names no statistic and a pass that computes none reads every variant of the source for nothing: name in `stats` the statistics you want, which are {the_five}, or leave `stats` out for the four that need no draw, {the_four}",
+        the_five = the_five_of_a_population(),
+        the_four = the_four_that_need_no_draw()
+    )]
+    DiversityWithNoStatistic,
+
+    /// A block of a pass of the diversity said it held more variants than
+    /// a count of them holds. Every reader of popnei gives blocks of far
+    /// fewer, and a `usize` is 64 bits on the targets popnei builds
+    /// natively for and 32 in WebAssembly, so no block of any of them
+    /// reaches this; a block that did would be counted into a number that
+    /// stopped at the largest one and would leave the pass reporting fewer
+    /// variants than it read. In Python it is a `ValueError`.
+    #[error(
+        "a block of the pass says it holds {num_vars} variants, which is more than the variants of a pass are counted in, {largest}",
+        largest = u64::MAX
+    )]
+    DiversityMoreVarsThanACountHolds {
+        /// How many variants the block said it held.
+        num_vars: usize,
+    },
+
+    /// The reader of a pass of the diversity states a ploidy of 0 or one
+    /// above the alleles a genotype of popnei holds. The threshold of called
+    /// genotypes of the pass is measured in that ploidy and so is the largest
+    /// draw the dataset allows, so a ploidy that did not fit would leave every
+    /// population counting no variant. The VCF reader refuses both when it is
+    /// opened and the vars file reader refuses a file whose genotypes hold no
+    /// allele, so what reaches this is a vars file whose metadata says its
+    /// genotypes hold more alleles than popnei reads. It is this module's own
+    /// case and not the one the statistics of one variant raise for their
+    /// `ploidy` argument: a user of `calc_pop_diversity` passes no ploidy, so
+    /// a message naming that argument would send them looking for one they
+    /// never wrote. In Python it is a `ValueError`, and it names the file the
+    /// variants were read from.
+    #[error(
+        "the variants were read at a ploidy of {ploidy}, and the diversity of a population is calculated over genotypes of 1 allele at least and {largest} at most: how many genotypes a population called at a variant is its called alleles over the ploidy"
+    )]
+    DiversityPloidyOutOfRange {
+        /// The ploidy the reader of the pass gives.
+        ploidy: usize,
+        /// The largest one popnei reads, `io::vcf::MAX_PLOIDY`.
+        largest: usize,
+    },
+
+    /// The bins of the folded spectrum of every population of a pass are
+    /// more floats than the machine counts: the populations times
+    /// `num_called_alleles / 2 + 1`, which is what one vector of them holds.
+    /// A `usize` is 32 bits in WebAssembly, where 430000 populations at a
+    /// draw of every gene copy of a large dataset reach it, and 64 bits
+    /// natively, where no dataset does. The pass says so before it reads a
+    /// variant rather than dying in the allocation. In Python it is a
+    /// `ValueError`: it is the populations and the draw a user asked for.
+    #[error(
+        "the folded spectrum of {num_pops} populations holds {num_bins} bins for each of them, which is more values than this machine counts, {largest}: ask for the spectrum of fewer populations at a time or for a smaller `num_called_alleles`",
+        largest = usize::MAX
+    )]
+    DiversityMoreBinsThanTheMachineHolds {
+        /// How many populations the pass is over.
+        num_pops: usize,
+        /// How many bins the spectrum of one of them holds,
+        /// `num_called_alleles / 2 + 1`.
+        num_bins: usize,
+    },
+
+    /// The number of called alleles every population is brought down to is
+    /// below 2. A draw of one allele shows one allele whatever the
+    /// population holds, so every standardized value of such a draw is 1 or
+    /// 0 and says nothing about the dataset. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "`num_called_alleles` is {num_called_alleles}, and a draw shows more than one allele only when it is of 2 alleles at least: a draw of one allele finds one allele whatever the population holds"
+    )]
+    DiversityDrawTooSmall {
+        /// The number of called alleles that was asked for.
+        num_called_alleles: u32,
+    },
+
+    /// The number of called alleles every population is brought down to is
+    /// above the individuals of the dataset times the ploidy, which is every
+    /// gene copy the dataset holds and so the most alleles any population can
+    /// have called at any variant. A draw above it is reached by no variant
+    /// of any population, and the folded spectrum of it is as long as half
+    /// the draw: at the top of a `u32` that is 2147483648 bins for each
+    /// population, 51 GB over three of them, which the pass would die
+    /// allocating rather than say what was wrong. The bound is read from the
+    /// pass and not from the call: `the_pass` of `diversity` takes the
+    /// individuals the reader gives and the ploidy it states, so the same
+    /// `num_called_alleles` is taken over one pass and refused over another,
+    /// a draw of 30 over the whole of `tests/reference/stats/panel.vcf.gz`
+    /// and the same draw after a filter of ten of its individuals. That is
+    /// why the message of this one names the file that was read. A draw that
+    /// this dataset's missing genotypes leave no population able to fill is a
+    /// different case, and it is no error. In Python it is a `ValueError`.
+    #[error(
+        "`num_called_alleles` is {num_called_alleles} and the largest draw this dataset allows is {largest_draw}, every gene copy of its {num_individuals} individuals at a ploidy of {ploidy}: no population can have called more alleles than that at a variant"
+    )]
+    DiversityDrawLargerThanTheDataset {
+        /// The number of called alleles that was asked for.
+        num_called_alleles: u32,
+        /// The largest draw the dataset allows, its individuals times its
+        /// ploidy. It is a `u64` because that product passes what a `u32`
+        /// holds above 2147483647 gene copies, and a `usize` in WebAssembly,
+        /// where it is 32 bits.
+        largest_draw: u64,
+        /// How many individuals the dataset has.
+        num_individuals: usize,
+        /// The ploidy the reader of the pass states.
+        ploidy: u32,
+    },
+
+    /// One of the populations the diversity is calculated for holds no
+    /// individual. Every statistic of a population is over the alleles its
+    /// individuals called, so a population with none has no allele to count
+    /// at any variant. In Python it is a `ValueError`.
+    #[error(
+        "the population at {pop} holds no individual, and every statistic of a population is over the alleles its individuals called"
+    )]
+    DiversityPopWithNoIndividual {
+        /// Which population of the call it is, counted from 0 in the order
+        /// they were given.
+        pop: usize,
+    },
+
+    /// An index given for an individual of a population is not an
+    /// individual of the dataset: they are counted from 0, so the last one
+    /// of a dataset of n individuals is n − 1. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the individual {individual} is in the population at {pop} and the dataset has {num_individuals} individuals, which are counted from 0"
+    )]
+    DiversityIndividualNotInTheDataset {
+        /// Which population of the call the index was given in.
+        pop: usize,
+        /// The index that was given.
+        individual: usize,
+        /// How many individuals the dataset has.
+        num_individuals: usize,
+    },
+
+    /// An individual is twice in one population of the call. Its alleles
+    /// would be counted twice in that population, at every variant and in
+    /// every one of the five statistics. An individual that is in two
+    /// populations is taken, as `docs/specs/stats.md` has it, and only the
+    /// repeat within one population is refused. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the individual {individual} is twice in the population at {pop}, and a population holds each of its individuals once"
+    )]
+    DiversityIndividualAskedForTwice {
+        /// Which population of the call holds it twice.
+        pop: usize,
+        /// The index that was given twice.
+        individual: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
@@ -2732,7 +2916,34 @@ impl Error {
             | Self::GwasModelNotBuilt { .. }
             | Self::GwasGrammarGammaOfAModelWithNoProjection { .. }
             | Self::GwasTraitOfAnUnknownName { .. }
-            | Self::GwasTestOfAnUnknownName { .. } => false,
+            | Self::GwasTestOfAnUnknownName { .. }
+            // The eight of the diversity of a population that are of what a
+            // user wrote, which "The Rust interface" of
+            // `docs/specs/diversity.md` counts among its arguments: the
+            // folded spectrum asked for with no `num_called_alleles` to
+            // draw, a `stats` that names no statistic at all and a name
+            // that is of none of the five, a draw of fewer than 2 alleles,
+            // which finds one allele whatever a population holds, and a
+            // spectrum whose bins over all the populations are more values
+            // than this machine counts, which is the populations and the
+            // draw and is looked at before a variant is read; and the three
+            // of the populations as a caller of the core writes them, by the
+            // position of each individual among the ones the reader gives:
+            // a population that holds none, a position that is not an
+            // individual of the dataset and a position given twice in one
+            // population, which are the three the r² of a set of variants
+            // has as well. A user of the Python or the TypeScript package
+            // reaches none of those three: `Pops::from_names` of
+            // `docs/specs/stats.md` refuses them first, in a message that
+            // names the population and the individual.
+            | Self::DiversitySfsWithoutADraw
+            | Self::DiversityStatOfAnUnknownName { .. }
+            | Self::DiversityWithNoStatistic
+            | Self::DiversityDrawTooSmall { .. }
+            | Self::DiversityMoreBinsThanTheMachineHolds { .. }
+            | Self::DiversityPopWithNoIndividual { .. }
+            | Self::DiversityIndividualNotInTheDataset { .. }
+            | Self::DiversityIndividualAskedForTwice { .. } => false,
             // The dataset a user gave, which is a file: a pass that gave
             // no variant with variance, a source of no individual, a
             // variant of more than two alleles among its called genotypes
@@ -2776,6 +2987,24 @@ impl Error {
             | Self::GwasGrammarGammaWithoutAVariantThatVaries { .. }
             | Self::GwasGrammarGammaFactorNotAboveZero { .. }
             | Self::GwasVariantsTooLarge
+            // The three of the diversity of a population that are of the
+            // variants the pass read and not of what a user wrote: a
+            // ploidy of 0 or above the alleles a genotype of popnei holds,
+            // which `calc_pop_diversity` takes no argument for, so it is
+            // the one the reader states and what reaches it is a vars file
+            // whose metadata says its genotypes hold more alleles than
+            // popnei reads; a draw above every gene copy the dataset holds,
+            // whose bound `the_pass` of `diversity` takes from the
+            // individuals the reader gives and the ploidy it states, so the
+            // same draw is taken over one pass and refused over another and
+            // the file that was read is what tells a user which pass it was;
+            // and a block that says it holds more variants than the variants
+            // of a pass are counted in, which is a reader with a defect and
+            // which whoever meets reports, with the file that was being read
+            // as part of that report.
+            | Self::DiversityPloidyOutOfRange { .. }
+            | Self::DiversityDrawLargerThanTheDataset { .. }
+            | Self::DiversityMoreVarsThanACountHolds { .. }
             // The defects: a reader that gave blocks which do not hold
             // one dataset, a block whose arrays are not of its size, a
             // block of no variants, the counts and the indices a caller of
@@ -2984,6 +3213,24 @@ fn the_remedies_of_a_fit_that_did_not_settle(model: crate::gwas::GwasModel) -> &
 /// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
 fn the_five_statistics() -> String {
     listed(&crate::stats::PerVarStat::NAMES)
+}
+
+/// The five statistics of a population, in the order of the fields of a
+/// result, as a message that asks a user to choose among them lists them.
+///
+/// They are written as a user writes them, with no backticks, because a
+/// user copies one of them into `stats`.
+fn the_five_of_a_population() -> String {
+    crate::diversity::DiversityStats::NAMES.join(", ")
+}
+
+/// The four statistics of a population that need no draw, in the same order
+/// and written the same way, for a message that asks a user to leave the fifth
+/// out.
+fn the_four_that_need_no_draw() -> String {
+    crate::diversity::DiversityStats::WITHOUT_A_DRAW
+        .names()
+        .join(", ")
 }
 
 /// `names` in one sentence, each in backticks, the last one after an "and":
@@ -3240,6 +3487,69 @@ mod tests {
                 factor: -1.5e-16,
                 num_vars: 3,
             },
+        ] {
+            assert!(error.names_the_file(), "{error} was said to name no file");
+        }
+    }
+
+    /// The errors of the diversity of a population that a user's own
+    /// arguments are refused with name no file, and the ones the pass is
+    /// refused over do.
+    ///
+    /// All eleven are here, because what tells the two apart is where the
+    /// value that was refused comes from and not how it reads. The draw
+    /// above every gene copy of the dataset is the one that was in the wrong
+    /// arm: `num_called_alleles` is a number a user wrote, but the bound it
+    /// is refused against is the individuals the reader of the pass gives
+    /// times the ploidy it states, so a draw of 30 over the whole of
+    /// `tests/reference/stats/panel.vcf.gz` is taken and the same draw after
+    /// a filter of ten of its individuals is refused, and only the file says
+    /// which pass it was. What this test cannot do is catch the case nobody
+    /// classified, which is what the exhaustive match of `names_the_file` is
+    /// for.
+    #[test]
+    fn the_errors_of_the_arguments_of_the_diversity_name_no_file() {
+        for error in [
+            Error::DiversitySfsWithoutADraw,
+            Error::DiversityStatOfAnUnknownName {
+                name: "heterozygosity".to_string(),
+            },
+            Error::DiversityWithNoStatistic,
+            Error::DiversityDrawTooSmall {
+                num_called_alleles: 1,
+            },
+            Error::DiversityMoreBinsThanTheMachineHolds {
+                num_pops: 430000,
+                num_bins: 2147483648,
+            },
+            Error::DiversityPopWithNoIndividual { pop: 2 },
+            Error::DiversityIndividualNotInTheDataset {
+                pop: 1,
+                individual: 50,
+                num_individuals: 50,
+            },
+            Error::DiversityIndividualAskedForTwice {
+                pop: 0,
+                individual: 3,
+            },
+        ] {
+            assert!(
+                !error.names_the_file(),
+                "{error} was said to name the file it happened in"
+            );
+        }
+        for error in [
+            Error::DiversityPloidyOutOfRange {
+                ploidy: 0,
+                largest: 255,
+            },
+            Error::DiversityDrawLargerThanTheDataset {
+                num_called_alleles: 30,
+                largest_draw: 20,
+                num_individuals: 10,
+                ploidy: 2,
+            },
+            Error::DiversityMoreVarsThanACountHolds { num_vars: 1 },
         ] {
             assert!(error.names_the_file(), "{error} was said to name no file");
         }

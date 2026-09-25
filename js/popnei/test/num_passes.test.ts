@@ -21,36 +21,44 @@ import { test } from "node:test";
 import type { ConsumerName } from "popnei";
 import { init, numPassesOf } from "popnei";
 
-/**
- * The ten consumers that read the source once when they are asked with no
- * options, which is every one of them but the principal components of the
- * variants.
- *
- * The association study is among them: it reads the source twice only when
- * it is asked for the GRAMMAR-Gamma approximation, which the default does
- * not ask for, and the two tests below are of that option.
- */
-const THE_CONSUMERS_OF_ONE_PASS: readonly ConsumerName[] = [
-  "calcPerVarDistribs",
-  "calcPerIndividualStats",
-  "calcPairwiseKosmanDists",
-  "calcPopDists",
-  "calcRogersHuffR2Matrix",
-  "calcLdAndDistPerPop",
-  "calcKinship",
-  "calcGwas",
-  "writeVars",
-  "iterBlocks",
-];
+import { theConsumersTheCrateNames } from "./consumers.ts";
 
 /**
- * The eleven consumers of the package, which are the ten above and the
- * principal components of the variants.
+ * How many passes each consumer makes when it is asked with no options.
+ *
+ * Eleven of the twelve read the source once, the principal components of the
+ * variants being the one that reads it twice for the weights its ten
+ * components ask for. The association study is among the eleven: it reads
+ * the source twice only when it is asked for the GRAMMAR-Gamma
+ * approximation, which the default does not ask for, and the two tests
+ * below are of that option.
+ *
+ * It is a `Record` over `ConsumerName` and not an array of names, because
+ * TypeScript makes a `Record` hold every member of the union and lets an
+ * array hold as few as it likes: a name added to `ConsumerName` and to no
+ * consumer of the crate compiled and type-checked while this was an array,
+ * and now it is a `TS2741` here and the comparison with the crate's own
+ * names below is what refuses it at run time.
  */
-const THE_CONSUMERS: readonly ConsumerName[] = [
-  ...THE_CONSUMERS_OF_ONE_PASS,
-  "doPcaFromVariants",
-];
+const THE_PASSES_OF_EACH_CONSUMER: Record<ConsumerName, number> = {
+  calcPerVarDistribs: 1,
+  calcPerIndividualStats: 1,
+  calcPairwiseKosmanDists: 1,
+  calcPopDists: 1,
+  calcPopDiversity: 1,
+  calcRogersHuffR2Matrix: 1,
+  calcLdAndDistPerPop: 1,
+  calcKinship: 1,
+  calcGwas: 1,
+  writeVars: 1,
+  iterBlocks: 1,
+  doPcaFromVariants: 2,
+};
+
+/** The twelve consumers of the package, which are the keys of that table. */
+const THE_CONSUMERS = Object.keys(
+  THE_PASSES_OF_EACH_CONSUMER,
+) as ConsumerName[];
 
 test("the pca of the variants makes two passes when weights are asked for", async () => {
   await init();
@@ -82,10 +90,12 @@ test("the study with no options makes the one pass of its exact denominator", as
   assert.equal(numPassesOf("calcGwas"), 1);
 });
 
-for (const consumer of THE_CONSUMERS_OF_ONE_PASS) {
-  test(`${consumer} makes one pass`, async () => {
+for (const [consumer, numPasses] of Object.entries(
+  THE_PASSES_OF_EACH_CONSUMER,
+)) {
+  test(`numPassesOf says ${consumer} with no options makes ${numPasses}`, async () => {
     await init();
-    assert.equal(numPassesOf(consumer), 1);
+    assert.equal(numPassesOf(consumer as ConsumerName), numPasses);
   });
 }
 
@@ -97,38 +107,16 @@ test("a name that is of no consumer is refused, with the names that are", async 
   });
 });
 
-/**
- * The names the refusal of a name that is of no consumer gives, which the
- * crate writes after the colon of that message.
- *
- * @throws {Error} When `calcKinships`, which is the name of no consumer, is
- * taken.
- */
-function theNamesOfTheRefusal(): string[] {
-  try {
-    numPassesOf("calcKinships" as ConsumerName);
-  } catch (refused) {
-    const message = refused instanceof Error ? refused.message : `${refused}`;
-    return message
-      .slice(message.lastIndexOf(":") + 1)
-      .split(",")
-      .map((name) => name.trim());
-  }
-  throw new Error(
-    "popnei: `calcKinships` is the name of no consumer and was taken",
-  );
-}
-
 test("every name the refusal gives is a name numPassesOf takes", async () => {
   await init();
-  // The eleven names live twice in the binding crate, in the function that
+  // The twelve names live twice in the binding crate, in the function that
   // takes a name and in the list the message of a refused name is built
   // from, and nothing else holds the two together. A name that the message
   // gives and the function refuses fails the loop below; a name the
   // function takes and the message leaves out fails the comparison with the
-  // eleven of this file, which are the eleven of
+  // twelve of this file, which are the twelve of
   // `docs/specs/js_sources.md`.
-  const names = theNamesOfTheRefusal();
+  const names = theConsumersTheCrateNames();
   assert.deepEqual([...names].sort(), [...THE_CONSUMERS].sort());
   for (const name of names) {
     assert.doesNotThrow(() => numPassesOf(name as ConsumerName));

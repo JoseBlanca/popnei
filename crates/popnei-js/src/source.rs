@@ -105,6 +105,8 @@ pub(crate) enum Consumer {
     KosmanDists,
     /// `calcPopDists`.
     PopDists,
+    /// `calcPopDiversity`.
+    PopDiversity,
     /// `calcRogersHuffR2Matrix`.
     R2Matrix,
     /// `calcLdAndDistPerPop`.
@@ -170,6 +172,7 @@ impl Consumer {
             | Consumer::PerIndividualStats
             | Consumer::KosmanDists
             | Consumer::PopDists
+            | Consumer::PopDiversity
             | Consumer::R2Matrix
             | Consumer::LdAndDist
             | Consumer::Kinship
@@ -196,6 +199,7 @@ impl Consumer {
             "calcPerIndividualStats" => Ok(Consumer::PerIndividualStats),
             "calcPairwiseKosmanDists" => Ok(Consumer::KosmanDists),
             "calcPopDists" => Ok(Consumer::PopDists),
+            "calcPopDiversity" => Ok(Consumer::PopDiversity),
             "calcRogersHuffR2Matrix" => Ok(Consumer::R2Matrix),
             "calcLdAndDistPerPop" => Ok(Consumer::LdAndDist),
             "calcKinship" => Ok(Consumer::Kinship),
@@ -216,11 +220,12 @@ impl Consumer {
 
 /// The name of each consumer as a user of the package writes it, for the
 /// message of a name that is of none of them.
-const THE_CONSUMERS: [&str; 11] = [
+const THE_CONSUMERS: [&str; 12] = [
     "calcPerVarDistribs",
     "calcPerIndividualStats",
     "calcPairwiseKosmanDists",
     "calcPopDists",
+    "calcPopDiversity",
     "calcRogersHuffR2Matrix",
     "calcLdAndDistPerPop",
     "calcKinship",

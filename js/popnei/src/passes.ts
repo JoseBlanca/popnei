@@ -30,6 +30,7 @@ export type ConsumerName =
   | "calcPerIndividualStats"
   | "calcPairwiseKosmanDists"
   | "calcPopDists"
+  | "calcPopDiversity"
   | "calcRogersHuffR2Matrix"
   | "calcLdAndDistPerPop"
   | "calcKinship"
