@@ -24,7 +24,7 @@ spec stands beside; `docs/specs/block.md` has `iterBlocks`.
 Three words of `docs/glossary.md` are used throughout. A **pass** is one
 reading of a source of variants from its start to its end. A **consumer** is
 what takes a `Variants`, makes the passes it needs and gives a result: a
-calculation, the writer `writeVars`, or `iterBlocks`; the package has eleven
+calculation, the writer `writeVars`, or `iterBlocks`; the package has twelve
 of them. A **run** is one call of one consumer, with the passes it makes.
 
 What the user of an application pays today, with the file taken whole:
@@ -295,9 +295,9 @@ gives.
 
 Every consumer of the package can throw the value that `told` threw:
 `calcPerVarDistribs`, `calcPerIndividualStats`, `calcPairwiseKosmanDists`,
-`calcPopDists`, `calcRogersHuffR2Matrix`, `calcKinship`,
-`doPcaFromVariants`, `calcGwas`, `writeVars` and the iteration of
-`iterBlocks`.
+`calcPopDists`, `calcPopDiversity`, `calcRogersHuffR2Matrix`,
+`calcLdAndDistPerPop`, `calcKinship`, `doPcaFromVariants`, `calcGwas`,
+`writeVars` and the iteration of `iterBlocks`.
 
 `onProgress` has no Python counterpart, and neither has `numPassesOf` of the
 item below. Goal 2 of `docs/objectives.md` asks for every difference between
@@ -437,7 +437,14 @@ from it, with ranges of the size popnei chose:
   consumer throws its value, which is what says that the failed read is not
   swallowed by the decompressor or turned into the error of a file that was
   cut short.
-- For each of the eleven consumers, the largest `pass` of the calls of one
+- A function that throws at a call inside the file while `calcPopDiversity`
+  reads it: the diversity throws its value. The check that every consumer
+  makes the passes `numPassesOf` says is not what holds a consumer to its
+  run: a consumer that opened no run of its own, or dropped it before its
+  pass read on, was still told of the first read of that pass, which is one
+  call of pass 1 of 1, and passed that check while it gave popnei's error
+  for the failed read in place of the value the application threw.
+- For each of the twelve consumers, the largest `pass` of the calls of one
   run equals `numPassesOf` of it with the same options. The association
   study is run twice here, once with the GRAMMAR-Gamma approximation and
   once without it, which are its two numbers of passes.
@@ -467,7 +474,7 @@ numPassesOf(consumer: ConsumerName, options?: object): number
 
 `ConsumerName` is the name of the function of this package that makes the
 passes: `"calcPerVarDistribs"`, `"calcPerIndividualStats"`,
-`"calcPairwiseKosmanDists"`, `"calcPopDists"`,
+`"calcPairwiseKosmanDists"`, `"calcPopDists"`, `"calcPopDiversity"`,
 `"calcRogersHuffR2Matrix"`, `"calcLdAndDistPerPop"`, `"calcKinship"`,
 `"doPcaFromVariants"`, `"calcGwas"`, `"writeVars"` and `"iterBlocks"`.
 `options` is the options object that function takes, and only
@@ -493,10 +500,10 @@ Under node: `numPassesOf("doPcaFromVariants", { numPrinComps: 10 })` is 2,
 with `numPrinComps` 0 it is 1, and with no options it is 2, which is the
 default of 10 components; `numPassesOf("calcGwas", { useGrammarGammaApprox:
 true })` is 2, with it false it is 1, and with no options it is 1, which is
-the default of the exact denominator; each of the other ten names gives 1; a
-name that is of no consumer throws, and so does a `numPrinComps` of -1 and a
+the default of the exact denominator; each of the other eleven names gives 1;
+a name that is of no consumer throws, and so does a `numPrinComps` of -1 and a
 `useGrammarGammaApprox` that is not a boolean. The test of the item above
-runs each of the eleven and compares the passes the calls showed with the
+runs each of the twelve and compares the passes the calls showed with the
 number this function gives, which is what would catch a consumer that grew a
 pass and did not say so.
 
@@ -597,8 +604,8 @@ thread_local! {
 /// A consumer of the package, with the argument of the one whose number of
 /// passes depends on it.
 pub(crate) enum Consumer {
-    PerVarDistribs, PerIndividualStats, KosmanDists, PopDists, R2Matrix,
-    LdAndDist, Kinship, PcaOfVariants { num_prin_comps: usize },
+    PerVarDistribs, PerIndividualStats, KosmanDists, PopDists, PopDiversity,
+    R2Matrix, LdAndDist, Kinship, PcaOfVariants { num_prin_comps: usize },
     Gwas { use_grammar_gamma_approx: bool }, WriteVars, IterBlocks,
 }
 
@@ -706,8 +713,7 @@ another over one source and tags each with a key of its own, since the
 function can carry that key, and it leaves the options of every consumer as
 the ones of the Python API, which goal 3 of `docs/objectives.md` asks the
 TypeScript API to mirror. An argument of every consumer is the same power
-with eleven places to add it to and eleven more lines of
-documentation.
+with twelve places to add it to and twelve more lines of documentation.
 Recommendation: the method of `Variants`. Meanwhile the implementer writes
 that.
 
