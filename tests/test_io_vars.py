@@ -346,10 +346,13 @@ def test_write_vars_leaves_no_file_when_the_vcf_fails_half_way(
 
 
 # How many variants the VCF of the two tests that act while a call runs
-# holds. Writing it as a vars file takes about a third of a second in the
-# build `maturin develop` makes, which the tests run against, so a thread of
-# the test has the time to act between the moment the file is made and the
-# moment the call is over.
+# holds. Both threads wait for the file the call makes and act when it is
+# there, and not after a time, because how long the pass takes is a fact of
+# the build: writing this VCF as a vars file took 0.457 s in the build
+# `maturin develop` makes and 0.029 s in the one `maturin develop --release`
+# makes, on the owner's Apple M5 Pro on 25 September 2026. The file is made
+# before the pass over the source begins, so what either thread has to act
+# in is the whole pass, in either build.
 VARIANTS_OF_THE_LONG_VCF = 100_000
 
 # A data line of 50 individuals whose first genotype holds four alleles,
@@ -437,11 +440,22 @@ def test_write_vars_says_when_it_could_not_take_away_the_file_it_was_writing(
     assert any(str(path) in note for note in notes), notes
 
 
-# How long the test below waits before it sends itself the signal of a
-# Ctrl-C. Writing the VCF above as a vars file took 0.313 s in the build
-# `maturin develop` makes, on the owner's Apple M5 Pro, so the call is in
-# the middle of its pass over the source when the signal arrives.
-SECONDS_BEFORE_THE_CTRL_C = 0.1
+def _send_a_ctrl_c_once_the_file_is_there(path: Path) -> None:
+    """Waits for `path` to be made and sends the process the signal of a
+    Ctrl-C, so that it arrives while the pass over the source runs.
+
+    `write_vars` makes the file before it releases the interpreter and
+    raises a signal that came meanwhile when the pass is over, so the signal
+    has to arrive between those two moments. Waiting for the file is what
+    puts it there in every build: a clock would have to know how long the
+    pass takes, which the release build does in a fifteenth of the time the
+    build of `maturin develop` does.
+    """
+    for _ in range(LOOKS_FOR_THE_FILE):
+        if path.exists():
+            os.kill(os.getpid(), signal.SIGINT)
+            return
+        time.sleep(SECONDS_BETWEEN_LOOKS)
 
 
 def test_a_ctrl_c_while_write_vars_runs_is_raised_and_leaves_no_file(
@@ -459,8 +473,8 @@ def test_a_ctrl_c_while_write_vars_runs_is_raised_and_leaves_no_file(
     # The default handler of SIGINT is the one that raises
     # `KeyboardInterrupt`, and it is put back where the test found it.
     handler = signal.signal(signal.SIGINT, signal.default_int_handler)
-    ctrl_c = threading.Timer(
-        SECONDS_BEFORE_THE_CTRL_C, lambda: os.kill(os.getpid(), signal.SIGINT)
+    ctrl_c = threading.Thread(
+        target=_send_a_ctrl_c_once_the_file_is_there, args=(path,), daemon=True
     )
 
     try:
@@ -468,7 +482,7 @@ def test_a_ctrl_c_while_write_vars_runs_is_raised_and_leaves_no_file(
         with pytest.raises(KeyboardInterrupt):
             write_vars(variants, path)
     finally:
-        ctrl_c.cancel()
+        ctrl_c.join(timeout=10)
         signal.signal(signal.SIGINT, handler)
 
     assert not path.exists()
