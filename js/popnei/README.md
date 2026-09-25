@@ -19,7 +19,7 @@ a `Variants` are for an application that shows how far a calculation has
 got and lets its user stop it, and "A file of the page, in a web worker"
 below has both.
 
-Eight calculations read the variants of a `Variants`.
+Ten calculations read the variants of a `Variants`.
 `calcPairwiseKosmanDists` gives, in a `Distances`, the Kosman distance of
 every pair of individuals, how many alleles the two do not share at a
 variant averaged over the variants at which both were called, which runs
@@ -48,7 +48,24 @@ missing, `missingGtRate`, and the share of its called genotypes at which it
 is heterozygous, `obsHetRate`. The second says which individuals are more
 heterozygous than the rest, a sign of a mixed sample or of an outcrossed
 individual among inbred ones, and it is NaN for an individual that called
-no genotype.
+no genotype. `calcPopDiversity` gives, in a `PopDiversity` and for each
+population a user names in `pops`, how much variety it holds: how many
+alleles its individuals called, how many of those no other population
+called at the same variant, how many of the variants vary in it, and F_IS,
+how far its genotypes are from the proportions its allele frequencies would
+give if its individuals paired at random. Given a `numCalledAlleles` it
+gives those first three again standardized to a draw of that many called
+alleles, so that a population of 20 individuals and one of 200 can be
+compared, and the folded site frequency spectrum of the draw, how the
+variants of the population are spread over the count of their rarer allele.
+`calcLdAndDistPerPop` gives, for each population, how r² falls off as the
+two variants of a pair move apart on a chromosome: the pairs are put into
+bins of distance, each bin carrying how many pairs it holds and the mean
+and the standard deviation of their r², and beside the bins a curve fitted
+to every pair of the population, which carries the distance at which r² has
+fallen to half. How fast it falls is a property of the population, two
+variants that sit close together having had fewer recombinations between
+them than two that sit far apart.
 
 The other three read the same variants. `calcPopDists` gives how far apart
 every pair of the populations a user names is: two populations are far apart
@@ -74,9 +91,10 @@ consumer of a `Variants`, gives the components of a table of individuals and
 traits handed to it as numbers, which is the same analysis over values an
 application holds and not over a source of variants.
 
-Each of the ten consumers of a `Variants`, `iterBlocks`, `writeVars`,
-`calcPairwiseKosmanDists`, `calcPopDists`, `calcRogersHuffR2Matrix`,
-`calcKinship`, `doPcaFromVariants`, `calcGwas`, `calcPerVarDistribs` and
+Each of the twelve consumers of a `Variants`, `iterBlocks`, `writeVars`,
+`calcPairwiseKosmanDists`, `calcPopDists`, `calcPopDiversity`,
+`calcRogersHuffR2Matrix`, `calcLdAndDistPerPop`, `calcKinship`,
+`doPcaFromVariants`, `calcGwas`, `calcPerVarDistribs` and
 `calcPerIndividualStats`, gives back the counts of the pass it made over the
 source, in a `passStats`: how many variants it
 took, and how many each filter of the `Variants` was given and kept. A
@@ -99,10 +117,10 @@ the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
 `docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md`,
 `docs/specs/filters.md`, `docs/specs/dists.md`, `docs/specs/pca.md`,
-`docs/specs/kinship.md`, `docs/specs/gwas.md`, `docs/specs/ld.md` and
-`docs/specs/stats.md` say what they give. `docs/specs/js_sources.md` has
-what a source of this package is read from and what it tells the page while
-it reads.
+`docs/specs/kinship.md`, `docs/specs/gwas.md`, `docs/specs/ld.md`,
+`docs/specs/diversity.md` and `docs/specs/stats.md` say what they give.
+`docs/specs/js_sources.md` has what a source of this package is read from and
+what it tells the page while it reads.
 
 ## Building it
 
@@ -728,9 +746,14 @@ cancels a run without ending its worker and recognises its own cancel with
 `===`; the `Variants` is then the one it was, and the next run over it reads
 the file from its start. `numPassesOf` answers that fourth number before a
 run starts, so that a bar covers the run and not each pass from the moment
-it is drawn: every consumer makes one pass, except `doPcaFromVariants` when
-it is asked for the weights of the variants, which needs the components of a
-first pass to calculate them in a second.
+it is drawn: every consumer makes one pass, except two. `doPcaFromVariants`
+makes two when its `numPrinComps` is above 0, which is what asks for the
+weight of every variant: a weight needs the components, and those are known
+when the first pass ends. `calcGwas` makes two when its
+`useGrammarGammaApprox` is true, which stands the approximation in for the
+denominator of the test of a mixed model, the factor of that approximation
+being estimated from the first block of the second pass; with the false it
+has by default, the study reads the file once.
 
 Where an application sets the function that is told the progress is not
 settled. `docs/specs/js_sources.md` leaves it open between the method of
