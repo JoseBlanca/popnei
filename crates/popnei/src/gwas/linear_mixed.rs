@@ -14,6 +14,7 @@ use crate::error::{Error, Result};
 use super::distributions::{chi2_sf_1df, t_sf_two_sided};
 use super::dosages::GwasDosages;
 use super::grammar_gamma::GrammarGamma;
+use super::projection::TheProjection;
 use super::result::{Answers, NullModel};
 use super::study::{Design, GwasInputShape, GwasModel, TestType};
 use super::the_share_that_is_nothing;
@@ -437,13 +438,13 @@ impl<'a> RemlSearch<'a> {
 /// [`LinearMixedModel::test_the_block`] is where every variant goes
 /// through it.
 ///
-/// The projection matrix and the trait through it are kept because every
-/// variant is tested against them, and so are the buffers of a block, so
-/// that a pass over a million variants asks the machine for them once and
-/// allocates nothing for a variant. The matrix is individuals by
-/// individuals, which at the 10000 individuals of `docs/objectives.md` is
-/// 800 MB, where everything a linear model keeps grows with the columns of
-/// the design.
+/// The projection is kept as the factor a variant is solved against and
+/// not as the matrix, which is [`TheProjection`], and so are the trait
+/// through it and the buffers of a block, so that a pass over a million
+/// variants asks the machine for them once and allocates nothing for a
+/// variant. What is kept is individuals by individuals either way, which
+/// at the 10000 individuals of `docs/objectives.md` is 800 MB, where
+/// everything a linear model keeps grows with the columns of the design.
 pub(crate) struct LinearMixedModel {
     /// The effect of the intercept and of each covariate, one per column
     /// of the design.
@@ -462,32 +463,25 @@ pub(crate) struct LinearMixedModel {
     /// covariance of the right shape is needed to test a variant; what it
     /// decides is whether a user is given them.
     split: TheSplitOfTheTrait,
-    /// The projection matrix `p`, `num_individuals` x `num_individuals`,
-    /// row after row, which every variant is tested through.
-    projection: Vec<f64>,
+    /// The projection `p`, held as the factor of the covariance and the
+    /// directions the design spans through it, which every variant is
+    /// solved against.
+    projection: TheProjection,
     /// The trait through it, `p y`, one value per tested individual, which
     /// every variant's numerator is taken against.
-    projected_trait: Vec<f64>,
-    /// The largest value of the diagonal of that matrix, which is what a
-    /// variant's own squared length is weighted by to say how much of the
-    /// variant the projection has left.
     ///
-    /// What bounds `x' p x` over `x' x` is the largest eigenvalue of the
-    /// projection, and this is not that: the matrix is 0 or above as a
-    /// quadratic form, so no value of its diagonal is below 0 and the
-    /// largest of them is at most that eigenvalue, which makes this an
-    /// under-estimate of the scale the threshold is meant to measure. By
-    /// how much was measured on 24 September 2026: the largest eigenvalue
-    /// is 1.697 times the largest diagonal entry on `panel_called` and
-    /// 1.725 times it on `panel`, so the threshold sits about 1.7 times
-    /// below the scale. It is the diagonal that is taken because it costs
-    /// one walk over the matrix where the eigenvalue costs a
-    /// decomposition, and a threshold under-estimated by 1.7 is a threshold
-    /// 1.7 times tighter than it was meant to be, not one that lets a
-    /// variant through: on `panel_called` the smallest real denominator is
-    /// about 30 against a threshold of 5e-11.
-    largest_of_the_projection: f64,
-    /// The trait through the projection matrix, `y' p y`.
+    /// It is `v⁻¹` applied to what the design leaves of the trait, which
+    /// is the same vector: `p y = v⁻¹ (y - d coefs)`, since `coefs` is the
+    /// solution of `d' v⁻¹ d coefs = d' v⁻¹ y` and what that leaves the
+    /// design is 0.
+    projected_trait: Vec<f64>,
+    /// The trait through the factor, `m y`, one value per tested
+    /// individual, whose squared length is `y' p y` and from which the
+    /// Wald test forms what a variant leaves of the trait.
+    trait_through_the_factor: Vec<f64>,
+    /// The trait through the projection matrix, `y' p y`, which is the
+    /// squared length of [`LinearMixedModel::trait_through_the_factor`]
+    /// and so is 0 or above whatever the rounding does.
     ypy: f64,
     /// How many individuals the study tests.
     num_individuals: usize,
@@ -507,10 +501,16 @@ pub(crate) struct LinearMixedModel {
     /// of `docs/specs/gwas.md` is about. A study that does not approximate
     /// never adds to it.
     num_fell_back_to_the_exact: u64,
-    /// The dosages of a block through the projection matrix, `x p`, the
-    /// variants that have variance x `num_individuals`. It stays empty
-    /// under the approximation, which is the product it does not make.
+    /// The dosages of a block through the projection, `m x`, the variants
+    /// that have variance x `num_individuals`. It stays empty under the
+    /// approximation, which is the solve it does not make.
     projected: Vec<f64>,
+    /// One variant through the projection, which only an approximating
+    /// study fills: the Wald test's fallback to the exact denominator
+    /// solves one variant at a time, and the buffer above is the one it
+    /// does not have. The first such variant of a pass grows it to one
+    /// value per tested individual and no later one allocates.
+    of_the_one_variant: Vec<f64>,
     /// The denominator of each variant that has variance, `x' p x`, one per
     /// variant, formed from the row above or approximated.
     den: Vec<f64>,
@@ -657,23 +657,38 @@ impl LinearMixedModel {
         let heritability = genetic_variance / (genetic_variance + residual_variance);
         let coefs = std::mem::take(&mut search.coefs);
         drop(search);
-        let projection = the_projection_of(
-            design,
+        let variances = TheVariances {
+            genetic: genetic_variance,
+            residual: residual_variance,
+        };
+        // `p y`, which every variant's numerator is taken against, is
+        // `v⁻¹` applied to what the design leaves of the trait: the
+        // effects solve `d' v⁻¹ d coefs = d' v⁻¹ y`, so `d' v⁻¹` applied
+        // to that remainder is 0 and `v⁻¹ (y - d coefs)` is `p y`.
+        let mut projected_trait = the_trait_less_the_design(phenotype, design, &coefs);
+        through_the_covariance(
             &eigenvalues,
             &vectors,
-            TheVariances {
-                genetic: genetic_variance,
-                residual: residual_variance,
-            },
+            variances,
+            num_individuals,
+            &mut projected_trait,
         )?;
-        let projected_trait = through_the_projection(&projection, phenotype)?;
-        // `y' p y`, the generalized residual sum of squares of the null
-        // over the genetic variance, which the restricted maximum
-        // likelihood makes the individuals less the columns of the design.
-        let ypy = phenotype
+        let mut projection = TheProjection::of_the_factored_covariance(
+            the_factored_covariance_of(&eigenvalues, &vectors, variances, num_individuals)?,
+            design,
+        )?;
+        // The trait through the factor, whose squared length is `y' p y`,
+        // the generalized residual sum of squares of the null over the
+        // genetic variance, which the restricted maximum likelihood makes
+        // the individuals less the columns of the design. It is a sum of
+        // squares and so is 0 or above whatever the rounding does, where
+        // the trait against the trait through the matrix was a sum of
+        // terms of both signs.
+        let mut trait_through_the_factor = Vec::new();
+        projection.through(phenotype, 1, &mut trait_through_the_factor)?;
+        let ypy = trait_through_the_factor
             .iter()
-            .zip(&projected_trait)
-            .map(|(measured, projected)| measured * projected)
+            .map(|through| through * through)
             .sum::<f64>();
         #[expect(
             clippy::arithmetic_side_effects,
@@ -687,19 +702,16 @@ impl LinearMixedModel {
             residual_variance,
             heritability,
             split,
-            largest_of_the_projection: projection
-                .chunks_exact(num_individuals.max(1))
-                .zip(0..)
-                .filter_map(|(row, at)| row.get(at).copied())
-                .fold(0.0_f64, f64::max),
             projection,
             projected_trait,
+            trait_through_the_factor,
             ypy,
             num_individuals,
             degrees_of_freedom: degrees_of_freedom as f64,
             approximation: None,
             num_fell_back_to_the_exact: 0,
             projected: Vec::new(),
+            of_the_one_variant: Vec::new(),
             den: Vec::new(),
             num: Vec::new(),
             beta: Vec::new(),
@@ -780,9 +792,7 @@ impl LinearMixedModel {
     /// such a variant is left out of the mean.
     pub(crate) fn approximate_the_denominator(&mut self, dosages: &GwasDosages) -> Result<()> {
         self.approximation = Some(GrammarGamma::of_the_first_block(
-            &self.projection,
-            self.num_individuals,
-            self.largest_of_the_projection,
+            &mut self.projection,
             dosages,
         )?);
         Ok(())
@@ -831,17 +841,17 @@ impl LinearMixedModel {
     /// The denominator of every variant of a block that has variance, in
     /// the order of the block, left in `den`.
     ///
-    /// Without the approximation it is `x' p x`, the variant through the
-    /// projection matrix and then against itself, and the product of the
-    /// block with that matrix is the whole cost of a block. With it, it is
-    /// the factor times the squared length of the variant's centered
-    /// dosages, and no product is made.
+    /// Without the approximation it is `x' p x`, which is the squared
+    /// length of the variant through the factor, `‖m x‖²`, and the solve
+    /// of the block against that factor is the whole cost of a block. With
+    /// it, it is the factor of the approximation times the squared length
+    /// of the variant's centered dosages, and no solve is made.
     ///
     /// # Errors
     ///
     /// [`Error::GwasVariantsTooLarge`] when the values of the block are
     /// more than a `usize` counts, and [`Error::GwasLinalg`] when the
-    /// product could not be done, which is where a block of other
+    /// solve could not be done, which is where a block of other
     /// individuals than the null model was fitted over is refused.
     fn the_denominators_of(&mut self, dosages: &GwasDosages, num_vars: usize) -> Result<()> {
         self.den.clear();
@@ -851,36 +861,12 @@ impl LinearMixedModel {
                 .extend(of_the_variants.map(|of_the_variant| approximation.den_of(of_the_variant)));
             return Ok(());
         }
-        let values = num_vars
-            .checked_mul(self.num_individuals)
-            .ok_or(Error::GwasVariantsTooLarge)?;
-        self.projected.resize(values, 0.0);
-        popnei_linalg::product(
-            TheFirstOperand::ByTheRowsOfTheResult {
-                values: dosages.dosages(),
-                rows: num_vars,
-            },
-            self.num_individuals,
-            TheSecondOperand::ByTheValuesSummedOver {
-                values: &self.projection,
-                cols: self.num_individuals,
-            },
-            &mut self.projected,
-        )
-        .map_err(|source| Error::GwasLinalg {
-            operation: "product of a block of variants with the projection matrix",
-            source,
-        })?;
+        self.projection
+            .through(dosages.dosages(), num_vars, &mut self.projected)?;
         self.den.extend(
             self.projected
                 .chunks_exact(self.num_individuals.max(1))
-                .zip(dosages.dosages().chunks_exact(self.num_individuals.max(1)))
-                .map(|(row, of_the_variant)| {
-                    row.iter()
-                        .zip(of_the_variant)
-                        .map(|(projected, dosage)| projected * dosage)
-                        .sum::<f64>()
-                }),
+                .map(|through| through.iter().map(|value| value * value).sum::<f64>()),
         );
         Ok(())
     }
@@ -911,9 +897,10 @@ impl LinearMixedModel {
     ///   sqrt(den)`, and `num² / den` is read against a chi square with one
     ///   degree of freedom. It is what GMMAT's `glmm.score` does.
     ///
-    /// The two products are the whole cost of a block: the dosages through
-    /// the projection matrix, which is individuals by individuals, and the
-    /// dosages against the trait through it. A model that
+    /// The solve and the product are the whole cost of a block: the
+    /// dosages against the factor of the covariance, which is individuals
+    /// by individuals and triangular, and the dosages against the trait
+    /// through the projection. A model that
     /// [`LinearMixedModel::approximate_the_denominator`] was called on
     /// makes the first of them no more and takes `den` from the
     /// GRAMMAR-Gamma approximation instead.
@@ -922,13 +909,10 @@ impl LinearMixedModel {
     /// individuals times 2.2e-16 of what there was has no answer, and gets
     /// the three NaNs a variant with no variance gets. What there was is
     /// the variant's own squared length times the largest value of the
-    /// diagonal of the projection matrix, which is what bounds `x' p x`
-    /// over `x' x`. `den` is 0 or above in exact arithmetic, and a variant
-    /// that the covariates and the kinship leave almost nothing of gets the
-    /// rounding of that, which can fall below 0: `beta` would be a number
-    /// divided by noise, large and of whichever sign the rounding chose,
-    /// and the two backends do not choose the same one. It is **Open 2** of
-    /// `docs/specs/gwas.md`.
+    /// diagonal of the projection, which is what bounds `x' p x` over
+    /// `x' x`. It is **Open 2** of `docs/specs/gwas.md`, and what it
+    /// refuses is a variant the covariates and the kinship leave nothing
+    /// of, whose `den` is not a quantity but the rounding of one.
     ///
     /// That comparison is made against whichever of the two denominators
     /// the study formed, and under the approximation it stops firing, which
@@ -944,30 +928,49 @@ impl LinearMixedModel {
     /// is the variant the exact test refuses and has what it is answered
     /// with instead.
     ///
-    /// The Wald test has a second comparison of its own, on `y' p y` less
-    /// `num² / den`, and a variant that the approximation puts at or below
-    /// its floor is answered from the exact denominator instead. That
-    /// comparison holds because the exact `den` keeps `num² / den` under
-    /// `y' p y`, and the approximate one does not: a variant whose own
-    /// ratio of `x' p x` to the squared length of its centered dosages is
-    /// above the factor gets a denominator smaller than the exact one, and
-    /// the subtraction then goes below 0 honestly. So the failure says
-    /// which variant the approximation could not answer, and the
-    /// projection matrix is here for the whole pass: one product of that
-    /// one variant with it gives its exact `x' p x`, and `beta`, what is
-    /// left and `se` are formed again from it and judged by the same rule
-    /// the exact route uses.
-    /// [`LinearMixedModel::num_fell_back_to_the_exact`] counts the variants
-    /// that took it. The same item of the spec and a decision of 24
-    /// September 2026, with the cargo test
-    /// `a_variant_whose_approximate_denominator_passes_ypy_is_answered`.
+    /// The Wald test has a second comparison of its own, on what the
+    /// variant leaves of the trait, at `n * 2.2e-16` of `y' p y` for both
+    /// routes, and the two routes reach that quantity differently.
+    ///
+    /// - With the exact denominator it is `‖m y - beta m x‖²`, formed from
+    ///   the residuals of the one variant, the trait through the factor
+    ///   less the variant through it times the variant's effect, as the
+    ///   plain linear model already
+    ///   forms its own. It is a sum of squares and cannot fall below 0, so
+    ///   `se` is a real number for every variant and the fourth kind of
+    ///   NaN that **Open 2** of the spec is about, a finite `beta` beside a
+    ///   NaN `se`, cannot be reached whatever the threshold does. Forming
+    ///   it does not move the threshold: what is left of a variant that
+    ///   explains the trait exactly is then the square of the rounding
+    ///   rather than the rounding, which is about 1e-28 of `y' p y` and is
+    ///   refused by a wider margin, and answering that band instead was
+    ///   measured on the fixture of six on 25 September 2026 and gives an
+    ///   `se` of 9.742e-16 on Accelerate against 1.979e-15 on faer, a
+    ///   factor of 2.03, and a p-value of 2.039e-45 against 1.708e-44, a
+    ///   factor of 8.4. It is the band where the quantity is its own
+    ///   rounding whichever way it is formed.
+    /// - With the approximate denominator there is no `v`, so it is
+    ///   `y' p y` less `num² / den`. A variant the approximation puts at or
+    ///   below that floor
+    ///   is answered from the exact denominator instead: the bound that
+    ///   keeps `num² / den` under `y' p y` is the exact denominator's and
+    ///   not the approximate one's, so the failure says which variant the
+    ///   approximation could not answer rather than that there is nothing
+    ///   left to test. The factor is here for the whole pass: one solve of
+    ///   that one variant against it gives its exact `x' p x` and its
+    ///   residuals, and `beta`, what is left and `se` are formed again from
+    ///   them and judged by the exact route's rule.
+    ///   [`LinearMixedModel::num_fell_back_to_the_exact`] counts the
+    ///   variants that took it. The same item of the spec and a decision of
+    ///   24 September 2026, with the cargo test
+    ///   `a_variant_whose_approximate_denominator_passes_ypy_is_answered`.
     ///
     /// # Errors
     ///
     /// [`Error::GwasVariantsTooLarge`] when the values of the block are
-    /// more than a `usize` counts, and [`Error::GwasLinalg`] when one of
-    /// the two products could not be done, which is where a block of other
-    /// individuals than the null model was fitted over is refused.
+    /// more than a `usize` counts, and [`Error::GwasLinalg`] when the solve
+    /// or one of the products could not be done, which is where a block of
+    /// other individuals than the null model was fitted over is refused.
     pub(crate) fn test_the_block(
         &mut self,
         dosages: &GwasDosages,
@@ -1004,26 +1007,35 @@ impl LinearMixedModel {
         let degrees_of_freedom = self.degrees_of_freedom;
         let ypy = self.ypy;
         // The share of what the variant was that the projection has to
-        // leave of it, and the share of `y' p y` that the Wald test's
-        // subtraction has to leave, for the variant to be worth testing.
+        // leave of it for the variant to be worth testing.
         let share_that_is_nothing = the_share_that_is_nothing(self.num_individuals);
-        let largest_of_the_projection = self.largest_of_the_projection;
+        let largest_of_the_projection = self.projection.largest_of_the_diagonal();
+        // The floor of the Wald test's own comparison, the same for the
+        // two routes to what the variant leaves of the trait: forming that
+        // quantity rather than subtracting it does not move the threshold,
+        // which the doc comment above measures.
         let the_floor_of_ypy = share_that_is_nothing * ypy;
-        // Whether `den` is `x' p x` itself or the GRAMMAR-Gamma
-        // approximation of it, which is what the Wald test's own comparison
-        // below turns on.
-        let the_denominator_is_exact = self.approximation.is_none();
+        // The rows of the block through the factor, which the exact route
+        // has and the approximation has not: a model that approximates
+        // leaves that buffer empty, so the chain gives nothing for every
+        // variant of the block.
+        let through_the_factor = self
+            .projected
+            .chunks_exact(self.num_individuals.max(1))
+            .map(Some)
+            .chain(std::iter::repeat(None));
         // The squared length of each variant's dosages is the one the block
         // summed where it wrote the row, on the threads of rayon: reading
         // it here would be a second full read of the block's dosages on
         // this one thread for one value per variant.
-        for (((den, num), of_the_dosages), of_the_variant) in self
+        for ((((den, num), of_the_dosages), of_the_variant), through) in self
             .den
             .iter()
             .copied()
             .zip(self.num.iter().copied())
             .zip(dosages.sum_of_squares().iter().copied())
             .zip(dosages.dosages().chunks_exact(self.num_individuals.max(1)))
+            .zip(through_the_factor)
         {
             if den <= share_that_is_nothing * largest_of_the_projection * of_the_dosages {
                 self.beta.push(f64::NAN);
@@ -1032,36 +1044,42 @@ impl LinearMixedModel {
                 continue;
             }
             let answered = match test {
-                // What the variant leaves of `y' p y` is `y' p y` less
-                // `num² / den`, and with the exact denominator that cannot
-                // go below 0: `num` is `x' p y` and the projection matrix
-                // is 0 or above as a quadratic form, so `num²` is at most
-                // `x' p x` times `y' p y`. A value at or below the
-                // threshold is therefore the rounding of a cancellation,
-                // the projection annihilating an affine image of the trait,
-                // and it falls on whichever side of 0 the rounding chose
-                // and differs between the two backends. That is what
-                // `the_wald_of` refuses, and it is Open 2 of
+                // What the variant leaves of the trait, formed from the
+                // residuals of the one variant where the exact route has
+                // them and subtracted where it has not. Open 2 of
                 // `docs/specs/gwas.md`.
-                TestType::Wald => {
-                    match the_wald_of(num, den, ypy, degrees_of_freedom, the_floor_of_ypy) {
+                TestType::Wald => match through {
+                    Some(through) => the_wald_of(
+                        num,
+                        den,
+                        the_trait_the_variant_leaves(
+                            through,
+                            &self.trait_through_the_factor,
+                            num / den,
+                        ),
+                        degrees_of_freedom,
+                        the_floor_of_ypy,
+                    ),
+                    // The approximate denominator holds no bound keeping
+                    // `num² / den` under `y' p y`: a variant whose own
+                    // ratio of `x' p x` to the squared length of its
+                    // centered dosages is above the factor gets a
+                    // denominator smaller than the exact one, and the
+                    // subtraction goes below 0 honestly. So the failure
+                    // says which variant the approximation could not
+                    // answer, and that one variant is solved against the
+                    // factor the model holds and tested again over it,
+                    // which is what the owner decided on 24 September 2026
+                    // in "Open 2's threshold under the approximation" of
+                    // that spec.
+                    None => match the_wald_of(
+                        num,
+                        den,
+                        ypy - num * num / den,
+                        degrees_of_freedom,
+                        the_floor_of_ypy,
+                    ) {
                         Some(answered) => Some(answered),
-                        None if the_denominator_is_exact => None,
-                        // The approximate denominator holds no such bound,
-                        // so the refusal here does not mean that there is
-                        // nothing left to test: a variant whose own ratio
-                        // of `x' p x` to the squared length of its centered
-                        // dosages is above the factor gets a denominator
-                        // smaller than the exact one, and `num² / den`
-                        // passes `y' p y` honestly. It also says which
-                        // variant that is, so the exact denominator of this
-                        // one variant is formed from the projection matrix
-                        // the model holds and the test made again over it,
-                        // which is what the owner decided on 24 September
-                        // 2026 in "Open 2's threshold under the
-                        // approximation" of that spec. What the variant
-                        // costs is the one product a study without the
-                        // approximation pays for every variant.
                         None => {
                             #[expect(
                                 clippy::arithmetic_side_effects,
@@ -1072,12 +1090,16 @@ impl LinearMixedModel {
                             {
                                 self.num_fell_back_to_the_exact += 1;
                             }
-                            let exact = the_exact_denominator_of(
-                                &self.projection,
-                                self.num_individuals,
+                            self.projection.through(
                                 of_the_variant,
-                                &mut self.projected,
+                                1,
+                                &mut self.of_the_one_variant,
                             )?;
+                            let exact = self
+                                .of_the_one_variant
+                                .iter()
+                                .map(|value| value * value)
+                                .sum::<f64>();
                             // The exact denominator comes with the rule the
                             // exact route applies to it: a variant of which
                             // the projection has left nothing is refused
@@ -1090,11 +1112,21 @@ impl LinearMixedModel {
                             {
                                 None
                             } else {
-                                the_wald_of(num, exact, ypy, degrees_of_freedom, the_floor_of_ypy)
+                                the_wald_of(
+                                    num,
+                                    exact,
+                                    the_trait_the_variant_leaves(
+                                        &self.of_the_one_variant,
+                                        &self.trait_through_the_factor,
+                                        num / exact,
+                                    ),
+                                    degrees_of_freedom,
+                                    the_floor_of_ypy,
+                                )
                             }
                         }
-                    }
-                }
+                    },
+                },
                 // The score test divides by `den` and forms no such
                 // subtraction, so a variant that explains the whole of what
                 // the null left is answered here.
@@ -1143,45 +1175,126 @@ struct TheVariances {
     residual: f64,
 }
 
-/// The projection matrix of a fitted linear mixed model.
+/// The trait less what the design explains of it, `y - d coefs`, one
+/// value per tested individual.
+///
+/// `coefs` holds one effect per column of the design, and a design with
+/// fewer columns than that leaves the trait alone in the values it has
+/// none for, which cannot happen: the effects come from
+/// [`RemlSearch`] over this same design.
+fn the_trait_less_the_design(phenotype: &[f64], design: &Design<'_>, coefs: &[f64]) -> Vec<f64> {
+    let num_coefs = design.num_coefs();
+    phenotype
+        .iter()
+        .zip(design.values().chunks_exact(num_coefs.max(1)))
+        .map(|(measured, of_the_individual)| {
+            let explained = of_the_individual
+                .iter()
+                .zip(coefs)
+                .map(|(value, coef)| value * coef)
+                .sum::<f64>();
+            measured - explained
+        })
+        .collect()
+}
+
+/// `values` through the inverse of the covariance of the trait, in place.
 ///
 /// The covariance of the trait under the null is the kinship times the
 /// genetic variance plus the identity times the residual one, `v =
 /// genetic_variance * k + residual_variance * i`, and the
 /// eigendecomposition of the kinship gives its inverse without another
-/// factorization: with `e` the eigenvectors and `l` the eigenvalues, `v⁻¹
-/// = e diag(1 / (genetic * l + residual)) e'`. The projection matrix is
-/// then `p = v⁻¹ - v⁻¹ d (d' v⁻¹ d)⁻¹ d' v⁻¹`.
-///
-/// The trait through it, `p y`, and `y' p y` are taken at the call site and
-/// not here, although the linear mixed model wants all three: what the
-/// logistic mixed model of the next plan wants of this is the matrix alone,
-/// its `p y` being the trait less the fitted mean and its inverse coming
-/// off a Cholesky factorization, and it has no `y' p y` at all. pyNei keeps
-/// the reusable piece alone in the same way, as `_projection`. Splitting it
-/// while it has one caller costs four lines at that caller and saves the
-/// next plan from splitting a function two models depend on.
+/// factorization: with `e` the eigenvectors and `l` the eigenvalues,
+/// `v⁻¹ = e diag(1 / (genetic * l + residual)) e'`. So this turns the
+/// values by the eigenvectors, divides each by its own entry of the
+/// covariance and turns them back, which is two products with a matrix
+/// and no matrix of that size built.
 ///
 /// `eigenvectors` is `num_individuals` x `num_individuals`, row after row,
-/// row `j` being the eigenvector of `eigenvalues[j]`. Three matrices of
-/// that size are held at once here, which at the 10000 individuals of
-/// `docs/objectives.md` is 2.4 GB, and one of them is what comes back, for
-/// the model to test its variants through; pyNei holds the same three and
-/// keeps the same one.
+/// row `j` being the eigenvector of `eigenvalues[j]`.
 ///
 /// # Errors
 ///
-/// [`Error::GwasLinalg`] when one of the four products, the Cholesky
-/// factorization of the design weighted by the covariance or the solve
-/// against it could not be done.
-fn the_projection_of(
-    design: &Design<'_>,
+/// [`Error::GwasLinalg`] when one of the two products could not be done.
+fn through_the_covariance(
     eigenvalues: &[f64],
     eigenvectors: &[f64],
     variances: TheVariances,
+    num_individuals: usize,
+    values: &mut [f64],
+) -> Result<()> {
+    let mut rotated = vec![0.0_f64; num_individuals];
+    popnei_linalg::product(
+        TheFirstOperand::ByTheRowsOfTheResult {
+            values: eigenvectors,
+            rows: num_individuals,
+        },
+        num_individuals,
+        TheSecondOperand::ByTheValuesSummedOver { values, cols: 1 },
+        &mut rotated,
+    )
+    .map_err(|source| Error::GwasLinalg {
+        operation: "product of the kinship's eigenvectors with what the design left",
+        source,
+    })?;
+    for (turned, eigenvalue) in rotated.iter_mut().zip(eigenvalues) {
+        *turned /= variances.genetic * eigenvalue + variances.residual;
+    }
+    popnei_linalg::product(
+        TheFirstOperand::ByTheValuesSummedOver {
+            values: eigenvectors,
+            rows: num_individuals,
+        },
+        num_individuals,
+        TheSecondOperand::ByTheValuesSummedOver {
+            values: &rotated,
+            cols: 1,
+        },
+        values,
+    )
+    .map_err(|source| Error::GwasLinalg {
+        operation: "product of the kinship's eigenvectors with the weighted remainder",
+        source,
+    })?;
+    Ok(())
+}
+
+/// The covariance of the trait under the null, factored: the lower
+/// triangular `l` of `v = l l'`, `num_individuals` x `num_individuals`,
+/// row after row, in the lower half of what comes back.
+///
+/// The covariance is built from the eigendecomposition and not from the
+/// kinship the caller gave, `v = e diag(genetic * l + residual) e'`,
+/// because the eigenvalues have been clamped at 0 by then: a kinship with
+/// a negative eigenvalue is not a covariance and has no real factor, and
+/// what is factored here is the nearest matrix that is one, which is the
+/// matrix the model was already inverting before it kept a factor
+/// instead. **Open 4** of `docs/specs/gwas.md` is how negative an
+/// eigenvalue may be before the kinship is refused rather than clamped,
+/// and this changes nothing of it.
+///
+/// `eigenvectors` is `num_individuals` x `num_individuals`, row after row,
+/// row `j` being the eigenvector of `eigenvalues[j]`. Two matrices of that
+/// size are held at once here where the projection matrix held three,
+/// which at the 10000 individuals of `docs/objectives.md` is 1.6 GB
+/// against 2.4 GB.
+///
+/// # Errors
+///
+/// [`Error::GwasLinalg`] when the product or the factorization could not
+/// be done. A factorization that refuses this matrix is a defect of
+/// popnei and not a kinship a user brought: every entry of
+/// `genetic * l + residual` is the residual variance at least, the
+/// eigenvalues having been clamped at 0 and the genetic variance being
+/// above 0, and the search leaves the ratio of the two at `exp(-10)` at
+/// the smallest, so the covariance is positive definite with a condition
+/// number of about 4e5 at the panel of `docs/specs/gwas.md`.
+fn the_factored_covariance_of(
+    eigenvalues: &[f64],
+    eigenvectors: &[f64],
+    variances: TheVariances,
+    num_individuals: usize,
 ) -> Result<Vec<f64>> {
-    let num_individuals = design.num_individuals();
-    let num_coefs = design.num_coefs();
     let mut scaled = vec![0.0_f64; eigenvectors.len()];
     for ((into, eigenvector), eigenvalue) in scaled
         .chunks_exact_mut(num_individuals.max(1))
@@ -1190,10 +1303,10 @@ fn the_projection_of(
     {
         let of_the_covariance = variances.genetic * eigenvalue + variances.residual;
         for (value, of_the_eigenvector) in into.iter_mut().zip(eigenvector) {
-            *value = of_the_eigenvector / of_the_covariance;
+            *value = of_the_eigenvector * of_the_covariance;
         }
     }
-    let mut inverse = vec![0.0_f64; eigenvectors.len()];
+    let mut covariance = vec![0.0_f64; eigenvectors.len()];
     popnei_linalg::product(
         TheFirstOperand::ByTheValuesSummedOver {
             values: eigenvectors,
@@ -1204,144 +1317,46 @@ fn the_projection_of(
             values: &scaled,
             cols: num_individuals,
         },
-        &mut inverse,
+        &mut covariance,
     )
     .map_err(|source| Error::GwasLinalg {
-        operation: "inverse of the covariance of the trait",
+        operation: "covariance of the trait from the kinship's eigendecomposition",
         source,
     })?;
-    let mut of_the_covariance = vec![0.0_f64; design.values().len()];
-    popnei_linalg::product(
-        TheFirstOperand::ByTheRowsOfTheResult {
-            values: &inverse,
-            rows: num_individuals,
-        },
-        num_individuals,
-        TheSecondOperand::ByTheValuesSummedOver {
-            values: design.values(),
-            cols: num_coefs,
-        },
-        &mut of_the_covariance,
-    )
-    .map_err(|source| Error::GwasLinalg {
-        operation: "product of the covariance's inverse with the design",
-        source,
-    })?;
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "the design is one slice of `num_individuals` x `num_coefs` values and a \
-                  study has two more individuals than columns, so `num_coefs` times \
-                  itself is smaller than a length a `usize` holds"
-    )]
-    let of_the_coefs = num_coefs * num_coefs;
-    let mut dvd = vec![0.0_f64; of_the_coefs];
-    popnei_linalg::product(
-        TheFirstOperand::ByTheValuesSummedOver {
-            values: design.values(),
-            rows: num_coefs,
-        },
-        num_individuals,
-        TheSecondOperand::ByTheValuesSummedOver {
-            values: &of_the_covariance,
-            cols: num_coefs,
-        },
-        &mut dvd,
-    )
-    .map_err(|source| Error::GwasLinalg {
-        operation: "product of the design with the covariance's inverse",
-        source,
-    })?;
-    popnei_linalg::cholesky_lower(&mut dvd, num_coefs).map_err(|source| Error::GwasLinalg {
-        operation: "Cholesky factorization of the design weighted by the covariance",
-        source,
-    })?;
-    let mut solved = of_the_covariance.clone();
-    popnei_linalg::solve_with_cholesky(&dvd, num_coefs, &mut solved, num_individuals).map_err(
-        |source| Error::GwasLinalg {
-            operation: "solve of the design weighted by the covariance",
+    drop(scaled);
+    popnei_linalg::cholesky_lower(&mut covariance, num_individuals).map_err(|source| {
+        Error::GwasLinalg {
+            operation: "factorization of the covariance of the trait",
             source,
-        },
-    )?;
-    // The buffer of the scaled eigenvectors is done with, and what goes in
-    // it is the part of the covariance's inverse that the design explains,
-    // which is taken out of that inverse to leave the projection matrix.
-    let mut of_the_design = scaled;
-    popnei_linalg::product(
-        TheFirstOperand::ByTheRowsOfTheResult {
-            values: &of_the_covariance,
-            rows: num_individuals,
-        },
-        num_coefs,
-        TheSecondOperand::ByTheColumnsOfTheResult {
-            values: &solved,
-            cols: num_individuals,
-        },
-        &mut of_the_design,
-    )
-    .map_err(|source| Error::GwasLinalg {
-        operation: "product that takes the design out of the covariance's inverse",
-        source,
+        }
     })?;
-    let mut projection = inverse;
-    for (entry, explained) in projection.iter_mut().zip(&of_the_design) {
-        *entry -= *explained;
-    }
-    Ok(projection)
-}
-
-/// The trait through a projection matrix, `p y`, one value per tested
-/// individual.
-///
-/// It is what every variant's numerator is taken against, `num` being the
-/// variant times this.
-///
-/// # Errors
-///
-/// [`Error::GwasLinalg`] when the product could not be done.
-fn through_the_projection(projection: &[f64], phenotype: &[f64]) -> Result<Vec<f64>> {
-    let mut through = vec![0.0_f64; phenotype.len()];
-    popnei_linalg::product(
-        TheFirstOperand::ByTheRowsOfTheResult {
-            values: projection,
-            rows: phenotype.len(),
-        },
-        phenotype.len(),
-        TheSecondOperand::ByTheValuesSummedOver {
-            values: phenotype,
-            cols: 1,
-        },
-        &mut through,
-    )
-    .map_err(|source| Error::GwasLinalg {
-        operation: "product of the projection matrix with the trait",
-        source,
-    })?;
-    Ok(through)
+    Ok(covariance)
 }
 
 /// The effect of one variant under the Wald test, how uncertain it is and
-/// the p-value of the test that it is 0, from the variant's numerator and
-/// a denominator, and `None` for a variant that has nothing left to test.
+/// the p-value of the test that it is 0, from the variant's numerator, a
+/// denominator and what the variant leaves of the trait, and `None` for a
+/// variant there is nothing left to test.
 ///
-/// `num` is `x' p y` and `den` is `x' p x` or the GRAMMAR-Gamma
-/// approximation of it. `y' p y` less `num² / den` is what the variant
-/// leaves of the trait, `se` is its square root over the degrees of
-/// freedom times `den`, and the effect divided by `se` is read against a
-/// Student t with those degrees of freedom, in both tails.
+/// `num` is `x' p y`, `den` is `x' p x` or the GRAMMAR-Gamma approximation
+/// of it, and `left` is what the variant leaves of `y' p y`. `se` is the
+/// square root of `left` over the degrees of freedom times `den`, and the
+/// effect divided by `se` is read against a Student t with those degrees
+/// of freedom, in both tails.
 ///
-/// `the_floor_of_ypy` is what has to be left for the variant to be worth
-/// testing, the tested individuals times 2.2e-16 of `y' p y`, and a
-/// variant at or below it gets the three NaNs of "The variants that have
-/// no answer" of `docs/specs/gwas.md`.
+/// `the_floor` is what has to be left for the variant to be worth testing,
+/// and a variant at or below it gets the three NaNs of "The variants that
+/// have no answer" of `docs/specs/gwas.md`. The caller passes it because
+/// the two routes to `left` have different floors, which the doc comment
+/// of [`LinearMixedModel::test_the_block`] gives.
 fn the_wald_of(
     num: f64,
     den: f64,
-    ypy: f64,
+    left: f64,
     degrees_of_freedom: f64,
-    the_floor_of_ypy: f64,
+    the_floor: f64,
 ) -> Option<(f64, f64, f64)> {
-    let left = ypy - num * num / den;
-    if left <= the_floor_of_ypy {
+    if left <= the_floor {
         return None;
     }
     let beta = num / den;
@@ -1349,49 +1364,31 @@ fn the_wald_of(
     Some((beta, se, t_sf_two_sided(beta / se, degrees_of_freedom)))
 }
 
-/// The exact denominator `x' p x` of one variant, its dosages through the
-/// projection matrix and then against themselves.
+/// What one variant leaves of the trait, `‖m y - beta m x‖²`, with `through`
+/// the variant through the projection, `trait_through_the_factor` the
+/// trait through it and `beta` the effect the test gives the variant.
 ///
-/// [`LinearMixedModel::the_denominators_of`] makes this for a whole block
-/// in one product where the study does not approximate. This is the same
-/// quantity for the one variant of an approximating study that the Wald
-/// test could not answer, and it costs one product of one variant with the
-/// matrix. `through_the_projection` is the model's own buffer, which the
-/// approximation leaves empty, so the first such variant of a pass grows
-/// it to one value per tested individual and no later one allocates.
-///
-/// # Errors
-///
-/// [`Error::GwasLinalg`] when the product could not be done.
-fn the_exact_denominator_of(
-    projection: &[f64],
-    num_individuals: usize,
-    of_the_variant: &[f64],
-    through_the_projection: &mut Vec<f64>,
-) -> Result<f64> {
-    through_the_projection.clear();
-    through_the_projection.resize(num_individuals, 0.0);
-    popnei_linalg::product(
-        TheFirstOperand::ByTheRowsOfTheResult {
-            values: of_the_variant,
-            rows: 1,
-        },
-        num_individuals,
-        TheSecondOperand::ByTheValuesSummedOver {
-            values: projection,
-            cols: num_individuals,
-        },
-        through_the_projection,
-    )
-    .map_err(|source| Error::GwasLinalg {
-        operation: "product of one variant with the projection matrix",
-        source,
-    })?;
-    Ok(through_the_projection
+/// It is `y' p y` less `num² / den` in exact arithmetic, and it is formed
+/// here and not subtracted for the reason "The linear model" of
+/// `docs/specs/gwas.md` gives for the plain linear model's own residual
+/// sum of squares: the two quantities agree to their last bits once a
+/// variant explains most of what the null left, and the subtraction is
+/// then the rounding of a cancelled sum, which is 0 or below as often as
+/// not and is not the same on the two arithmetic backends. Formed, it is a
+/// sum of squares and cannot fall below 0.
+fn the_trait_the_variant_leaves(
+    through: &[f64],
+    trait_through_the_factor: &[f64],
+    beta: f64,
+) -> f64 {
+    through
         .iter()
-        .zip(of_the_variant)
-        .map(|(projected, dosage)| projected * dosage)
-        .sum())
+        .zip(trait_through_the_factor)
+        .map(|(of_the_variant, of_the_trait)| {
+            let left = of_the_trait - beta * of_the_variant;
+            left * left
+        })
+        .sum()
 }
 
 /// The null model of the linear mixed model against GMMAT 1.5.0's
@@ -2787,6 +2784,22 @@ pub(crate) mod lmm {
     /// right is the panel, where what is left comes out 8.53e-13 on
     /// Accelerate and 3.98e-13 on faer against a threshold of 8.67e-12, and
     /// that measurement is in **Open 2** of the spec.
+    ///
+    /// **This fixture is what holds the two halves of the factored
+    /// projection together**, measured on 25 September 2026. With the
+    /// factor in place and `y' p y` less `num² / den` still subtracted, the
+    /// subtraction of this variant comes out above the threshold on both
+    /// backends and the variant is answered, with an `se` of 2.980e-8 and a
+    /// p-value of 5.837e-23 on Accelerate and 4.790e-8 and 2.424e-22 on
+    /// faer, 1.6 times and 4.2 times apart: `y' p y` and `den` are exact
+    /// squared lengths there, so the rounding of the cancellation between
+    /// them lands where it likes and no longer below 0. Forming
+    /// `‖m y - beta m x‖²` is what puts it back at 2.847e-30 of `y' p y` on
+    /// Accelerate and 1.174e-29 on faer, against a threshold of 1.332e-15
+    /// of it, and refuses the variant again on both. Going the other way and answering that
+    /// band, by squaring the share the threshold is built from, gives an
+    /// `se` of 9.742e-16 against 1.979e-15 and a p-value of 2.039e-45
+    /// against 1.708e-44, 2.0 times and 8.4 times apart.
     #[test]
     fn a_variant_that_leaves_nothing_of_the_trait_has_no_wald_answer() {
         let mut vcf = String::from(THE_HEADER_OF_SIX);

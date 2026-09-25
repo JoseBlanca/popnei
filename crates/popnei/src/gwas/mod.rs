@@ -87,6 +87,7 @@ mod linear_mixed;
 mod logistic;
 mod logistic_mixed;
 mod pass;
+mod projection;
 mod result;
 mod study;
 
