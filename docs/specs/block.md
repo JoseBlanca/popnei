@@ -353,8 +353,8 @@ association study of
 components of the variants, the Kosman distance of every pair of
 individuals, the distances between populations, the diversity of every
 population, and the two passes of the stats module. The r² matrix of
-`docs/specs/ld.md` does not: it reads for 0.006 s and works on the blocks
-for 0.004 s of a run of 0.452 s, because the matrix it then computes is
+`docs/specs/ld.md` does not: its pass over the blocks reads for 0.008 s and
+works for 0.004 s of a run of 0.448 s, because the matrix it then computes is
 quadratic in the variants it was given, so the most the thread could hide is
 1 per cent of that run.
 

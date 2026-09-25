@@ -1600,8 +1600,8 @@ the target compares" of "Speed" does. Meanwhile 0.50 s stands and is met.
 - The read ahead thread of section 3 of `docs/architecture.md`: it is a
   reader over a reader and both calculations here take any reader. The r²
   matrix was measured with it on 25 September 2026 and does not take it: its
-  pass over the blocks reads for 0.006 s and works for 0.004 s of a run of
-  0.452 s over 100000 variants of 1000 individuals, the rest being the matrix
+  pass over the blocks reads for 0.008 s and works for 0.004 s of a run of
+  0.448 s over 100000 variants of 1000 individuals, the rest being the matrix
   it then computes, so the most a reading thread could hide is 1 per cent of
   that run. "Which passes take it" of `docs/specs/block.md` has the rule and
   `docs/reports/perf-read-ahead-2026-09-25.md` the measurement.
