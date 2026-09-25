@@ -1280,12 +1280,12 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
     // The blocks are read on a thread of its own, one block ahead, so that
     // the read of the next block and the counting of the one in hand
     // overlap. This pass is almost all reader:
-    // `docs/reports/perf-read-ahead-2026-09-25.md` measured it at 0.113 s of
-    // the 0.130 s of five statistics over 100000 variants of 1000
-    // individuals on 18 cores, against 0.013 s of counting the rows of blocks
-    // already in memory, so what the thread hides is the counting and not the
-    // read. In wasm there is no thread and the blocks come one after another
-    // as they did.
+    // `docs/reports/perf-read-ahead-2026-09-25.md` measured five statistics
+    // over 100000 variants of 1000 individuals of a vars file at 0.040 s
+    // without this and 0.034 s with it on 18 cores, and 0.213 s against
+    // 0.117 s on one thread, where the read alone is 0.027 s and 0.110 s and
+    // the counting of blocks already in memory 0.013 s. In wasm there is no
+    // thread and the blocks come one after another as they did.
     // The chain is lent through a reborrow of its own, because
     // `with_one_block_ahead` moves the reader it is given to its thread and
     // this pass is generic over a reader that may have no size: `&mut R` is
@@ -1719,12 +1719,13 @@ pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
     let mut num_vars: u64 = 0;
     // The blocks are read on a thread of its own, one block ahead, for the
     // reason `calc_per_var_distribs` above has it: this pass is almost all
-    // reader, 0.113 s of its 0.129 s over 100000 variants of 1000
-    // individuals on 18 cores, which leaves 0.016 s for the counting; no
-    // benchmark of this pass times that part on its own, and
-    // `docs/reports/perf-read-ahead-2026-09-25.md` says so where it gives the
-    // number. In wasm there is no thread and the blocks come one after another
-    // as they did.
+    // reader. Over 100000 variants of 1000 individuals of a vars file it
+    // takes 0.041 s without this and 0.035 s with it on 18 cores, and 0.211 s
+    // against 0.116 s on one thread, where the read alone is 0.027 s and
+    // 0.110 s; no benchmark times its counting on its own, and
+    // `docs/reports/perf-read-ahead-2026-09-25.md` says so where it gives
+    // that part. In wasm there is no thread and the blocks come one after
+    // another as they did.
     // The chain is lent through a reborrow of its own, because
     // `with_one_block_ahead` moves the reader it is given to its thread and
     // this pass is generic over a reader that may have no size: `&mut R` is

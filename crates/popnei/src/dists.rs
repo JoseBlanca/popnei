@@ -800,9 +800,10 @@ pub fn calc_kosman_sums<R: BlockReader + ?Sized>(reader: &mut R) -> Result<Kosma
     let ploidy = reader.ploidy();
     // The blocks are read on a thread of its own, one block ahead, so that
     // the read of the next block and the counting of the pairs of the one in
-    // hand overlap: `docs/reports/perf-read-ahead-2026-09-25.md` measured
-    // the reader at 0.116 s of the 0.219 s of this calculation over 100000
-    // variants of 1000 individuals on 18 cores, against 0.103 s of counting.
+    // hand overlap. Over 100000 variants of 1000 individuals of a vars file,
+    // `docs/reports/perf-read-ahead-2026-09-25.md` measured this calculation
+    // at 0.123 s without this and 0.110 s with it on 18 cores, and 0.852 s
+    // against 0.764 s on one thread, against 0.103 s of counting.
     // It is the one pass that gave up something for it: the sets of bits and
     // the block were dropped before the reader was asked for the next one so
     // that the memory of two blocks was never held at once, and the reading

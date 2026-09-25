@@ -639,10 +639,12 @@ fn the_weights_of_a_second_pass<R: BlockReader>(
     // which is the column of `princomps` its first one goes into.
     let mut used_before = 0_usize;
     // The blocks of the second pass are read one block ahead of the product
-    // that gives the weights, for the reason the first pass has them: the
-    // two passes together read for 0.227 s of the 0.491 s that ten weights
-    // over 100000 variants of 1000 individuals take on 18 cores, and work
-    // for 0.219 s, which `docs/reports/perf-read-ahead-2026-09-25.md` has.
+    // that gives the weights, for the reason the first pass has them. Ten
+    // weights over 100000 variants of 1000 individuals take 0.300 s without
+    // this and 0.280 s with it on 18 cores, and 0.627 s against 0.455 s on
+    // one thread: the two passes together wait 0.027 s on the handle against
+    // 0.211 s of work, which `docs/reports/perf-read-ahead-2026-09-25.md`
+    // has.
     with_one_block_ahead(reader, |blocks| {
         while let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? {
             timed(Phase::Work, || -> Result<()> {
@@ -858,13 +860,15 @@ fn the_first_pass<R: BlockReader>(
     // are not used are left as they were and nothing reads them.
     let mut standardized: Vec<f64> = Vec::new();
     // The blocks are read on a thread of its own, one block ahead, so that
-    // the read of the next block and the product of the one in hand
-    // overlap: `docs/reports/perf-read-ahead-2026-09-25.md` measured the
-    // reader at 0.114 s of the 0.334 s of this analysis over 100000 variants
-    // of 1000 individuals on 18 cores, against 0.178 s of work on the same
-    // blocks. In wasm, where there is no thread, the blocks come one after
-    // another as they did, and the chain of readers is lent and not given
-    // away, so the caller still reads its counts when this returns.
+    // the read of the next block and the product of the one in hand overlap.
+    // Over 100000 variants of 1000 individuals of a vars file with no
+    // weights asked for, `docs/reports/perf-read-ahead-2026-09-25.md`
+    // measured this analysis at 0.236 s without this and 0.221 s with it on
+    // 18 cores, and 0.433 s against 0.341 s on one thread, against 0.170 s
+    // of work on the same blocks. In wasm, where there is no thread, the
+    // blocks come one after another as they did, and the chain of readers is
+    // lent and not given away, so the caller still reads its counts when
+    // this returns.
     with_one_block_ahead(reader, |blocks| {
         while let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? {
             timed(Phase::Work, || -> Result<()> {

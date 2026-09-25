@@ -1561,10 +1561,11 @@ pub(crate) fn sums_of_the_pass<R: BlockReader + ?Sized>(
     let mut num_vars: u64 = 0;
     // The blocks are read on a thread of its own, one block ahead, so that
     // the read of the next block and the counting of the pairs of the one in
-    // hand overlap: `docs/reports/perf-read-ahead-2026-09-25.md` measured
-    // the reader at 0.110 s of the 0.133 s of this pass over 100000 variants
-    // of 1000 individuals on 18 cores, against 0.023 s of counting, so what
-    // the thread hides is the counting and not the read. The names of the
+    // hand overlap. Over 100000 variants of 1000 individuals of a vars file,
+    // `docs/reports/perf-read-ahead-2026-09-25.md` measured this pass at
+    // 0.043 s without this and 0.036 s with it on 18 cores, and 0.269 s
+    // against 0.175 s on one thread; at 18 cores its counting is 0.029 s and
+    // the read 0.027 s, so the two are level. The names of the
     // chromosomes come off the handle and not off the chain, which is lent:
     // each block brings the names its variants added, so the table the row
     // of a block is cut by holds every chromosome that block named. In wasm

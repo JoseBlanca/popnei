@@ -427,13 +427,16 @@ fn the_pass_over_the_blocks<R: BlockReader>(
     let mut standardized: Vec<f64> = Vec::new();
     let mut buffers = TheBuffersOfTheDenominators::default();
     // The blocks are read on a thread of its own, one block ahead, so that
-    // the read of the next block and the product of the one in hand
-    // overlap: `docs/reports/perf-read-ahead-2026-09-25.md` measured the
-    // reader at 0.114 s of the 0.299 s of a kinship over 100000 variants of
-    // 1000 individuals on 18 cores, against 0.184 s of work on the same
-    // blocks. In wasm, where there is no thread, the blocks come one after
-    // another as they did. The chain of readers is lent and not given away,
-    // which is what lets `calc_kinship` read its counts when this returns.
+    // the read of the next block and the product of the one in hand overlap.
+    // Over 100000 variants of 1000 individuals of a vars file,
+    // `docs/reports/perf-read-ahead-2026-09-25.md` measured the kinship at
+    // 0.198 s without this and 0.184 s with it on 18 cores, and 0.400 s
+    // against 0.302 s on one thread: what the pass waits on the handle is
+    // 0.008 s of the 0.027 s the read costs at 18 cores, against 0.179 s of
+    // work on the same blocks. In wasm, where there is no thread, the blocks
+    // come one after another as they did. The chain of readers is lent and
+    // not given away, which is what lets `calc_kinship` read its counts when
+    // this returns.
     with_one_block_ahead(blocks, |blocks| {
         while let Some(mut block) = timed(Phase::NextBlock, || blocks.next_block())? {
             timed(Phase::Work, || -> Result<()> {

@@ -1407,9 +1407,11 @@ fn the_pass<R: BlockReader + ?Sized>(
     let mut num_vars: u64 = 0;
     // The blocks are read on a thread of its own, one block ahead, so that
     // the read of the next block and the counting of the one in hand
-    // overlap: `docs/reports/perf-read-ahead-2026-09-25.md` measured the
-    // reader at 0.113 s of the 0.170 s of this pass over 100000 variants of
-    // 1000 individuals on 18 cores, against 0.052 s of counting. In wasm,
+    // overlap. Over 100000 variants of 1000 individuals of a vars file in
+    // three populations, `docs/reports/perf-read-ahead-2026-09-25.md`
+    // measured this pass at 0.079 s without this and 0.071 s with it on 18
+    // cores, and 0.590 s against 0.490 s on one thread, against 0.052 s of
+    // counting. In wasm,
     // where there is no thread, the blocks come one after another as they
     // did, and the chain of readers is lent and not given away, so the
     // counts of the filters below are still the chain's own.
