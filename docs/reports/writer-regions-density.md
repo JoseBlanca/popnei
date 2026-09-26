@@ -86,3 +86,20 @@ Deliverables, run at f60c4e3:
   failure. fmt, clippy, both wasm checks and ruff clean.
 - 2 and 3: `cargo test -p popnei --lib source_header -- --list` counts 13
   tests, where it counted 0 before, and all 13 pass.
+
+## 2. The missing rate
+
+Task 2.1, commit ecfc6cf. The missing rate is the sixth statistic of
+`calc_per_var_distribs`: the missing genotypes of a variant over its
+called and missing ones, a half called genotype counted as missing, from
+the counts the observed heterozygosity already makes. Six tests have
+`per_var_missing_rate` in their names: the worked example of the spec with
+and without populations and at `min_num_individuals` 20, the rates 0, 0.25,
+0.5, 0.75 and 1 on the edges of 4 bins, 3 of 20 in bin 5 of 40, and the
+table of plink2 for `many.vcf` over all and in popA and popB, whose
+histograms match exactly and whose means match within 1e-12 relative.
+Both binding crates only gained the field in their destructuring, so that
+they compile; until task 2.2 `stats: ["missing_rate"]` in TypeScript is
+taken and gives nothing. The spec's paragraph on `MAX_NUM_BINS` counted
+four statistics with a histogram and 3.2 MB for each chunk of rows; with
+the missing rate they are five and 4 MB, and the spec says so now.

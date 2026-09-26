@@ -1364,8 +1364,9 @@ TypeScript" of the pass says, and a value is placed by them.
 Python. A histogram a person reads has tens of bins, pyNei's default is
 40, and each bin is a count of 8 bytes for every population and every
 statistic, held once by the pass and once more by each chunk of rows a
-thread is reading, so 100000 bins of the four statistics of one population
-are 3.2 MB per chunk. Above the bound the counts are a vector no machine
+thread is reading, so 100000 bins of the five statistics with a
+histogram, the missing rate among them, of one population are 4 MB per
+chunk. Above the bound the counts are a vector no machine
 gives: 2^60 bins are the `PanicException` of a capacity that overflowed,
 which derives from `BaseException`, so `except Exception` does not catch
 it and a notebook dies, and 1e12 bins abort the interpreter where the

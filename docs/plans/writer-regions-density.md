@@ -152,7 +152,7 @@ committed.
 
 Tasks:
 
-- [ ] 2.1 The statistic in the core, `crates/popnei/src/stats.rs`, from
+- [x] 2.1 The statistic in the core, `crates/popnei/src/stats.rs`, from
   "The missing rate" and the six names of "The Rust interface" of
   `docs/specs/stats.md`. Deliverable 1. A variant put in the wrong bin
   gives a wrong count and no error, so this task is a commit of its own,
