@@ -305,27 +305,24 @@ fn chrom_lengths_of(object: &Map<String, Value>) -> Result<Vec<(String, u64)>> {
     let Some(value) = object.get("chrom_lengths") else {
         return Ok(Vec::new());
     };
-    let not_lengths = || {
-        not_a_vars_file(format!(
-            "`chrom_lengths` of the `{POPNEI_KEY}` key of its schema is {value} and not a json array of pairs of a chromosome and a length above 0"
-        ))
-    };
     let Some(pairs) = value.as_array() else {
-        return Err(not_lengths());
+        return Err(not_a_vars_file(format!(
+            "`chrom_lengths` of the `{POPNEI_KEY}` key of its schema is not a json array of pairs of a chromosome and a length above 0"
+        )));
     };
     let mut lengths: Vec<(String, u64)> = Vec::new();
-    for pair in pairs {
-        let (Some(chrom), Some(length)) = (
-            pair.get(0).and_then(Value::as_str),
-            pair.get(1)
-                .and_then(Value::as_u64)
-                .filter(|length| *length > 0),
-        ) else {
-            return Err(not_lengths());
+    for (index, pair) in pairs.iter().enumerate() {
+        let chrom = pair.get(0).and_then(Value::as_str);
+        let length = pair
+            .get(1)
+            .and_then(Value::as_u64)
+            .filter(|length| *length > 0);
+        let (Some(chrom), Some(length), Some(2)) = (chrom, length, pair.as_array().map(Vec::len))
+        else {
+            return Err(not_a_vars_file(format!(
+                "the pair {index}, counted from 0, of `chrom_lengths` of the `{POPNEI_KEY}` key of its schema is {pair}, which is not a chromosome and a length above 0"
+            )));
         };
-        if pair.as_array().map(Vec::len) != Some(2) {
-            return Err(not_lengths());
-        }
         if lengths.iter().any(|(named, _)| named == chrom) {
             return Err(not_a_vars_file(format!(
                 "`chrom_lengths` of the `{POPNEI_KEY}` key of its schema gives the chromosome {chrom} twice"
@@ -5135,6 +5132,37 @@ mod tests {
         assert!(
             problem.contains("gives the chromosome chr1 twice"),
             "{problem}"
+        );
+    }
+
+    /// A length past the largest a `u64` holds and a length written as a
+    /// float, which serde_json reads as floats, are refused.
+    #[test]
+    fn source_header_chrom_lengths_past_a_u64_or_written_as_floats_are_refused() {
+        for length in ["18446744073709551616", "2000.0", "2e3"] {
+            let key = format!(
+                r#"{{"format_version":"1.1","individuals":["ind1"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[["chr1",{length}]]}}"#
+            );
+            let error = metadata_from_json(&key).unwrap_err();
+            assert!(
+                matches!(error, Error::NotAVarsFile { .. }),
+                "{length}: {error}"
+            );
+        }
+    }
+
+    /// The error of a wrong pair names it and where it is, and not the
+    /// whole list, which on a real genome holds thousands of pairs.
+    #[test]
+    fn source_header_chrom_lengths_refused_name_the_pair_and_not_the_list() {
+        let key = r#"{"format_version":"1.1","individuals":["ind1"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[["chrA",2000],["chrB",0],["chrC",7]]}"#;
+        let error = metadata_from_json(key).unwrap_err();
+        let Error::NotAVarsFile { problem } = &error else {
+            panic!("{error}");
+        };
+        assert_eq!(
+            problem,
+            r#"the pair 1, counted from 0, of `chrom_lengths` of the `popnei` key of its schema is ["chrB",0], which is not a chromosome and a length above 0"#
         );
     }
 
