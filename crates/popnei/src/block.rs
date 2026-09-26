@@ -899,7 +899,7 @@ impl Block {
             return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
         }
         if let Some(vcf_text) = self.vcf_text.as_mut() {
-            vcf_text.retain_individuals(keep)?;
+            vcf_text.retain_individuals(keep, self.ploidy)?;
         }
         if !self.gts.is_empty() {
             // `check` passed and the genotypes are not empty, so they are

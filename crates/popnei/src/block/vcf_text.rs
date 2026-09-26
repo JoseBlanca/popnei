@@ -12,6 +12,12 @@ use std::collections::TryReserveError;
 
 use crate::error::{Error, Result};
 
+/// How many lines one job of the filter of individuals writes at least, as
+/// the rows of the genotypes are gathered in jobs of 64 at least; not
+/// measured for the text.
+#[cfg(not(target_family = "wasm"))]
+const LINES_PER_JOB: usize = 64;
+
 /// The text of the line of each variant of a block of a VCF: its nine first
 /// columns, CHROM to FORMAT, and the column of each individual, `0/1:12` or
 /// `./.`, as the line has them and without its end of line.
@@ -336,111 +342,204 @@ impl VcfText {
     /// does with the text. Each line becomes its nine first columns and the
     /// kept columns joined by tabs.
     ///
-    /// The lines are rewritten one after another, each through a buffer,
-    /// since a kept column can come before one that is still to be read. A
-    /// line is never longer than it was, so it is written at or before
-    /// where it was read and over no line that is still to be read. The two
-    /// buffers are allocated once for the block and none for a line.
+    /// The length of each new line is worked out from its ends, and the
+    /// lines are then written into a new buffer of the block, each into the
+    /// part of it that is its own, which natively is done on the threads of
+    /// rayon, as the genotypes of the block are gathered. The text holds the
+    /// old buffers and the new ones for as long as it takes.
     ///
     /// `keep` holds each index once, which the block checked.
     ///
     /// # Errors
     ///
-    /// When `keep` holds an index at or beyond the individuals of the text,
-    /// which the block checked before, and when the ends of the text are
-    /// not those of its lines, which the reader and the compactions of this
-    /// module build: both are a defect of popnei that no call reaches. The
-    /// text is then no longer that of its lines, and the block is lost with
-    /// the error.
-    pub(crate) fn retain_individuals(&mut self, keep: &[usize]) -> Result<()> {
-        let per_line = self.ends_per_line();
-        let kept_per_line = keep.len().saturating_add(1);
-        // The sizes that the error of a text that is not of its lines names,
-        // which do not change until every line has been rewritten.
-        let (found, expected) = (
-            self.text_ends.len(),
-            self.line_ends.len().saturating_mul(per_line),
-        );
-        let not_of_its_lines = move || Error::BlockArrayOfAnotherSize {
-            array: "vcf_text",
-            found,
-            expected,
-        };
-        let mut line = Vec::new();
-        let mut ends = Vec::with_capacity(kept_per_line);
-        let mut write_byte = 0usize;
-        let mut read_byte = 0usize;
-        for var in 0..self.line_ends.len() {
-            let line_end = self
-                .line_ends
-                .get(var)
-                .copied()
-                .ok_or_else(not_of_its_lines)?;
-            let first_end = var.checked_mul(per_line).ok_or_else(not_of_its_lines)?;
-            let read_ends = first_end
-                .checked_add(per_line)
-                .and_then(|last_end| self.text_ends.get(first_end..last_end))
-                .ok_or_else(not_of_its_lines)?;
-            let read_line = self
-                .bytes
-                .get(read_byte..line_end)
-                .ok_or_else(not_of_its_lines)?;
-            line.clear();
-            ends.clear();
-            let fixed_end = read_ends.first().copied().ok_or_else(not_of_its_lines)?;
-            let fixed = usize::try_from(fixed_end)
-                .ok()
-                .and_then(|fixed_end| read_line.get(..fixed_end))
-                .ok_or_else(not_of_its_lines)?;
-            line.extend_from_slice(fixed);
-            ends.push(fixed_end);
-            for individual in keep {
-                let (Some(start), Some(end)) = (
-                    read_ends.get(*individual).copied(),
-                    individual
-                        .checked_add(1)
-                        .and_then(|next| read_ends.get(next))
-                        .copied(),
-                ) else {
-                    return Err(Error::IndividualToKeepNotInTheBlock {
-                        individual: *individual,
-                        num_individuals: self.num_individuals,
-                    });
-                };
-                // The start is the end of the text before the column, the
-                // tab, which goes with the column: the kept columns are
-                // joined by tabs as the line had them.
-                let column = usize::try_from(start)
-                    .ok()
-                    .zip(usize::try_from(end).ok())
-                    .and_then(|(start, end)| read_line.get(start..end))
-                    .ok_or_else(not_of_its_lines)?;
-                line.extend_from_slice(column);
-                // The line is at most as long as the one it came from, whose
-                // ends are 32 bits.
-                ends.push(u32::try_from(line.len()).map_err(|_| not_of_its_lines())?);
-            }
-            let write_end = write_byte.saturating_add(line.len());
-            self.bytes
-                .get_mut(write_byte..write_end)
-                .ok_or_else(not_of_its_lines)?
-                .copy_from_slice(&line);
-            let write_ends = var.saturating_mul(kept_per_line);
-            self.text_ends
-                .get_mut(write_ends..write_ends.saturating_add(kept_per_line))
-                .ok_or_else(not_of_its_lines)?
-                .copy_from_slice(&ends);
-            if let Some(slot) = self.line_ends.get_mut(var) {
-                *slot = write_end;
-            }
-            write_byte = write_end;
-            read_byte = line_end;
+    /// When the text is not of its lines, which [`VcfText::check`] finds,
+    /// and when `keep` holds an index at or beyond the individuals of the
+    /// text, which the block checked before: both are a defect of popnei
+    /// that no call reaches, and the text is left as it was. And when the
+    /// machine does not give the memory of the new buffers, the error of a
+    /// block too large of the size of this one, whose genotypes hold
+    /// `ploidy` alleles each.
+    pub(crate) fn retain_individuals(&mut self, keep: &[usize], ploidy: usize) -> Result<()> {
+        self.check(self.line_ends.len(), self.num_individuals)?;
+        if let Some(individual) = keep.iter().find(|index| **index >= self.num_individuals) {
+            return Err(Error::IndividualToKeepNotInTheBlock {
+                individual: *individual,
+                num_individuals: self.num_individuals,
+            });
         }
-        self.bytes.truncate(write_byte);
-        self.text_ends
-            .truncate(self.line_ends.len().saturating_mul(kept_per_line));
+        let num_vars = self.line_ends.len();
+        let kept_per_line = keep.len().saturating_add(1);
+        let too_large = || Error::BlockTooLarge {
+            num_vars_per_block: num_vars,
+            num_individuals: self.num_individuals,
+            ploidy,
+            size: super::BlockSize::AskedFor,
+        };
+        let mut lengths: Vec<usize> = Vec::new();
+        lengths
+            .try_reserve_exact(num_vars)
+            .map_err(|_| too_large())?;
+        lengths.extend((0..num_vars).map(|var| self.kept_length(var, keep)));
+        let mut line_ends: Vec<usize> = Vec::new();
+        line_ends
+            .try_reserve_exact(num_vars)
+            .map_err(|_| too_large())?;
+        let mut total = 0usize;
+        for length in &lengths {
+            // A kept line is at most as long as its line, so the lines kept
+            // are at most the bytes of the text, which were allocated.
+            total = total.saturating_add(*length);
+            line_ends.push(total);
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.try_reserve_exact(total).map_err(|_| too_large())?;
+        bytes.resize(total, 0);
+        let mut text_ends: Vec<u32> = Vec::new();
+        let num_ends = num_vars.saturating_mul(kept_per_line);
+        text_ends
+            .try_reserve_exact(num_ends)
+            .map_err(|_| too_large())?;
+        text_ends.resize(num_ends, 0);
+        // The part of the new buffer each line is written into, cut one
+        // after another by the lengths just worked out.
+        let mut parts: Vec<&mut [u8]> = Vec::new();
+        parts.try_reserve_exact(num_vars).map_err(|_| too_large())?;
+        let mut rest = bytes.as_mut_slice();
+        for length in &lengths {
+            let (part, after) = rest
+                .split_at_mut_checked(*length)
+                .ok_or_else(|| self.not_of_its_lines())?;
+            parts.push(part);
+            rest = after;
+        }
+        self.write_the_kept_lines(keep, &mut parts, &mut text_ends)?;
+        self.bytes = bytes;
+        self.line_ends = line_ends;
+        self.text_ends = text_ends;
         self.num_individuals = keep.len();
         Ok(())
+    }
+
+    /// How many bytes the line `var` holds with the columns of `keep`
+    /// alone: its nine first columns and each kept column with the tab
+    /// before it. 0 for a line the text does not hold, which
+    /// [`VcfText::check`] made impossible.
+    fn kept_length(&self, var: usize, keep: &[usize]) -> usize {
+        let ends = self.ends_of(var);
+        let end = |index: usize| {
+            ends.get(index)
+                .and_then(|end| usize::try_from(*end).ok())
+                .unwrap_or(0)
+        };
+        keep.iter().fold(end(0), |length, individual| {
+            let column = end(individual.saturating_add(1)).saturating_sub(end(*individual));
+            length.saturating_add(column)
+        })
+    }
+
+    /// The kept line of each variant into its part of `parts` and its ends
+    /// into its `keep.len() + 1` places of `text_ends`: natively on the
+    /// threads of rayon, since no two lines share a byte.
+    ///
+    /// # Errors
+    ///
+    /// What [`VcfText::write_a_kept_line`] refuses.
+    #[cfg(not(target_family = "wasm"))]
+    fn write_the_kept_lines(
+        &self,
+        keep: &[usize],
+        parts: &mut [&mut [u8]],
+        text_ends: &mut [u32],
+    ) -> Result<()> {
+        use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+        use rayon::slice::ParallelSliceMut;
+
+        let kept_per_line = keep.len().saturating_add(1);
+        parts
+            .par_iter_mut()
+            .zip(text_ends.par_chunks_mut(kept_per_line))
+            .enumerate()
+            .with_min_len(LINES_PER_JOB)
+            .try_for_each(|(var, (part, ends))| self.write_a_kept_line(var, keep, part, ends))
+    }
+
+    /// The same lines written one after another, which is what wasm does:
+    /// it has no threads.
+    ///
+    /// # Errors
+    ///
+    /// What [`VcfText::write_a_kept_line`] refuses.
+    #[cfg(target_family = "wasm")]
+    fn write_the_kept_lines(
+        &self,
+        keep: &[usize],
+        parts: &mut [&mut [u8]],
+        text_ends: &mut [u32],
+    ) -> Result<()> {
+        let kept_per_line = keep.len().saturating_add(1);
+        for (var, (part, ends)) in parts
+            .iter_mut()
+            .zip(text_ends.chunks_mut(kept_per_line))
+            .enumerate()
+        {
+            self.write_a_kept_line(var, keep, part, ends)?;
+        }
+        Ok(())
+    }
+
+    /// The line `var` with the columns of `keep` alone into `part`, which
+    /// holds as many bytes as [`VcfText::kept_length`] said, and the ends of
+    /// its texts into `ends`, the `keep.len() + 1` of them.
+    ///
+    /// # Errors
+    ///
+    /// When the line, a column of it or its part is not where its ends say,
+    /// which [`VcfText::check`] made impossible.
+    fn write_a_kept_line(
+        &self,
+        var: usize,
+        keep: &[usize],
+        part: &mut [u8],
+        ends: &mut [u32],
+    ) -> Result<()> {
+        let (line, read_ends) = self.line_of(var).ok_or_else(|| self.not_of_its_lines())?;
+        let end = |index: usize| {
+            read_ends
+                .get(index)
+                .and_then(|end| usize::try_from(*end).ok())
+                .ok_or_else(|| self.not_of_its_lines())
+        };
+        let mut written = 0usize;
+        let mut slots = ends.iter_mut();
+        let mut put = |start: usize, stop: usize| -> Result<()> {
+            let bytes = line
+                .get(start..stop)
+                .ok_or_else(|| self.not_of_its_lines())?;
+            let after = written.saturating_add(bytes.len());
+            part.get_mut(written..after)
+                .ok_or_else(|| self.not_of_its_lines())?
+                .copy_from_slice(bytes);
+            written = after;
+            let slot = slots.next().ok_or_else(|| self.not_of_its_lines())?;
+            *slot = u32::try_from(written).map_err(|_| self.not_of_its_lines())?;
+            Ok(())
+        };
+        put(0, end(0)?)?;
+        for individual in keep {
+            // The column with the tab before it, where the end of the text
+            // before it is.
+            put(end(*individual)?, end(individual.saturating_add(1))?)?;
+        }
+        Ok(())
+    }
+
+    /// The error of a text whose ends are not those of its lines.
+    fn not_of_its_lines(&self) -> Error {
+        Error::BlockArrayOfAnotherSize {
+            array: "vcf_text",
+            found: self.text_ends.len(),
+            expected: self.line_ends.len().saturating_mul(self.ends_per_line()),
+        }
     }
 
     /// The lines of `other` after the ones this text holds, which is what
@@ -1249,6 +1348,27 @@ mod tests {
         );
         let mut reblock = Reblock::new(reader, Some(7)).expect("the reblock");
         assert_eq!(blocks_of(&mut reblock).expect("many.vcf").len(), 0);
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn vcf_text_of_many_vcf_in_one_block_keeps_four_individuals_on_one_thread_and_on_four() {
+        let lines = lines_of_the_file("many.vcf");
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let individuals = [49, 3, 17, 0];
+        for num_threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build()
+                .expect("the pool");
+            let mut reader = reader_of("many.vcf", 500, Needs::ALL | Needs::VCF_TEXT);
+            let mut blocks = blocks_of(&mut reader).expect("many.vcf");
+            assert_eq!(blocks.len(), 1);
+            pool.install(|| blocks[0].retain_individuals(&individuals))
+                .expect("the retain");
+            blocks[0].check().expect("the block");
+            assert_the_blocks_are_the_lines(&blocks, reader.chroms(), &lines, &individuals);
+        }
     }
 
     #[test]
