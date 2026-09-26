@@ -736,6 +736,119 @@ pub enum Error {
         pop: String,
     },
 
+    /// The density of the variants was asked for windows of 0 base pairs,
+    /// which hold no position.
+    #[error(
+        "`window_size` is 0, and a window of the density of the variants is 1 base pair wide at least: it is how many base pairs each window counts the variants of"
+    )]
+    VarDensityWindowSizeZero,
+
+    /// A length of a chromosome that the density of the variants was given
+    /// is 0, which is a chromosome with no position. The VCF reader and the
+    /// vars file reader refuse such a length, so from a source only a
+    /// reader with a defect gives one.
+    #[error(
+        "the length of the chromosome {chrom} in {from} is 0, and a length is 1 at least: it is the last position of the chromosome, counted from 1"
+    )]
+    VarDensityChromLengthZero {
+        /// The chromosome.
+        chrom: String,
+        /// Where the length came from.
+        from: crate::stats::LengthsFrom,
+    },
+
+    /// A chromosome is named twice among the lengths the density of the
+    /// variants was given, which could each put its last window elsewhere.
+    /// A Python dict and a TypeScript object cannot hold a name twice, and
+    /// the VCF reader and the vars file reader give one length for each
+    /// chromosome, so only a caller of the core crate reaches it.
+    #[error("the chromosome {chrom} is named twice in {from}, and each chromosome has one length")]
+    VarDensityChromLengthTwice {
+        /// The chromosome.
+        chrom: String,
+        /// Where the lengths came from.
+        from: crate::stats::LengthsFrom,
+    },
+
+    /// A variant of the density of the variants is past the length of its
+    /// chromosome. A count with a variant beyond the end of its chromosome
+    /// would say nothing of the length being wrong, and the telomere that
+    /// the VCF format puts at the length plus 1 is one such variant.
+    #[error(
+        "a variant of the chromosome {chrom} is at the position {pos}, past the length of the chromosome, {length}, which {from} gave: the windows of a chromosome with a length end at it, so either the length or the position is wrong"
+    )]
+    VarDensityVarPastTheLength {
+        /// The chromosome of the variant.
+        chrom: String,
+        /// Its position, counted from 1.
+        pos: u64,
+        /// The length of the chromosome.
+        length: u64,
+        /// Where the length came from.
+        from: crate::stats::LengthsFrom,
+    },
+
+    /// A variant of the density of the variants is at the position 0, which
+    /// the VCF format allows for a telomere and which lies in no window,
+    /// since the first window of a chromosome starts at 1. tabix 1.24
+    /// counts such a line in the region 1 to 1000, with the warning
+    /// `Coordinate <= 0 detected`.
+    #[error(
+        "a variant of the chromosome {chrom} is at the position 0, and the windows of the density of the variants start at the position 1, so it is in none of them; the VCF format puts a telomere there"
+    )]
+    VarDensityVarAtPositionZero {
+        /// The chromosome of the variant.
+        chrom: String,
+    },
+
+    /// The density of the variants would have more windows, over all its
+    /// chromosomes, than `stats::MAX_NUM_WINDOWS`. With the lengths of the
+    /// chromosomes the number is known before the pass, and without them
+    /// it is the number the pass had reached when it passed the bound, so
+    /// the density has that many at least.
+    #[error(
+        "the density of the variants in windows of {window_size} base pairs has {num_windows} windows at least, and it has {largest} at most: each window is a row of the result, and a wider window gives fewer of them"
+    )]
+    VarDensityTooManyWindows {
+        /// How many windows it has at least.
+        num_windows: u64,
+        /// The width of a window it was asked for.
+        window_size: u64,
+        /// The most it has, `stats::MAX_NUM_WINDOWS`.
+        largest: usize,
+    },
+
+    /// One window of the density of the variants would count more variants
+    /// than its count holds, 4294967295, which only a source of more than 4
+    /// billion variants at the positions of one window reaches.
+    #[error(
+        "the window {start} to {end} of the chromosome {chrom} holds more than {largest} variants, the most the count of a window of the density of the variants holds"
+    )]
+    VarDensityWindowTooFull {
+        /// The chromosome of the window.
+        chrom: String,
+        /// The first position of the window.
+        start: u64,
+        /// The last position of the window.
+        end: u64,
+        /// The most a count holds, `u32::MAX`.
+        largest: u32,
+    },
+
+    /// A block given to the density of the variants holds a chromosome
+    /// number that the table of names of its reader has no name for. The
+    /// lengths are looked up by the name of the chromosome and the result
+    /// gives each chromosome by its name, so the variant could be counted
+    /// in no chromosome. The table has the names of every block its reader
+    /// gave, so a user reaches this only through a reader with a defect.
+    #[error(
+        "a block given to the density of the variants holds the chromosome number {number}, and the table of chromosome names of its reader has no name for it"
+    )]
+    VarDensityChromNameMissing {
+        /// The number that has no name.
+        number: u32,
+    },
+
     /// A value of the table of a principal component analysis is not
     /// finite, an infinity or a NaN, with the place where it is. There is
     /// nothing to give for such a table: the mean of that trait, and with
@@ -3075,7 +3188,20 @@ impl Error {
             | Self::DiversityMoreBinsThanTheMachineHolds { .. }
             | Self::DiversityPopWithNoIndividual { .. }
             | Self::DiversityIndividualNotInTheDataset { .. }
-            | Self::DiversityIndividualAskedForTwice { .. } => false,
+            | Self::DiversityIndividualAskedForTwice { .. }
+            // The three of the density of the variants that are of what a
+            // user wrote: windows of 0 base pairs, and a length of 0 or a
+            // chromosome named twice in `chrom_lengths`. The same two of
+            // the lengths a source gave are of that file, below.
+            | Self::VarDensityWindowSizeZero
+            | Self::VarDensityChromLengthZero {
+                from: crate::stats::LengthsFrom::ChromLengths,
+                ..
+            }
+            | Self::VarDensityChromLengthTwice {
+                from: crate::stats::LengthsFrom::ChromLengths,
+                ..
+            } => false,
             // The dataset a user gave, which is a file: a pass that gave
             // no variant with variance, a source of no individual, a
             // variant of more than two alleles among its called genotypes
@@ -3241,7 +3367,31 @@ impl Error {
             | Self::VarsZstd
             | Self::VarsIndividualTwice { .. }
             | Self::VarsFileOfNoGenotypes { .. }
-            | Self::VarsTextTooLarge { .. } => true,
+            | Self::VarsTextTooLarge { .. }
+            // The six of the density of the variants that are of the file:
+            // a length of 0 or a chromosome twice among the lengths its
+            // header gave, which no reader of popnei gives; a variant past
+            // the length of its chromosome, whether the length came from
+            // `chrom_lengths` or from the file, since the variant is of the
+            // file; a variant at the position 0; more windows than the
+            // density has, which the lengths and the variants of the file
+            // decide with the width a user wrote, so a user who runs over
+            // a directory of files needs to know which one it was; a window
+            // of more variants than its count holds; and a block whose
+            // chromosome number its reader has no name for, a defect.
+            | Self::VarDensityChromLengthZero {
+                from: crate::stats::LengthsFrom::Source,
+                ..
+            }
+            | Self::VarDensityChromLengthTwice {
+                from: crate::stats::LengthsFrom::Source,
+                ..
+            }
+            | Self::VarDensityVarPastTheLength { .. }
+            | Self::VarDensityVarAtPositionZero { .. }
+            | Self::VarDensityTooManyWindows { .. }
+            | Self::VarDensityWindowTooFull { .. }
+            | Self::VarDensityChromNameMissing { .. } => true,
         }
     }
 }

@@ -1,12 +1,16 @@
 //! The statistics of the variants and of the individuals, per population.
 //!
 //! A population is a named set of individuals that a calculation treats as
-//! a group, and every statistic of this module is calculated for each
-//! population over its individuals alone. [`Pops`] is what a pass works
+//! a group, and every statistic of this module but one is calculated for
+//! each population over its individuals alone. [`Pops`] is what a pass works
 //! with: the name of each population and the indices of its individuals
 //! among the individuals the pass gives, which are those of the source
 //! after the filter of individuals of `docs/specs/filters.md` when the
 //! variants carry one.
+//!
+//! The one is the density of the variants along the chromosomes,
+//! [`calc_var_density`], which counts the variants in windows of their
+//! positions and reads no genotype.
 //!
 //! `docs/specs/stats.md` has the design, and the row `stats` of section 9
 //! of `docs/architecture.md` where the module sits.
@@ -21,6 +25,11 @@ use crate::phases::{Phase, timed};
 use crate::variant::{
     AlleleCounts, GtCounts, Needs, count_alleles, count_alleles_of, count_gts, count_gts_of,
     count_the_genotype,
+};
+
+mod density;
+pub use density::{
+    DensityOfChrom, DensityWindow, LengthsFrom, MAX_NUM_WINDOWS, VarDensity, calc_var_density,
 };
 
 /// The name of the one population of a calculation that was given no
