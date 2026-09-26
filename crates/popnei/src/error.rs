@@ -2775,6 +2775,24 @@ pub enum Error {
         expected: usize,
     },
 
+    /// A batch of the vars file holds a variant that its entry of the
+    /// `popnei_batches` key of the footer does not: on a chromosome the
+    /// entry does not name, or outside the smallest and the largest
+    /// position it gives for its chromosome. The filter by regions skips a
+    /// batch by that entry, so a footer changed after the file was written
+    /// would have batches skipped that hold variants the filter keeps.
+    #[error(
+        "the batch {batch} of the vars file holds a variant at {chrom} {pos}, which its entry of the `popnei_batches` key of the footer does not hold; the footer was changed after the file was written, so the file has to be written again"
+    )]
+    VarsBatchOutsideItsRegions {
+        /// Which batch of the file it is, counted from 1.
+        batch: u64,
+        /// The chromosome of the variant.
+        chrom: String,
+        /// Its position.
+        pos: u64,
+    },
+
     /// The buffers of the vars file are compressed with zstd, which no
     /// build of popnei carries: arrow takes zstd from a crate that wraps
     /// the C library, and popnei builds for WebAssembly with no second
@@ -3365,6 +3383,7 @@ impl Error {
             | Self::VarsAlleleBelowMissing { .. }
             | Self::VarsBatchesDoNotMatch { .. }
             | Self::VarsBatchNumVars { .. }
+            | Self::VarsBatchOutsideItsRegions { .. }
             | Self::VarsZstd
             | Self::VarsIndividualTwice { .. }
             | Self::VarsFileOfNoGenotypes { .. }

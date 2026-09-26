@@ -417,10 +417,19 @@ fn region_from_json(value: &Value) -> Result<Region> {
             "the `chrom` of a region of an entry of the `{POPNEI_BATCHES_KEY}` key of its footer is {chrom}, which is not the name of a chromosome"
         )));
     };
+    let min_pos = position_of_a_region(object, "min_pos")?;
+    let max_pos = position_of_a_region(object, "max_pos")?;
+    // A region that goes down holds no position, and the filter by regions
+    // would pass its batch over whatever the batch holds.
+    if min_pos > max_pos {
+        return Err(not_a_vars_file(format!(
+            "a region of `{chrom}` of an entry of the `{POPNEI_BATCHES_KEY}` key of its footer has the `min_pos` {min_pos}, above its `max_pos` {max_pos}"
+        )));
+    }
     Ok(Region {
         chrom: chrom.to_owned(),
-        min_pos: position_of_a_region(object, "min_pos")?,
-        max_pos: position_of_a_region(object, "max_pos")?,
+        min_pos,
+        max_pos,
     })
 }
 
@@ -1589,19 +1598,36 @@ impl<R: Read + Seek> VarsReader<R> {
     /// `pos` columns or of no variant, is read: nothing says it can be
     /// passed over, and the filter refuses the first of them for the field
     /// it depends on.
-    fn passes_over(&mut self, index: usize) -> bool {
+    ///
+    /// The message of a batch that is passed over is read, the few bytes
+    /// before its buffers, and not its buffers.
+    ///
+    /// # Errors
+    ///
+    /// When the message of a batch that is passed over cannot be read, is
+    /// not one of a batch, or holds another number of rows than its entry
+    /// of the footer.
+    fn passes_over(&mut self, index: usize) -> Result<bool> {
         let (Some(selection), Some(batch)) = (self.skip_outside.as_ref(), self.batches.get(index))
         else {
-            return false;
+            return Ok(false);
         };
         if batch.regions.is_empty()
             || !batch.regions.iter().all(|region| {
                 selection.keeps_none_of(&region.chrom, region.min_pos, region.max_pos)
             })
         {
-            return false;
+            return Ok(false);
         }
         let num_vars = u64::try_from(batch.num_vars).unwrap_or(u64::MAX);
+        if let Some(at) = self.blocks.get(index).copied() {
+            let place = self.place_of(index)?;
+            let Ok(len) = usize::try_from(at.metadata_len) else {
+                return Err(block_too_large(place.num_vars, &self.metadata));
+            };
+            let message = bytes_at(&mut self.source, at.offset, len)?;
+            message_of_a_batch(&message, place)?;
+        }
         if self.counted_as_skipped.len() < self.batches.len() {
             self.counted_as_skipped.resize(self.batches.len(), false);
         }
@@ -1613,7 +1639,7 @@ impl<R: Read + Seek> VarsReader<R> {
             // a `u64` holds, so this does not saturate.
             self.num_skipped = self.num_skipped.saturating_add(num_vars);
         }
-        true
+        Ok(true)
     }
 }
 
@@ -1814,13 +1840,11 @@ impl<R: Read + Seek> VarsReader<R> {
         if num_vars == 0 {
             return Ok(None);
         }
-        Ok(Some(block_of_the_batch(
-            batch,
-            wanted,
-            &self.metadata,
-            &mut self.chroms,
-            place,
-        )?))
+        let block = block_of_the_batch(batch, wanted, &self.metadata, &mut self.chroms, place)?;
+        if let Some(entry) = self.batches.get(index) {
+            variants_in_their_entry(&block, &self.chroms, entry, place.batch)?;
+        }
+        Ok(Some(block))
     }
 }
 
@@ -1897,11 +1921,18 @@ impl<R: Read + Seek> VarsReader<R> {
                 break;
             };
             let index = self.next;
-            if self.passes_over(index) {
-                // The batches of a file are as many as the machine counts,
-                // so this never saturates.
-                self.next = self.next.saturating_add(1);
-                continue;
+            match self.passes_over(index) {
+                Ok(true) => {
+                    // The batches of a file are as many as the machine
+                    // counts, so this never saturates.
+                    self.next = self.next.saturating_add(1);
+                    continue;
+                }
+                Ok(false) => {}
+                Err(problem) => {
+                    failed = Some((index, problem));
+                    break;
+                }
             }
             #[cfg(test)]
             self.batches_read.push(index);
@@ -1980,7 +2011,7 @@ impl<R: Read + Seek> VarsReader<R> {
                 return Ok(None);
             };
             let index = self.next;
-            if self.passes_over(index) {
+            if self.passes_over(index)? {
                 // The batches of a file are as many as the machine counts,
                 // so this never saturates.
                 self.next = self.next.saturating_add(1);
@@ -2212,7 +2243,19 @@ impl VarsReader<BufReader<File>> {
 /// The batch could not be read, with the batch and what does not fit, and
 /// the batch holds another number of variants than its entry of the footer
 /// when its message says so.
-fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPlace) -> Result<()> {
+/// The message of a batch, the flatbuffer at the start of its bytes that
+/// says how many rows the batch holds and where its buffers are, checked to
+/// be one of a batch and to hold the rows its entry of the footer says.
+///
+/// `bytes` are those of the message and may go on into the buffers, which
+/// are not read: a batch the filter by regions passes over has its message
+/// read alone.
+///
+/// # Errors
+///
+/// When the bytes are not the message of a batch of arrow, and when it
+/// holds another number of rows than the entry of the footer.
+fn message_of_a_batch(bytes: &[u8], place: BatchPlace) -> Result<BatchMessage<'_>> {
     let damaged = |problem: String| batch_of_other_bytes(place.batch, problem);
     // A message that starts with the mark of a continuation has its length
     // after it, and one that has not starts with that length.
@@ -2248,6 +2291,13 @@ fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPl
             expected: place.num_vars,
         });
     }
+    Ok(batch)
+}
+
+fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPlace) -> Result<()> {
+    let damaged = |problem: String| batch_of_other_bytes(place.batch, problem);
+    let batch = message_of_a_batch(bytes, place)?;
+    let found = place.num_vars;
     let body = u64::try_from(metadata_len)
         .ok()
         .and_then(|message_len| {
@@ -2699,6 +2749,53 @@ fn block_of_the_batch(
         }
     }
     Ok(block)
+}
+
+/// That every variant of the block of a batch is in its entry of the
+/// `popnei_batches` key of the footer: on a chromosome the entry names and
+/// between the smallest and the largest position it gives for it, which is
+/// what the filter by regions skips a batch by. A block read without the
+/// chromosome and the position, and a batch whose entry has no regions, of
+/// a file with no `chrom` and `pos` columns, have nothing to check.
+///
+/// # Errors
+///
+/// The first variant that is not, with its chromosome and its position.
+fn variants_in_their_entry(
+    block: &Block,
+    chroms: &ChromTable,
+    entry: &BatchInfo,
+    batch: u64,
+) -> Result<()> {
+    let (Some(chrom), Some(pos)) = (block.chrom.as_deref(), block.pos.as_deref()) else {
+        return Ok(());
+    };
+    if entry.regions.is_empty() {
+        return Ok(());
+    }
+    // The region of the chromosome of the variant before, so that a run of
+    // variants of one chromosome finds its region once.
+    let mut of_the_chrom: Option<(u32, Option<&Region>)> = None;
+    for (number, pos) in chrom.iter().zip(pos) {
+        let region = match of_the_chrom {
+            Some((before, region)) if before == *number => region,
+            Some(_) | None => {
+                let region = chroms
+                    .name(*number)
+                    .and_then(|name| entry.regions.iter().find(|region| region.chrom == name));
+                of_the_chrom = Some((*number, region));
+                region
+            }
+        };
+        if !region.is_some_and(|region| region.min_pos <= *pos && *pos <= region.max_pos) {
+            return Err(Error::VarsBatchOutsideItsRegions {
+                batch,
+                chrom: chroms.name(*number).unwrap_or_default().to_owned(),
+                pos: *pos,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The number of the chromosome of each variant of the batch, in `chroms`.
@@ -6777,6 +6874,106 @@ mod tests {
             panic!("the batch of four variants whose entry says three gave {error}");
         };
         assert_eq!((batch, found, expected), (1, 4, 3));
+    }
+
+    /// The four variants of `cases.vcf` in one batch, chr1 100 to 400,
+    /// with the footer saying `num_vars` and `regions` of it.
+    fn cases_with_the_footer(num_vars: usize, regions: Vec<Region>) -> Vec<u8> {
+        let mut parts = FileParts::of_cases();
+        parts.popnei_batches = Some(batches_as_json(&[BatchInfo { num_vars, regions }]));
+        parts.written()
+    }
+
+    fn region(chrom: &str, min_pos: u64, max_pos: u64) -> Region {
+        Region {
+            chrom: chrom.to_owned(),
+            min_pos,
+            max_pos,
+        }
+    }
+
+    /// The regions of a BED, handed to a reader as the filter by regions
+    /// hands them.
+    fn keeping(bed: &[u8]) -> crate::filters::RegionSelection {
+        crate::filters::RegionSelection {
+            regions: Arc::new(crate::filters::Regions::from_bed(bed).expect("the BED")),
+            exclude: false,
+        }
+    }
+
+    /// A region of the footer whose smallest position is above its largest
+    /// holds no position, and the skip would pass its batch over: it is
+    /// refused when the file is opened.
+    #[test]
+    fn skip_outside_a_region_of_the_footer_that_goes_down_is_not_a_vars_file() {
+        let problem = problem_of(
+            opened(cases_with_the_footer(4, vec![region("chr1", 400, 100)])).map(|_| ()),
+        );
+        assert!(problem.contains("`min_pos`"), "{problem}");
+        assert!(problem.contains("400"), "{problem}");
+    }
+
+    /// A batch the regions keep none of is passed over, and its message is
+    /// read first: one whose rows are not the variants of its entry of the
+    /// footer is refused as it is when the batch is read.
+    #[test]
+    fn skip_outside_a_skipped_batch_of_another_number_of_variants_is_refused() {
+        let mut reader = opened(cases_with_the_footer(3, vec![region("chr1", 100, 400)]))
+            .expect("the bytes are a vars file");
+        assert!(reader.skip_outside(keeping(b"chr2\t0\t10\n")));
+        let error = match reader.next_block() {
+            Ok(block) => panic!("the batch of four whose entry says three gave {block:?}"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                Error::VarsBatchNumVars {
+                    batch: 1,
+                    found: 4,
+                    expected: 3
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(reader.batches_read().is_empty());
+        // Of the right number the batch is passed over and nothing is read.
+        let mut reader = opened(cases_with_the_footer(4, vec![region("chr1", 100, 400)]))
+            .expect("the bytes are a vars file");
+        assert!(reader.skip_outside(keeping(b"chr2\t0\t10\n")));
+        assert!(reader.next_block().expect("no error").is_none());
+        assert_eq!(reader.num_skipped(), 4);
+    }
+
+    /// A batch that is read is checked against its entry of the footer: a
+    /// variant at a position the entry of its chromosome does not reach, or
+    /// on a chromosome the entry does not name, is an error of the batch,
+    /// with and without the regions of the filter.
+    #[test]
+    fn skip_outside_a_variant_outside_its_entry_of_the_footer_is_refused() {
+        for (regions, chrom, pos) in [
+            (vec![region("chr1", 150, 400)], "chr1", 100),
+            (vec![region("chr1", 100, 300)], "chr1", 400),
+            (vec![region("chr2", 100, 400)], "chr1", 100),
+        ] {
+            for with_the_regions in [false, true] {
+                let mut reader =
+                    opened(cases_with_the_footer(4, regions.clone())).expect("a vars file");
+                if with_the_regions {
+                    assert!(reader.skip_outside(keeping(b"chr1\t0\t1000\nchr2\t0\t1000\n")));
+                }
+                let error = match blocks_of(&mut reader) {
+                    Ok(blocks) => panic!("{regions:?} gave {} blocks", blocks.len()),
+                    Err(error) => error,
+                };
+                assert!(
+                    matches!(&error, Error::VarsBatchOutsideItsRegions { batch: 1, chrom: of, pos: at }
+                        if of == chrom && *at == pos),
+                    "{regions:?}: {error:?}"
+                );
+                assert!(error.names_the_file());
+            }
+        }
     }
 
     /// No build of popnei carries the zstd crate, so a file whose buffers
