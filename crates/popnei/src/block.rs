@@ -1995,45 +1995,47 @@ impl BlockReader for OneBlockAhead {
     ///
     /// # Errors
     ///
-    /// What the chain failed with, after the blocks it gave before it.
-    /// After it there is no block.
+    /// What the chain failed with, after the blocks it gave before it, and
+    /// the defect of an answer to an offer of regions sent in place of a
+    /// block. After either there is no block.
     fn next_block(&mut self) -> Result<Option<Block>> {
         if self.finished {
             return Ok(None);
         }
-        loop {
-            let read = match self.read_before_the_answer.pop_front() {
-                Some(read) => Ok(read),
-                None => self.blocks.recv(),
-            };
-            return match read {
-                Ok(ABlockRead::Block(block, now)) => {
-                    self.took(now);
-                    Ok(Some(block))
-                }
-                Ok(ABlockRead::NoMore(now)) => {
-                    self.took(now);
-                    self.finished = true;
-                    Ok(None)
-                }
-                Ok(ABlockRead::Failed(error)) => {
-                    self.finished = true;
-                    Err(error)
-                }
-                // An answer is only sent to a `skip_outside`, which waits
-                // for it and takes it, so none reaches here; were one to,
-                // it says nothing of the blocks and the next read is taken.
-                Ok(ABlockRead::Answered(_)) => continue,
-                // The thread ended without saying why, which nothing but a
-                // panic in the chain of readers does, and a panic of a
-                // thread of the scope is raised again where
-                // `with_one_block_ahead` was called, so what this returns is
-                // thrown away there. There is no block either way.
-                Err(_) => {
-                    self.finished = true;
-                    Ok(None)
-                }
-            };
+        let read = match self.read_before_the_answer.pop_front() {
+            Some(read) => Ok(read),
+            None => self.blocks.recv(),
+        };
+        match read {
+            Ok(ABlockRead::Block(block, now)) => {
+                self.took(now);
+                Ok(Some(block))
+            }
+            Ok(ABlockRead::NoMore(now)) => {
+                self.took(now);
+                self.finished = true;
+                Ok(None)
+            }
+            Ok(ABlockRead::Failed(error)) => {
+                self.finished = true;
+                Err(error)
+            }
+            // An answer is only sent to a `skip_outside`, which waits
+            // for it and takes it, so one that reaches here is a defect
+            // of popnei, and the reads after it are not to be trusted.
+            Ok(ABlockRead::Answered(_)) => {
+                self.finished = true;
+                Err(Error::ReadAheadAnswerInPlaceOfABlock)
+            }
+            // The thread ended without saying why, which nothing but a
+            // panic in the chain of readers does, and a panic of a
+            // thread of the scope is raised again where
+            // `with_one_block_ahead` was called, so what this returns is
+            // thrown away there. There is no block either way.
+            Err(_) => {
+                self.finished = true;
+                Ok(None)
+            }
         }
     }
 
@@ -4435,6 +4437,36 @@ mod tests {
         assert_eq!(reader.needs, Needs::GTS);
         assert_eq!(reader.filtering_stats(), two_counts());
         assert!(reader.left.is_empty());
+    }
+
+    /// An answer to an offer of regions that arrives where the handle asked
+    /// for a block is the error of a defect of popnei, and nothing comes
+    /// after it, not a read that is passed over in silence.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn an_answer_in_place_of_a_block_is_a_defect_of_popnei() {
+        let (built, blocks) = std::sync::mpsc::sync_channel(1);
+        let (asked, _asks) = std::sync::mpsc::channel();
+        built.send(super::ABlockRead::Answered(true)).unwrap();
+        drop(built);
+        let mut ahead = super::OneBlockAhead {
+            blocks,
+            asked,
+            read_before_the_answer: std::collections::VecDeque::new(),
+            individuals: Vec::new(),
+            ploidy: 2,
+            header: super::SourceHeader::default(),
+            chroms: ChromTable::new(),
+            filtering_stats: Vec::new(),
+            num_skipped: 0,
+            finished: false,
+        };
+        let error = ahead.next_block().unwrap_err();
+        assert!(
+            matches!(error, Error::ReadAheadAnswerInPlaceOfABlock),
+            "{error}"
+        );
+        assert!(ahead.next_block().unwrap().is_none());
     }
 
     /// A pass that stops in the middle, which is what a study whose test of

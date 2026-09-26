@@ -202,6 +202,15 @@ pub enum Error {
     )]
     ReaderGaveABlockOfNoVariants,
 
+    /// The reader one block ahead was sent the answer to an offer of
+    /// regions where it asked its thread for a block. Only
+    /// `skip_outside` makes the thread answer, and it waits for the answer
+    /// and takes it, so this is a defect of popnei.
+    #[error(
+        "the reader one block ahead was given the answer to an offer of regions where it asked for a block, which is a defect of popnei"
+    )]
+    ReadAheadAnswerInPlaceOfABlock,
+
     /// A reader gave a block that holds the genotypes of no individual,
     /// either because it has no individual or because its ploidy is 0, and
     /// a calculation over the variants reads the genotype of one individual
@@ -3025,6 +3034,7 @@ impl Error {
             | Self::BlocksDoNotFitTogether { .. }
             | Self::BlockArrayOfAnotherSize { .. }
             | Self::ReaderGaveABlockOfNoVariants
+            | Self::ReadAheadAnswerInPlaceOfABlock
             | Self::BlockWithNoGenotypeOfAVariant { .. }
             | Self::KeepOfAnotherSize { .. }
             | Self::VcfParseNotFinished { .. }
