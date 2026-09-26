@@ -1024,7 +1024,12 @@ A variant is inside a region when its chromosome has the name of the
 region's, written the same way, and its position, the POS of its VCF, is
 in the region. Only the position is looked at, and not the bases its
 reference allele covers, so a deletion that starts before a region and
-reaches into it is outside (**Open 1**, below). A variant on a chromosome
+reaches into it is outside. The owner decided it on 26 September 2026:
+it is what `bcftools view -T` and `plink2 --extract bed0` do, and the
+same for every variant of one base. The option not taken was any base the
+reference allele covers, as `bcftools view -R` does, which would have the
+filter and the skip read the alleles, and the vars file keep the longest
+reference allele of each batch. A variant on a chromosome
 that the BED does not name is outside. Regions that overlap or that touch
 act as the one region they cover together, and the order of the lines
 does not matter.
@@ -1738,29 +1743,9 @@ variants of one batch, and the pass takes no more than 0.02 s, against the
 
 ## Open points
 
-The owner decides the point below, and the implementer follows its
-"meanwhile" until they do.
-
-1. **Whether a variant is in a region by its position or by the bases of
-   its reference allele.** The options:
-   - (a) By its position alone, as `bcftools view -T` and `plink2
-     --extract bed0` do. A deletion that starts before a region and covers
-     bases of it is outside, so an excluded repeat keeps the deletions
-     that reach into it from outside. The filter and the skip of the VCF
-     reader read the chromosome and the position alone.
-   - (b) By any base its reference allele covers, from POS to POS plus
-     the length of REF less one, as `bcftools view -R` does. The deletion
-     `AT` at chr1 250 of the worked example is inside the region of
-     position 251. The filter reads the alleles too, and so does the skip
-     of the VCF reader. A batch of a vars file whose positions all come
-     after a region can still hold a deletion that reaches back into it,
-     so skipping batches needs the longest reference allele of each
-     batch, which the footer does not keep.
-
-   Recommended: (a), because it is what plink2 and bcftools with a BED
-   file do, and it is the same for every variant of one base, which most
-   variants of a panel are. Meanwhile, (a).
-
+None. The owner decided on 26 September 2026 the one the filter by regions
+had, that a variant is in a region by its position alone, which is
+written under "What it gives" of that filter with the option not taken.
 What the owner decided on 21 September 2026 about the three
 threshold filters and the counts, and on 22 September 2026 about the
 filter by linkage disequilibrium and about the order of the kept

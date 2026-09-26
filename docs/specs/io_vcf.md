@@ -736,11 +736,21 @@ describes: the header, and the text of every line.
 
 When the filter of individuals took some out, AC, how often each
 alternative allele was called, and AN, the called alleles, are counts
-over individuals that are no longer in the file. Whether the writer works
-them out again is **Open 1**, below. The other values of INFO, a depth
-DP or a frequency AF, are
-written as the source had them, as `bcftools view -s` writes them: they
-are of every individual of the source.
+over individuals that are no longer in the file, and the writer takes
+them out: the two values from every line, an INFO left with nothing
+becoming `.`, and their `##INFO` lines from the header. It is what
+`bcftools view -I -s` followed by `bcftools annotate -x INFO/AC,INFO/AN`
+writes. The owner decided it on 26 September 2026. The options not taken
+were to work them out again from the kept individuals, as `bcftools view
+-s` does, adding them to the lines that lack them; to work them out again
+only where a line has them; and to leave them as they were, as `bcftools
+view -I` does, which would give counts that are wrong with nothing in the
+file to say so. The writer takes them out when the pass has fewer
+individuals than its source, which `header()` and `individuals()` of its
+reader say; a filter that keeps every individual, in any order, leaves
+the counts right, and they stay. The other values of INFO, a depth DP or
+a frequency AF, are written as the source had them, as `bcftools view -s`
+writes them: they are of every individual of the source.
 
 When the source is a vars file, the lines hold what the file holds:
 
@@ -880,8 +890,9 @@ after the other. Nothing needs a `reblock` before it, and what is kept
 from one block to the next is the text that does not yet fill a member.
 
 With the text of the lines, a row is its nine first columns and the
-columns of the kept individuals, joined by tabs, and the genotypes of the
-block are read only for Open 1. Without it, a row is formatted from the
+columns of the kept individuals, joined by tabs, less AC and AN when
+individuals were taken out, and the genotypes of the block are not read.
+Without it, a row is formatted from the
 columns of the block.
 
 ### How it is verified
@@ -921,14 +932,14 @@ read. The cargo tests, made at `write_vcf` of "The Rust interface":
 - Read with the default, the line of chr1 250, whose FILTER is `q10`, is
   not there and the other five are as they were.
 - Read with `only_passed` false and with the filter of individuals
-  keeping `c` and `a`, the lines are those that `bcftools view
-  --no-version -s c,a write.vcf` writes, under the meanwhile of Open 1,
-  and the header is the one it writes less its
-  `##FILTER=<ID=PASS,Description="All filters passed">`, which bcftools
-  adds after `##fileformat` and popnei does not. The first line is
-  `chr1 100 rs1 A T 29.5 PASS AC=3;AN=4;DP=12 GT:DP 1/1:3 0/1:4`, the
-  line of chr1 250 has `AC=0;AN=2;DP=5`, and chr1 1001, whose ALT is `.`,
-  gets `DP=9;AN=4`.
+  keeping `c` and `a`, the file is what `bcftools view --no-version -I -s
+  c,a write.vcf | bcftools annotate --no-version -x INFO/AC,INFO/AN`
+  writes, less the `##FILTER=<ID=PASS,Description="All filters passed">`
+  that bcftools adds after `##fileformat` and popnei does not, run on 26
+  September 2026. The first line is `chr1 100 rs1 A T 29.5 PASS DP=12
+  GT:DP 1/1:3 0/1:4`, and chr2 1500, whose INFO was `AC=1;AN=6`, has `.`.
+  With the filter keeping `c`, `b` and `a`, every individual in another
+  order, AC and AN stay as they were.
 - Read with the default, written as a vars file and written back from it
   with `write_vcf`, the file is the header of the vars file case above,
   with the two `##contig` lines of the lengths, and these five lines:
@@ -1100,10 +1111,6 @@ that "What the reader keeps for the writer" gives the reason for.
 pub struct VcfWriteOptions {
     /// Members of bgzip, or plain text.
     pub bgzip: bool,
-    /// Work AC and AN out again from the genotypes of the kept
-    /// individuals, Open 1: true when the steps have a filter of
-    /// individuals.
-    pub recount_ac_an: bool,
 }
 
 /// Every variant of `reader` into a VCF on `sink`, and the sink back with
@@ -1242,40 +1249,9 @@ so what the writer adds is what the measurement has to find.
 
 ## Open points
 
-The owner decides the point below, and the implementer follows its
-"meanwhile" until they do.
-
-1. **AC and AN after the filter of individuals.** When the filter of
-   individuals takes individuals out, the AC and AN of a line are counts
-   over individuals that are no longer in the file. The options:
-   - (a) As `bcftools view -s` does: AC and AN are worked out again from
-     the genotypes of the kept individuals in every line. A value that is
-     there is replaced where it stands; one that is not is appended at the
-     end of INFO, AC before AN, and an INFO of `.` becomes `AC=..;AN=..`;
-     a line whose ALT is `.` gets AN alone. A header that does not declare
-     them gets `##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele
-     count in genotypes">` and `##INFO=<ID=AN,Number=1,Type=Integer,
-     Description="Total number of alleles in called genotypes">` after its
-     last meta line. A half called genotype counts its called allele in
-     both, as the rest of popnei does. bcftools 1.24 does each of these,
-     tried on 26 September 2026. The lines are those bcftools writes, so
-     the test compares them whole; a line gets values it may not have had,
-     as chr1 1001 of `write.vcf` gets `AN=4`.
-   - (b) Worked out again only where the line has them. The file keeps its
-     shape, and differs from what bcftools writes in the lines without
-     them.
-   - (c) As the source had them, what `bcftools view -I` does. The counts
-     are of the whole file, and nothing in the file says so.
-
-   Recommended: (a), because it is the reference program's behaviour and
-   no count in the file is of individuals that are not in it. Meanwhile,
-   (a), whenever the steps have a filter of individuals, also one that
-   keeps every individual in their order, as bcftools does whenever `-s`
-   is given. The binding crate, which has the steps, says so in
-   `recount_ac_an` of `VcfWriteOptions`, since the chain of readers does
-   not tell such a filter from none.
-
-The owner decided on 20 September 2026 the six points the reader had:
+None. The owner decided on 26 September 2026 the one the writer had, what it
+does with AC and AN when individuals were taken out, which is written under
+"What it gives" of the writer with the options not taken. The owner decided on 20 September 2026 the six points the reader had:
 the ploidy as an argument and the refusal of mixed ploidies, the variants
 that failed a filter left out by default, an allele number that is not
 declared as an error, no error for a VCF with no variants, a quality that
