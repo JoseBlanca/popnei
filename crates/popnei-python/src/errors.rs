@@ -396,7 +396,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // system's when the file system is what refused, so that Python
         // raises the exception of that number, and there is none when
         // arrow-rs refused what it was handed.
-        popnei::Error::VarsFileNotWritten { ref source, .. } => {
+        popnei::Error::FileNotWritten { ref source, .. } => {
             let number = source.as_ref().and_then(std::io::Error::raw_os_error);
             os_error(number, without_the_number(message, number), path)
         }

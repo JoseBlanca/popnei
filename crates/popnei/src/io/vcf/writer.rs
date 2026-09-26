@@ -110,7 +110,7 @@ pub fn vcf_text_num_vars_per_block(num_individuals: usize) -> usize {
 /// has no column of the chromosome, the position, the alleles or the
 /// genotypes, [`Error::VcfWriterColumnMissing`]; when a block of a VCF holds
 /// no text, or a block a chromosome number its reader has no name for,
-/// which are defects of the reader; and when the sink fails, [`Error::VarsFileNotWritten`]. The bytes
+/// which are defects of the reader; and when the sink fails, [`Error::FileNotWritten`]. The bytes
 /// written before the error are on the sink, and it is the caller that
 /// removes the file.
 pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
@@ -219,7 +219,7 @@ impl<W: Write> VcfOut<W> {
 /// said and the error it gave, which a binding crate builds its exception
 /// with.
 fn not_written(failure: std::io::Error) -> Error {
-    Error::VarsFileNotWritten {
+    Error::FileNotWritten {
         problem: failure.to_string(),
         source: Some(failure),
     }
@@ -1284,7 +1284,7 @@ mod tests {
         ] {
             let mut reader = reader_of("write.vcf", false, None);
             match write_vcf(&mut reader, SinkThatFills { room }, options) {
-                Err(Error::VarsFileNotWritten { source, .. }) => {
+                Err(Error::FileNotWritten { source, .. }) => {
                     let kind = source.map(|source| source.kind());
                     assert_eq!(kind, Some(std::io::ErrorKind::StorageFull));
                 }

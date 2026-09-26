@@ -2827,14 +2827,14 @@ pub enum Error {
 
     /// The vars file or the VCF could not be written: the sink refused the
     /// bytes, a disc that filled up among them, or arrow-rs could not write
-    /// what it was given. The name is of the first writer that had it.
+    /// what it was given.
     ///
     /// It is not [`Error::Io`], which is a source that could not be read. A
-    /// call that writes a vars file reads another file, and which of the
+    /// call that writes a file reads another one, and which of the
     /// two went wrong is what a user acts on, so the write says that it was
     /// the write.
     #[error("the file could not be written: {problem}")]
-    VarsFileNotWritten {
+    FileNotWritten {
         /// What went wrong, as the system or arrow-rs said it.
         problem: String,
         /// The error the file system gave, when the cause is one and not a
@@ -3191,7 +3191,7 @@ impl Error {
             // `filename`.
             | Self::FileNotOpened { .. }
             | Self::Io(..)
-            | Self::VarsFileNotWritten { .. }
+            | Self::FileNotWritten { .. }
             | Self::VcfBgzipEndMissing
             | Self::VcfBgzipCorrupted { .. }
             | Self::VarsFileCutShort { .. }

@@ -1083,11 +1083,11 @@ fn gts_column(gts: Vec<i8>, alleles_per_var: i32) -> Result<ArrayRef> {
 )]
 fn not_written(problem: ArrowError) -> Error {
     match problem {
-        ArrowError::IoError(_, failure) => Error::VarsFileNotWritten {
+        ArrowError::IoError(_, failure) => Error::FileNotWritten {
             problem: failure.to_string(),
             source: Some(failure),
         },
-        other => Error::VarsFileNotWritten {
+        other => Error::FileNotWritten {
             problem: other.to_string(),
             source: None,
         },
@@ -1097,7 +1097,7 @@ fn not_written(problem: ArrowError) -> Error {
 /// The error of a writer whose sink is gone, which is what is left after
 /// the header of the file could not be written.
 fn the_sink_is_gone() -> Error {
-    Error::VarsFileNotWritten {
+    Error::FileNotWritten {
         problem: "the header of the file could not be written, and the writer has nothing left \
                   to write on"
             .to_owned(),
@@ -4372,7 +4372,7 @@ mod tests {
             Err(error) => error,
         };
 
-        let Error::VarsFileNotWritten { problem, source } = &error else {
+        let Error::FileNotWritten { problem, source } = &error else {
             panic!("the error is {error}");
         };
         assert_eq!(

@@ -302,7 +302,7 @@ fn the_pass(
 fn of_the_file_it_is_about(error: popnei::Error, read: &Path, written: &Path) -> PyPopneiError {
     let of_the_write = matches!(
         error,
-        popnei::Error::VarsFileNotWritten { .. }
+        popnei::Error::FileNotWritten { .. }
             | popnei::Error::VarsFileOfNoGenotypes { .. }
             | popnei::Error::VarsTextTooLarge { .. }
             | popnei::Error::VarsBlockDoesNotFit { .. }
@@ -319,7 +319,7 @@ fn of_the_file_it_is_about(error: popnei::Error, read: &Path, written: &Path) ->
 /// core keeps for it. The number the system gave travels with it, since
 /// that number is what the exception of Python is built with.
 fn not_written(failure: std::io::Error) -> popnei::Error {
-    popnei::Error::VarsFileNotWritten {
+    popnei::Error::FileNotWritten {
         problem: failure.to_string(),
         source: Some(failure),
     }
