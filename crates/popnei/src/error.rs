@@ -464,8 +464,9 @@ pub enum Error {
 
     /// A line of a BED file given to the filter by regions is not a region
     /// popnei can read: it has fewer than three columns separated by tabs,
-    /// its start or its end is not a whole number of 0 or more, or its
-    /// start is not below its end. The binding crate puts the path of the
+    /// its chromosome is empty, its start or its end is not a whole number
+    /// of 0 or more or is above the largest number of 64 bits, or its start
+    /// is not below its end. The binding crate puts the path of the
     /// file in front of the message.
     #[error("line {line} of the BED file: {problem}")]
     BedLine {

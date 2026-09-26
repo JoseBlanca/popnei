@@ -455,7 +455,7 @@ class Variants:
             # pyo3 refuses it with `'int' object is not an instance of
             # 'bool'`, which names neither the argument nor the call.
             raise TypeError(
-                f"`exclude` is True or False, and {exclude!r}, a "
+                f"`exclude` is True or False, and {exclude!r}, of the type "
                 f"{type(exclude).__name__}, was given"
             )
         self._steps.filter_by_regions(bed_path, exclude)

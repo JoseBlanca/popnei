@@ -89,14 +89,24 @@ pub enum BedLineProblem {
     /// chromosome a variant can be on.
     EmptyChromosome,
     /// The start is not a whole number of 0 or more written in digits
-    /// alone, or it does not fit in 64 bits.
+    /// alone.
     StartNotAWholeNumber {
         /// The start as the line writes it.
         found: String,
     },
     /// The end is not a whole number of 0 or more written in digits
-    /// alone, or it does not fit in 64 bits.
+    /// alone.
     EndNotAWholeNumber {
+        /// The end as the line writes it.
+        found: String,
+    },
+    /// The start is a whole number above the largest of 64 bits.
+    StartAboveTheLargest {
+        /// The start as the line writes it.
+        found: String,
+    },
+    /// The end is a whole number above the largest of 64 bits.
+    EndAboveTheLargest {
         /// The end as the line writes it.
         found: String,
     },
@@ -122,9 +132,10 @@ impl fmt::Display for BedLineProblem {
                 } else {
                     ""
                 };
+                let columns_of = if *columns == 1 { "column" } else { "columns" };
                 write!(
                     formatter,
-                    "it has {columns} columns separated by tabs{spaces}; a region of BED is \
+                    "it has {columns} {columns_of} separated by tabs{spaces}; a region of BED is \
                      three columns at least, the chromosome, the start and the end, which BED \
                      separates by tabs"
                 )
@@ -142,6 +153,16 @@ impl fmt::Display for BedLineProblem {
                 formatter,
                 "its end is `{found}`, and an end is a whole number of 0 or more, written in \
                  digits"
+            ),
+            BedLineProblem::StartAboveTheLargest { found } => write!(
+                formatter,
+                "its start, {found}, is above {largest}, the largest number of 64 bits",
+                largest = u64::MAX
+            ),
+            BedLineProblem::EndAboveTheLargest { found } => write!(
+                formatter,
+                "its end, {found}, is above {largest}, the largest number of 64 bits",
+                largest = u64::MAX
             ),
             BedLineProblem::StartNotBelowEnd { start, end } => write!(
                 formatter,
@@ -299,16 +320,20 @@ fn region_of_the_line(line: &[u8]) -> std::result::Result<(&[u8], Region), BedLi
     if chrom.is_empty() {
         return Err(BedLineProblem::EmptyChromosome);
     }
-    let Some(start) = whole_number(start) else {
-        return Err(BedLineProblem::StartNotAWholeNumber {
-            found: String::from_utf8_lossy(start).into_owned(),
-        });
-    };
-    let Some(end) = whole_number(end) else {
-        return Err(BedLineProblem::EndNotAWholeNumber {
-            found: String::from_utf8_lossy(end).into_owned(),
-        });
-    };
+    let start = whole_number(start).map_err(|problem| {
+        let found = String::from_utf8_lossy(start).into_owned();
+        match problem {
+            NotANumberOf64Bits::NotDigits => BedLineProblem::StartNotAWholeNumber { found },
+            NotANumberOf64Bits::AboveTheLargest => BedLineProblem::StartAboveTheLargest { found },
+        }
+    })?;
+    let end = whole_number(end).map_err(|problem| {
+        let found = String::from_utf8_lossy(end).into_owned();
+        match problem {
+            NotANumberOf64Bits::NotDigits => BedLineProblem::EndNotAWholeNumber { found },
+            NotANumberOf64Bits::AboveTheLargest => BedLineProblem::EndAboveTheLargest { found },
+        }
+    })?;
     if start >= end {
         return Err(BedLineProblem::StartNotBelowEnd { start, end });
     }
@@ -318,16 +343,28 @@ fn region_of_the_line(line: &[u8]) -> std::result::Result<(&[u8], Region), BedLi
     Ok((chrom, Region { first, last: end }))
 }
 
-/// The whole number `digits` writes, or None when it is empty, holds a byte
-/// that is not a digit, or does not fit in a `u64`.
-fn whole_number(digits: &[u8]) -> Option<u64> {
-    if digits.is_empty() {
-        return None;
+/// Why a column of a BED is not a start or an end.
+enum NotANumberOf64Bits {
+    /// It is empty or holds a byte that is not a digit.
+    NotDigits,
+    /// It is digits alone, of a number above the largest `u64`.
+    AboveTheLargest,
+}
+
+/// The whole number `digits` writes, or why it is not one that fits in a
+/// `u64`.
+fn whole_number(digits: &[u8]) -> std::result::Result<u64, NotANumberOf64Bits> {
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return Err(NotANumberOf64Bits::NotDigits);
     }
-    digits.iter().try_fold(0_u64, |number, byte| {
-        let digit = byte.checked_sub(b'0').filter(|digit| *digit <= 9)?;
-        number.checked_mul(10)?.checked_add(u64::from(digit))
-    })
+    digits
+        .iter()
+        .try_fold(0_u64, |number, byte| {
+            number
+                .checked_mul(10)?
+                .checked_add(u64::from(byte.saturating_sub(b'0')))
+        })
+        .ok_or(NotANumberOf64Bits::AboveTheLargest)
 }
 
 /// The regions sorted by their first position and joined where they

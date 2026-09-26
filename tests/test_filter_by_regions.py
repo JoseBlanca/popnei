@@ -280,8 +280,12 @@ def test_an_exclude_that_is_not_a_bool_is_a_type_error(
 ) -> None:
     variants = _many(reference_vcf_dir)
 
-    with pytest.raises(TypeError, match="`exclude` is True or False"):
+    with pytest.raises(TypeError) as refusal:
         variants.filter_by_regions(REGIONS_BED, exclude=1)
+
+    assert str(refusal.value) == (
+        "`exclude` is True or False, and 1, of the type int, was given"
+    )
 
     assert variants.steps == ()
 

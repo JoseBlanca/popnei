@@ -580,6 +580,7 @@ fn a_line_of_fewer_than_three_columns_by_regions_is_refused_with_its_line() {
     assert!(message.starts_with("line 1 of the BED file: "), "{message}");
     assert!(message.contains("spaces"), "{message}");
     assert!(message.contains("separates by tabs"), "{message}");
+    assert!(message.contains("it has 1 column separated"), "{message}");
 }
 
 /// A start or an end that is not a whole number of 0 or more written in
@@ -592,11 +593,6 @@ fn a_start_or_an_end_that_is_not_a_whole_number_by_regions_is_refused_with_its_l
         (b"chr1\t+99\t100\n".as_slice(), 1, "+99"),
         (b"chr1\t\t10\n".as_slice(), 1, ""),
         (b"chr1\t1.5\t10\n".as_slice(), 1, "1.5"),
-        (
-            b"chr1\t18446744073709551616\t18446744073709551617\n".as_slice(),
-            1,
-            "18446744073709551616",
-        ),
     ] {
         let error = the_error_of(bed);
         let problem = BedLineProblem::StartNotAWholeNumber {
@@ -614,6 +610,22 @@ fn a_start_or_an_end_that_is_not_a_whole_number_by_regions_is_refused_with_its_l
         "line 2 of the BED file: its end is `1e3`, and an end is a whole number of 0 or more, \
          written in digits"
     );
+    // A start or an end past the largest number of 64 bits is said to be.
+    let error = the_error_of(b"chr1\t18446744073709551616\t18446744073709551617\n");
+    let problem = BedLineProblem::StartAboveTheLargest {
+        found: "18446744073709551616".to_owned(),
+    };
+    assert!(bed_line(1, problem)(&error), "{error:?}");
+    assert_eq!(
+        error.to_string(),
+        "line 1 of the BED file: its start, 18446744073709551616, is above \
+         18446744073709551615, the largest number of 64 bits"
+    );
+    let error = the_error_of(b"chr1\t0\t99999999999999999999\n");
+    let problem = BedLineProblem::EndAboveTheLargest {
+        found: "99999999999999999999".to_owned(),
+    };
+    assert!(bed_line(1, problem)(&error), "{error:?}");
     // The largest `u64` is one.
     let regions =
         Regions::from_bed(b"chr1\t0\t18446744073709551615\n".as_slice()).expect("the largest end");
