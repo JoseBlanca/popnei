@@ -1231,8 +1231,9 @@ def calc_var_density(
 It is a consumer of the `Variants`, with one pass. `VarDensity` is a
 frozen dataclass with `windows`, a pandas frame with one row per window
 and the columns `chrom`, the name, `start` and `end`, the first and the
-last position of the window, and `num_vars`, the count, and
-`pass_stats`. The chromosomes are in the order of the lengths, those of
+last position of the window, of the dtype `uint64`, which holds every
+position a source gives, and `num_vars`, the count, of the dtype
+`uint32`, and `pass_stats`. The chromosomes are in the order of the lengths, those of
 `chrom_lengths` or of the source, and after them those with variants and
 no length, in the order their first variant came; the windows of each in
 the order of their positions.
@@ -1280,7 +1281,16 @@ In TypeScript it is `calcVarDensity(variants, windowSize, {chromLengths})`,
 with `chromLengths` an object of chromosome name to length, and it gives
 `chroms`, the name of each window's chromosome as an array of strings,
 `start` and `end` as `Float64Array`, as `iterBlocks` gives the positions,
-`numVars` as a `Uint32Array`, and `passStats`.
+`numVars` as a `Uint32Array`, and `passStats`. A float64 holds every
+whole number up to 2^53 and rounds the ones above it, so a window that
+ends past 9007199254740992, which a length of a `##contig` line can give,
+is an `Error` that names the chromosome and the end, as a position past it
+is for `iterBlocks`, and not a window with another end than the one
+Python gives. `windowSize` and each length of `chromLengths` are whole
+numbers from 1 to 2^53 - 1, `Number.MAX_SAFE_INTEGER`, the largest one a
+number of JavaScript counts to one by one, and anything else is an
+`Error` that names the argument before the pass starts. This was decided
+on 26 September 2026, when the binding was written.
 
 pyNei has no density of the variants, so nothing is mirrored and nothing
 differs.
