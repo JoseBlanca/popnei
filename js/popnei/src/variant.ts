@@ -615,7 +615,8 @@ export class Variants {
    * The call adds a step and gives nothing back.
    *
    * @throws {Error} When `bed` is not a `Uint8Array`, when `exclude` is not
-   * a boolean, when the options are not an object, when a line of the BED
+   * a boolean, when the options are not an object or hold a key other than
+   * `exclude`, when a line of the BED
    * has fewer than three columns separated by tabs, a start or an end that
    * is not a whole number of 0 or more or a start that is not below its
    * end, which the message names the line of, when the BED holds no region,
@@ -625,7 +626,7 @@ export class Variants {
    */
   filterByRegions(bed: Uint8Array, options: { exclude?: boolean } = {}): void {
     theWasmHasToBeLoaded();
-    anObjectOfOptions("filterByRegions", options);
+    anObjectOfOptions("filterByRegions", options, ["exclude"]);
     const exclude =
       options.exclude === undefined ? false : aBoolean("exclude", options.exclude);
     this.#stepsThatWereNotFreed().filter_by_regions(bytesOfAFile("bed", bed), exclude);
@@ -708,6 +709,7 @@ export class Variants {
    */
   iterBlocks(options: IterBlocksOptions = {}): Blocks {
     theWasmHasToBeLoaded();
+    anObjectOfOptions("iterBlocks", options, ["fields", "numVarsPerBlock"]);
     const source = this.#sourceThatWasNotFreed();
     const steps = this.#stepsThatWereNotFreed();
     const fields = namesOf(

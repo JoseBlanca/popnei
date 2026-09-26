@@ -156,3 +156,18 @@ test("a bed that is not a Uint8Array and an exclude that is not a boolean are re
   );
   assert.deepEqual(variants.steps, []);
 });
+
+test("an option of filterByRegions that is not one is refused and named", () => {
+  const variants = theDataset();
+  assert.throws(
+    () =>
+      variants.filterByRegions(REGIONS_BED, {
+        excluded: true,
+      } as unknown as { exclude?: boolean }),
+    {
+      message:
+        "popnei: `excluded` is not an option of `filterByRegions`, whose options are `exclude`",
+    },
+  );
+  assert.deepEqual(variants.steps, []);
+});

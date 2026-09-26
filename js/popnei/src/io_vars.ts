@@ -140,7 +140,7 @@ export function writeVars(
   options: WriteVarsOptions = {},
 ): VarsWritten {
   theWasmHasToBeLoaded();
-  anObjectOfOptions("writeVars", options);
+  anObjectOfOptions("writeVars", options, ["numVarsPerBlock"]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,

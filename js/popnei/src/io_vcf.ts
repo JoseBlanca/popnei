@@ -93,6 +93,7 @@ export function openVcf(
   options: OpenVcfOptions = {},
 ): Variants {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("openVcf", options, ["ploidy", "onlyPassed"]);
   const ploidy =
     options.ploidy === undefined
       ? defaultPloidy()
@@ -174,7 +175,7 @@ export function writeVcf(
   options: WriteVcfOptions = {},
 ): VcfWritten {
   theWasmHasToBeLoaded();
-  anObjectOfOptions("writeVcf", options);
+  anObjectOfOptions("writeVcf", options, ["bgzip"]);
   const bgzip =
     options.bgzip === undefined ? true : aBoolean("bgzip", options.bgzip);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(

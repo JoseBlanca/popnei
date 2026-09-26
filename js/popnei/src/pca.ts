@@ -30,6 +30,7 @@ import {
 
 import {
   aBoolean,
+  anObjectOfOptions,
   valuesOfATable,
   wholeNumberOfOneOrMore,
   wholeNumberOfZeroOrMore,
@@ -143,6 +144,7 @@ export function doPca(
   options: DoPcaOptions = {},
 ): PcaResult {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("doPca", options, ["centerData", "standardizeData"]);
   const rows = wholeNumberOfOneOrMore("numRows", numRows);
   const cols = wholeNumberOfOneOrMore("numCols", numCols);
   const values = valuesOfATable("data", data, rows, cols);
@@ -290,6 +292,7 @@ export function doPcaFromVariants(
   options: DoPcaFromVariantsOptions = {},
 ): VariantsPcaResult {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("doPcaFromVariants", options, ["transformToBiallelic", "numPrinComps"]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,

@@ -61,7 +61,12 @@ import {
   default_use_grammar_gamma_approx as defaultUseGrammarGammaApprox,
 } from "../wasm/popnei.js";
 
-import { aBoolean, aString, whatWasGiven } from "./arguments.js";
+import {
+  aBoolean,
+  aString,
+  onlyTheseOptions,
+  whatWasGiven,
+} from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
 import { Kinship } from "./kinship.js";
 import { theValuesOf } from "./pca.js";
@@ -417,6 +422,15 @@ export function calcGwas(
     variants,
   );
   theOptions(options);
+  onlyTheseOptions("calcGwas", options, [
+    "phenotype",
+    "trait",
+    "covariates",
+    "test",
+    "transformToBiallelic",
+    "kinship",
+    "useGrammarGammaApprox",
+  ]);
   const trait = aString("trait", options.trait);
   const test =
     options.test === undefined ? undefined : aString("test", options.test);

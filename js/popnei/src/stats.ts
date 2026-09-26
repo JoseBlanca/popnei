@@ -30,6 +30,7 @@ import {
 } from "../wasm/popnei.js";
 
 import {
+  anObjectOfOptions,
   aNumber,
   aString,
   namesOf,
@@ -305,6 +306,7 @@ export function calcPerVarDistribs(
   options: PerVarDistribsOptions = {},
 ): PerVarDistribs {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("calcPerVarDistribs", options, ["stats", "pops", "minNumIndividuals", "histKwargs", "ploidy", "polyThreshold"]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,

@@ -540,3 +540,22 @@ test("a Variants is freed by the using of a block too", async () => {
     message: /freed/,
   });
 });
+
+test("an option of openVcf written in another case is refused and named", async () => {
+  const bytes = await referenceVcf("cases.vcf");
+  assert.throws(
+    () => openVcf(bytes, { onlypassed: false } as unknown as { onlyPassed?: boolean }),
+    {
+      message:
+        "popnei: `onlypassed` is not an option of `openVcf`, whose options are `ploidy` and `onlyPassed`",
+    },
+  );
+});
+
+test("an option of iterBlocks that is not one is refused and named", async () => {
+  const variants = openVcf(await referenceVcf("cases.vcf"));
+  assert.throws(
+    () => variants.iterBlocks({ field: ["pos"] } as unknown as IterBlocksOptions),
+    { message: /^popnei: `field` is not an option of `iterBlocks`/ },
+  );
+});

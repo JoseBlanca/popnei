@@ -32,6 +32,7 @@ import {
 } from "../wasm/popnei.js";
 
 import {
+  anObjectOfOptions,
   namesOf,
   popsOfTheObject,
   wholeNumberOfZeroOrMore,
@@ -355,6 +356,7 @@ export function calcPopDiversity(
   options: CalcPopDiversityOptions = {},
 ): PopDiversity {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("calcPopDiversity", options, ["stats", "pops", "numCalledAlleles", "minNumIndividuals"]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,

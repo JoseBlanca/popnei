@@ -243,18 +243,64 @@ export function aNumber(argument: string, value: unknown): number {
  * @throws {Error} When `value` is not a boolean.
  */
 /**
- * That the options given to `functionName` are an object: `null`, which
- * JavaScript reads a property of with its own `TypeError` that names
- * neither popnei nor the argument, is refused with popnei's `Error`.
+ * That the options given to `functionName` are an object that holds none
+ * but `options`: `null`, which JavaScript reads a property of with its own
+ * `TypeError` that names neither popnei nor the argument, is refused with
+ * popnei's `Error`, and so is a key that is not one of `options`.
  *
- * @throws {Error} When `value` is not an object, or is `null` or an array.
+ * @throws {Error} When `value` is not an object, or is `null` or an array,
+ * and what `onlyTheseOptions` throws.
  */
-export function anObjectOfOptions(functionName: string, value: unknown): void {
+export function anObjectOfOptions(
+  functionName: string,
+  value: unknown,
+  options: readonly string[],
+): void {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(
       `popnei: the options of \`${functionName}\` are an object, and ${whatWasGiven(value)} was given`,
     );
   }
+  onlyTheseOptions(functionName, value, options);
+}
+
+/**
+ * That the object of options given to `functionName` holds none but
+ * `options`.
+ *
+ * An option that is misspelt, `{excluded: true}` for `{exclude: true}` or
+ * `{onlypassed: false}` for `{onlyPassed: false}`, is an option that was
+ * not given, so the call would run with the default and say nothing of it:
+ * `filterByRegions` would keep the variants inside the regions where the
+ * user asked for those outside. TypeScript refuses such a key in an object
+ * written in the call, and not in one built elsewhere nor in JavaScript.
+ *
+ * @throws {Error} When `value` holds a key that is not one of `options`,
+ * which the message names with the options there are.
+ */
+export function onlyTheseOptions(
+  functionName: string,
+  value: object,
+  options: readonly string[],
+): void {
+  for (const key of Object.keys(value)) {
+    if (!options.includes(key)) {
+      throw new Error(
+        `popnei: \`${key}\` is not an option of \`${functionName}\`, whose ` +
+          `options are ${listed(options)}`,
+      );
+    }
+  }
+}
+
+/** The names, each in backticks, joined with commas and a last `and`. */
+function listed(names: readonly string[]): string {
+  const quoted = names.map((name) => `\`${name}\``);
+  const last = quoted.pop();
+  if (last === undefined) {
+    return "none";
+  }
+  return quoted.length === 0 ? last : `${quoted.join(", ")} and ${last}`;
 }
 
 export function aBoolean(argument: string, value: unknown): boolean {

@@ -26,6 +26,7 @@ import {
 
 import {
   aBoolean,
+  anObjectOfOptions,
   namesOf,
   whatWasGiven,
   wholeNumberOfZeroOrMore,
@@ -419,6 +420,7 @@ export function calcKinship(
   options: CalcKinshipOptions = {},
 ): Kinship {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("calcKinship", options, ["individuals", "transformToBiallelic"]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,
