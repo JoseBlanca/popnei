@@ -68,7 +68,7 @@ def test_write_vcf_writes_write_vcf_back_as_it_was_plain_and_bgzipped(
     )
 
 
-def test_write_vcf_writes_the_five_lines_of_the_vars_file_ofwrite_vcf(
+def test_write_vcf_writes_the_five_lines_of_the_vars_file_of_write_vcf(
     reference_vcf_dir: Path, tmp_path: Path
 ) -> None:
     """Read with the default, written as a vars file and written back.
