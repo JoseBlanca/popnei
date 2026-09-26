@@ -199,6 +199,11 @@ const BYTES_PER_BATCH: usize = 16 * 1024 * 1024;
 /// times the bytes. `std::io::BufReader::new` would give 8 KiB.
 const BYTES_OF_THE_FILE_BUFFER: usize = 256 * 1024;
 
+/// The most bytes of a line whose text a block keeps for the VCF writer,
+/// 4294967295: the ends of its texts are 32 bit places in it,
+/// `docs/specs/io_vcf.md`.
+const MOST_BYTES_OF_A_LINE_OF_TEXT: u32 = u32::MAX;
+
 /// The nine first columns of the `#CHROM` line of a VCF with genotypes. The
 /// columns after them are the individuals.
 const FIRST_COLUMNS: [&str; 9] = [
@@ -565,6 +570,7 @@ impl BatchRow {
                     line,
                     self.number,
                     rules.individuals.len(),
+                    rules.most_bytes_of_a_line_of_text,
                     &mut self.text_ends,
                 ),
                 false => Ok(()),
@@ -686,6 +692,9 @@ pub struct VcfReader<R: BufRead + Send> {
     /// [`BYTES_PER_BATCH`]: the bound that a file of many individuals
     /// reaches before the lines are counted.
     bytes_per_batch: usize,
+    /// The most bytes of a line whose text is kept,
+    /// [`MOST_BYTES_OF_A_LINE_OF_TEXT`] but in a test.
+    most_bytes_of_a_line_of_text: u32,
     /// How many batches were filled, which is how the tests see that a
     /// bound cut them.
     #[cfg(test)]
@@ -755,6 +764,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             filled: 0,
             lines_per_batch: LINES_PER_BATCH,
             bytes_per_batch: BYTES_PER_BATCH,
+            most_bytes_of_a_line_of_text: MOST_BYTES_OF_A_LINE_OF_TEXT,
             #[cfg(test)]
             batches_filled: 0,
             line_number: 0,
@@ -915,6 +925,13 @@ impl<R: BufRead + Send> VcfReader<R> {
     #[cfg(test)]
     fn batches_filled(&self) -> u64 {
         self.batches_filled
+    }
+
+    /// The most bytes of a line whose text is kept, which the test of the
+    /// line that is longer lowers from the 4294967295 no test writes.
+    #[cfg(test)]
+    pub(crate) fn set_most_bytes_of_a_line_of_text(&mut self, most_bytes: u32) {
+        self.most_bytes_of_a_line_of_text = most_bytes;
     }
 
     /// The line whose parse panics, for the test of what a reader does
@@ -1202,6 +1219,7 @@ impl<R: BufRead + Send> VcfReader<R> {
                 batch,
                 filled,
                 parsing,
+                most_bytes_of_a_line_of_text,
                 #[cfg(test)]
                 panic_at_line,
                 ..
@@ -1210,6 +1228,7 @@ impl<R: BufRead + Send> VcfReader<R> {
                 needs: *needs,
                 ploidy: options.ploidy,
                 individuals,
+                most_bytes_of_a_line_of_text: *most_bytes_of_a_line_of_text,
                 #[cfg(test)]
                 panic_at_line: *panic_at_line,
             };
@@ -1732,6 +1751,9 @@ struct RowRules<'a> {
     /// The individuals of the header, in the order of their columns, by the
     /// name that an error of one of them carries.
     individuals: &'a [String],
+    /// The most bytes a line whose text is kept holds,
+    /// [`MOST_BYTES_OF_A_LINE_OF_TEXT`], which a test lowers.
+    most_bytes_of_a_line_of_text: u32,
     /// The line whose parse panics. No VCF makes the parse panic, and this
     /// is how the test of what a reader does after a panic in its parse
     /// makes one happen; nothing outside the tests can set it.
@@ -2038,6 +2060,7 @@ fn fill_text_ends(
     line: &[u8],
     number: u64,
     num_individuals: usize,
+    most_bytes: u32,
     ends: &mut Vec<u32>,
 ) -> Result<()> {
     let wrong = |problem: String| Error::VcfDataLine {
@@ -2046,12 +2069,14 @@ fn fill_text_ends(
         problem,
     };
     ends.clear();
-    let Ok(length) = u32::try_from(line.len()) else {
+    let Some(length) = u32::try_from(line.len())
+        .ok()
+        .filter(|length| *length <= most_bytes)
+    else {
         return Err(wrong(format!(
             "it is {length} bytes long, and the text of a line that popnei keeps for the VCF \
-             writer is {most} bytes at most",
+             writer is {most_bytes} bytes at most",
             length = line.len(),
-            most = u32::MAX,
         )));
     };
     // The tabs after the eighth end the nine first columns and the column
@@ -4922,6 +4947,7 @@ mod tests {
             needs,
             ploidy,
             individuals,
+            most_bytes_of_a_line_of_text: super::MOST_BYTES_OF_A_LINE_OF_TEXT,
             panic_at_line: None,
         };
         let mut gts = if needs.contains(Needs::GTS) {
@@ -5443,6 +5469,7 @@ mod tests {
             needs: Needs::GTS,
             ploidy: 2,
             individuals: &individuals,
+            most_bytes_of_a_line_of_text: super::MOST_BYTES_OF_A_LINE_OF_TEXT,
             panic_at_line: None,
         };
         let line = data_line("chr1 100 . A T . PASS . GT 0/0 0/1 1/1");
@@ -5942,6 +5969,7 @@ mod tests {
             needs: Needs::ALL,
             ploidy: MANY_PLOIDY,
             individuals: &individuals,
+            most_bytes_of_a_line_of_text: super::MOST_BYTES_OF_A_LINE_OF_TEXT,
             panic_at_line: None,
         };
         let gts_per_variant = individuals.len().saturating_mul(MANY_PLOIDY);

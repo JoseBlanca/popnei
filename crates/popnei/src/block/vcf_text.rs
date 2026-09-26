@@ -775,6 +775,42 @@ mod tests {
     }
 
     #[test]
+    fn vcf_text_refuses_a_line_longer_than_the_most_the_ends_of_its_texts_reach() {
+        let short = "chr1\t5\t.\tA\tT\t.\tPASS\t.\tGT\t0/1\t./.\t1/1";
+        let long = "chr1\t9\trs0123456789\tC\tG\t.\tPASS\t.\tGT\t0/0\t0/1\t1|1";
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block: Some(2),
+        };
+        let mut reader =
+            VcfReader::new(Cursor::new(vcf_of(&[short, long], "\n")), options).expect("the VCF");
+        reader.set_needs(Needs::VCF_TEXT);
+        // 4294967295 bytes in popnei, which no test writes: the bound is
+        // lowered to one line between the two.
+        reader.set_most_bytes_of_a_line_of_text(u32::try_from(short.len()).expect("a length"));
+        match blocks_of(&mut reader) {
+            Err(Error::VcfDataLine {
+                line,
+                place,
+                problem,
+            }) => {
+                assert_eq!((line, place), (4, VcfPlace::Line));
+                assert_eq!(
+                    problem,
+                    format!(
+                        "it is {} bytes long, and the text of a line that popnei keeps for the \
+                         VCF writer is {} bytes at most",
+                        long.len(),
+                        short.len()
+                    )
+                );
+            }
+            other => panic!("not the error of a line too long: {other:?}"),
+        }
+    }
+
+    #[test]
     fn vcf_text_retain_vars_keeps_the_lines_of_the_variants_that_stay() {
         let mut block = the_block_of_write_vcf();
         block
