@@ -10,8 +10,8 @@
 use std::io::Write;
 
 use crate::block::{
-    Block, BlockReader, GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK,
-    VcfText,
+    AllelesColumn, Block, BlockReader, GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK,
+    MIN_NUM_VARS_PER_BLOCK, VcfText,
 };
 use crate::error::{Error, Result};
 use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
@@ -83,10 +83,11 @@ pub fn vcf_text_num_vars_per_block(num_individuals: usize) -> usize {
 /// [`Needs::VCF_TEXT`]. The header is that of `reader.header()`: the lines
 /// before `#CHROM` of a VCF, or, from any other source, a `##fileformat`
 /// line, one `##contig` line for each chromosome of known length and the
-/// `##FORMAT` line of GT; then a `#CHROM` line of `reader.individuals()`. A
-/// block with the text of its lines is written from that text; one without
-/// it is written from its columns, and then it has to hold the chromosome,
-/// the position, the id, the alleles, the quality and the genotypes. When
+/// `##FORMAT` line of GT; then a `#CHROM` line of `reader.individuals()`.
+/// The lines of a VCF are written from the text the reader kept of them;
+/// those of any other source from the columns of its blocks, which have to
+/// hold the chromosome, the position, the alleles and the genotypes, and an
+/// id or a quality the source has no column for is `.`. When
 /// the pass has fewer individuals than its source, AC and AN are taken out
 /// of every line and their `##INFO` lines out of the header, since they are
 /// counts over individuals that are no longer in the file. A source with no
@@ -105,10 +106,11 @@ pub fn vcf_text_num_vars_per_block(num_individuals: usize) -> usize {
 /// # Errors
 ///
 /// When the reader fails; when a block is not of its own size or of the
-/// individuals and the ploidy of the pass; when a block holds neither the
-/// text of its lines nor every column a line is written from, or a
-/// chromosome number its reader has no name for, which are defects of the
-/// reader; and when the sink fails, [`Error::VarsFileNotWritten`]. The bytes
+/// individuals and the ploidy of the pass; when a source that is not a VCF
+/// has no column of the chromosome, the position, the alleles or the
+/// genotypes, [`Error::VcfWriterColumnMissing`]; when a block of a VCF holds
+/// no text, or a block a chromosome number its reader has no name for,
+/// which are defects of the reader; and when the sink fails, [`Error::VarsFileNotWritten`]. The bytes
 /// written before the error are on the sink, and it is the caller that
 /// removes the file.
 pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
@@ -120,6 +122,10 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
     let num_individuals = reader.individuals().len();
     let ploidy = reader.ploidy();
     let without_counts = num_individuals < reader.header().individuals.len();
+    let from = match reader.header().vcf_meta_lines {
+        Some(_) => LinesFrom::Text,
+        None => LinesFrom::Columns,
+    };
     let mut out = match options.bgzip {
         true => VcfOut::Bgzip(BgzipOut::new(sink)),
         false => VcfOut::Plain(sink),
@@ -138,7 +144,7 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
                 found_ploidy: block.ploidy,
             });
         }
-        let how = LinesOf::block(&block, reader.chroms(), without_counts)?;
+        let how = LinesOf::block(&block, reader.chroms(), without_counts, from)?;
         format_rows(&how, block.num_vars, &mut buffers)?;
         for buffer in &buffers {
             out.write(buffer)?;
@@ -278,6 +284,15 @@ fn is_the_info_line_of_a_count(line: &str) -> bool {
     })
 }
 
+/// Where the lines of a pass come from, which the header of its source
+/// says: a VCF, whose lines are written from their text, or a source of
+/// columns alone, a vars file.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LinesFrom {
+    Text,
+    Columns,
+}
+
 /// What the lines of one block are written from.
 enum LinesOf<'a> {
     /// The text the reader kept of each line, and whether AC and AN are
@@ -286,37 +301,71 @@ enum LinesOf<'a> {
         text: &'a VcfText,
         without_counts: bool,
     },
-    /// The columns of the block, and the names of its chromosomes.
-    Columns {
-        block: &'a Block,
-        chroms: &'a ChromTable,
-        alleles_per_var: usize,
-    },
+    /// The columns of the block, each one it has, and the names of its
+    /// chromosomes.
+    Columns(ColumnsOfABlock<'a>),
+}
+
+/// The columns of a block that a line is written from when it has no text:
+/// the four every line needs, and the id and the quality, which a source
+/// can lack and which are `.` then.
+struct ColumnsOfABlock<'a> {
+    chroms: &'a ChromTable,
+    chrom: &'a [u32],
+    pos: &'a [u64],
+    id: Option<&'a [String]>,
+    alleles: &'a AllelesColumn,
+    qual: Option<&'a [f32]>,
+    gts: &'a [i8],
+    ploidy: usize,
+    alleles_per_var: usize,
 }
 
 impl<'a> LinesOf<'a> {
-    /// The text of the block when it has one, and its columns when it has
-    /// every one a line is written from.
+    /// The text of the block when it has one, and its columns when it does
+    /// not.
     ///
     /// # Errors
     ///
-    /// [`Error::VcfWriterFieldsMissing`] when the block has neither.
-    fn block(block: &'a Block, chroms: &'a ChromTable, without_counts: bool) -> Result<Self> {
+    /// When a block of a VCF, `from` [`LinesFrom::Text`], has no text,
+    /// which is a defect of the reader, [`Error::VcfWriterFieldsMissing`];
+    /// and when a block of another source lacks the chromosome, the
+    /// position, the alleles or the genotypes,
+    /// [`Error::VcfWriterColumnMissing`], a source without that column.
+    fn block(
+        block: &'a Block,
+        chroms: &'a ChromTable,
+        without_counts: bool,
+        from: LinesFrom,
+    ) -> Result<Self> {
         if let Some(text) = block.vcf_text.as_ref() {
             return Ok(LinesOf::Text {
                 text,
                 without_counts,
             });
         }
-        let missing = Needs::ALL.difference(block.fields());
-        if !missing.is_empty() {
-            return Err(Error::VcfWriterFieldsMissing { fields: missing });
+        if from == LinesFrom::Text {
+            return Err(Error::VcfWriterFieldsMissing {
+                fields: Needs::VCF_TEXT,
+            });
         }
-        Ok(LinesOf::Columns {
-            block,
+        let missing = |column: &'static str| Error::VcfWriterColumnMissing { column };
+        // A block of variants whose `gts` is empty holds no genotypes;
+        // `check` said that one that holds them holds all of them.
+        if block.gts.is_empty() && block.num_vars > 0 {
+            return Err(missing("gts"));
+        }
+        Ok(LinesOf::Columns(ColumnsOfABlock {
             chroms,
+            chrom: block.chrom.as_deref().ok_or_else(|| missing("chrom"))?,
+            pos: block.pos.as_deref().ok_or_else(|| missing("pos"))?,
+            id: block.id.as_deref(),
+            alleles: block.alleles.as_ref().ok_or_else(|| missing("alleles"))?,
+            qual: block.qual.as_deref(),
+            gts: &block.gts,
+            ploidy: block.ploidy.max(1),
             alleles_per_var: block.num_individuals.saturating_mul(block.ploidy),
-        })
+        }))
     }
 
     /// The line of the variant `var` of the block, ended by `\n`, after
@@ -324,8 +373,7 @@ impl<'a> LinesOf<'a> {
     ///
     /// # Errors
     ///
-    /// [`Error::VcfWriterChromNameMissing`] for a chromosome number the
-    /// table has no name for.
+    /// What [`ColumnsOfABlock::write_line`] refuses.
     fn write_line(&self, var: usize, out: &mut Vec<u8>) -> Result<()> {
         match self {
             LinesOf::Text {
@@ -340,11 +388,7 @@ impl<'a> LinesOf<'a> {
                 out.push(b'\t');
                 out.extend_from_slice(text.individuals(var).as_bytes());
             }
-            LinesOf::Columns {
-                block,
-                chroms,
-                alleles_per_var,
-            } => write_columns_line(block, chroms, *alleles_per_var, var, out)?,
+            LinesOf::Columns(columns) => columns.write_line(var, out)?,
         }
         out.push(b'\n');
         Ok(())
@@ -384,47 +428,52 @@ fn write_fixed_without_counts(fixed: &str, out: &mut Vec<u8>) {
     }
 }
 
-/// The line of the variant `var` from the columns of the block, without its
-/// end, after what `out` holds: the table of "What it gives" of the writer
-/// in `docs/specs/io_vcf.md`. The block holds every column, which
-/// [`LinesOf::block`] said, and `var` is one of its variants.
-///
-/// # Errors
-///
-/// [`Error::VcfWriterChromNameMissing`] for a chromosome number the table
-/// has no name for.
-fn write_columns_line(
-    block: &Block,
-    chroms: &ChromTable,
-    alleles_per_var: usize,
-    var: usize,
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    let number = block
-        .chrom
-        .as_ref()
-        .and_then(|chrom| chrom.get(var))
-        .copied()
-        .unwrap_or(u32::MAX);
-    let chrom = chroms
-        .name(number)
-        .ok_or(Error::VcfWriterChromNameMissing { number })?;
-    out.extend_from_slice(chrom.as_bytes());
-    out.push(b'\t');
-    let pos = block.pos.as_ref().and_then(|pos| pos.get(var)).copied();
-    // A `Vec` takes every byte written into it, so these `write!` cannot
-    // fail, and what they format allocates nothing.
-    write!(out, "{}", pos.unwrap_or(0)).map_err(not_written)?;
-    out.push(b'\t');
-    match block.id.as_ref().and_then(|id| id.get(var)) {
-        Some(id) if !id.is_empty() => out.extend_from_slice(id.as_bytes()),
-        _ => out.push(b'.'),
-    }
-    out.push(b'\t');
-    if let Some(alleles) = block.alleles.as_ref() {
-        out.extend_from_slice(alleles.allele(var, 0).as_bytes());
+impl ColumnsOfABlock<'_> {
+    /// The line of the variant `var`, without its end, after what `out`
+    /// holds: the table of "What it gives" of the writer in
+    /// `docs/specs/io_vcf.md`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::VcfWriterChromNameMissing`] for a chromosome number the
+    /// table has no name for, and [`Error::BlockArrayOfAnotherSize`] for a
+    /// column that holds no entry of `var`, which [`Block::check`] made
+    /// impossible for a variant of the block.
+    fn write_line(&self, var: usize, out: &mut Vec<u8>) -> Result<()> {
+        let short = |array: &'static str, found: usize| Error::BlockArrayOfAnotherSize {
+            array,
+            found,
+            expected: var.saturating_add(1),
+        };
+        let number = *self
+            .chrom
+            .get(var)
+            .ok_or_else(|| short("chrom", self.chrom.len()))?;
+        let chrom = self
+            .chroms
+            .name(number)
+            .ok_or(Error::VcfWriterChromNameMissing { number })?;
+        out.extend_from_slice(chrom.as_bytes());
         out.push(b'\t');
-        let num_alleles = alleles.num_alleles(var);
+        let pos = *self
+            .pos
+            .get(var)
+            .ok_or_else(|| short("pos", self.pos.len()))?;
+        // A `Vec` takes every byte written into it, so these `write!` cannot
+        // fail, and what they format allocates nothing.
+        write!(out, "{pos}").map_err(not_written)?;
+        out.push(b'\t');
+        match self.id.and_then(|id| id.get(var)) {
+            Some(id) if !id.is_empty() => out.extend_from_slice(id.as_bytes()),
+            _ => out.push(b'.'),
+        }
+        out.push(b'\t');
+        let num_alleles = self.alleles.num_alleles(var);
+        if num_alleles == 0 {
+            return Err(short("alleles", self.alleles.num_vars()));
+        }
+        out.extend_from_slice(self.alleles.allele(var, 0).as_bytes());
+        out.push(b'\t');
         if num_alleles < 2 {
             out.push(b'.');
         }
@@ -432,36 +481,36 @@ fn write_columns_line(
             if allele > 1 {
                 out.push(b',');
             }
-            out.extend_from_slice(alleles.allele(var, allele).as_bytes());
+            out.extend_from_slice(self.alleles.allele(var, allele).as_bytes());
         }
-    }
-    out.push(b'\t');
-    match block.qual.as_ref().and_then(|qual| qual.get(var)) {
-        // `Display` of an `f32` is the shortest decimal text that reads
-        // back as the same `f32`, and never in the notation with an
-        // exponent: `29.5` and `50`.
-        Some(qual) if !qual.is_nan() => write!(out, "{qual}").map_err(not_written)?,
-        _ => out.push(b'.'),
-    }
-    out.extend_from_slice(b"\t.\t.\tGT");
-    let start = var.saturating_mul(alleles_per_var);
-    let row = block
-        .gts
-        .get(start..start.saturating_add(alleles_per_var))
-        .unwrap_or_default();
-    for genotype in row.chunks(block.ploidy.max(1)) {
         out.push(b'\t');
-        for (index, allele) in genotype.iter().enumerate() {
-            if index > 0 {
-                out.push(b'/');
-            }
-            match *allele {
-                MISSING_ALLELE => out.push(b'.'),
-                allele => write!(out, "{allele}").map_err(not_written)?,
+        match self.qual.and_then(|qual| qual.get(var)) {
+            // `Display` of an `f32` is the shortest decimal text that reads
+            // back as the same `f32`, and never in the notation with an
+            // exponent: `29.5` and `50`.
+            Some(qual) if !qual.is_nan() => write!(out, "{qual}").map_err(not_written)?,
+            _ => out.push(b'.'),
+        }
+        out.extend_from_slice(b"\t.\t.\tGT");
+        let start = var.saturating_mul(self.alleles_per_var);
+        let row = self
+            .gts
+            .get(start..start.saturating_add(self.alleles_per_var))
+            .ok_or_else(|| short("gts", self.gts.len()))?;
+        for genotype in row.chunks(self.ploidy) {
+            out.push(b'\t');
+            for (index, allele) in genotype.iter().enumerate() {
+                if index > 0 {
+                    out.push(b'/');
+                }
+                match *allele {
+                    MISSING_ALLELE => out.push(b'.'),
+                    allele => write!(out, "{allele}").map_err(not_written)?,
+                }
             }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 /// The lines of the `num_vars` variants of a block, into `buffers`, one
@@ -977,21 +1026,139 @@ mod tests {
         }
     }
 
+    /// The reader over `write.vcf`, read with the default, whose blocks lose
+    /// the columns of `dropped`: a source of fewer fields, as the vars file
+    /// of another writer can be.
+    struct WithoutColumns {
+        reader: VcfReader<BufReader<File>>,
+        dropped: Needs,
+    }
+
+    impl BlockReader for WithoutColumns {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            let Some(mut block) = self.reader.next_block()? else {
+                return Ok(None);
+            };
+            if self.dropped.contains(Needs::CHROM_POS) {
+                block.chrom = None;
+                block.pos = None;
+            }
+            if self.dropped.contains(Needs::ID) {
+                block.id = None;
+            }
+            if self.dropped.contains(Needs::ALLELES) {
+                block.alleles = None;
+            }
+            if self.dropped.contains(Needs::QUAL) {
+                block.qual = None;
+            }
+            Ok(Some(block))
+        }
+
+        fn individuals(&self) -> &[String] {
+            self.reader.individuals()
+        }
+
+        fn ploidy(&self) -> usize {
+            self.reader.ploidy()
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            self.reader.chroms()
+        }
+
+        fn set_needs(&mut self, needs: Needs) {
+            self.reader.set_needs(needs);
+        }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
+
+        fn header(&self) -> &SourceHeader {
+            self.reader.header()
+        }
+
+        fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+            false
+        }
+
+        fn num_skipped(&self) -> u64 {
+            0
+        }
+    }
+
+    /// The vars file of `write.vcf` read with the default, written from
+    /// blocks without the columns of `dropped`.
+    fn vars_file_without(dropped: Needs) -> Vec<u8> {
+        let reader = WithoutColumns {
+            reader: reader_of("write.vcf", true, None),
+            dropped,
+        };
+        write_vars(reader, Vec::new(), None)
+            .expect("the vars file")
+            .0
+    }
+
     #[test]
-    fn write_vcf_writes_a_block_without_its_text_from_its_columns() {
-        let text = written(|| Box::new(OneBlock::of_write_vcf(Needs::ALL))).0;
+    fn write_vcf_of_a_vars_file_without_the_id_and_the_qual_writes_a_dot_for_both() {
+        let vars = vars_file_without(Needs::ID | Needs::QUAL);
+        let (text, num_vars) = written(|| {
+            Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
+        });
+        let lines: Vec<&str> = text.lines().filter(|line| !line.starts_with('#')).collect();
+        assert_eq!(
+            lines,
+            [
+                "chr1\t100\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\t1/1",
+                "chr1\t1000\t.\tG\tC,T\t.\t.\t.\tGT\t1/2\t0/1\t0/0",
+                "chr1\t1001\t.\tC\t.\t.\t.\t.\tGT\t0/0\t0/0\t0/0",
+                "chr2\t1\t.\tT\tG\t.\t.\t.\tGT\t1/1\t0/.\t0/0",
+                "chr2\t1500\t.\tA\tG\t.\t.\t.\tGT\t0/0\t1/0\t0/0",
+            ]
+        );
+        assert_eq!(num_vars, 5);
+    }
+
+    #[test]
+    fn write_vcf_of_a_vars_file_without_the_alleles_or_the_chrom_names_the_column() {
+        for (dropped, column) in [(Needs::ALLELES, "alleles"), (Needs::CHROM_POS, "chrom")] {
+            let vars = vars_file_without(dropped);
+            let mut reader = VarsReader::new(Cursor::new(vars)).expect("the vars file");
+            match write_vcf(&mut reader, Vec::new(), PLAIN) {
+                Err(error @ Error::VcfWriterColumnMissing { .. }) => {
+                    assert!(
+                        error.to_string().contains(&format!("`{column}`")),
+                        "{error}"
+                    );
+                    assert!(error.names_the_file());
+                }
+                other => panic!("not the error of a missing {column}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn write_vcf_writes_a_block_of_a_source_that_is_not_a_vcf_from_its_columns() {
+        let text = written(|| {
+            let mut reader = OneBlock::of_write_vcf(Needs::ALL);
+            // The header of a source that is not a VCF has no lines of one.
+            reader.header.vcf_meta_lines = None;
+            Box::new(reader)
+        })
+        .0;
         assert!(text.contains("\nchr1\t100\trs1\tA\tT\t29.5\t.\t.\tGT\t0/1\t0/1\t1/1\n"));
         assert!(text.contains("\nchr1\t250\t.\tAT\tA\t.\t.\t.\tGT\t./.\t0/1\t0/0\n"));
     }
 
     #[test]
-    fn write_vcf_refuses_a_block_with_neither_its_text_nor_every_column() {
-        let mut reader = OneBlock::of_write_vcf(Needs::GTS | Needs::CHROM_POS | Needs::ID);
+    fn write_vcf_refuses_a_block_of_a_vcf_without_its_text() {
+        let mut reader = OneBlock::of_write_vcf(Needs::ALL);
         match write_vcf(&mut reader, Vec::new(), PLAIN) {
             Err(Error::VcfWriterFieldsMissing { fields }) => {
-                assert_eq!(fields, Needs::ALLELES | Needs::QUAL);
+                assert_eq!(fields, Needs::VCF_TEXT);
             }
-            other => panic!("not the error of the missing fields: {other:?}"),
+            other => panic!("not the error of the missing text: {other:?}"),
         }
     }
 

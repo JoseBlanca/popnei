@@ -2771,17 +2771,28 @@ pub enum Error {
         /// How many one column of a batch holds.
         largest: u64,
     },
-    /// A block given to the VCF writer holds neither the text of its lines
-    /// nor every column a line is written from without it. The writer asks
-    /// its reader for both, the text for a VCF and the columns for any
-    /// source, so a block with neither comes from a reader with a defect.
+    /// A block of a VCF given to the VCF writer does not hold the text of
+    /// its lines. The writer asks a VCF for it, so a block without it comes
+    /// from a reader with a defect.
     #[error(
-        "a block given to the VCF writer holds neither the text of its lines nor {fields}, which the writer asked its reader for"
+        "a block of a VCF given to the VCF writer does not hold {fields}, which the writer asked its reader for"
     )]
     VcfWriterFieldsMissing {
-        /// The fields of the block that a line written from the columns
-        /// needs and that the block does not hold.
+        /// The fields the block does not hold, the text of its lines.
         fields: Needs,
+    },
+
+    /// The source of the VCF writer has no column of the chromosome, of the
+    /// position, of the alleles or of the genotypes, which every line needs:
+    /// a vars file that another program wrote without it, since the reader
+    /// of a vars file gives a block without a column the file lacks. It is
+    /// of the file that was read, which it names in Python.
+    #[error(
+        "the source has no `{column}` column, and every line of a VCF written from it needs one"
+    )]
+    VcfWriterColumnMissing {
+        /// The column: `chrom`, `pos`, `alleles` or `gts`.
+        column: &'static str,
     },
 
     /// A block given to the VCF writer holds a chromosome number that the
@@ -3195,6 +3206,7 @@ impl Error {
             | Self::NotAVcf { .. }
             | Self::VcfHeader { .. }
             | Self::VcfDataLine { .. }
+            | Self::VcfWriterColumnMissing { .. }
             | Self::VcfGenotypePloidy { .. }
             | Self::BedLine { .. }
             | Self::BedWithNoRegion
