@@ -113,24 +113,43 @@ fn blocks_of(reader: &mut impl BlockReader) -> Result<Vec<Block>> {
 }
 
 /// A source over a reader that takes the regions it is offered and passes
-/// over the variants the selection does not keep, counting them, which is
-/// what a source that skips does: so the filter is tested over a source
-/// that skips, before work package 5 gives the VCF reader the skip.
+/// over variants the selection does not keep, counting them, which is what
+/// a source that skips does: so the filter is tested over a source that
+/// skips, before work package 5 gives the VCF reader the skip.
 struct SkippingSource<R: BlockReader> {
     reader: R,
     selection: Option<RegionSelection>,
     num_skipped: u64,
     /// How many times it was offered the regions, held by the test too.
     offers: Arc<AtomicUsize>,
+    /// Which of the variants the selection does not keep it passes over.
+    skips: TheSkip,
+}
+
+/// Which variants a [`SkippingSource`] passes over.
+#[derive(Debug, Clone, Copy)]
+enum TheSkip {
+    /// Every variant the selection does not keep, as the VCF reader of work
+    /// package 5 will.
+    EveryVariant,
+    /// The blocks of which the selection keeps no variant, whole, and none
+    /// of the other blocks, as the vars file reader of work package 5 will
+    /// skip a batch: the filter has to take out the rest.
+    WholeBlocks,
 }
 
 impl<R: BlockReader> SkippingSource<R> {
     fn over(reader: R) -> SkippingSource<R> {
+        SkippingSource::of(reader, TheSkip::EveryVariant)
+    }
+
+    fn of(reader: R, skips: TheSkip) -> SkippingSource<R> {
         SkippingSource {
             reader,
             selection: None,
             num_skipped: 0,
             offers: Arc::new(AtomicUsize::new(0)),
+            skips,
         }
     }
 }
@@ -152,6 +171,13 @@ impl<R: BlockReader> BlockReader for SkippingSource<R> {
                 .zip(&pos)
                 .map(|(number, pos)| selection.keeps(chroms.name(*number).expect("a name"), *pos))
                 .collect();
+            let keep = match self.skips {
+                TheSkip::EveryVariant => keep,
+                TheSkip::WholeBlocks => {
+                    let any_kept = keep.iter().any(|keep_it| *keep_it);
+                    vec![any_kept; keep.len()]
+                }
+            };
             let skipped = keep.iter().filter(|keep_it| !**keep_it).count();
             self.num_skipped = self
                 .num_skipped
@@ -335,16 +361,17 @@ fn many_vcf_by_regions_keeps_the_45_and_excludes_to_the_455_of_bcftools_and_plin
         let expected = the_reference(name);
         assert_eq!(u64::try_from(expected.len()).unwrap(), num_kept);
         for num_vars_per_block in [Some(7), None] {
-            for skips in [false, true] {
+            for skips in [
+                None,
+                Some(TheSkip::EveryVariant),
+                Some(TheSkip::WholeBlocks),
+            ] {
                 let selection = selection_of(&the_bed_of_the_spec(), exclude);
-                let what = format!("exclude {exclude}, {num_vars_per_block:?}, skips {skips}");
-                let source: Box<dyn BlockReader> = if skips {
-                    Box::new(SkippingSource::over(vcf_reader(
-                        "many.vcf",
-                        num_vars_per_block,
-                    )))
-                } else {
-                    Box::new(vcf_reader("many.vcf", num_vars_per_block))
+                let what = format!("exclude {exclude}, {num_vars_per_block:?}, skips {skips:?}");
+                let vcf = vcf_reader("many.vcf", num_vars_per_block);
+                let source: Box<dyn BlockReader> = match skips {
+                    Some(skips) => Box::new(SkippingSource::of(vcf, skips)),
+                    None => Box::new(vcf),
                 };
                 let mut reader =
                     RegionsReader::new(source, RegionFilter::new(selection)).expect("the reader");
@@ -1015,5 +1042,30 @@ fn keeps_and_keeps_none_of_by_regions_agree_with_the_positions_of_the_lines() {
                 }
             }
         }
+    }
+}
+
+/// The source of whole blocks passes over some of the blocks of 7 of
+/// `many.vcf` on either side, so the test above runs the filter over a
+/// source that skipped variants and gave it others to take out. The
+/// numbers are those of the 72 blocks of 7 of the file and of
+/// `regions.txt`, counted with Python: 63 blocks hold none of the 45, and
+/// 6 blocks, 38 variants, only variants of the 45.
+#[test]
+fn the_source_of_whole_blocks_by_regions_skips_some_blocks_and_gives_others() {
+    for (exclude, skipped) in [(false, 441), (true, 38)] {
+        let mut source = SkippingSource::of(vcf_reader("many.vcf", Some(7)), TheSkip::WholeBlocks);
+        assert!(source.skip_outside(selection_of(&the_bed_of_the_spec(), exclude)));
+        let given: usize = blocks_of(&mut source)
+            .expect("the blocks")
+            .iter()
+            .map(|block| block.num_vars)
+            .sum();
+        assert_eq!(source.num_skipped(), skipped, "exclude {exclude}");
+        assert_eq!(
+            u64::try_from(given).unwrap() + skipped,
+            500,
+            "exclude {exclude}"
+        );
     }
 }
