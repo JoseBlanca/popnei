@@ -474,6 +474,10 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // only through a reader with a defect.
         | popnei::Error::VcfWriterFieldsMissing { .. }
         | popnei::Error::VcfWriterChromNameMissing { .. }
+        // A member of bgzip that the writer could not put together, which
+        // its cutting of the text into members and its stored block of a
+        // text deflate does not shrink make impossible.
+        | popnei::Error::VcfWriterMemberNotBuilt { .. }
         // A population of the fall-off of r² with distance that has no
         // dosages when the pass has ended, which is one more of that kind:
         // the pass refuses a reader that gave no variant before it fits any

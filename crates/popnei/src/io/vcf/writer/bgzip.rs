@@ -185,10 +185,10 @@ fn compress_the_members(text: &[u8], members: &mut [Vec<u8>]) -> Result<()> {
 /// When the text is longer than a member holds, which is a defect of the
 /// caller.
 fn compress_a_member(compress: &mut Compress, text: &[u8], member: &mut Vec<u8>) -> Result<()> {
-    let too_long = || Error::BlockArrayOfAnotherSize {
-        array: "the text of a member of bgzip",
+    let too_long = || Error::VcfWriterMemberNotBuilt {
+        what: "text",
         found: text.len(),
-        expected: TEXT_OF_A_MEMBER,
+        most: TEXT_OF_A_MEMBER,
     };
     let length = u16::try_from(text.len())
         .ok()
@@ -244,10 +244,10 @@ fn end_the_member(text: &[u8], length: u16, member: &mut Vec<u8>) -> Result<()> 
         .len()
         .checked_sub(1)
         .and_then(|size| u16::try_from(size).ok())
-        .ok_or(Error::BlockArrayOfAnotherSize {
-            array: "a member of bgzip",
+        .ok_or(Error::VcfWriterMemberNotBuilt {
+            what: "whole member",
             found: member.len(),
-            expected: MOST_BYTES_OF_A_MEMBER,
+            most: MOST_BYTES_OF_A_MEMBER,
         })?;
     if let Some(slot) = member.get_mut(16..BYTES_OF_THE_HEADER) {
         slot.copy_from_slice(&size.to_le_bytes());
@@ -268,6 +268,8 @@ mod tests {
     use flate2::{Compress, Compression};
 
     use flate2::Status;
+
+    use crate::error::Error;
 
     use super::{
         BYTES_OF_THE_HEADER, COMPRESSION_LEVEL, HEADER_BEFORE_THE_SIZE, MOST_BYTES_OF_A_MEMBER,
@@ -351,6 +353,11 @@ mod tests {
         let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
         let mut member = Vec::new();
         let text = vec![b'a'; TEXT_OF_A_MEMBER + 1];
-        assert!(compress_a_member(&mut compress, &text, &mut member).is_err());
+        match compress_a_member(&mut compress, &text, &mut member) {
+            Err(Error::VcfWriterMemberNotBuilt { what, found, most }) => {
+                assert_eq!((what, found, most), ("text", 65281, 65280));
+            }
+            other => panic!("not the error of a member not built: {other:?}"),
+        }
     }
 }

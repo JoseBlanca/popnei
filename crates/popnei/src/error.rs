@@ -2795,6 +2795,24 @@ pub enum Error {
         column: &'static str,
     },
 
+    /// A member of bgzip that the VCF writer could not put together: a text
+    /// of more bytes than a member holds, or a member of more bytes than its
+    /// header can state. The writer cuts the text into members of 65280
+    /// bytes and stores one that deflate did not shrink, so it is a defect
+    /// of popnei; it is of the file being written, which it names in
+    /// Python.
+    #[error(
+        "a member of bgzip could not be put together: its {what} is {found} bytes, and a member holds {most} at most"
+    )]
+    VcfWriterMemberNotBuilt {
+        /// `text` or `whole member`.
+        what: &'static str,
+        /// How many bytes it is.
+        found: usize,
+        /// How many it holds at most.
+        most: usize,
+    },
+
     /// A block given to the VCF writer holds a chromosome number that the
     /// table of the reader it came from has no name for. That table has the
     /// names of every block the reader gave, so a user reaches this only
@@ -3148,6 +3166,7 @@ impl Error {
             | Self::VarsChromNameMissing { .. }
             | Self::VcfWriterFieldsMissing { .. }
             | Self::VcfWriterChromNameMissing { .. }
+            | Self::VcfWriterMemberNotBuilt { .. }
             | Self::RegionFilterChromNameMissing { .. }
             | Self::PcaTableOfAnotherSize { .. }
             | Self::PcaLinalg { .. }
