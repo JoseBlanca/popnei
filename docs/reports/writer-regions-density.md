@@ -422,6 +422,34 @@ same 14 variants and excluded to the same 31. What they found:
 - The docstrings said the counts are the same wherever the filter stands
   among the steps, which is not so after a threshold filter.
 
+The fixes are the 16 commits from fc05524 to f879804, each finding that
+changed a behaviour with a test that failed first. Each mutation a
+reviewer had shown to pass now fails a test. What the owner should know:
+
+- Every function and method of the TypeScript package that takes options,
+  fifteen of them, now refuses a key it does not know and names it. User
+  code that passed an extra key and relied on its being ignored gets an
+  `Error` now.
+- A BED line is a header only when it is `track` or `browser` followed by
+  a blank or the end of the line, or starts with `#`; an empty chromosome
+  name is refused; a leading byte order mark is skipped. The spec says so.
+- The memory of wasm that a BED of 89.8 MB takes went from 315 MB to
+  225 MB, of which about 90 MB is the copy wasm-bindgen makes of the
+  bytes; a test holds it below three times the size of the BED. Reading
+  the BED twice, once to count the regions of each chromosome and once to
+  fill them, would bring it to about 160 MB, and was not done.
+- The regions of one chromosome are now reached by the bytes of its name
+  through one handle, which the VCF reader of work package 5 keeps from
+  line to line.
+
+Not taken: the error of a second filter by regions names neither BED
+file. That is what the spec chose; naming the one already set would help
+the user find it, and it is among the questions at the end.
+
+After the fixes: `cargo test --workspace` 1165 passed, 2 ignored, and 150;
+pytest 586 passed, 6 skipped; `npm test` 460 of 461, the old failure;
+`npm run test:browser` 8 passed.
+
 ## 6. The density of the variants
 
 Task 6.1, commits 317ec23 and f7f7a44. `calc_var_density` counts the
