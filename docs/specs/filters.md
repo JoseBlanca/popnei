@@ -1062,17 +1062,28 @@ pyNei has no filter by regions, so nothing is mirrored and nothing
 differs.
 
 The lines of a BED file that are not regions are skipped: an empty line,
-and one that starts with `#`, `track` or `browser`, which the tools of the
-UCSC genome browser write and which bedtools skips, by its documentation;
-bcftools 1.24 refuses a BED that has them, tried on 26 September 2026. A
-BED that starts with the two bytes of gzip, `1f 8b`, is read through gzip,
-as a VCF is. What is refused, a `ValueError` in Python that names the file
+one that starts with `#`, and one whose first word is `track` or
+`browser`, which the tools of the UCSC genome browser write and which
+bedtools skips, by its documentation; bcftools 1.24 refuses a BED that
+has them, tried on 26 September 2026. The word is the whole of what comes
+before the first blank, a space or a tab, or the end of the line, so
+`tracks1 0 5`, whose chromosome is `tracks1`, is a region, as bcftools
+1.24 and plink2 v2.0.0-a.7.7 read it. A BED that starts with the two
+bytes of gzip, `1f 8b`, is read through gzip, as a VCF is, and the three
+bytes of the UTF-8 byte order mark, `ef bb bf`, which some editors of
+Windows write at the start of a text, are dropped from the start of the
+text, so that they are not read as the start of the first chromosome
+name. What is refused, a `ValueError` in Python that names the file
+and the line, and in TypeScript an `Error` that names the line: What is refused, a `ValueError` in Python that names the file
 and the line, and in TypeScript an `Error` that names the line:
 
 - A line of fewer than three columns separated by tabs. A line with
   spaces between its columns is one of these, and the message says that
   BED separates them by tabs.
-- A start or an end that is not a whole number of 0 or more.
+- A chromosome that is empty, a line that starts with a tab, which names
+  no chromosome a variant can be on; plink2 v2.0.0-a.7.7 refuses it too.
+- A start or an end that is not a whole number of 0 or more, or that is
+  above 18446744073709551615, the largest number of 64 bits.
 - A start that is not below its end. BED allows a start equal to its end
   for a point between two bases, which holds no position of popnei's.
 - A BED with no region.
@@ -1091,8 +1102,8 @@ refused and matches no variant.
 
 - The filter needs the chromosome and the position. It asks its source
   for them besides what its consumer asked for, and a source that lacks
-  them, a vars file written without those columns or a `Variants` built
-  from an array of genotypes, gives at its first block the error of
+  them, a vars file written without those columns, gives at its first
+  block the error of
   `docs/specs/variant.md` for a field that a consumer depends on and did
   not get, a `ValueError` in Python that names the field.
 - A BED that names its chromosomes `1` where the source names them `chr1`
