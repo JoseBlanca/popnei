@@ -437,14 +437,15 @@ impl Steps {
     /// a filter by regions of this kind that is set already.
     /// The BED is read first, since it is wrong whatever the list holds.
     pub fn filter_by_regions(&mut self, bed: &[u8], exclude: bool) -> Result<(), JsPopneiError> {
-        let regions = Regions::from_bed_bytes(bed).map_err(|error| match error {
+        let regions = Regions::from_bed_bytes(bed).map_err(|error| {
             // A gzipped BED that ends in the middle or is damaged, which the
             // core says of a source, and which a user who also gave a VCF
             // would read as the VCF.
-            popnei::Error::Io(source) => {
+            if let popnei::Error::Io(source) = error {
                 JsPopneiError::Refused(format!("the BED could not be read: {source}"))
+            } else {
+                JsPopneiError::Core(error)
             }
-            other => JsPopneiError::Core(other),
         })?;
         let num_regions = regions.num_regions();
         let step = Step {
