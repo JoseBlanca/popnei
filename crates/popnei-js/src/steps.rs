@@ -263,11 +263,15 @@ impl Steps {
     /// regions of a filter by regions.
     ///
     /// A count crosses as a float64, which holds every whole number up to
-    /// 2^53 exactly, and a `usize` of wasm is 32 bits wide, so a user reads
-    /// the number the core counted.
+    /// 2^53 exactly. The one count there is, the number of regions of a
+    /// BED, is of regions the core holds in memory, 16 bytes each, and
+    /// 2^53 of them would be 2^57 bytes, which no machine this crate builds
+    /// for addresses, in wasm, where a `usize` is 32 bits wide, or
+    /// natively: so a user reads the number the core counted.
     #[expect(
         clippy::cast_precision_loss,
-        reason = "a usize of wasm is below 2^32, which a float64 holds exactly"
+        reason = "a count of regions held in memory, 16 bytes each, is far below the 2^53 \
+                  a float64 holds exactly, in wasm and natively"
     )]
     #[must_use]
     pub fn arg_counts(&self) -> Vec<f64> {
