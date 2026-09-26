@@ -1342,14 +1342,19 @@ impl VcfReader<BufReader<File>> {
 /// When the length is not a whole number above 0, written in digits alone,
 /// `length=0`, `length=abc`, `length=+5`, or is past the largest a `u64`
 /// holds; when the line has a length and no ID, an empty ID, two `ID` or
-/// two `length` fields; and when it does not end in `>` or leaves a quote
-/// open.
+/// two `length` fields; and when its value does not start with `<`, does
+/// not end in `>` or leaves a quote open.
 fn contig_length_of(text: &str, line_number: u64) -> Result<Option<(&str, u64)>> {
-    let Some(rest) = text.strip_prefix("##contig=<") else {
+    let Some(value) = text.strip_prefix("##contig=") else {
         return Ok(None);
     };
     let wrong = |what: &str| Error::VcfHeader {
         problem: format!("its line {line_number} is a ##contig line {what}"),
+    };
+    // The VCF format makes every `##contig` line a structured one, so a
+    // value that is not `<...>` would lose its length in silence.
+    let Some(rest) = value.trim_start().strip_prefix('<') else {
+        return Err(wrong("whose value does not start with `<`"));
     };
     let Some(inner) = rest.trim_end().strip_suffix('>') else {
         return Err(wrong("that does not end in `>`"));
@@ -2275,6 +2280,7 @@ mod tests {
             "##contig=< ID=chr1,length=300>",
             "##contig=<ID=chr1,length=300> ",
             "##contig=<ID = chr1,length = 300>",
+            "##contig= <ID=chr1,length=300>",
         ] {
             assert_eq!(
                 lengths_of_the_contig_line(contig),
@@ -2337,6 +2343,10 @@ mod tests {
             (
                 "##contig=<ID=chr1,length=300",
                 "its line 1 is a ##contig line that does not end in `>`",
+            ),
+            (
+                "##contig=ID=chr1,length=300",
+                "its line 1 is a ##contig line whose value does not start with `<`",
             ),
             (
                 r#"##contig=<ID=chr1,length=300,Description="a>"#,

@@ -830,7 +830,7 @@ chromosomes still come from the data lines, as "The cases a reader of the
 rules would not guess" says, and a `##contig` line whose chromosome has no
 variant gives it no number.
 
-A `##contig=<` line is read as htslib reads it, and what htslib reads and
+A `##contig` line is read as htslib reads it, and what htslib reads and
 this reader could not is a wrong header, so that no length is dropped or
 changed in silence. These were decided on 26 September 2026 with the code,
 against bcftools 1.24:
@@ -844,6 +844,10 @@ against bcftools 1.24:
   of the line is the one outside them.
 - A line that does not end in `>`, or whose quotes are not closed, is a
   wrong header; bcftools warns of an incomplete header line.
+- A `##contig=` line whose value, after its blanks, does not start with
+  `<` is a wrong header, since the VCF format makes every `##contig` line
+  a structured one; `##contig=ID=chr1,length=300`, which bcftools 1.24
+  drops without a word, would otherwise lose its length.
 - A length is written in digits alone, so `+5` is wrong too, and one past
   the largest a `u64` holds, 18446744073709551615, is a wrong header that
   says so. Two lines of one ID with the same length give it that length
