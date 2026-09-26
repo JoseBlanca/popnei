@@ -1168,7 +1168,16 @@ does already for a column that no consumer asked for: "How it runs" of
 the reader in `docs/specs/io_vcf.md` does not check a column it does not
 parse. A line outside the regions holds no variant of the pass either
 way. A POS that does not parse as a number gives the line a row, so the
-parse gives the error of that column whatever the regions are.
+parse gives the error of that column whatever the regions are. The serial
+pass reads a POS written in digits alone that fit in 64 bits, and any
+other gets a row: `+5`, which the parse reads as 5, reaches the filter,
+which takes it out when it is outside, so it is counted among the
+variants the filter was given and not among those the source skipped.
+
+The offer holds from the next block the source builds. A block the reader
+one block ahead of `docs/specs/block.md` had built before the offer
+reached its thread is given whole, and the filter takes out what it does
+not keep, so the counts are the same and fewer variants are skipped.
 
 With the skip, a chromosome whose lines are all skipped gets no number in
 the table of chromosome names, so the numbers of the chromosomes can
