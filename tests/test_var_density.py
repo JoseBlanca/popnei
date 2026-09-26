@@ -174,9 +174,9 @@ def test_var_density_refuses_chrom_lengths_that_are_no_lengths():
         calc_var_density(_many(), 1000, chrom_lengths=[("chr1", 12000)])
     with pytest.raises(TypeError, match="`chrom_lengths`"):
         calc_var_density(_many(), 1000, chrom_lengths={1: 12000})
-    with pytest.raises(TypeError, match="`chrom_lengths`"):
+    with pytest.raises(TypeError, match=r"`chrom_lengths\[.chr1.\]`"):
         calc_var_density(_many(), 1000, chrom_lengths={"chr1": 1.5e4})
-    with pytest.raises(ValueError, match="`chrom_lengths`"):
+    with pytest.raises(ValueError, match=r"`chrom_lengths\[.chr1.\]`"):
         calc_var_density(_many(), 1000, chrom_lengths={"chr1": -5})
     with pytest.raises(ValueError, match="`chrom_lengths`") as refused:
         calc_var_density(_many(), 1000, chrom_lengths={"chr1": 12000, "chr2": 0})
@@ -227,3 +227,31 @@ def test_var_density_of_a_pass_that_gives_no_variant_is_refused(tmp_path):
 def test_var_density_of_something_that_is_not_variants_is_a_type_error():
     with pytest.raises(TypeError, match="open_vcf"):
         calc_var_density(str(MANY), 1000)
+
+
+def test_var_density_gives_the_chromosomes_in_the_order_of_chrom_lengths():
+    # chr2 first, which is neither the order of the names nor that of the
+    # variants of write.vcf.
+    density = calc_var_density(
+        open_vcf(WRITE), 500, chrom_lengths={"chr2": 1500, "chr1": 2000}
+    )
+    assert _windows(density) == _laid_end_to_end(
+        "chr2", 500, 1500, [1, 0, 1]
+    ) + _laid_end_to_end("chr1", 500, 2000, [1, 1, 1, 0])
+
+
+@pytest.mark.parametrize(
+    ("length", "refused"),
+    [
+        (-5, ValueError),
+        (None, TypeError),
+        (1.5e4, TypeError),
+        (True, TypeError),
+        (2**64, ValueError),
+    ],
+)
+def test_var_density_refuses_a_length_that_is_no_length_and_names_its_chromosome(
+    length, refused
+):
+    with pytest.raises(refused, match=r"`chrom_lengths\['chr2'\]`"):
+        calc_var_density(_many(), 1000, chrom_lengths={"chr1": 12000, "chr2": length})

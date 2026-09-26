@@ -651,8 +651,7 @@ def calc_var_density(
 def _the_chrom_lengths(chrom_lengths: object) -> list[tuple[str, object]]:
     """The pairs of chromosome name and length of `chrom_lengths`, in the
     order it iterates in, which is the order of the chromosomes of the
-    result; each length is checked by the core crate's binding, which names
-    the argument."""
+    result, each a str and a whole number of 0 or more that 64 bits hold."""
     if not isinstance(chrom_lengths, Mapping):
         raise TypeError(
             f"`chrom_lengths` is {chrom_lengths!r}, a {type(chrom_lengths).__name__}, "
@@ -660,11 +659,31 @@ def _the_chrom_lengths(chrom_lengths: object) -> list[tuple[str, object]]:
             f"{{'chr1': 248956422}}"
         )
     pairs = list(chrom_lengths.items())
-    for chrom, _length in pairs:
+    for chrom, length in pairs:
         if not isinstance(chrom, str):
             raise TypeError(
                 f"`chrom_lengths` names the chromosome {chrom!r}, a "
                 f"{type(chrom).__name__}, and a chromosome is named by a str, as "
                 f"the source writes it"
             )
+        # The binding crate refuses the same lengths, under the name of the
+        # argument alone: here the message names the chromosome too, which
+        # is what a user of a dict of 25 of them looks for. A length of 0 is
+        # the core's to refuse, and its message names the chromosome.
+        where = f"`chrom_lengths[{chrom!r}]`"
+        if isinstance(length, bool) or not isinstance(length, int):
+            raise TypeError(
+                f"{where} is {length!r}, a {type(length).__name__}, and a length is "
+                f"a whole number of 1 or more"
+            )
+        if length < 0 or length > _LARGEST_LENGTH:
+            raise ValueError(
+                f"{where} is {length}, and a length is a whole number of 1 or more "
+                f"that 64 bits hold"
+            )
     return pairs
+
+
+# The largest length a chromosome is given, the largest whole number of 64
+# bits, which the VCF reader takes in a `##contig` line too.
+_LARGEST_LENGTH = 2**64 - 1
