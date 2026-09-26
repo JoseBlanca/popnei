@@ -851,3 +851,19 @@ fn a_chromosome_whose_name_starts_with_track_by_regions_is_a_region() {
     assert!(regions.contains("tracks1", 5));
     assert!(regions.contains("browsers", 2));
 }
+
+/// A line whose chromosome is empty names no chromosome a variant can be
+/// on, and plink2 v2.0.0-a.7.7 refuses it too.
+#[test]
+fn an_empty_chromosome_by_regions_is_refused_with_its_line() {
+    let error = the_error_of(b"chr1\t0\t5\n\t0\t2\n");
+    assert!(
+        bed_line(2, BedLineProblem::EmptyChromosome)(&error),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "line 2 of the BED file: its chromosome is empty, and a region is of a chromosome \
+         that has a name"
+    );
+}

@@ -81,6 +81,9 @@ pub enum BedLineProblem {
         /// separates them by tabs.
         with_spaces: bool,
     },
+    /// The chromosome is empty: the line starts with a tab, and names no
+    /// chromosome a variant can be on.
+    EmptyChromosome,
     /// The start is not a whole number of 0 or more written in digits
     /// alone, or it does not fit in 64 bits.
     StartNotAWholeNumber {
@@ -122,6 +125,10 @@ impl fmt::Display for BedLineProblem {
                      separates by tabs"
                 )
             }
+            BedLineProblem::EmptyChromosome => write!(
+                formatter,
+                "its chromosome is empty, and a region is of a chromosome that has a name"
+            ),
             BedLineProblem::StartNotAWholeNumber { found } => write!(
                 formatter,
                 "its start is `{found}`, and a start is a whole number of 0 or more, written in \
@@ -156,7 +163,7 @@ impl Regions {
     /// # Errors
     ///
     /// [`Error::BedLine`], with the number of the line, for a line of fewer
-    /// than three columns separated by tabs, a start or an end that is not
+    /// than three columns separated by tabs, an empty chromosome, a start or an end that is not
     /// a whole number of 0 or more that fits in 64 bits, and a start that
     /// is not below its end; [`Error::BedWithNoRegion`] for a BED with no
     /// line of a region; and [`Error::Io`] when `source` cannot be read or
@@ -280,6 +287,9 @@ fn region_of_the_line(line: &[u8]) -> std::result::Result<(&[u8], Region), BedLi
             with_spaces: line.contains(&b' '),
         });
     };
+    if chrom.is_empty() {
+        return Err(BedLineProblem::EmptyChromosome);
+    }
     let Some(start) = whole_number(start) else {
         return Err(BedLineProblem::StartNotAWholeNumber {
             found: String::from_utf8_lossy(start).into_owned(),
