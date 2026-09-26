@@ -3129,6 +3129,10 @@ mod tests {
         offers: Arc<AtomicUsize>,
         /// How many variants it says it passed over for those regions.
         num_skipped: u64,
+        /// Where it says that a call of `next_block` has returned, so that
+        /// a test of the reader one block ahead knows the thread has built
+        /// what it will send next.
+        returned: Option<std::sync::mpsc::Sender<()>>,
     }
 
     impl GivenBlocks {
@@ -3154,6 +3158,7 @@ mod tests {
                 },
                 offers: Arc::new(AtomicUsize::new(0)),
                 num_skipped: 0,
+                returned: None,
             }
         }
 
@@ -3192,12 +3197,18 @@ mod tests {
     impl BlockReader for GivenBlocks {
         fn next_block(&mut self) -> Result<Option<Block>> {
             let calls = self.calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
-            if self.fails_at == Some(calls) {
-                return Err(Error::Io(std::io::Error::other(
+            let given = if self.fails_at == Some(calls) {
+                Err(Error::Io(std::io::Error::other(
                     "the reader of the tests failed",
-                )));
+                )))
+            } else {
+                Ok(self.left.pop())
+            };
+            if let Some(returned) = &self.returned {
+                // A test that stopped listening does not need to know.
+                let _ = returned.send(());
             }
-            Ok(self.left.pop())
+            given
         }
 
         fn individuals(&self) -> &[String] {
@@ -3242,6 +3253,7 @@ mod tests {
     mod source_header {
         use std::sync::Arc;
         use std::sync::atomic::Ordering;
+        use std::sync::mpsc::Receiver;
 
         use super::super::{
             FilteredReader, IndividualsReader, LdFilter, LdFilteredReader, RegionSelection,
@@ -3400,27 +3412,43 @@ mod tests {
             assert_eq!(offers.load(Ordering::SeqCst), 2);
         }
 
+        /// The three blocks of the worked example in a source that says
+        /// when each call of `next_block` returned, and the end where it
+        /// says so.
+        fn three_blocks_that_say_when_they_are_built() -> (GivenBlocks, Receiver<()>) {
+            let (returned, built) = std::sync::mpsc::channel();
+            let source = GivenBlocks {
+                num_skipped: 7,
+                returned: Some(returned),
+                ..GivenBlocks::of(vec![
+                    block_of_the_worked_example(&[0, 1]),
+                    block_of_the_worked_example(&[2, 3]),
+                    block_of_the_worked_example(&[4, 5]),
+                ])
+            };
+            (source, built)
+        }
+
         /// The reader one block ahead hands the offer to the chain on its
         /// thread and gives its answer, then every block of the chain in
         /// its order, the one the thread had built before it saw the offer
         /// among them, and the variants the chain skipped once the blocks
-        /// are over.
+        /// are over. The offer is made once the thread has built the next
+        /// read, a block or the word that there are none, so the handle
+        /// always holds that read back; after the third block it is the
+        /// chain's last word, and the chain still answers.
         #[test]
         fn the_reader_one_block_ahead_hands_the_regions_on_and_loses_no_block() {
-            for blocks_read_before in 0..3 {
-                let mut source = GivenBlocks {
-                    num_skipped: 7,
-                    ..GivenBlocks::of(vec![
-                        block_of_the_worked_example(&[0, 1]),
-                        block_of_the_worked_example(&[2, 3]),
-                        block_of_the_worked_example(&[4, 5]),
-                    ])
-                };
+            for blocks_read_before in 0..=3 {
+                let (mut source, built) = three_blocks_that_say_when_they_are_built();
                 let offers = source.offers();
                 let (answer, positions, num_skipped) = with_one_block_ahead(&mut source, |ahead| {
                     let mut blocks = Vec::new();
                     for _ in 0..blocks_read_before {
                         blocks.extend(ahead.next_block()?);
+                    }
+                    for _ in 0..=blocks_read_before {
+                        built.recv().expect("the thread built its next read");
                     }
                     let answer = ahead.skip_outside(a_selection());
                     while let Some(block) = ahead.next_block()? {
@@ -3433,6 +3461,41 @@ mod tests {
                 assert_eq!(positions, [1, 2, 3, 4, 5, 6], "{blocks_read_before}");
                 assert_eq!(num_skipped, 7, "{blocks_read_before}");
                 assert_eq!(offers.load(Ordering::SeqCst), 1, "{blocks_read_before}");
+            }
+        }
+
+        /// An offer made after the chain said it has no more blocks, and one
+        /// made after it failed, get the chain's answer and not one that
+        /// depends on when the thread ended.
+        #[test]
+        fn the_reader_one_block_ahead_answers_an_offer_after_the_last_word_of_the_chain() {
+            for round in 0..50 {
+                let (mut source, _built) = three_blocks_that_say_when_they_are_built();
+                let offers = source.offers();
+                let answer = with_one_block_ahead(&mut source, |ahead| {
+                    while ahead.next_block()?.is_some() {}
+                    Ok(ahead.skip_outside(a_selection()))
+                })
+                .unwrap();
+                assert!(answer, "round {round}");
+                assert_eq!(offers.load(Ordering::SeqCst), 1, "round {round}");
+
+                let mut source = GivenBlocks::failing_at(
+                    vec![
+                        block_of_the_worked_example(&[0, 1]),
+                        block_of_the_worked_example(&[2, 3]),
+                    ],
+                    2,
+                );
+                let offers = source.offers();
+                let answer = with_one_block_ahead(&mut source, |ahead| {
+                    assert!(ahead.next_block()?.is_some());
+                    assert!(ahead.next_block().is_err());
+                    Ok(ahead.skip_outside(a_selection()))
+                })
+                .unwrap();
+                assert!(answer, "round {round}, after the error");
+                assert_eq!(offers.load(Ordering::SeqCst), 1, "round {round}");
             }
         }
     }

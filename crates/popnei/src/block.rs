@@ -1875,14 +1875,17 @@ fn the_chain_now<R: BlockReader>(reader: &R, sent: &mut usize) -> TheChainNow {
 
 /// The reading thread of [`with_one_block_ahead`]: every block of `reader`
 /// sent to the handle, then either the word that there are no more or the
-/// error the chain failed with.
+/// error the chain failed with, and after that word what the handle asks
+/// of the chain, until the handle is dropped.
 ///
-/// It ends when the chain is over, when the chain fails, and when the
-/// handle is dropped, which is what a pass that returns early does: the
-/// send fails then, and the block that was built is dropped with the
-/// thread. The chain is left where it stopped and is not read again, which
-/// is what the caller of [`with_one_block_ahead`] then asks for its
-/// counts.
+/// It ends when the handle is dropped, which is what a pass does when it
+/// returns, early or at the end: a send or a wait on the asks fails then,
+/// and a block that was built is dropped with the thread. It serves the
+/// asks after the last word so that an offer of regions made at the end of
+/// the chain gets the chain's answer, and not one that depends on whether
+/// the thread had ended. The chain is left where it stopped and is not read
+/// again, which is what the caller of [`with_one_block_ahead`] then asks
+/// for its counts.
 #[cfg(not(target_family = "wasm"))]
 fn read_one_block_ahead<R: BlockReader>(
     reader: &mut R,
@@ -1897,14 +1900,8 @@ fn read_one_block_ahead<R: BlockReader>(
         // is what the trait says of a change of `Needs` in the middle of a
         // pass, and holds the variants it was built with.
         while let Ok(ask) = asks.try_recv() {
-            match ask {
-                AskOfTheChain::Needs(fields) => reader.set_needs(fields),
-                AskOfTheChain::SkipOutside(selection) => {
-                    let answer = reader.skip_outside(selection);
-                    if built.send(ABlockRead::Answered(answer)).is_err() {
-                        return;
-                    }
-                }
+            if !asked_of_the_chain(reader, ask, &built) {
+                return;
             }
         }
         let read = match reader.next_block() {
@@ -1920,7 +1917,34 @@ fn read_one_block_ahead<R: BlockReader>(
             return;
         }
         if !more_may_follow {
+            break;
+        }
+    }
+    // The chain has said its last word, and the handle can still ask it
+    // for fields or offer it regions until it is dropped.
+    while let Ok(ask) = asks.recv() {
+        if !asked_of_the_chain(reader, ask, &built) {
             return;
+        }
+    }
+}
+
+/// What the handle asked, done on the chain, with the answer to an offer
+/// sent back; false when the handle was dropped and nobody hears it.
+#[cfg(not(target_family = "wasm"))]
+fn asked_of_the_chain<R: BlockReader>(
+    reader: &mut R,
+    ask: AskOfTheChain,
+    built: &std::sync::mpsc::SyncSender<ABlockRead>,
+) -> bool {
+    match ask {
+        AskOfTheChain::Needs(fields) => {
+            reader.set_needs(fields);
+            true
+        }
+        AskOfTheChain::SkipOutside(selection) => {
+            let answer = reader.skip_outside(selection);
+            built.send(ABlockRead::Answered(answer)).is_ok()
         }
     }
 }
@@ -2081,9 +2105,11 @@ impl BlockReader for OneBlockAhead {
     /// The answer of the chain, which the reading thread asks before it
     /// builds its next block: this reader changes no variant, so the offer
     /// goes on. The block the thread had built before it saw the offer
-    /// holds the variants it was built with and is given first. False when
-    /// the reading thread has ended, since there is no next block to pass
-    /// over variants in.
+    /// holds the variants it was built with and is given first. The thread
+    /// serves the offer after the chain's last word too, so the answer is
+    /// the chain's wherever in the pass it is made. False only when the
+    /// reading thread ended without a word, which a panic of the chain
+    /// does.
     fn skip_outside(&mut self, selection: RegionSelection) -> bool {
         if self
             .asked
@@ -2093,8 +2119,8 @@ impl BlockReader for OneBlockAhead {
             return false;
         }
         // The thread sends at most one read before it sees the offer, the
-        // block it had built or its last word, and then the answer; after
-        // a last word it ends and the channel is closed.
+        // block it had built or its last word, and then the answer, which
+        // it sends after its last word as well.
         loop {
             match self.blocks.recv() {
                 Ok(ABlockRead::Answered(answer)) => return answer,
