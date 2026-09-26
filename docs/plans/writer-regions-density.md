@@ -98,7 +98,7 @@ Stands on: nothing of this plan.
 
 Tasks:
 
-- [ ] 1.1 `SourceHeader` and the three methods of `BlockReader` in
+- [x] 1.1 `SourceHeader` and the three methods of `BlockReader` in
   `crates/popnei/src/block.rs`, from "The Rust interface" of
   `docs/specs/block.md`, and their implementation in every reader of the
   crate and of `crates/popnei/benches/`: the readers over a reader pass the
@@ -113,8 +113,8 @@ Tasks:
   `header()` and in `VarsMetadata`. Deliverables 1 and 2. Needs 1.2 for the
   test that writes `write.vcf` to a vars file.
 
-What could go wrong: the trait has 21 implementations, 5 of them in the
-benches, and a reader over a reader that answers with its own empty header
+What could go wrong: the trait has 26 implementations, 5 of them in the
+benches (21 were counted when the plan was written; `Box` and `&mut` are two of the others), and a reader over a reader that answers with its own empty header
 instead of its source's compiles; deliverable 3 is what finds it.
 
 ## 2. The missing rate

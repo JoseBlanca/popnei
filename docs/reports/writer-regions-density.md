@@ -32,3 +32,20 @@ three of `main` announce merges, and the two of
 `spec/writer-regions-density` are this plan's own spec and the failure of
 the node test above. No file of this plan is being changed on another
 branch.
+
+## 1. The reader trait and the header of a source
+
+Task 1.1, commit edcac3d. `SourceHeader` and the three methods of
+`BlockReader`, `header`, `skip_outside` and `num_skipped`, are in every one
+of the 26 implementations of the trait, where the plan counted 21: the
+crate has 21, among them the ones for `Box` and `&mut`, and the benches 5.
+The threshold filters and the filter by linkage disequilibrium refuse the
+offer of regions; the filter of individuals, `reblock`, the reader one
+block ahead, `Box` and `&mut` hand it to their source. The reader one
+block ahead sends the offer to its reading thread and waits for the
+answer, and gives first a block the thread built before it saw the offer.
+`skip_outside` takes a `RegionSelection`, which the plan builds in task
+4.1, so that type and an empty `Regions` came forward into
+`crates/popnei/src/filters.rs`, with no constructor outside the tests;
+task 4.1 fills them in. Four tests under `filters::tests::source_header`;
+the subagent broke the code three ways and each broke them.
