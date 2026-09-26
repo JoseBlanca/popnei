@@ -825,17 +825,33 @@ chromosome whose `##contig` line has one, `##contig=<ID=chr1,length=2000>`,
 which the density of `docs/specs/stats.md` reads too. A `##contig` line
 without a length gives no length. A length that is not a whole number
 above 0, and two `##contig` lines of one ID with two lengths, are a wrong
-header, the `ValueError` of this spec, with the line. A length is written
-in digits alone, so `+5` is wrong too; two lines of one ID with the same
-length give it that length once; a `##contig` line with a length and no
-ID is a wrong header too, since the VCF specification requires the ID and
-a length of no chromosome would otherwise be dropped in silence; and a
-comma inside quotes, in a `Description="a, b"`, does
-not end a field. These four were decided on 26 September 2026 with the
-code. The numbers of the
+header, the `ValueError` of this spec, with the line. The numbers of the
 chromosomes still come from the data lines, as "The cases a reader of the
 rules would not guess" says, and a `##contig` line whose chromosome has no
 variant gives it no number.
+
+A `##contig=<` line is read as htslib reads it, and what htslib reads and
+this reader could not is a wrong header, so that no length is dropped or
+changed in silence. These were decided on 26 September 2026 with the code,
+against bcftools 1.24:
+
+- The blanks around each field, around its `=` and after the `>` are not
+  part of it, so `##contig=< ID=chr1, length=300> ` is chr1 300, as
+  bcftools reads it.
+- A comma inside quotes does not end a field, and inside quotes the
+  character after a `\` is taken as it is, so the `\"` of
+  `Description="a \",length=5\""` does not end the quotes and the length
+  of the line is the one outside them.
+- A line that does not end in `>`, or whose quotes are not closed, is a
+  wrong header; bcftools warns of an incomplete header line.
+- A length is written in digits alone, so `+5` is wrong too, and one past
+  the largest a `u64` holds, 18446744073709551615, is a wrong header that
+  says so. Two lines of one ID with the same length give it that length
+  once.
+- A line with two `ID` or two `length` fields, a line with a length and no
+  `ID`, and an empty `ID` are a wrong header. The VCF specification
+  requires the ID, and bcftools keeps the first of two lengths where this
+  reader would have had to choose.
 
 The text of the lines is a field of `Needs`, `VCF_TEXT`, which
 `write_vcf` asks for and nothing else does. With it, the block holds, for

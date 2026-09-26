@@ -392,9 +392,15 @@ One thread, spawned inside a `std::thread::scope` so that the chain can be
 lent to it by reference and is back with its owner when the scope ends. One
 channel of capacity zero carries what the thread read, a block with the
 names and the counts the chain then had, or the word that there are no more,
-or the error the chain failed with, and nothing follows either of the last
+or the error the chain failed with, and no block follows either of the last
 two. A second channel, from the pass to the thread, carries a change of the
-fields the pass asks for.
+fields the pass asks for and an offer of the regions of the filter by
+regions, which the thread hands to the chain before it builds its next
+block and whose answer comes back on the first channel. The thread serves
+that second channel after its last word too, until the pass drops the
+handle, so that an offer made at the end of the chain gets the chain's
+answer and not one that depends on when the thread ended. An answer that
+arrives where the pass asked for a block is a defect of popnei.
 
 A pass that returns in the middle, which a calculation whose block fails
 does and which the Ctrl-C of a Python user comes out as, drops the handle;
@@ -571,12 +577,14 @@ pub trait BlockReader: Send {
     /// What the source said of itself. A reader over another reader
     /// gives its source's.
     fn header(&self) -> &SourceHeader;
-    /// It offers the reader the regions of the filter by regions, whose
-    /// variants outside them it may skip from the next block it builds,
-    /// and says whether it will. A source that can skip says true, a
-    /// reader over another reader that changes no variant hands the offer
-    /// to its source and says what it answers, and a filter of variants
-    /// says false. `docs/specs/filters.md`.
+    /// It offers the reader the regions of the filter by regions, the
+    /// variants the selection does not keep it may skip from the next
+    /// block it builds, and says whether it will. A source that can skip
+    /// says true, a reader over another reader that changes no variant
+    /// hands the offer to its source and says what it answers, and a
+    /// filter of variants says false. An offer that a source took holds
+    /// for as long as that source lives, so the reader that offers owns
+    /// its source. `docs/specs/filters.md`.
     fn skip_outside(&mut self, selection: RegionSelection) -> bool;
     /// How many variants the source passed over for the regions it was
     /// handed, since the pass started. 0 for a reader that skips nothing.
@@ -658,7 +666,7 @@ pub fn needs_of_the_fields<'a>(
 ) -> Result<Needs>;
 ```
 
-This module adds seven cases to the error of the crate. A
+This module adds eight cases to the error of the crate. A
 `num_vars_per_block` of 0, which `Reblock::new` and every source that
 takes a size refuse. A block the machine cannot give the memory for: a
 reader that is given a size refuses one whose genotypes,
@@ -681,7 +689,10 @@ when a block of its source has another number of individuals or another
 ploidy than the source says it has. A block of no variants, which
 `reblock` refuses. A block whose arrays are not of its size, which `check`
 finds, with the array and the two sizes. A `keep` that has not one value
-for each variant of its block. And a name that is not a field of a block.
+for each variant of its block. A name that is not a field of a block. And
+an answer to an offer of regions that reaches the reader one block ahead
+where it asked for a block, a defect of popnei, a `RuntimeError` in
+Python.
 
 ## Open points
 
