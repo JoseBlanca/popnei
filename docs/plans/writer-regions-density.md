@@ -87,7 +87,8 @@ Deliverables:
    1500]]` and `format_version` `"1.1"`; a file of 1.0 reads with no
    lengths. `cargo test -p popnei --lib source_header -- --list` counts
    them, and counted 0 on 7331638.
-3. A cargo test that each reader over a reader, the three threshold filters,
+3. A cargo test whose name contains `source_header`, counted with those of
+   deliverable 2, that each reader over a reader, the three threshold filters,
    the filter by linkage disequilibrium, the filter of individuals,
    `reblock` and the reader one block ahead, gives its source's header,
    and that the filters answer `skip_outside` with false and `num_skipped`
@@ -150,8 +151,9 @@ Tasks:
 
 - [ ] 2.1 The statistic in the core, `crates/popnei/src/stats.rs`, from
   "The missing rate" and the six names of "The Rust interface" of
-  `docs/specs/stats.md`. Deliverable 1. A wrong bin would be silent: it is
-  its own commit, guarded by deliverable 1.
+  `docs/specs/stats.md`. Deliverable 1. A variant put in the wrong bin
+  gives a wrong count and no error, so this task is a commit of its own,
+  and deliverable 1 is what guards it.
 - [ ] 2.2 Both binding crates, the Python and the TypeScript result, the
   reference files and the tests. Deliverables 2, 3 and 4.
 
@@ -187,7 +189,7 @@ Deliverables:
    `writeVcf`.
 5. The measurement of "### The writer" of "Speed" of `docs/specs/io_vcf.md`
    on `big.vcf` and `big.vars`, written into that section with the machine,
-   the load and the runs, against the three numbers of bcftools there.
+   the load average and every run, against the three numbers of bcftools there.
 
 Stands on: work package 1, for the header.
 
@@ -293,8 +295,9 @@ Tasks:
 
 What could go wrong: the serial pass of the VCF reader is what bounds it
 on 18 threads, by "Speed" of `docs/specs/io_vcf.md`, and reading POS there
-adds to it. The read of the whole file without regions has to stay within
-its targets of that section, which 5.2 measures too.
+adds to it. The read of the whole plain file without regions has to stay
+within the targets of that section, 0.594 s on one thread and 0.108 s on
+18, which 5.2 measures too.
 
 ## 6. The density of the variants
 
@@ -318,7 +321,9 @@ Deliverables:
    written into "Speed" of `docs/specs/stats.md`, which gives no number to
    reach until then.
 
-Stands on: work package 1, for the lengths.
+Stands on: work package 1, for the lengths. Task 6.1 edits
+`crates/popnei/src/stats.rs`, as 2.1 does, and runs after 2.1 is
+committed; otherwise work package 6 can run side by side with 3, 4 and 5.
 
 Tasks:
 
