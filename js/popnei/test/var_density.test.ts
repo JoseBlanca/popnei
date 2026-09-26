@@ -14,13 +14,19 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { VarDensity } from "popnei";
-import { calcVarDensity, init, openVcf } from "popnei";
+import { calcVarDensity, init, openVars, openVcf, writeVars } from "popnei";
 
 import { referenceStats, referenceVcf } from "./reference.ts";
 
 await init();
 
 const MANY = await referenceVcf("many.vcf");
+
+/**
+ * `write.vcf` of the VCF writer: chr1 100, 1000 and 1001 and chr2 1 and
+ * 1500 read with the default, with the lengths chr1 2000 and chr2 1500.
+ */
+const WRITE = await referenceVcf("write.vcf");
 
 /** One window as the tables of the spec give it. */
 type Window = [string, number, number, number];
@@ -151,5 +157,67 @@ test("the density refuses a window that ends past 2^53 and takes one that ends o
   assert.throws(
     () => calcVarDensity(openVcf(pastIt), 2 ** 52),
     /9007199254740993/,
+  );
+});
+
+test("the density gives the chromosomes in the order of chromLengths", () => {
+  // chr2 first, which is neither the order of the names nor that of the
+  // variants of write.vcf.
+  const density = calcVarDensity(openVcf(WRITE), 500, {
+    chromLengths: { chr2: 1500, chr1: 2000 },
+  });
+  assert.deepEqual(windowsOf(density), [
+    ...laidEndToEnd("chr2", 500, 1500, [1, 0, 1]),
+    ...laidEndToEnd("chr1", 500, 2000, [1, 1, 1, 0]),
+  ]);
+});
+
+test("the density takes the lengths in the order JavaScript gives the keys, whole numbers first", () => {
+  const lines: [string, number][] = [
+    ["X", 1],
+    ["10", 1],
+    ["2", 1],
+  ];
+  const density = calcVarDensity(openVcf(aVcf([], lines)), 100, {
+    chromLengths: { X: 100, "10": 100, "2": 100 },
+  });
+  assert.deepEqual(density.chroms, ["2", "10", "X"]);
+});
+
+test("the density refuses chromLengths that is a Map or any object but a plain one", () => {
+  const variants = openVcf(WRITE);
+  for (const given of [
+    new Map([["chr1", 10]]),
+    new Date(0),
+    Object.create({ chr1: 10 }),
+  ]) {
+    assert.throws(
+      () =>
+        calcVarDensity(variants, 500, {
+          chromLengths: given as unknown as Record<string, number>,
+        }),
+      /`chromLengths`/,
+    );
+  }
+  const noPrototype = Object.assign(Object.create(null), { chr1: 2000 });
+  const density = calcVarDensity(variants, 500, { chromLengths: noPrototype });
+  assert.deepEqual(density.chroms.slice(0, 1), ["chr1"]);
+});
+
+test("the density of a vars file reads the lengths it keeps", () => {
+  const vars = writeVars(openVcf(WRITE)).bytes;
+  const density = calcVarDensity(openVars(vars), 500);
+  assert.deepEqual(windowsOf(density), [
+    ...laidEndToEnd("chr1", 500, 2000, [1, 1, 1, 0]),
+    ...laidEndToEnd("chr2", 500, 1500, [1, 0, 1]),
+  ]);
+});
+
+test("the density refuses the last window of a chromosome with no length that ends past 2^53", () => {
+  // The window of 2^52 + 1 that holds 2^53 ends at 2^53 + 2.
+  const pastIt = aVcf([], [["chr1", 2 ** 53]]);
+  assert.throws(
+    () => calcVarDensity(openVcf(pastIt), 2 ** 52 + 1),
+    /9007199254740994/,
   );
 });

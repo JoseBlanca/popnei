@@ -715,7 +715,11 @@ export interface VarDensity {
  * full width. A chromosome with a length is in the result whether or not it
  * has a variant. The chromosomes are in the order of the lengths, and after
  * them those with variants and no length, in the order their first variant
- * came; the windows of each in the order of their positions.
+ * came; the windows of each in the order of their positions. The order of
+ * `chromLengths` is the order JavaScript gives the keys of an object, which
+ * puts the keys that are whole numbers first, in ascending order, and then
+ * the others in the order they were written: `{X: 1, "10": 1, "2": 1}` gives
+ * 2, 10 and X, where the same dict in Python gives X, 10 and 2.
  *
  * It is a consumer of the `variants`: it makes one pass over the source
  * through the steps the `Variants` has when it is called, reading only the
@@ -725,11 +729,13 @@ export interface VarDensity {
  * each.
  *
  * @throws {Error} When `windowSize` or a length of `chromLengths` is not a
- * whole number from 1 to 2^53 - 1; when a variant is past the length of its
+ * whole number from 1 to 2^53 - 1; when `chromLengths` is not a plain
+ * object, a `Map` among the rest; when a variant is past the length of its
  * chromosome, which the message says came from `chromLengths` or from the
  * source, or at the position 0; when the density would have more than 10
  * million windows; when a window ends past 2^53, which a number of
- * JavaScript would round; when the source cannot be read; when the pass
+ * JavaScript would round; when the arrays of the windows do not fit in the
+ * memory the page has left; when the source cannot be read; when the pass
  * gives no variant; and when `init` has not been awaited.
  */
 export function calcVarDensity(
@@ -784,8 +790,9 @@ export function calcVarDensity(
  * The names and the lengths of `chromLengths`, in the order its keys
  * iterate in, or `undefined` when it was not given.
  *
- * @throws {Error} When it is not an object, or a length is not a whole
- * number from 1 to 2^53 - 1.
+ * @throws {Error} When it is not a plain object, one whose prototype is
+ * `Object.prototype` or `null`, a `Map` among the rest, or a length is not a
+ * whole number from 1 to 2^53 - 1.
  */
 function theChromLengths(
   value: unknown,
@@ -793,9 +800,17 @@ function theChromLengths(
   if (value === undefined) {
     return undefined;
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  // A `Map`, and any object of a class of its own, keeps its entries where
+  // `Object.keys` does not look, so it would be read as no lengths and say
+  // nothing of it: the windows up to each length would not be there, and a
+  // variant past a length would not be refused.
+  const prototype =
+    typeof value === "object" && value !== null
+      ? Object.getPrototypeOf(value)
+      : undefined;
+  if (prototype !== Object.prototype && prototype !== null) {
     throw new Error(
-      "popnei: `chromLengths` is an object of chromosome name to length, " +
+      "popnei: `chromLengths` is a plain object of chromosome name to length, " +
         `{chr1: 248956422}, and ${whatWasGiven(value)} was given`,
     );
   }
