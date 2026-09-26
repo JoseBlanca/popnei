@@ -37,8 +37,8 @@ branch.
 
 Task 1.1, commit edcac3d. `SourceHeader` and the three methods of
 `BlockReader`, `header`, `skip_outside` and `num_skipped`, are in every one
-of the 26 implementations of the trait, where the plan counted 21: the
-crate has 21, among them the ones for `Box` and `&mut`, and the benches 5.
+of the 24 implementations of the trait, where the plan counted 21: the
+crate has 19, among them the ones for `Box` and `&mut`, and the benches 5.
 The threshold filters and the filter by linkage disequilibrium refuse the
 offer of regions; the filter of individuals, `reblock`, the reader one
 block ahead, `Box` and `&mut` hand it to their source. The reader one

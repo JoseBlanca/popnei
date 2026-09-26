@@ -116,8 +116,8 @@ Tasks:
   `header()` and in `VarsMetadata`. Deliverables 1 and 2. Needs 1.2 for the
   test that writes `write.vcf` to a vars file.
 
-What could go wrong: the trait has 26 implementations, 5 of them in the
-benches (21 were counted when the plan was written; `Box` and `&mut` are two of the others), and a reader over a reader that answers with its own empty header
+What could go wrong: the trait has 24 implementations, 5 of them in the
+benches (21 were counted when the plan was written), and a reader over a reader that answers with its own empty header
 instead of its source's compiles; deliverable 3 is what finds it.
 
 ## 2. The missing rate
