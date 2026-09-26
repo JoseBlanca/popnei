@@ -825,7 +825,12 @@ chromosome whose `##contig` line has one, `##contig=<ID=chr1,length=2000>`,
 which the density of `docs/specs/stats.md` reads too. A `##contig` line
 without a length gives no length. A length that is not a whole number
 above 0, and two `##contig` lines of one ID with two lengths, are a wrong
-header, the `ValueError` of this spec, with the line. The numbers of the
+header, the `ValueError` of this spec, with the line. A length is written
+in digits alone, so `+5` is wrong too; two lines of one ID with the same
+length give it that length once; a `##contig` line with a length and no
+ID gives none; and a comma inside quotes, in a `Description="a, b"`, does
+not end a field. These four were decided on 26 September 2026 with the
+code. The numbers of the
 chromosomes still come from the data lines, as "The cases a reader of the
 rules would not guess" says, and a `##contig` line whose chromosome has no
 variant gives it no number.
