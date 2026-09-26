@@ -1314,35 +1314,53 @@ impl VcfReader<BufReader<File>> {
     }
 }
 
-/// The individuals of the `#CHROM` line, whose nine first columns have to
-/// be the nine of a VCF with genotypes.
 /// The chromosome and the length of the `##contig` line `text`, the line
-/// `number` of the file, or `None` when it is another line of the header
-/// or a `##contig` line with no length.
+/// `line_number` of the file, or `None` when it is another line of the
+/// header or a `##contig` line with no length.
 ///
 /// The fields are read between `<` and `>`, separated by commas outside
-/// quotes, so that a `Description="a, b"` does not cut a field in two.
+/// quotes, with the blanks around each field, around its `=` and after the
+/// `>` left out, as htslib reads them.
 ///
 /// # Errors
 ///
-/// When the length is not a whole number above 0 that a `u64` holds,
-/// written in digits alone, `length=0`, `length=abc`, `length=+5`, and
-/// when the line has a length and no ID.
-fn contig_length_of(text: &str, number: u64) -> Result<Option<(&str, u64)>> {
-    let Some(fields) = text
-        .strip_prefix("##contig=<")
-        .and_then(|rest| rest.strip_suffix('>'))
-    else {
+/// When the length is not a whole number above 0, written in digits alone,
+/// `length=0`, `length=abc`, `length=+5`, or is past the largest a `u64`
+/// holds; when the line has a length and no ID, an empty ID, two `ID` or
+/// two `length` fields; and when it does not end in `>` or leaves a quote
+/// open.
+fn contig_length_of(text: &str, line_number: u64) -> Result<Option<(&str, u64)>> {
+    let Some(rest) = text.strip_prefix("##contig=<") else {
         return Ok(None);
+    };
+    let wrong = |what: &str| Error::VcfHeader {
+        problem: format!("its line {line_number} is a ##contig line {what}"),
+    };
+    let Some(inner) = rest.trim_end().strip_suffix('>') else {
+        return Err(wrong("that does not end in `>`"));
+    };
+    let Some(fields) = fields_outside_quotes(inner) else {
+        return Err(wrong("whose quotes are not closed"));
     };
     let mut id = None;
     let mut length = None;
-    for field in fields_outside_quotes(fields) {
-        if let Some(value) = field.strip_prefix("ID=") {
-            id = Some(value);
-        } else if let Some(value) = field.strip_prefix("length=") {
-            length = Some(value);
+    for field in fields {
+        let Some((key, value)) = field.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let kept = match key {
+            "ID" => &mut id,
+            "length" => &mut length,
+            _ => continue,
+        };
+        if kept.is_some() {
+            return Err(wrong(&format!("with two `{key}` fields")));
         }
+        *kept = Some(value.trim());
+    }
+    if id == Some("") {
+        return Err(wrong("with an empty ID"));
     }
     let Some(length) = length else {
         return Ok(None);
@@ -1352,29 +1370,43 @@ fn contig_length_of(text: &str, number: u64) -> Result<Option<(&str, u64)>> {
     let Some(chrom) = id else {
         return Err(Error::VcfHeader {
             problem: format!(
-                "its line {number} gives a chromosome the length {length} and no ID, which a ##contig line needs"
+                "its line {line_number} gives a chromosome the length {length} and no ID, which a ##contig line needs"
             ),
         });
     };
     let whole_number = !length.is_empty() && length.bytes().all(|byte| byte.is_ascii_digit());
     match length.parse::<u64>() {
         Ok(parsed) if whole_number && parsed > 0 => Ok(Some((chrom, parsed))),
+        Err(_) if whole_number => Err(Error::VcfHeader {
+            problem: format!(
+                "the length of the chromosome {chrom} in its line {line_number} is {length}, past the largest length popnei reads, {largest}",
+                largest = u64::MAX
+            ),
+        }),
         _ => Err(Error::VcfHeader {
             problem: format!(
-                "the length of the chromosome {chrom} in its line {number} is {length}, and a length is a whole number above 0"
+                "the length of the chromosome {chrom} in its line {line_number} is {length}, and a length is a whole number above 0"
             ),
         }),
     }
 }
 
 /// The fields of the `<...>` of a line of the header, `fields` without
-/// its brackets, cut at the commas that are outside quotes.
-fn fields_outside_quotes(fields: &str) -> Vec<&str> {
+/// its brackets, cut at the commas that are outside quotes, or `None` when
+/// a quote is not closed. Inside quotes the character after a `\` is
+/// taken as it is, so a `\"` does not end them.
+fn fields_outside_quotes(fields: &str) -> Option<Vec<&str>> {
     let mut cut = Vec::new();
     let mut in_quotes = false;
+    let mut escaped = false;
     let mut start = 0_usize;
     for (at, character) in fields.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match character {
+            '\\' if in_quotes => escaped = true,
             '"' => in_quotes = !in_quotes,
             ',' if !in_quotes => {
                 cut.push(fields.get(start..at).unwrap_or_default());
@@ -1384,10 +1416,15 @@ fn fields_outside_quotes(fields: &str) -> Vec<&str> {
             _ => {}
         }
     }
+    if in_quotes {
+        return None;
+    }
     cut.push(fields.get(start..).unwrap_or_default());
-    cut
+    Some(cut)
 }
 
+/// The individuals of the `#CHROM` line, whose nine first columns have to
+/// be the nine of a VCF with genotypes.
 fn individuals_of(chrom_line: &str, line_number: u64) -> Result<Vec<String>> {
     let columns: Vec<&str> = chrom_line.split('\t').collect();
     for (index, expected) in FIRST_COLUMNS.iter().enumerate() {
@@ -2202,6 +2239,113 @@ mod tests {
                 .and_then(|lines| lines.get(2))
                 .map(String::as_str),
             Some("##contig=<ID=chr2>")
+        );
+    }
+
+    /// The lengths of the chromosomes of a VCF whose one line before
+    /// `#CHROM` is `contig`.
+    fn lengths_of_the_contig_line(contig: &str) -> Vec<(String, u64)> {
+        let vcf = vcf_with_meta_lines(&[contig], "\n");
+        let reader = VcfReader::new(Cursor::new(vcf.into_bytes()), VcfOptions::default())
+            .unwrap_or_else(|error| panic!("{contig}: {error}"));
+        reader.header().chrom_lengths.clone()
+    }
+
+    /// The blanks around a field, around its `=` and after the `>` are not
+    /// part of it, as bcftools 1.24 reads them.
+    #[test]
+    fn source_header_reads_a_contig_line_with_blanks_as_bcftools_does() {
+        for contig in [
+            "##contig=<ID=chr1, length=300>",
+            "##contig=< ID=chr1,length=300>",
+            "##contig=<ID=chr1,length=300> ",
+            "##contig=<ID = chr1,length = 300>",
+        ] {
+            assert_eq!(
+                lengths_of_the_contig_line(contig),
+                [("chr1".to_owned(), 300)],
+                "{contig}"
+            );
+        }
+    }
+
+    /// Inside quotes the character after a `\` is taken as it is, so a
+    /// `\"` does not end the quotes and a `length=` inside them is text.
+    #[test]
+    fn source_header_takes_an_escaped_quote_inside_quotes_as_text() {
+        for contig in [
+            r#"##contig=<ID=chr1,length=300,Description="note \",length=5,\" end">"#,
+            r#"##contig=<ID=chr1,Description="x\",length=5",length=300>"#,
+        ] {
+            assert_eq!(
+                lengths_of_the_contig_line(contig),
+                [("chr1".to_owned(), 300)],
+                "{contig}"
+            );
+        }
+    }
+
+    /// A comma inside quotes does not end a field, so the `length=5` of the
+    /// description, which comes after the length of the line, is text.
+    #[test]
+    fn source_header_takes_a_comma_inside_quotes_as_text() {
+        assert_eq!(
+            lengths_of_the_contig_line(r#"##contig=<ID=chr1,length=300,Description="a,length=5">"#),
+            [("chr1".to_owned(), 300)]
+        );
+    }
+
+    /// A `##contig=<` line that htslib reads and this reader could not read
+    /// as it does is a wrong header, which names the line.
+    #[test]
+    fn source_header_refuses_a_contig_line_it_cannot_read_as_bcftools_does() {
+        let problem_of = |contig: &str| {
+            let error = error_of(&vcf_with_meta_lines(&[contig], "\n"), VcfOptions::default());
+            let Error::VcfHeader { problem } = error else {
+                panic!("{contig}: {error}");
+            };
+            problem
+        };
+        for (contig, expected) in [
+            (
+                "##contig=<ID=chr1,length=300,length=5>",
+                "its line 1 is a ##contig line with two `length` fields",
+            ),
+            (
+                "##contig=<ID=chr1,ID=chr2,length=300>",
+                "its line 1 is a ##contig line with two `ID` fields",
+            ),
+            (
+                "##contig=<ID=,length=300>",
+                "its line 1 is a ##contig line with an empty ID",
+            ),
+            (
+                "##contig=<ID=chr1,length=300",
+                "its line 1 is a ##contig line that does not end in `>`",
+            ),
+            (
+                r#"##contig=<ID=chr1,length=300,Description="a>"#,
+                "its line 1 is a ##contig line whose quotes are not closed",
+            ),
+        ] {
+            assert_eq!(problem_of(contig), expected, "{contig}");
+        }
+    }
+
+    /// A length past the largest a `u64` holds is refused for that, and not
+    /// as a length that is no whole number.
+    #[test]
+    fn source_header_refuses_a_contig_length_past_the_largest_a_u64_holds() {
+        let error = error_of(
+            &vcf_with_meta_lines(&["##contig=<ID=chr1,length=18446744073709551616>"], "\n"),
+            VcfOptions::default(),
+        );
+        let Error::VcfHeader { problem } = error else {
+            panic!("{error}");
+        };
+        assert_eq!(
+            problem,
+            "the length of the chromosome chr1 in its line 1 is 18446744073709551616, past the largest length popnei reads, 18446744073709551615"
         );
     }
 
