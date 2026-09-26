@@ -105,9 +105,9 @@ pub fn num_vars_per_block_of_write_vcf(source: WriterSource) -> Option<usize> {
 /// Every variant of `reader` into a VCF on `sink`, bgzipped or plain as
 /// `options` say, and the sink back with how many variants were written.
 ///
-/// It asks a VCF, a source whose header has the lines of one, for the text
-/// of its lines alone, [`Needs::VCF_TEXT`], and any other source for every
-/// field. A binding crate opens the source with the size of blocks that
+/// It asks `reader` for every field and for the text of the lines,
+/// [`Needs::VCF_TEXT`], so that a line whose position or genotype does not
+/// parse is refused. A binding crate opens the source with the size of blocks that
 /// [`num_vars_per_block_of_write_vcf`] gives. The header is that of `reader.header()`: the lines
 /// before `#CHROM` of a VCF, or, from any other source, a `##fileformat`
 /// line, one `##contig` line for each chromosome of known length and the
@@ -150,15 +150,11 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
         Some(_) => LinesFrom::Text,
         None => LinesFrom::Columns,
     };
-    // The lines of a VCF are written from their text alone, so its reader
-    // parses no genotype and no column for them: a filter of the pass asks
-    // for what it reads itself. On `big.vcf` of "Speed" the pass took
-    // 0.95 s on one thread with every field asked for too and 0.52 s
-    // without.
-    reader.set_needs(match from {
-        LinesFrom::Text => Needs::VCF_TEXT,
-        LinesFrom::Columns => Needs::ALL,
-    });
+    // Every field, the text of the lines too, also for a VCF whose lines
+    // are written from their text alone: the reader parses the position
+    // and the genotypes of each line, so a line of a corrupted file is
+    // refused and not copied into the file.
+    reader.set_needs(Needs::ALL | Needs::VCF_TEXT);
     let num_individuals = reader.individuals().len();
     let ploidy = reader.ploidy();
     let without_counts = num_individuals < reader.header().individuals.len();
@@ -621,7 +617,7 @@ mod tests {
         FilteringStats, PassStep, RegionSelection, VarFilteringCriterion, chain_of,
     };
     use crate::io::vars::{VarsReader, write_vars};
-    use crate::io::vcf::{VcfOptions, VcfReader};
+    use crate::io::vcf::{VcfOptions, VcfPlace, VcfReader};
     use crate::variant::{ChromTable, Needs};
 
     /// A reference VCF, or what bcftools 1.24 wrote or printed of one, at
@@ -1278,6 +1274,46 @@ mod tests {
         }
     }
 
+    /// The error of a data line that `write_vcf` gives for a VCF whose
+    /// second line is `wrong`, plain.
+    fn the_wrong_line_of(wrong: &str) -> (u64, VcfPlace, String) {
+        let vcf = format!(
+            "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\tb\n\
+             chr1\t5\t.\tA\tT\t.\tPASS\t.\tGT\t0/1\t1/1\n{wrong}\n"
+        );
+        let mut reader =
+            VcfReader::new(Cursor::new(vcf.into_bytes()), VcfOptions::default()).expect("the VCF");
+        match write_vcf(&mut reader, Vec::new(), PLAIN) {
+            Err(Error::VcfDataLine {
+                line,
+                place,
+                problem,
+            }) => (line, place, problem),
+            other => panic!("not the error of a wrong data line: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_vcf_refuses_a_vcf_whose_genotype_does_not_parse() {
+        let (line, place, _) = the_wrong_line_of("chr1\t9\t.\tA\tT\t.\tPASS\t.\tGT\t0/x\t1/1");
+        assert_eq!((line, place), (4, VcfPlace::Individual("a".to_owned())));
+        let vcf = "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\n\
+                   chr1\t9\t.\tA\tT\t.\tPASS\t.\tGT\t0/1/1\n";
+        let mut reader =
+            VcfReader::new(Cursor::new(vcf.as_bytes().to_vec()), VcfOptions::default())
+                .expect("the VCF");
+        match write_vcf(&mut reader, Vec::new(), PLAIN) {
+            Err(Error::VcfGenotypePloidy { line, found, .. }) => assert_eq!((line, found), (3, 3)),
+            other => panic!("not the error of a genotype of another ploidy: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_vcf_refuses_a_vcf_whose_pos_is_not_a_number() {
+        let (line, place, _) = the_wrong_line_of("chr1\tnine\t.\tA\tT\t.\tPASS\t.\tGT\t0/1\t1/1");
+        assert_eq!((line, place), (4, VcfPlace::Column("POS")));
+    }
+
     /// A sink that takes `room` bytes and refuses the rest.
     #[derive(Debug)]
     struct SinkThatFills {
@@ -1544,13 +1580,13 @@ mod tests {
     }
 
     #[test]
-    fn write_vcf_asks_a_vcf_for_its_text_alone_and_any_other_source_for_every_field() {
+    fn write_vcf_asks_every_source_for_every_field_and_the_text_of_the_lines() {
         let mut of_the_vcf = ThatKeepsItsNeeds {
             reader: Box::new(reader_of("write.vcf", false, None)),
             asked_for: Vec::new(),
         };
         let (text, _) = plain(&mut of_the_vcf);
-        assert_eq!(of_the_vcf.asked_for, [Needs::VCF_TEXT]);
+        assert_eq!(of_the_vcf.asked_for, [Needs::ALL | Needs::VCF_TEXT]);
         assert_eq!(text, write_vcf_text());
 
         let (vars, _) = write_vars(reader_of("write.vcf", true, None), Vec::new(), None)
@@ -1560,7 +1596,7 @@ mod tests {
             asked_for: Vec::new(),
         };
         plain(&mut of_the_vars_file);
-        assert_eq!(of_the_vars_file.asked_for, [Needs::ALL]);
+        assert_eq!(of_the_vars_file.asked_for, [Needs::ALL | Needs::VCF_TEXT]);
     }
 
     #[test]
