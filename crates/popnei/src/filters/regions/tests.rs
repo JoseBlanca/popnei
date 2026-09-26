@@ -1663,12 +1663,15 @@ fn skip_outside_is_handed_on_by_reblock_and_the_reader_one_block_ahead() {
     assert!(answered);
     assert_eq!(kept, the_reference("excluded_regions"));
     assert_eq!(stats, vec![("excluded_regions", pair(500, 455))]);
-    // The thread had built the block ahead before the offer reached it,
-    // and the offer holds from the next block the source builds, so of the
-    // 45 the source passed over those after that block, which the counts
-    // hold whatever their number.
+    // The offer holds from the next block the source builds, and the thread
+    // may have built blocks ahead before it reached it: a quiet run builds
+    // one, and the source passes over 38 of the 45, and one where the offer
+    // arrives first none, and it passes over all 45. The first 28 variants
+    // of the file, four blocks of 7, are all inside the regions, so each
+    // block built ahead holds 7 of the 45, and the counts are the same
+    // whichever it was.
     let skipped = source.num_skipped();
-    assert!(skipped > 0 && skipped <= 45, "{skipped}");
+    assert!(skipped <= 45 && (45 - skipped).is_multiple_of(7), "{skipped}");
 }
 
 /// A POS that does not parse gives its line a row, whatever the regions
@@ -1764,4 +1767,141 @@ fn skip_outside_a_line_outside_the_regions_keeps_the_checks_of_its_shape() {
         the_error_of_the_vcf(b"chr1\t500\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/7\n", true),
         None
     );
+}
+
+/// A batch whose largest position is the one position of a region is read:
+/// `many.vcf` in batches of 4 has its first batch from chr1 1000 to 1111,
+/// and `chr1 1110 1111` is 1111 alone.
+#[test]
+fn skip_outside_a_batch_whose_largest_position_is_the_first_of_a_region_is_read() {
+    let mut reader = RegionsReader::new(
+        vars_reader(&vars_file_of_many_vcf(4)),
+        RegionFilter::new(selection_of(b"chr1\t1110\t1111\n", false)),
+    )
+    .expect("the reader");
+    let blocks = blocks_of(&mut reader).expect("the blocks");
+    assert_eq!(
+        named_of(&blocks, reader.chroms()),
+        vec![named("chr1", 1111)]
+    );
+    assert_eq!(reader.filtering_stats(), vec![("regions", pair(500, 1))]);
+}
+
+/// A consumer that asks for other fields in the middle of a pass has the
+/// batches that were decoded and not given decoded again, and a batch that
+/// was passed over is walked past again and counted once: in a pool of 4
+/// threads the window is of 4 batches, the fourth batch of the file is
+/// skipped, and the reader reads the three others after the first twice.
+#[test]
+fn skip_outside_a_batch_walked_past_twice_after_set_needs_is_counted_once() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .expect("the pool");
+    pool.install(|| {
+        let mut source = vars_reader(&vars_file_of_many_vcf(100));
+        assert!(source.skip_outside(selection_of(&the_bed_of_the_spec(), false)));
+        let first = source
+            .next_block()
+            .expect("a block")
+            .expect("the first block");
+        source.set_needs(Needs::ALL);
+        let rest = blocks_of(&mut source).expect("the blocks");
+        let given: usize = first.num_vars + rest.iter().map(|block| block.num_vars).sum::<usize>();
+        assert_eq!(given, 400);
+        assert_eq!(source.num_skipped(), 100);
+        assert_eq!(source.batches_read(), [0, 1, 2, 4, 1, 2, 4].as_slice());
+    });
+}
+
+/// An empty POS gives its line a row, so the parse gives the error of the
+/// column with the skip as without it.
+#[test]
+fn skip_outside_an_empty_pos_is_the_error_of_that_column() {
+    let line = b"chr1\t\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/0\n";
+    let without = the_error_of_the_vcf(line, false);
+    assert!(
+        without
+            .as_deref()
+            .is_some_and(|error| error.contains("POS")),
+        "{without:?}"
+    );
+    assert_eq!(the_error_of_the_vcf(line, true), without);
+}
+
+/// A POS the serial pass does not read, `+500`, gets a row: the parse
+/// reads 500, the source gives it and does not count it as skipped, and
+/// the filter over it takes it out.
+#[test]
+fn skip_outside_a_pos_with_a_plus_is_given_and_not_counted_as_skipped() {
+    let vcf = b"##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\n\
+                chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\n\
+                chr1\t+500\t.\tA\tT\t.\t.\t.\tGT\t0/1\n\
+                chr1\t600\t.\tA\tT\t.\t.\t.\tGT\t0/1\n";
+    let options = VcfOptions {
+        ploidy: 2,
+        only_passed: false,
+        num_vars_per_block: None,
+    };
+    let mut source =
+        VcfReader::new(std::io::Cursor::new(vcf.to_vec()), options).expect("the reader");
+    assert!(source.skip_outside(selection_of(b"chr1\t0\t10\n", false)));
+    let blocks = blocks_of(&mut source).expect("the blocks");
+    assert_eq!(
+        named_of(&blocks, source.chroms()),
+        vec![named("chr1", 5), named("chr1", 500)]
+    );
+    assert_eq!(source.num_skipped(), 1);
+
+    let source = VcfReader::new(std::io::Cursor::new(vcf.to_vec()), options).expect("the reader");
+    let mut reader = RegionsReader::new(
+        source,
+        RegionFilter::new(selection_of(b"chr1\t0\t10\n", false)),
+    )
+    .expect("the reader");
+    let blocks = blocks_of(&mut reader).expect("the blocks");
+    assert_eq!(named_of(&blocks, reader.chroms()), vec![named("chr1", 5)]);
+    assert_eq!(reader.filtering_stats(), vec![("regions", pair(3, 1))]);
+}
+
+/// With the variants that failed their FILTER left out, which is what
+/// Python reads by default, the filter is given the 475 that passed and
+/// keeps 42, and 433 with `exclude`, which `bcftools view -f PASS,. -T`
+/// keeps, with the skip and without it: a line left out for its FILTER is
+/// not among the variants skipped.
+#[test]
+fn skip_outside_with_only_passed_gives_the_42_and_the_433_of_the_475() {
+    for (exclude, name, kept) in [(false, "regions", 42_u64), (true, "excluded_regions", 433)] {
+        for skips in [true, false] {
+            let options = VcfOptions {
+                ploidy: 2,
+                only_passed: true,
+                num_vars_per_block: Some(7),
+            };
+            let vcf = VcfReader::from_path(&reference_dir().join("vcf/many.vcf"), options)
+                .expect("the reader");
+            let source: Box<dyn BlockReader> = if skips {
+                Box::new(vcf)
+            } else {
+                Box::new(RefusesTheOffer(vcf))
+            };
+            let mut reader = RegionsReader::new(
+                source,
+                RegionFilter::new(selection_of(&the_bed_of_the_spec(), exclude)),
+            )
+            .expect("the reader");
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+            let num_kept: usize = blocks.iter().map(|block| block.num_vars).sum();
+            assert_eq!(
+                u64::try_from(num_kept).unwrap(),
+                kept,
+                "exclude {exclude} skips {skips}"
+            );
+            assert_eq!(
+                reader.filtering_stats(),
+                vec![(name, pair(475, kept))],
+                "exclude {exclude} skips {skips}"
+            );
+        }
+    }
 }

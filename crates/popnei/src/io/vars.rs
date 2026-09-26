@@ -6901,6 +6901,29 @@ mod tests {
         }
     }
 
+    /// A file with no `chrom` and `pos` columns has no regions in its
+    /// footer, so the reader skips nothing under the regions and gives its
+    /// batch, which the filter refuses for the field it depends on: had the
+    /// reader skipped a batch of no regions, the pass would give no variant
+    /// and no error.
+    #[test]
+    fn skip_outside_a_file_with_no_chrom_and_pos_columns_skips_nothing() {
+        let mut parts = FileParts::of_cases();
+        parts
+            .columns
+            .retain(|(field, _)| field.name() != "chrom" && field.name() != "pos");
+        parts.popnei_batches = Some(batches_as_json(&[BatchInfo {
+            num_vars: 4,
+            regions: Vec::new(),
+        }]));
+        let mut reader = opened(parts.written()).expect("a vars file");
+        assert!(reader.skip_outside(keeping(b"chr2\t0\t10\n")));
+        let blocks = blocks_of(&mut reader).expect("the blocks");
+        assert_eq!(blocks.iter().map(|block| block.num_vars).sum::<usize>(), 4);
+        assert_eq!(reader.num_skipped(), 0);
+        assert_eq!(reader.batches_read(), [0].as_slice());
+    }
+
     /// A region of the footer whose smallest position is above its largest
     /// holds no position, and the skip would pass its batch over: it is
     /// refused when the file is opened.
