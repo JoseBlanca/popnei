@@ -257,7 +257,7 @@ Tasks:
   `chain_of` and `refuse_a_second_filter_of_a_kind`, from "The filter by
   regions" and its part of "The Rust interface" of `docs/specs/filters.md`.
   The BEDs and the script. Deliverables 1 and 2.
-- [ ] 4.2 The step in both binding crates and both packages. Deliverable 3.
+- [x] 4.2 The step in both binding crates and both packages. Deliverable 3.
 
 ## 5. The skip of the sources
 
