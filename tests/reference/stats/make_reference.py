@@ -46,6 +46,7 @@ at the first one that differs.
 
 import csv
 import gzip
+import io
 import subprocess
 import sys
 import tempfile
@@ -101,20 +102,35 @@ def write_panel(ref_dir):
     with open(HERE / "panel_pops_bcftools.txt", "w") as f:
         for name in individuals:
             f.write(f"{name}\t{pop_of[name]}\n")
-    with gzip.open(HERE / "panel.vcf.gz", "wt") as f:
-        f.write("##fileformat=VCFv4.2\n")
-        f.write("##contig=<ID=1>\n")
-        f.write('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n')
-        f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(individuals) + "\n")
-        pos = 0
-        for chunk in variants.iter_vars_chunks():
-            gts = chunk.gts.gt_values
-            for var in range(chunk.num_vars):
-                pos += 1
-                row = gts[var]
-                calls = ["./." if numpy.any(g < 0) else f"{g[0]}/{g[1]}" for g in row]
-                f.write(f"1\t{pos}\tvar{pos - 1:04d}\tA\tC\t.\tPASS\t.\tGT\t" + "\t".join(calls) + "\n")
+    f = io.StringIO()
+    f.write("##fileformat=VCFv4.2\n")
+    f.write("##contig=<ID=1>\n")
+    f.write('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n')
+    f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(individuals) + "\n")
+    pos = 0
+    for chunk in variants.iter_vars_chunks():
+        gts = chunk.gts.gt_values
+        for var in range(chunk.num_vars):
+            pos += 1
+            row = gts[var]
+            calls = ["./." if numpy.any(g < 0) else f"{g[0]}/{g[1]}" for g in row]
+            f.write(f"1\t{pos}\tvar{pos - 1:04d}\tA\tC\t.\tPASS\t.\tGT\t" + "\t".join(calls) + "\n")
+    write_gzipped_if_changed(HERE / "panel.vcf.gz", f.getvalue())
     return individuals
+
+
+def write_gzipped_if_changed(path, text):
+    """`text` gzipped into `path`, which is left as it is when it holds that
+    text already: gzip writes the time into its header, so the same text
+    written again is other bytes, and a run of this script would leave a
+    committed file changed for nothing. A new file is written with a time
+    of 0, so the same text gives the same bytes."""
+    if path.exists():
+        with gzip.open(path, "rt") as existing:
+            if existing.read() == text:
+                return
+    with open(path, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gzipped:
+        gzipped.write(text.encode())
 
 
 def run(command):
