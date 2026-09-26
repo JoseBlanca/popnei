@@ -1098,3 +1098,259 @@ fn a_second_filter_by_regions_over_a_source_that_skips_is_not_handed_on() {
         );
     }
 }
+
+/// A source of the tests that gives the blocks it was built with over a
+/// table of chromosome names it was given, and counts how many times it
+/// was asked for a block.
+struct GivenBlocks {
+    left: Vec<Block>,
+    chroms: ChromTable,
+    individuals: Vec<String>,
+    header: SourceHeader,
+    calls: Arc<AtomicUsize>,
+}
+
+impl GivenBlocks {
+    /// A source of one haploid individual whose chromosomes are named
+    /// `names`, numbered in that order.
+    fn of(blocks: Vec<Block>, names: &[&str]) -> GivenBlocks {
+        let mut chroms = ChromTable::new();
+        for name in names {
+            chroms.intern(name);
+        }
+        let mut left = blocks;
+        left.reverse();
+        GivenBlocks {
+            left,
+            chroms,
+            individuals: vec!["ind1".to_owned()],
+            header: SourceHeader {
+                individuals: vec!["ind1".to_owned()],
+                chrom_lengths: Vec::new(),
+                vcf_meta_lines: None,
+            },
+            calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl BlockReader for GivenBlocks {
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.left.pop())
+    }
+
+    fn individuals(&self) -> &[String] {
+        &self.individuals
+    }
+
+    fn ploidy(&self) -> usize {
+        1
+    }
+
+    fn chroms(&self) -> &ChromTable {
+        &self.chroms
+    }
+
+    fn set_needs(&mut self, _needs: Needs) {}
+
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        Vec::new()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        &self.header
+    }
+
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    fn num_skipped(&self) -> u64 {
+        0
+    }
+}
+
+/// A block of one haploid individual of the variants given, each its
+/// chromosome number and its position, whose genotype is the number of the
+/// variant, so that a test sees which variants stayed.
+fn haploid_block(variants: &[(u32, u64)]) -> Block {
+    Block {
+        num_vars: variants.len(),
+        num_individuals: 1,
+        ploidy: 1,
+        gts: (0..variants.len())
+            .map(|var| i8::try_from(var % 100).unwrap())
+            .collect(),
+        chrom: Some(variants.iter().map(|(chrom, _)| *chrom).collect()),
+        pos: Some(variants.iter().map(|(_, pos)| *pos).collect()),
+        id: None,
+        alleles: None,
+        qual: None,
+        vcf_text: None,
+    }
+}
+
+/// A source that gives a block of no variants has a defect: the reader
+/// gives the error of it and does not ask the source again.
+#[test]
+fn a_source_that_gives_a_block_of_no_variants_by_regions_is_the_error_of_a_defect() {
+    let source = GivenBlocks::of(
+        vec![haploid_block(&[]), haploid_block(&[(0, 5)])],
+        &["chr1"],
+    );
+    let calls = Arc::clone(&source.calls);
+    let mut reader = RegionsReader::new(
+        source,
+        RegionFilter::new(selection_of(b"chr1\t0\t10\n", false)),
+    )
+    .expect("the reader");
+    let error = reader.next_block().expect_err("a block of no variants");
+    assert!(
+        matches!(error, Error::ReaderGaveABlockOfNoVariants),
+        "{error:?}"
+    );
+    assert!(
+        reader
+            .next_block()
+            .expect("no block after the error")
+            .is_none()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// An error of the filter ends the pass: no block after it, and the source
+/// is not asked again.
+#[test]
+fn after_an_error_of_the_filter_by_regions_there_is_no_block_and_the_source_is_not_asked_again() {
+    let source = GivenBlocks::of(
+        vec![
+            haploid_block(&[(0, 5)]),
+            haploid_block(&[(0, 6), (1, 7)]),
+            haploid_block(&[(0, 8)]),
+        ],
+        &["chr1"],
+    );
+    let calls = Arc::clone(&source.calls);
+    let mut reader = RegionsReader::new(
+        source,
+        RegionFilter::new(selection_of(b"chr1\t0\t10\n", false)),
+    )
+    .expect("the reader");
+    assert!(reader.next_block().expect("the first block").is_some());
+    let error = reader.next_block().expect_err("a chromosome with no name");
+    assert!(
+        matches!(error, Error::RegionFilterChromNameMissing { number: 1 }),
+        "{error:?}"
+    );
+    assert!(
+        reader
+            .next_block()
+            .expect("no block after the error")
+            .is_none()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(reader.filtering_stats(), vec![("regions", pair(1, 1))]);
+}
+
+/// Of two chromosome numbers with no name in a block large enough to be
+/// shared out over the threads, the error is the one of the first row,
+/// wherever the threads found an error.
+#[test]
+fn the_error_of_a_block_by_regions_is_the_one_of_its_first_row_that_has_one() {
+    let mut variants: Vec<(u32, u64)> = (1..=200_000).map(|pos| (0, pos)).collect();
+    // The first at the end of the first half of the rows and the second
+    // at the start of the second, where a thread that takes the second
+    // half finds it at once.
+    *variants.get_mut(99_999).unwrap() = (9, 1);
+    *variants.get_mut(100_000).unwrap() = (8, 1);
+    let mut chroms = ChromTable::new();
+    chroms.intern("chr1");
+    for _ in 0..5 {
+        let mut block = haploid_block(&variants);
+        let mut filter = RegionFilter::new(selection_of(b"chr1\t0\t10\n", false));
+        let error = filter
+            .filter_block(&mut block, &chroms)
+            .expect_err("no name");
+        assert!(
+            matches!(error, Error::RegionFilterChromNameMissing { number: 9 }),
+            "{error:?}"
+        );
+    }
+}
+
+/// The chromosome numbers of a source need not follow the order of the
+/// names in the BED, nor its chromosomes all be in it: chr2 comes first
+/// here, then one the BED does not name, then chr1.
+#[test]
+fn chromosomes_in_any_order_by_regions_are_each_looked_up_by_name() {
+    let mut chroms = ChromTable::new();
+    for name in ["chr2", "chrUn", "chr1"] {
+        chroms.intern(name);
+    }
+    let bed = b"chr1\t0\t10\nchr2\t100\t110\n";
+    for (exclude, expected) in [
+        (false, vec![(0, 105), (2, 5), (0, 101)]),
+        (true, vec![(0, 5), (1, 5), (1, 105), (2, 105)]),
+    ] {
+        let mut block = haploid_block(&[
+            (0, 5),
+            (0, 105),
+            (1, 5),
+            (1, 105),
+            (2, 5),
+            (2, 105),
+            (0, 101),
+        ]);
+        let mut filter = RegionFilter::new(selection_of(bed, exclude));
+        filter
+            .filter_block(&mut block, &chroms)
+            .expect("the filter");
+        let kept: Vec<(u32, u64)> = block
+            .chrom
+            .unwrap()
+            .into_iter()
+            .zip(block.pos.unwrap())
+            .collect();
+        assert_eq!(kept, expected, "exclude {exclude}");
+    }
+}
+
+/// A chromosome name of a BED that is not UTF-8 text is read, as the spec
+/// says, and matches no chromosome a source names, which are text.
+#[test]
+fn a_chromosome_name_that_is_not_utf8_by_regions_is_read_and_matches_no_variant() {
+    let regions =
+        Regions::from_bed(b"chr\xff1\t0\t10\nchr1\t0\t5\n".as_slice()).expect("the regions");
+    assert_eq!(regions.num_regions(), 2);
+    assert!(regions.contains("chr1", 5));
+    assert!(!regions.contains("chr1", 6));
+    assert!(!regions.contains("chr\u{fffd}1", 5));
+}
+
+/// A BED that names its chromosomes `1` where `many.vcf` names them `chr1`
+/// keeps nothing, and the consumer gives the error of a pass that gave no
+/// variant, with the counts of the filter, 500 given and 0 kept.
+#[test]
+fn a_bed_of_other_names_by_regions_is_the_error_of_a_pass_that_gave_no_variant() {
+    let mut reader = RegionsReader::new(
+        vcf_reader("many.vcf", None),
+        RegionFilter::new(selection_of(b"1\t0\t2000\n2\t0\t30000\n", false)),
+    )
+    .expect("the reader");
+    let error = match crate::kinship::calc_kinship(&mut reader, None, false) {
+        Ok(_) => panic!("a kinship of no variant"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(&error, Error::PassGaveNoVariant { num_vars_of_the_source: 500, filters }
+            if *filters == vec![("regions", pair(500, 0))]),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("the `regions` filter was given 500 and kept 0"),
+        "{error}"
+    );
+}
