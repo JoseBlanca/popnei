@@ -433,7 +433,7 @@ from it, with ranges of the size popnei chose:
   about a value it holds, after the generated `free` had zeroed the pointer
   of the handle and dropped its entry of the `FinalizationRegistry`, so the
   source stayed in the memory of wasm with no handle left to free it. The
-  list of the twelve the two loops run over is held to the twelve the
+  list of the thirteen the two loops run over is held to the thirteen the
   binding crate names, which it writes in the message of a name that is of
   no consumer.
 - A function that throws on the first call of the second pass: the PCA
@@ -458,7 +458,7 @@ from it, with ranges of the size popnei chose:
   pass read on, was still told of the first read of that pass, which is one
   call of pass 1 of 1, and passed that check while it gave popnei's error
   for the failed read in place of the value the application threw.
-- For each of the twelve consumers, the largest `pass` of the calls of one
+- For each of the thirteen consumers, the largest `pass` of the calls of one
   run equals `numPassesOf` of it with the same options, and the last call of
   each of its passes says the 117346 bytes of `many.vcf`. The association
   study is run twice here, once with the GRAMMAR-Gamma approximation and
@@ -527,7 +527,7 @@ the default of the exact denominator; each of the eleven names other than
 among them; a name that is of no consumer throws, and so does a
 `numPrinComps` of -1 and a `useGrammarGammaApprox` that is not a boolean.
 The test of the item above
-runs each of the twelve and compares the passes the calls showed with the
+runs each of the thirteen and compares the passes the calls showed with the
 number this function gives, which is what would catch a consumer that grew a
 pass and did not say so.
 
@@ -737,7 +737,7 @@ another over one source and tags each with a key of its own, since the
 function can carry that key, and it leaves the options of every consumer as
 the ones of the Python API, which goal 3 of `docs/objectives.md` asks the
 TypeScript API to mirror. An argument of every consumer is the same power
-with twelve places to add it to and twelve more lines of documentation.
+with thirteen places to add it to and thirteen more lines of documentation.
 Recommendation: the method of `Variants`. Meanwhile the implementer writes
 that.
 
