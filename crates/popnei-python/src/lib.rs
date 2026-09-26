@@ -148,7 +148,7 @@ mod _core {
     #[pymodule_export]
     use super::vars::{VarsSource, open_vars, write_vars};
     #[pymodule_export]
-    use super::vcf::{VcfSource, open_vcf};
+    use super::vcf::{VcfSource, open_vcf, write_vcf};
     #[pymodule_export]
     use super::version;
 }

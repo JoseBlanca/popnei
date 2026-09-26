@@ -1,5 +1,6 @@
 /** Reading and writing a vars file, the file popnei keeps its variants in. */
 
+import type { WrittenFile } from "../wasm/popnei.js";
 import {
   open_vars as openVarsOfTheCore,
   open_vars_of_a_file as openVarsOfAFileOfTheCore,
@@ -155,6 +156,22 @@ export function writeVars(
   const file = whileTheRunReads(() =>
     source.write_vars(numVarsPerBlock, steps.of_a_pass()),
   );
+  return theBytesAndTheCountsOf(file, "vars file");
+}
+
+/**
+ * The bytes of a file the core wrote in the memory of wasm, put together
+ * into one array of the caller's, and the counts of the pass that wrote it;
+ * the file is freed in wasm whatever happens. `what` names the file in the
+ * error of one that gave fewer bytes than it said it holds.
+ *
+ * @throws {Error} When the pieces hold another number of bytes than the
+ * file says, which is a defect of popnei.
+ */
+export function theBytesAndTheCountsOf(
+  file: WrittenFile,
+  what: string,
+): { bytes: Uint8Array; passStats: PassStats } {
   try {
     const bytes = new Uint8Array(file.num_bytes());
     let written = 0;
@@ -168,7 +185,7 @@ export function writeVars(
     }
     if (written !== bytes.length) {
       throw new Error(
-        `popnei: the vars file says it holds ${bytes.length} bytes and gave ${written}`,
+        `popnei: the ${what} says it holds ${bytes.length} bytes and gave ${written}`,
       );
     }
     return { bytes, passStats: passStatsOf(file.pass_stats()) };

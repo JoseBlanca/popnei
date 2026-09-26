@@ -26,7 +26,7 @@ use popnei::io::vars::VarsReader;
 
 use crate::errors::PyPopneiError;
 use crate::source::{Blocks, OpenSource, PassCounts, blocks_of, count_of, source_of};
-use crate::steps::{Steps, chain_of};
+use crate::steps::{Step, Steps, chain_of};
 
 // A vars file that was opened: its path, and the individuals and the ploidy
 // its schema named. A `///` here would become the `__doc__` of the class,
@@ -91,6 +91,10 @@ impl OpenSource for VarsSource {
     ) -> Result<Box<dyn BlockReader>, popnei::Error> {
         Ok(Box::new(VarsReader::from_path(&self.path)?))
     }
+
+    fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize> {
+        None
+    }
 }
 
 // The vars file at `path`. It reads the schema and the footer, so the
@@ -140,11 +144,48 @@ pub(crate) fn write_vars(
         .map(|asked_for| count_of("num_vars_per_block", asked_for))
         .transpose()?;
     let steps = steps.get().of_a_pass()?;
+    // The source is opened at the size of its own blocks: the core puts a
+    // `reblock` of `num_vars_per_block` over whatever it is given, so the
+    // batches of the file hold that many variants whichever source they
+    // came from.
+    write_the_pass(py, source, &path, None, &steps, |chain, sink| {
+        popnei::io::vars::write_vars(chain, sink, num_vars_per_block)
+    })
+}
+
+/// Every variant of `source` through the steps of `steps` into a file made
+/// at `path`, written by `write`, and the counts of the pass: what
+/// `write_vars` and `write_vcf` both do around the writer of the core.
+/// The source is opened with blocks of `num_vars_per_block`, or of the size
+/// of its own blocks for `None`.
+///
+/// It makes the file, refusing a path that a file is at; releases the
+/// interpreter for the whole pass; flushes the bytes to the disc before it
+/// returns; and takes the file away when the pass fails or a Ctrl-C
+/// arrived, so that a call that failed leaves nothing behind.
+///
+/// # Errors
+///
+/// The ones [`file_at`] gives for the path, what the pass or `write`
+/// failed with, named for the file it is about, and the `KeyboardInterrupt`
+/// of a Ctrl-C.
+pub(crate) fn write_the_pass(
+    py: Python<'_>,
+    source: &dyn OpenSource,
+    path: &Path,
+    num_vars_per_block: Option<usize>,
+    steps: &[Step],
+    write: impl FnOnce(
+        &mut Box<dyn BlockReader>,
+        BufWriter<File>,
+    ) -> Result<(BufWriter<File>, u64), popnei::Error>
+    + Send,
+) -> Result<PassCounts, PyPopneiError> {
     // A Ctrl-C that was pending when this was called is raised here, before
     // a file is made: what a user stopped leaves no file at the path.
     py.check_signals()?;
     let read = source.path().to_path_buf();
-    let file = file_at(&path)?;
+    let file = file_at(path)?;
     // The whole source is read inside this one call, which is seconds for a
     // VCF of hundreds of megabytes, so the interpreter is released for all
     // of it. A Ctrl-C that arrives meanwhile is raised when the call is
@@ -152,18 +193,13 @@ pub(crate) fn write_vars(
     // loop over the blocks is the core's, which `docs/specs/io_vars.md` has
     // this crate call instead of writing that loop again.
     let written = py.detach(|| -> Result<PassCounts, popnei::Error> {
-        // The source is opened at the size of its own blocks: the core puts
-        // a `reblock` of `num_vars_per_block` over whatever it is given, so
-        // the batches of the file hold that many variants whichever source
-        // they came from.
-        let reader = source.reader(None)?;
+        let reader = source.reader(num_vars_per_block)?;
         // The chain of the pass stays here, lent to the core, so that the
         // counts of its filters can be read when the call is over: the loop
         // over the blocks is the core's, and so is the count of the
         // variants it wrote, which no loop of this crate sees.
-        let mut chain = chain_of(reader, &steps)?;
-        let (sink, num_vars) =
-            popnei::io::vars::write_vars(&mut chain, BufWriter::new(file), num_vars_per_block)?;
+        let mut chain = chain_of(reader, steps)?;
+        let (sink, num_vars) = write(&mut chain, BufWriter::new(file))?;
         // What the buffer still holds goes to the file here, where its
         // error is read; a buffer that is dropped writes it and loses it.
         let file = sink
@@ -184,14 +220,14 @@ pub(crate) fn write_vars(
     let written = match written {
         Ok(counts) => counts,
         Err(error) => {
-            let taken = take_away(&path);
+            let taken = take_away(path);
             // The file the error names is the one it is about: a wrong line
             // of the VCF that was being read names that VCF, and a disc that
             // filled up names the file that was being written, which the
             // core keeps apart from an error of a source that could not be
             // read.
-            let refusal = of_the_file_it_is_about(error, &read, &path);
-            return Err(with_what_was_left(refusal, &path, taken));
+            let refusal = of_the_file_it_is_about(error, &read, path);
+            return Err(with_what_was_left(refusal, path, taken));
         }
     };
     // A Ctrl-C that arrived while the file was being written is still
@@ -200,8 +236,8 @@ pub(crate) fn write_vars(
     // as every call that fails leaves none, so that the call they make
     // again finds the path free.
     if let Err(interrupted) = py.check_signals() {
-        let taken = take_away(&path);
-        return Err(with_what_was_left(interrupted.into(), &path, taken));
+        let taken = take_away(path);
+        return Err(with_what_was_left(interrupted.into(), path, taken));
     }
     Ok(written)
 }

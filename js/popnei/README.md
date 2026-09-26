@@ -11,7 +11,8 @@ the page, and gives a `Variants`, the handle whose `iterBlocks` gives the
 genotypes block by block; `writeVars`, which
 gives back the bytes of a vars file with every variant of a `Variants`, and
 `openVars`, which opens such a file, its bytes or the file of the page, as
-another `Variants`. A vars file is
+another `Variants`; and `writeVcf`, which gives back the bytes of a VCF,
+bgzipped by default, with every variant of a `Variants`. A vars file is
 one arrow IPC file, also called feather v2, which pandas, R and polars open
 as a table with no popnei installed: it is where a user keeps their
 variants once the VCF has been read. `numPassesOf` and the `onProgress` of
@@ -94,7 +95,8 @@ consumer of a `Variants`, gives the components of a table of individuals and
 traits handed to it as numbers, which is the same analysis over values an
 application holds and not over a source of variants.
 
-Each of the twelve consumers of a `Variants`, `iterBlocks`, `writeVars`,
+Each of the thirteen consumers of a `Variants`, `iterBlocks`, `writeVars`,
+`writeVcf`,
 `calcPairwiseKosmanDists`, `calcPopDists`, `calcPopDiversity`,
 `calcRogersHuffR2Matrix`, `calcLdAndDistPerPop`, `calcKinship`,
 `doPcaFromVariants`, `calcGwas`, `calcPerVarDistribs` and
@@ -525,6 +527,28 @@ when it reads it and no build of popnei carries the code that reads zstd.
 A `Variants` of a vars file is a source like the one of a VCF: it goes to
 `iterBlocks` and back to `writeVars`, which writes the file again with
 another size of batch.
+
+The variants of a `Variants`, after its steps, go back to a VCF with
+`writeVcf` of `docs/specs/io_vcf.md`, which plink2, bcftools and every
+other program of the field read:
+
+```ts
+import { init, openVcf, writeVcf } from "popnei";
+
+await init();
+const variants = openVcf(new Uint8Array(await readFile("many.vcf")));
+variants.filterByMissingData(0.04);
+// Bgzipped, which tabix indexes, unless `{ bgzip: false }` asks for text.
+const { bytes, passStats } = writeVcf(variants);
+console.log(passStats.numVars);
+variants.free();
+```
+
+A line of a VCF source is written as the source had it, INFO, FILTER, the
+phase and every value of each individual among them; the filter of
+individuals keeps the columns of the individuals it keeps and takes AC and
+AN out when it took individuals out. A vars file source gives lines of
+what the file holds, with FILTER and INFO a dot.
 
 The first calculation over such a handle is the Kosman distance of every
 pair of individuals, `docs/specs/dists.md`:

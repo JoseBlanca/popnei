@@ -13,7 +13,7 @@
  * `Variants`, the iteration of `iterBlocks` among them, as
  * `docs/glossary.md` has the three words.
  *
- * Each of the twelve consumers is stopped in two ways, in the two loops
+ * Each of the thirteen consumers is stopped in two ways, in the two loops
  * over `THE_CONSUMERS` of `consumers.ts`: with a value of the application,
  * which the consumer has to give back as it is, and with the `free()` of the
  * variants that are being read, which popnei refuses and whose refusal then
@@ -155,7 +155,7 @@ function numVarsReadAgain(variants: Variants): number {
   return numVars;
 }
 
-test("the twelve consumers the tests stop are the twelve the crate names", () => {
+test("the thirteen consumers the tests stop are the thirteen the crate names", () => {
   // The loops below are worth what their list holds: a consumer left out of
   // it is never stopped and nothing says so. The crate's own list is what
   // the message of a name that is of no consumer gives, and it is written in
@@ -180,7 +180,7 @@ for (const consumer of THE_CONSUMERS) {
         `${consumer.name} gave an error of popnei: ${String(thrown)}`,
       );
       // The first read of the pass is the header of the VCF, read when the
-      // reader is built, so every one of the twelve was stopped before it
+      // reader is built, so every one of the thirteen was stopped before it
       // was given a variant.
       assert.equal(calls.length, 1);
       assert.equal(calls.at(0)?.bytesRead, 0);

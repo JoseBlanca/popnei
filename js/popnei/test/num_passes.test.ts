@@ -26,9 +26,9 @@ import { theConsumersTheCrateNames } from "./consumers.ts";
 /**
  * How many passes each consumer makes when it is asked with no options.
  *
- * Eleven of the twelve read the source once, the principal components of the
+ * Twelve of the thirteen read the source once, the principal components of the
  * variants being the one that reads it twice for the weights its ten
- * components ask for. The association study is among the eleven: it reads
+ * components ask for. The association study is among the twelve: it reads
  * the source twice only when it is asked for the GRAMMAR-Gamma
  * approximation, which the default does not ask for, and the two tests
  * below are of that option.
@@ -51,11 +51,12 @@ const THE_PASSES_OF_EACH_CONSUMER: Record<ConsumerName, number> = {
   calcKinship: 1,
   calcGwas: 1,
   writeVars: 1,
+  writeVcf: 1,
   iterBlocks: 1,
   doPcaFromVariants: 2,
 };
 
-/** The twelve consumers of the package, which are the keys of that table. */
+/** The thirteen consumers of the package, which are the keys of that table. */
 const THE_CONSUMERS = Object.keys(
   THE_PASSES_OF_EACH_CONSUMER,
 ) as ConsumerName[];
@@ -109,12 +110,12 @@ test("a name that is of no consumer is refused, with the names that are", async 
 
 test("every name the refusal gives is a name numPassesOf takes", async () => {
   await init();
-  // The twelve names live twice in the binding crate, in the function that
+  // The thirteen names live twice in the binding crate, in the function that
   // takes a name and in the list the message of a refused name is built
   // from, and nothing else holds the two together. A name that the message
   // gives and the function refuses fails the loop below; a name the
   // function takes and the message leaves out fails the comparison with the
-  // twelve of this file, which are the twelve of
+  // thirteen of this file, which are the thirteen of
   // `docs/specs/js_sources.md`.
   const names = theConsumersTheCrateNames();
   assert.deepEqual([...names].sort(), [...THE_CONSUMERS].sort());

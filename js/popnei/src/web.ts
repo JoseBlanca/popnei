@@ -54,8 +54,13 @@ export type {
 } from "./ld.js";
 export { openVars, writeVars } from "./io_vars.js";
 export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
-export { openVcf } from "./io_vcf.js";
-export type { BytesOrFile, OpenVcfOptions } from "./io_vcf.js";
+export { openVcf, writeVcf } from "./io_vcf.js";
+export type {
+  BytesOrFile,
+  OpenVcfOptions,
+  VcfWritten,
+  WriteVcfOptions,
+} from "./io_vcf.js";
 export { doPca, doPcaFromVariants } from "./pca.js";
 export type {
   DoPcaFromVariantsOptions,

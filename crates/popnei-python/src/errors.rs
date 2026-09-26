@@ -388,8 +388,8 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             format!("the file could not be read: {}", what_went_wrong(&source)),
             path,
         ),
-        // The vars file that a call was writing and that the file system
-        // or arrow-rs refused, which is an error of that file and not of
+        // The vars file or the VCF that a call was writing and that the
+        // file system or arrow-rs refused, which is an error of that file and not of
         // the source the call was reading: `path` is the file being
         // written wherever this case travels, and the message of the core
         // says already that it could not be written. The number is the
@@ -467,6 +467,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VarsBlockDoesNotFit { .. }
         | popnei::Error::VarsBlockColumns { .. }
         | popnei::Error::VarsChromNameMissing { .. }
+        // The two of the VCF writer, which are of the same kind: a block
+        // that holds neither the text of its lines nor every column a line
+        // is written from, and a chromosome number its reader has no name
+        // for. `write_vcf` asks its reader for both, so a user reaches them
+        // only through a reader with a defect.
+        | popnei::Error::VcfWriterFieldsMissing { .. }
+        | popnei::Error::VcfWriterChromNameMissing { .. }
         // A population of the fall-off of r² with distance that has no
         // dosages when the pass has ended, which is one more of that kind:
         // the pass refuses a reader that gave no variant before it fits any

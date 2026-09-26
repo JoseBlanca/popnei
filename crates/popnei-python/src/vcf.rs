@@ -12,11 +12,12 @@ use std::path::{Path, PathBuf};
 use pyo3::prelude::*;
 
 use popnei::block::BlockReader;
-use popnei::io::vcf::{VcfOptions, VcfReader};
+use popnei::io::vcf::{VcfOptions, VcfReader, VcfWriteOptions, vcf_text_num_vars_per_block};
 
 use crate::errors::PyPopneiError;
-use crate::source::{Blocks, OpenSource, blocks_of, count_of};
+use crate::source::{Blocks, OpenSource, PassCounts, blocks_of, count_of, source_of};
 use crate::steps::Steps;
+use crate::vars::write_the_pass;
 
 // A VCF that was opened: its path, the options it is read with, and the
 // individuals its header named. A `///` here would become the `__doc__` of
@@ -92,6 +93,10 @@ impl OpenSource for VcfSource {
         };
         Ok(Box::new(VcfReader::from_path(&self.path, options)?))
     }
+
+    fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize> {
+        Some(vcf_text_num_vars_per_block(self.individuals.len()))
+    }
 }
 
 // The VCF at `path`, read with `ploidy` alleles in every genotype and, when
@@ -125,4 +130,35 @@ pub(crate) fn open_vcf(
         options,
         individuals,
     })
+}
+
+// Every variant of `source` into a VCF at `path`, through the steps of
+// `steps`, bgzipped when the path ends in `.gz` and plain otherwise.
+// `source` is a VCF that `open_vcf` opened or a vars file that `open_vars`
+// did, and what it gives back is the counts of the pass it made. The path
+// is handled as `write_vars` handles its own: a path a file is at is
+// refused, and the file of a call that failed is taken away. A `///`
+// comment would become the `__doc__` of `popnei._core.write_vcf`, and what
+// a Python user reads belongs to the package, which is the API.
+#[pyfunction]
+#[pyo3(signature = (source, path, steps))]
+pub(crate) fn write_vcf(
+    py: Python<'_>,
+    source: &Bound<'_, PyAny>,
+    path: PathBuf,
+    steps: &Bound<'_, Steps>,
+) -> Result<PassCounts, PyPopneiError> {
+    let source = source_of(source)?;
+    let steps = steps.get().of_a_pass()?;
+    let options = VcfWriteOptions {
+        bgzip: path.as_os_str().as_encoded_bytes().ends_with(b".gz"),
+    };
+    write_the_pass(
+        py,
+        source,
+        &path,
+        source.num_vars_per_block_of_the_vcf_writer(),
+        &steps,
+        |chain, sink| popnei::io::vcf::write_vcf(chain, sink, options),
+    )
 }

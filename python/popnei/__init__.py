@@ -21,7 +21,7 @@ from popnei.gwas import (
     calc_gwas,
 )
 from popnei.io_vars import VarsWritten, open_vars, write_vars
-from popnei.io_vcf import open_vcf
+from popnei.io_vcf import VcfWritten, open_vcf, write_vcf
 from popnei.kinship import Kinship, calc_kinship
 from popnei.ld import (
     LdAndDistPerPop,
@@ -78,6 +78,7 @@ __all__ = [
     "TraitType",
     "Variants",
     "VarsWritten",
+    "VcfWritten",
     "__version__",
     "calc_gwas",
     "calc_kinship",
@@ -93,4 +94,5 @@ __all__ = [
     "open_vars",
     "open_vcf",
     "write_vars",
+    "write_vcf",
 ]

@@ -37,6 +37,7 @@ export type ConsumerName =
   | "doPcaFromVariants"
   | "calcGwas"
   | "writeVars"
+  | "writeVcf"
   | "iterBlocks";
 
 /**

@@ -92,6 +92,12 @@ pub(crate) trait OpenSource: Sync {
         &self,
         num_vars_per_block: Option<usize>,
     ) -> Result<Box<dyn BlockReader>, popnei::Error>;
+
+    /// The size of the blocks that a pass of `write_vcf` opens the source
+    /// with: the smaller blocks of `vcf_text_num_vars_per_block` for a VCF,
+    /// whose blocks then hold the text of its lines, and `None`, the size
+    /// of its own blocks, for a source that has no text to keep.
+    fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize>;
 }
 
 /// The source that `object` is, which is one of the two classes a

@@ -32,9 +32,9 @@ use crate::ld::{ArgumentsOfTheBins, LdAndDistOfAPass, R2Matrix, ld_and_dist_of, 
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
 use crate::pop_dists::{ArgumentsOfTheDists, PopDistsOfAPass, pop_dists_of};
 use crate::source::{
-    Blocks, Consumer, OpenSource, RunOfAConsumer, TheFileOfASource, VarsFile, blocks_of,
-    bytes_of_a_vars_file, starts_a_run_of, tells_the_progress, the_bytes_of_a_new_source,
-    the_file_of_a_new_source, the_source_was_freed,
+    Blocks, Consumer, OpenSource, RunOfAConsumer, TheFileOfASource, WrittenFile, blocks_of,
+    bytes_of_a_vars_file, bytes_of_a_vcf, starts_a_run_of, tells_the_progress,
+    the_bytes_of_a_new_source, the_file_of_a_new_source, the_source_was_freed,
 };
 use crate::stats::{
     ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, per_individual_stats_of,
@@ -122,8 +122,22 @@ impl VarsSource {
         &self,
         num_vars_per_block: Option<usize>,
         steps: Steps,
-    ) -> Result<VarsFile, JsPopneiError> {
+    ) -> Result<WrittenFile, JsPopneiError> {
         bytes_of_a_vars_file(self, num_vars_per_block, steps)
+    }
+
+    /// The variants of the file, through the steps of `steps`, as a VCF,
+    /// bgzipped when `bgzip` is true and plain text otherwise, which the
+    /// package reads out of the memory of wasm piece by piece, with the
+    /// counts of the pass that wrote it.
+    ///
+    /// # Errors
+    ///
+    /// When the source cannot be read, when a block of it is not one the
+    /// writer can write, and when the memory of the tab does not take the
+    /// file.
+    pub fn write_vcf(&self, bgzip: bool, steps: Steps) -> Result<WrittenFile, JsPopneiError> {
+        bytes_of_a_vcf(self, bgzip, steps)
     }
 
     /// The five per variant statistics of one pass over the file, through
@@ -550,6 +564,10 @@ impl OpenSource for VarsSource {
         Ok(Box::new(VarsReader::new(
             self.file.a_pass_of(self.in_javascript, run)?,
         )?))
+    }
+
+    fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize> {
+        None
     }
 }
 
