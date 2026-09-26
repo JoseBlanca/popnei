@@ -54,7 +54,9 @@ use crate::variant::{
 };
 
 mod regions;
-pub use regions::{BedLineProblem, RegionFilter, RegionSelection, Regions, RegionsReader};
+pub use regions::{
+    BedLineProblem, RegionFilter, RegionSelection, Regions, RegionsReader, SelectionOfAChrom,
+};
 
 /// How many variants a filter was given and how many of them it kept, over
 /// every block it has taken since it was built.

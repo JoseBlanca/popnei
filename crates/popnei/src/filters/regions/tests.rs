@@ -898,3 +898,39 @@ fn a_byte_order_mark_by_regions_is_dropped_from_the_start_of_the_bed() {
         Regions::from_bed(b"chr1\t0\t5\n\xef\xbb\xbfchr2\t0\t5\n".as_slice()).expect("the regions");
     assert!(!regions.contains("chr2", 5));
 }
+
+/// The regions of one chromosome, looked up once by its name as bytes,
+/// answer what the selection answers for each position of it: the handle
+/// a reader that holds CHROM as bytes keeps from one line to the next.
+#[test]
+fn the_regions_of_one_chromosome_by_regions_answer_as_the_selection_does() {
+    for exclude in [false, true] {
+        let selection = selection_of(&the_bed_of_the_spec(), exclude);
+        for chrom in ["chr1", "chr2", "chr3", "chr4"] {
+            let of_the_chrom = selection.regions_of(chrom.as_bytes());
+            for pos in [
+                1, 2000, 2001, 4990, 4991, 5100, 5101, 10249, 10250, 19001, 30001,
+            ] {
+                assert_eq!(
+                    of_the_chrom.keeps(pos),
+                    selection.keeps(chrom, pos),
+                    "{chrom} {pos} exclude {exclude}"
+                );
+            }
+            for (min_pos, max_pos) in [(1, 2000), (2001, 4990), (8400, 10213), (12100, 15763)] {
+                assert_eq!(
+                    of_the_chrom.keeps_none_of(min_pos, max_pos),
+                    selection.keeps_none_of(chrom, min_pos, max_pos),
+                    "{chrom} {min_pos} {max_pos} exclude {exclude}"
+                );
+            }
+        }
+    }
+    let inside = selection_of(&the_bed_of_the_spec(), false);
+    assert!(inside.regions_of(b"chr1").keeps(2000));
+    assert!(!inside.regions_of(b"chr1").keeps(2001));
+    assert!(inside.regions_of(b"chr4").keeps_none_of(1, u64::MAX));
+    let outside = selection_of(&the_bed_of_the_spec(), true);
+    assert!(outside.regions_of(b"chr4").keeps(1));
+    assert!(outside.regions_of(b"chr3").keeps_none_of(1, 100_000));
+}

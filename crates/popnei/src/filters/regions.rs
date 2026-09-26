@@ -464,7 +464,7 @@ impl RegionSelection {
     /// `chrom` is one the filter keeps.
     #[must_use]
     pub fn keeps(&self, chrom: &str, pos: u64) -> bool {
-        self.regions.contains(chrom, pos) != self.exclude
+        self.regions_of(chrom.as_bytes()).keeps(pos)
     }
 
     /// Whether no position from `min_pos` to `max_pos` of `chrom`, both
@@ -473,15 +473,54 @@ impl RegionSelection {
     /// at all, and none of them is kept.
     #[must_use]
     pub fn keeps_none_of(&self, chrom: &str, min_pos: u64, max_pos: u64) -> bool {
+        self.regions_of(chrom.as_bytes())
+            .keeps_none_of(min_pos, max_pos)
+    }
+
+    /// The selection on the chromosome named `chrom`, as the bytes a source
+    /// holds the name in: a reader looks the name up once for a run of
+    /// variants of one chromosome and asks the handle of each of them,
+    /// where [`RegionSelection::keeps`] looks the name up at every call. A
+    /// name the BED does not have is a chromosome of no region.
+    #[must_use]
+    pub fn regions_of(&self, chrom: &[u8]) -> SelectionOfAChrom<'_> {
+        SelectionOfAChrom {
+            regions: self.regions.of_the_chrom(chrom).unwrap_or(&[]),
+            exclude: self.exclude,
+        }
+    }
+}
+
+/// A [`RegionSelection`] on one chromosome: its regions, sorted and joined,
+/// and which side of them is kept.
+#[derive(Debug, Clone, Copy)]
+pub struct SelectionOfAChrom<'regions> {
+    regions: &'regions [Region],
+    exclude: bool,
+}
+
+impl SelectionOfAChrom<'_> {
+    /// Whether the variant at position `pos` of this chromosome is one the
+    /// filter keeps.
+    #[must_use]
+    pub fn keeps(&self, pos: u64) -> bool {
+        holds(self.regions, pos) != self.exclude
+    }
+
+    /// Whether no position from `min_pos` to `max_pos` of this chromosome,
+    /// both included, is one the filter keeps. A `min_pos` above `max_pos`
+    /// is no position at all, and none of them is kept.
+    #[must_use]
+    pub fn keeps_none_of(&self, min_pos: u64, max_pos: u64) -> bool {
         if min_pos > max_pos {
             return true;
         }
-        let regions = self.regions.of_the_chrom(chrom.as_bytes()).unwrap_or(&[]);
         // The first region that does not end before `min_pos`: the regions
         // before it hold none of the positions, and it is the only one that
         // can hold `min_pos`.
-        let first = regions
-            .get(regions.partition_point(|region| region.last < min_pos))
+        let first = self
+            .regions
+            .get(self.regions.partition_point(|region| region.last < min_pos))
             .copied();
         if self.exclude {
             // Every position is inside, and the regions are joined, so one
@@ -588,7 +627,7 @@ impl RegionFilter {
 /// thread keeps from one row to the next: the variants of a chromosome
 /// come together in a sorted source, so the name is looked up once for
 /// each run of them and not for each variant.
-type TheLastChrom<'regions> = Option<(u32, Option<&'regions [Region]>)>;
+type TheLastChrom<'regions> = Option<(u32, SelectionOfAChrom<'regions>)>;
 
 /// Whether the selection keeps the variant at `chrom_number` and `pos`,
 /// with the regions of its chromosome read from `last` when the row before
@@ -600,21 +639,20 @@ fn keeps_the_row<'regions>(
     chrom_number: u32,
     pos: u64,
 ) -> Result<bool> {
-    let regions = match *last {
-        Some((number, regions)) if number == chrom_number => regions,
+    let of_the_chrom = match *last {
+        Some((number, of_the_chrom)) if number == chrom_number => of_the_chrom,
         Some(_) | None => {
             let Some(name) = chroms.name(chrom_number) else {
                 return Err(Error::RegionFilterChromNameMissing {
                     number: chrom_number,
                 });
             };
-            let regions = selection.regions.of_the_chrom(name.as_bytes());
-            *last = Some((chrom_number, regions));
-            regions
+            let of_the_chrom = selection.regions_of(name.as_bytes());
+            *last = Some((chrom_number, of_the_chrom));
+            of_the_chrom
         }
     };
-    let inside = regions.is_some_and(|regions| holds(regions, pos));
-    Ok(inside != selection.exclude)
+    Ok(of_the_chrom.keeps(pos))
 }
 
 /// Which variants of a block the selection keeps, one value for each, in
