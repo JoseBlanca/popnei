@@ -218,9 +218,10 @@ impl From<JsPopneiError> for JsValue {
 /// range of distances, the frequency a variant is counted below, and the
 /// bins of no bin, whose message names the two distances the bins are cut
 /// across beside `num_bins`. The `num_called_alleles` of a draw the dataset
-/// cannot fill is rewritten here too.
+/// cannot fill is rewritten here too, and so are the `window_size` and the
+/// `chrom_lengths` of the density of the variants.
 ///
-/// Three of the twelve names the core writes are left as they are.
+/// Three of the fourteen names the core writes are left as they are.
 /// `num_prin_comps` is in the error of a second pass that was not made,
 /// which `pca.rs` of this crate opens a reader for whenever the weights are
 /// asked for, so no call of TypeScript reaches it. The `max_num_vars` of a
@@ -268,6 +269,19 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
             | popnei::Error::DiversityDrawLargerThanTheDataset { .. }
     ) {
         return message.replace("num_called_alleles", "numCalledAlleles");
+    }
+    if matches!(error, popnei::Error::VarDensityWindowSizeZero) {
+        return message.replace("window_size", "windowSize");
+    }
+    // The three of the density of the variants that name where a length came
+    // from, which is `chrom_lengths` when the user gave the lengths.
+    if matches!(
+        error,
+        popnei::Error::VarDensityChromLengthZero { .. }
+            | popnei::Error::VarDensityChromLengthTwice { .. }
+            | popnei::Error::VarDensityVarPastTheLength { .. }
+    ) {
+        return message.replace("chrom_lengths", "chromLengths");
     }
     message
 }

@@ -9,6 +9,7 @@
 
 use pyo3::prelude::*;
 
+mod density;
 mod dists;
 mod diversity;
 mod errors;
@@ -125,6 +126,8 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_USE_GRAMMAR_GAMMA_APPROX: bool = popnei::gwas::DEFAULT_USE_GRAMMAR_GAMMA_APPROX;
 
+    #[pymodule_export]
+    use super::density::calc_var_density;
     #[pymodule_export]
     use super::dists::calc_pairwise_kosman_dists;
     #[pymodule_export]

@@ -19,6 +19,9 @@
  * is missing and the share of its called genotypes at which it is
  * heterozygous. It takes no `pops`, since each of its values is of one
  * individual.
+ *
+ * `calcVarDensity` takes no `pops` either: it counts the variants in windows
+ * along each chromosome, and reads no genotype.
  */
 
 import {
@@ -33,6 +36,7 @@ import {
   anObjectOfOptions,
   aNumber,
   aString,
+  distanceInBasePairs,
   namesOf,
   popsOfTheObject,
   whatWasGiven,
@@ -659,4 +663,151 @@ export function calcPerIndividualStats(
   } finally {
     stats.free();
   }
+}
+
+/** The options of `calcVarDensity`. */
+export interface VarDensityOptions {
+  /**
+   * The length of each chromosome, an object of chromosome name to length,
+   * which replaces the lengths of the source for every chromosome: one it
+   * does not name has no length. When it is not given the lengths are those
+   * of the source, the `##contig` lines of a VCF that have a `length` and
+   * what a vars file keeps of them.
+   */
+  chromLengths?: Record<string, number>;
+}
+
+/** What `calcVarDensity` gives back, one entry of each array per window. */
+export interface VarDensity {
+  /** The name of the chromosome of each window. */
+  chroms: readonly string[];
+
+  /** The first position of each window, counted from 1. */
+  start: Float64Array;
+
+  /** The last position of each window, included. */
+  end: Float64Array;
+
+  /** How many variants of the pass are at a position from start to end. */
+  numVars: Uint32Array;
+
+  /**
+   * How many variants the pass gave, after the steps of the `Variants`, and
+   * what each filter of it was given and kept.
+   */
+  passStats: PassStats;
+}
+
+/**
+ * How many variants fall in each window of `windowSize` base pairs along
+ * each chromosome, in one pass over `variants`.
+ *
+ * A user sees with it where the variants are crowded, where there are none,
+ * a centromere or a region that did not map, and how evenly a filter took
+ * variants out. The windows of a chromosome are laid end to end from the
+ * position 1 and do not overlap: window k, counted from 0, holds the
+ * positions from k x `windowSize` + 1 to (k + 1) x `windowSize`. A window
+ * with no variant is in the result with a count of 0.
+ *
+ * With the length of a chromosome the windows cover it to its end, and the
+ * last one ends at the length. Without one, the windows go up to the one
+ * that holds the last variant of the chromosome, and that one ends at its
+ * full width. A chromosome with a length is in the result whether or not it
+ * has a variant. The chromosomes are in the order of the lengths, and after
+ * them those with variants and no length, in the order their first variant
+ * came; the windows of each in the order of their positions.
+ *
+ * It is a consumer of the `variants`: it makes one pass over the source
+ * through the steps the `Variants` has when it is called, reading only the
+ * chromosome and the position of each variant, and the `Variants` is as it
+ * was afterwards. The variants need not be sorted. pyNei has no density of
+ * the variants; the result is the columns of the frame of Python, one array
+ * each.
+ *
+ * @throws {Error} When `windowSize` or a length of `chromLengths` is not a
+ * whole number from 1 to 2^53 - 1; when a variant is past the length of its
+ * chromosome, which the message says came from `chromLengths` or from the
+ * source, or at the position 0; when the density would have more than 10
+ * million windows; when a window ends past 2^53, which a number of
+ * JavaScript would round; when the source cannot be read; when the pass
+ * gives no variant; and when `init` has not been awaited.
+ */
+export function calcVarDensity(
+  variants: Variants,
+  windowSize: number,
+  options: VarDensityOptions = {},
+): VarDensity {
+  theWasmHasToBeLoaded();
+  anObjectOfOptions("calcVarDensity", options, ["chromLengths"]);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
+  const width = distanceInBasePairs("windowSize", windowSize, 1);
+  const lengths = theChromLengths(options.chromLengths);
+  // The steps of the pass are a copy of the list, made after every argument
+  // was checked so that nothing refused here leaves one behind: the call
+  // takes it over and frees it.
+  const density = whileTheRunReads(() =>
+    source.calc_var_density(
+      steps.of_a_pass(),
+      width,
+      lengths?.names,
+      lengths?.lengths ?? new Float64Array(0),
+    ),
+  );
+  // Every array is copied out of the memory of wasm as it is read, and the
+  // result holds that memory until it is freed, which is here: what the user
+  // gets are the copies.
+  try {
+    const names = density.chroms();
+    const windowsPerChrom = density.windows_per_chrom();
+    const chroms: string[] = [];
+    for (const [which, name] of names.entries()) {
+      for (let window = 0; window < (windowsPerChrom[which] ?? 0); window++) {
+        chroms.push(name);
+      }
+    }
+    return {
+      chroms: Object.freeze(chroms),
+      start: density.starts(),
+      end: density.ends(),
+      numVars: density.num_vars(),
+      passStats: passStatsOf(density.pass_stats()),
+    };
+  } finally {
+    density.free();
+  }
+}
+
+/**
+ * The names and the lengths of `chromLengths`, in the order its keys
+ * iterate in, or `undefined` when it was not given.
+ *
+ * @throws {Error} When it is not an object, or a length is not a whole
+ * number from 1 to 2^53 - 1.
+ */
+function theChromLengths(
+  value: unknown,
+): { names: string[]; lengths: Float64Array } | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      "popnei: `chromLengths` is an object of chromosome name to length, " +
+        `{chr1: 248956422}, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  const given = value as Record<string, unknown>;
+  const names = Object.keys(given);
+  const lengths = new Float64Array(names.length);
+  for (const [which, name] of names.entries()) {
+    lengths[which] = distanceInBasePairs(
+      `chromLengths.${name}`,
+      given[name],
+      1,
+    );
+  }
+  return { names, lengths };
 }

@@ -38,8 +38,10 @@ from popnei.stats import (
     PerVarStat,
     PolyVarsStats,
     StatsDistrib,
+    VarDensity,
     calc_per_individual_stats,
     calc_per_var_distribs,
+    calc_var_density,
 )
 from popnei.variant import Blocks, PassStats, Variants
 
@@ -76,6 +78,7 @@ __all__ = [
     "Step",
     "TestType",
     "TraitType",
+    "VarDensity",
     "Variants",
     "VarsWritten",
     "VcfWritten",
@@ -89,6 +92,7 @@ __all__ = [
     "calc_pop_dists",
     "calc_pop_diversity",
     "calc_rogers_huff_r2_matrix",
+    "calc_var_density",
     "do_pca",
     "do_pca_from_variants",
     "open_vars",

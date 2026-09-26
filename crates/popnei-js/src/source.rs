@@ -101,6 +101,8 @@ pub(crate) enum Consumer {
     PerVarDistribs,
     /// `calcPerIndividualStats`.
     PerIndividualStats,
+    /// `calcVarDensity`.
+    VarDensity,
     /// `calcPairwiseKosmanDists`.
     KosmanDists,
     /// `calcPopDists`.
@@ -172,6 +174,7 @@ impl Consumer {
             }
             Consumer::PerVarDistribs
             | Consumer::PerIndividualStats
+            | Consumer::VarDensity
             | Consumer::KosmanDists
             | Consumer::PopDists
             | Consumer::PopDiversity
@@ -200,6 +203,7 @@ impl Consumer {
         match name {
             "calcPerVarDistribs" => Ok(Consumer::PerVarDistribs),
             "calcPerIndividualStats" => Ok(Consumer::PerIndividualStats),
+            "calcVarDensity" => Ok(Consumer::VarDensity),
             "calcPairwiseKosmanDists" => Ok(Consumer::KosmanDists),
             "calcPopDists" => Ok(Consumer::PopDists),
             "calcPopDiversity" => Ok(Consumer::PopDiversity),
@@ -224,9 +228,10 @@ impl Consumer {
 
 /// The name of each consumer as a user of the package writes it, for the
 /// message of a name that is of none of them.
-const THE_CONSUMERS: [&str; 13] = [
+const THE_CONSUMERS: [&str; 14] = [
     "calcPerVarDistribs",
     "calcPerIndividualStats",
+    "calcVarDensity",
     "calcPairwiseKosmanDists",
     "calcPopDists",
     "calcPopDiversity",

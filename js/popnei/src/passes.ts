@@ -28,6 +28,7 @@ import { theWasmHasToBeLoaded } from "./core.js";
 export type ConsumerName =
   | "calcPerVarDistribs"
   | "calcPerIndividualStats"
+  | "calcVarDensity"
   | "calcPairwiseKosmanDists"
   | "calcPopDists"
   | "calcPopDiversity"

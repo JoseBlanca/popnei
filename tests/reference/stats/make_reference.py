@@ -40,6 +40,15 @@ over popA and over popB:
     many.counts.tsv  many.smiss  many.scount
     many.vmiss       many.popA.vmiss  many.popB.vmiss
 
+and, for the density of the variants, the count tabix 1.24 gives of each
+window of 1000 base pairs of many.vcf.gz, the command of "How it is
+verified" of the density, over an index that `tabix -p vcf` makes of a copy
+of the file in a directory it throws away, chr1 from 1 to 11000 and chr2
+from 1 to 20000, one line per window with the chromosome, the start, the
+end and the count:
+
+    many.density.tsv
+
 The script checks what it got against the literals the spec gives, and stops
 at the first one that differs.
 """
@@ -61,6 +70,12 @@ ROOT = HERE.parent.parent.parent
 MANY_VCF = ROOT / "tests" / "reference" / "vcf" / "many.vcf"
 PLINK2_VERSION = "v2.0.0-a.7.7"
 BCFTOOLS_VERSION = "1.24"
+TABIX_VERSION = "1.24"
+MANY_VCF_GZ = ROOT / "tests" / "reference" / "vcf" / "many.vcf.gz"
+# The windows of 1000 base pairs of "How it is verified" of the density: the
+# last variant of chr1 is at 10213 and that of chr2 at 19463.
+DENSITY_WINDOW = 1000
+DENSITY_CHROMS = (("chr1", 11), ("chr2", 20))
 
 
 def pynei_reference_dir():
@@ -87,6 +102,9 @@ def check_versions():
     bcftools = subprocess.run(["bcftools", "--version"], capture_output=True, text=True)
     if bcftools.stdout.splitlines()[0] != f"bcftools {BCFTOOLS_VERSION}":
         raise SystemExit(f"bcftools {BCFTOOLS_VERSION} is needed; found: {bcftools.stdout.splitlines()[0]}")
+    tabix = subprocess.run(["tabix", "--version"], capture_output=True, text=True)
+    if tabix.stdout.splitlines()[0] != f"tabix (htslib) {TABIX_VERSION}":
+        raise SystemExit(f"tabix {TABIX_VERSION} is needed; found: {tabix.stdout.splitlines()[0]}")
 
 
 def write_panel(ref_dir):
@@ -204,6 +222,27 @@ def run_plink2_on_many():
         log.unlink()
 
 
+def run_tabix_on_many():
+    """The count of each window, `tabix many.vcf.gz chr1:1-1000 | wc -l` and
+    the same for every other window, over an index made of a copy of the
+    file, so that no index is left beside the committed one."""
+    with tempfile.TemporaryDirectory() as index_dir:
+        copy = Path(index_dir) / "many.vcf.gz"
+        copy.write_bytes(MANY_VCF_GZ.read_bytes())
+        run(["tabix", "-p", "vcf", str(copy)])
+        with open(HERE / "many.density.tsv", "w") as f:
+            f.write("chrom\tstart\tend\tnum_vars\n")
+            for chrom, num_windows in DENSITY_CHROMS:
+                for window in range(num_windows):
+                    start = window * DENSITY_WINDOW + 1
+                    end = (window + 1) * DENSITY_WINDOW
+                    lines = subprocess.run(
+                        ["tabix", str(copy), f"{chrom}:{start}-{end}"],
+                        check=True, capture_output=True, text=True,
+                    ).stdout.splitlines()
+                    f.write(f"{chrom}\t{start}\t{end}\t{len(lines)}\n")
+
+
 def read_table(path):
     with open(path) as f:
         rows = [line.rstrip("\n").split("\t") for line in f]
@@ -253,6 +292,17 @@ def check():
     assert (many_smiss[0]["MISSING_CT"], many_smiss[0]["OBS_CT"], many_scount[0]["HET_CT"]) == ("29", "500", "201"), (many_smiss[0], many_scount[0])
     assert (many_smiss[1]["MISSING_CT"], many_scount[1]["HET_CT"]) == ("25", "195"), (many_smiss[1], many_scount[1])
     check_the_missing_rate_of_many()
+    check_the_density_of_many()
+
+
+def check_the_density_of_many():
+    """The first table of "How it is verified" of the density: chr1 in 11
+    windows, 1, 27 nine times and 6, and chr2 in 20, 0 ten times, 21, 27
+    eight times and 13."""
+    rows = read_table(HERE / "many.density.tsv")
+    counts = {chrom: [int(row["num_vars"]) for row in rows if row["chrom"] == chrom] for chrom, _ in DENSITY_CHROMS}
+    assert counts["chr1"] == [1] + [27] * 9 + [6], counts["chr1"]
+    assert counts["chr2"] == [0] * 10 + [21] + [27] * 8 + [13], counts["chr2"]
 
 
 def check_the_missing_rate_of_many():
@@ -288,5 +338,6 @@ if __name__ == "__main__":
     write_many_pops()
     run_bcftools_on_many()
     run_plink2_on_many()
+    run_tabix_on_many()
     check()
     print("done", file=sys.stderr)

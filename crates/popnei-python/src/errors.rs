@@ -478,6 +478,10 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // block whose chromosome number the table of its reader has no name
         // for, which the filter looks the regions up by.
         | popnei::Error::RegionFilterChromNameMissing { .. }
+        // The one of the density of the variants, which is of the same kind:
+        // a block whose chromosome number the table of its reader has no
+        // name for, which the lengths are looked up by.
+        | popnei::Error::VarDensityChromNameMissing { .. }
         // A member of bgzip that the writer could not put together, which
         // its cutting of the text into members and its stored block of a
         // text deflate does not shrink make impossible.

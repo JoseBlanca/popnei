@@ -18,6 +18,9 @@ two numbers for each individual instead: the share of the variants at which
 its genotype is missing and the share of its called genotypes at which it is
 heterozygous. It takes no `pops`, since each of its values is of one
 individual.
+
+:func:`popnei.calc_var_density` takes no `pops` either: it counts the
+variants in windows along each chromosome, and reads no genotype.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -560,3 +563,108 @@ def calc_per_individual_stats(variants: Variants) -> PerIndividualStats:
         obs_het_rate=pandas.Series(obs_het_rate, index=names),
         pass_stats=_pass_stats_of(counts),
     )
+
+
+@dataclass(frozen=True)
+class VarDensity:
+    """What :func:`popnei.calc_var_density` gives back."""
+
+    windows: pandas.DataFrame
+    """One row for each window: `chrom`, the name of its chromosome,
+    `start` and `end`, its first and its last position, both included and
+    counted from 1, of the dtype ``uint64``, and `num_vars`, how many
+    variants of the pass are at a position from `start` to `end`, of the
+    dtype ``uint32``. The chromosomes are in the order of the lengths, those
+    of `chrom_lengths` or of the source, and after them those with variants
+    and no length, in the order their first variant came; the windows of
+    each in the order of their positions."""
+
+    pass_stats: PassStats
+    """How many variants the pass gave, after the steps of the ``Variants``,
+    and what each filter of it was given and kept."""
+
+
+def calc_var_density(
+    variants: Variants,
+    window_size: int,
+    chrom_lengths: Mapping[str, int] | None = None,
+) -> VarDensity:
+    """How many variants fall in each window of `window_size` base pairs
+    along each chromosome, in one pass over `variants`.
+
+    A user sees with it where the variants are crowded, where there are
+    none, a centromere or a region that did not map, and how evenly a filter
+    took variants out. The windows of a chromosome are laid end to end from
+    the position 1 and do not overlap: window k, counted from 0, holds the
+    positions from k x `window_size` + 1 to (k + 1) x `window_size`. A
+    window with no variant is in the result with a count of 0.
+
+    With the length of a chromosome the windows cover it to its end, and
+    the last one ends at the length, so it is shorter than the others when
+    the length is not a multiple of the width. Without one, the windows go up
+    to the one that holds the last variant of the chromosome, and that one
+    ends at its full width. The lengths are those of `chrom_lengths`, a
+    mapping of chromosome name to length, and when it is None those of the
+    source: the ``##contig`` lines of a VCF that have a ``length``, and what
+    a vars file keeps of them. A `chrom_lengths` that is given replaces the
+    lengths of the source for every chromosome, and one it does not name has
+    no length. A chromosome with a length is in the result whether or not it
+    has a variant.
+
+    It is a consumer of the `variants`: it makes one pass over the source
+    through the steps the ``Variants`` has when it is called, reading only
+    the chromosome and the position of each variant, and the ``Variants`` is
+    as it was afterwards. The variants need not be sorted.
+
+    `window_size` and each length are whole numbers of 1 or more: what is no
+    whole number is a ``TypeError`` and one below 1 a ``ValueError``, which
+    names the argument. These are a ``ValueError`` too: a variant past the
+    length of its chromosome, whose message says whether the length came
+    from `chrom_lengths` or from the source; a variant at the position 0,
+    which the VCF format allows for a telomere and which lies in no window;
+    more than 10 million windows over all the chromosomes, which asks for a
+    wider window; and a pass that gives no variant, whatever the lengths.
+
+    pyNei has no density of the variants.
+    """
+    if not isinstance(variants, Variants):
+        # The path of the VCF whose variants are read is the mistake that is
+        # easiest to make, and what it gave was the `AttributeError` of an
+        # object with no source inside it.
+        raise TypeError(
+            f"`variants` is {variants!r}, a {type(variants).__name__}, and "
+            f"`calc_var_density` reads the variants of a source: give it what "
+            f"`open_vcf` or `open_vars` gives, "
+            f"calc_var_density(open_vcf(vcf_path), 100000)"
+        )
+    lengths = None if chrom_lengths is None else _the_chrom_lengths(chrom_lengths)
+    names, windows_per_chrom, start, end, num_vars, counts = _core.calc_var_density(
+        variants._source, variants._steps, window_size, lengths
+    )
+    chroms = numpy.repeat(numpy.array(list(names), dtype=object), windows_per_chrom)
+    windows = pandas.DataFrame(
+        {"chrom": chroms, "start": start, "end": end, "num_vars": num_vars}
+    )
+    return VarDensity(windows=windows, pass_stats=_pass_stats_of(counts))
+
+
+def _the_chrom_lengths(chrom_lengths: object) -> list[tuple[str, object]]:
+    """The pairs of chromosome name and length of `chrom_lengths`, in the
+    order it iterates in, which is the order of the chromosomes of the
+    result; each length is checked by the core crate's binding, which names
+    the argument."""
+    if not isinstance(chrom_lengths, Mapping):
+        raise TypeError(
+            f"`chrom_lengths` is {chrom_lengths!r}, a {type(chrom_lengths).__name__}, "
+            f"and it is a mapping of chromosome name to length, "
+            f"{{'chr1': 248956422}}"
+        )
+    pairs = list(chrom_lengths.items())
+    for chrom, _length in pairs:
+        if not isinstance(chrom, str):
+            raise TypeError(
+                f"`chrom_lengths` names the chromosome {chrom!r}, a "
+                f"{type(chrom).__name__}, and a chromosome is named by a str, as "
+                f"the source writes it"
+            )
+    return pairs

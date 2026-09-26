@@ -75,7 +75,11 @@ export type {
   PopDistMeasure,
   PopDists,
 } from "./pop_dists.js";
-export { calcPerIndividualStats, calcPerVarDistribs } from "./stats.js";
+export {
+  calcPerIndividualStats,
+  calcPerVarDistribs,
+  calcVarDensity,
+} from "./stats.js";
 export type {
   BinType,
   HistKwargs,
@@ -85,6 +89,8 @@ export type {
   PerVarStat,
   PolyVarsStats,
   StatsDistrib,
+  VarDensity,
+  VarDensityOptions,
 } from "./stats.js";
 export { Variants } from "./variant.js";
 export type {
