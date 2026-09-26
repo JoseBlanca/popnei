@@ -17,6 +17,7 @@
 
 use std::fs::File;
 use std::io::{BufWriter, ErrorKind};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
 
 use pyo3::prelude::*;
@@ -192,31 +193,25 @@ pub(crate) fn write_the_pass(
     // over and not between two blocks, as it is in `Blocks::__next__`: the
     // loop over the blocks is the core's, which `docs/specs/io_vars.md` has
     // this crate call instead of writing that loop again.
-    let written = py.detach(|| -> Result<PassCounts, popnei::Error> {
-        let reader = source.reader(num_vars_per_block)?;
-        // The chain of the pass stays here, lent to the core, so that the
-        // counts of its filters can be read when the call is over: the loop
-        // over the blocks is the core's, and so is the count of the
-        // variants it wrote, which no loop of this crate sees.
-        let mut chain = chain_of(reader, steps)?;
-        let (sink, num_vars) = write(&mut chain, BufWriter::new(file))?;
-        // What the buffer still holds goes to the file here, where its
-        // error is read; a buffer that is dropped writes it and loses it.
-        let file = sink
-            .into_inner()
-            .map_err(|failure| not_written(failure.into_error()))?;
-        // The bytes reach the disc here and not when the file is closed,
-        // where nothing reads what the close said: a file system that only
-        // then says that it is full would leave a file that is not whole
-        // after a call that returned and said nothing.
-        file.sync_all().map_err(not_written)?;
-        let filtering = chain
-            .filtering_stats()
-            .into_iter()
-            .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-            .collect();
-        Ok((num_vars, filtering))
+    let written = py.detach(|| {
+        // A panic of the pass, which is a defect of popnei, unwinds out of
+        // this call as a `PanicException`; it is caught here for as long as
+        // it takes to take the file away, since a file left at the path is
+        // one the user's next call refuses as a path already taken.
+        catch_unwind(AssertUnwindSafe(|| {
+            the_pass(source, num_vars_per_block, steps, file, write)
+        }))
     });
+    let written = match written {
+        Ok(written) => written,
+        Err(panic) => {
+            // The panic is what the user is told of; a file that could not
+            // be taken away as well is not something the exception of a
+            // panic has room to say.
+            let _ = take_away(path);
+            resume_unwind(panic)
+        }
+    };
     let written = match written {
         Ok(counts) => counts,
         Err(error) => {
@@ -240,6 +235,48 @@ pub(crate) fn write_the_pass(
         return Err(with_what_was_left(interrupted.into(), path, taken));
     }
     Ok(written)
+}
+
+/// The pass of [`write_the_pass`] over `source` into `file`, and its
+/// counts.
+///
+/// # Errors
+///
+/// What opening the source, building the chain of `steps`, `write` and the
+/// file system refuse.
+fn the_pass(
+    source: &dyn OpenSource,
+    num_vars_per_block: Option<usize>,
+    steps: &[Step],
+    file: File,
+    write: impl FnOnce(
+        &mut Box<dyn BlockReader>,
+        BufWriter<File>,
+    ) -> Result<(BufWriter<File>, u64), popnei::Error>,
+) -> Result<PassCounts, popnei::Error> {
+    let reader = source.reader(num_vars_per_block)?;
+    // The chain of the pass stays here, lent to the core, so that the
+    // counts of its filters can be read when the call is over: the loop
+    // over the blocks is the core's, and so is the count of the
+    // variants it wrote, which no loop of this crate sees.
+    let mut chain = chain_of(reader, steps)?;
+    let (sink, num_vars) = write(&mut chain, BufWriter::new(file))?;
+    // What the buffer still holds goes to the file here, where its
+    // error is read; a buffer that is dropped writes it and loses it.
+    let file = sink
+        .into_inner()
+        .map_err(|failure| not_written(failure.into_error()))?;
+    // The bytes reach the disc here and not when the file is closed,
+    // where nothing reads what the close said: a file system that only
+    // then says that it is full would leave a file that is not whole
+    // after a call that returned and said nothing.
+    file.sync_all().map_err(not_written)?;
+    let filtering = chain
+        .filtering_stats()
+        .into_iter()
+        .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
+        .collect();
+    Ok((num_vars, filtering))
 }
 
 /// `error` with the file it is about, since a user reads which of the two
