@@ -1318,7 +1318,7 @@ impl VcfReader<BufReader<File>> {
 /// be the nine of a VCF with genotypes.
 /// The chromosome and the length of the `##contig` line `text`, the line
 /// `number` of the file, or `None` when it is another line of the header
-/// or a `##contig` line with no ID or no length.
+/// or a `##contig` line with no length.
 ///
 /// The fields are read between `<` and `>`, separated by commas outside
 /// quotes, so that a `Description="a, b"` does not cut a field in two.
@@ -1326,7 +1326,8 @@ impl VcfReader<BufReader<File>> {
 /// # Errors
 ///
 /// When the length is not a whole number above 0 that a `u64` holds,
-/// written in digits alone, `length=0`, `length=abc`, `length=+5`.
+/// written in digits alone, `length=0`, `length=abc`, `length=+5`, and
+/// when the line has a length and no ID.
 fn contig_length_of(text: &str, number: u64) -> Result<Option<(&str, u64)>> {
     let Some(fields) = text
         .strip_prefix("##contig=<")
@@ -1343,8 +1344,17 @@ fn contig_length_of(text: &str, number: u64) -> Result<Option<(&str, u64)>> {
             length = Some(value);
         }
     }
-    let (Some(chrom), Some(length)) = (id, length) else {
+    let Some(length) = length else {
         return Ok(None);
+    };
+    // The VCF specification asks every `##contig` line for an ID, and a
+    // length of no chromosome passed over in silence would be lost.
+    let Some(chrom) = id else {
+        return Err(Error::VcfHeader {
+            problem: format!(
+                "its line {number} gives a chromosome the length {length} and no ID, which a ##contig line needs"
+            ),
+        });
     };
     let whole_number = !length.is_empty() && length.bytes().all(|byte| byte.is_ascii_digit());
     match length.parse::<u64>() {
@@ -2178,14 +2188,13 @@ mod tests {
                 "##contig=<ID=chr1,Description=\"a, length=5\",length=300>",
                 "##contig=<ID=chr2>",
                 "##contig=<ID=chr1,length=300>",
-                "##contig=<length=7>",
             ],
             "\r\n",
         );
         let reader = VcfReader::new(Cursor::new(vcf.into_bytes()), VcfOptions::default()).unwrap();
         let header = reader.header();
         assert_eq!(header.chrom_lengths, [("chr1".to_owned(), 300)]);
-        assert_eq!(header.vcf_meta_lines.as_ref().map(Vec::len), Some(5));
+        assert_eq!(header.vcf_meta_lines.as_ref().map(Vec::len), Some(4));
         assert_eq!(
             header
                 .vcf_meta_lines
@@ -2205,10 +2214,10 @@ mod tests {
         assert!(reader.header().chrom_lengths.is_empty());
     }
 
-    /// A length of 0, one that is not a number, and two lengths for one
-    /// chromosome are a wrong header, which names the line.
+    /// A length of 0, one that is not a number, a length with no ID, and two
+    /// lengths for one chromosome are a wrong header, which names the line.
     #[test]
-    fn source_header_refuses_a_contig_length_of_0_of_abc_and_two_lengths_of_one_id() {
+    fn source_header_refuses_a_contig_length_of_0_of_abc_with_no_id_and_two_of_one_id() {
         let problem_of = |meta_lines: &[&str]| {
             let error = error_of(
                 &vcf_with_meta_lines(meta_lines, "\n"),
@@ -2230,6 +2239,10 @@ mod tests {
         assert_eq!(
             problem_of(&["##contig=<ID=chr1,length=+5>"]),
             "the length of the chromosome chr1 in its line 1 is +5, and a length is a whole number above 0"
+        );
+        assert_eq!(
+            problem_of(&["##fileformat=VCFv4.3", "##contig=<length=7>"]),
+            "its line 2 gives a chromosome the length 7 and no ID, which a ##contig line needs"
         );
         assert_eq!(
             problem_of(&[
