@@ -315,6 +315,11 @@ fn regions_that_touch_or_nest_by_regions_are_joined() {
         .expect("the regions");
     // 1 to 10 and 11 to 20 touch, 3 to 5 is inside, 22 to 30 is apart.
     assert_eq!(regions.num_regions(), 2);
+    // The first positions of the region that holds the nested one, which a
+    // sort by the last position would put after it and lose.
+    assert!(regions.contains("c", 1));
+    assert!(regions.contains("c", 2));
+    assert!(regions.contains("c", 3));
     assert!(regions.contains("c", 20));
     assert!(!regions.contains("c", 21));
     assert!(regions.contains("c", 22));
@@ -593,6 +598,8 @@ fn a_start_or_an_end_that_is_not_a_whole_number_by_regions_is_refused_with_its_l
         (b"chr1\t+99\t100\n".as_slice(), 1, "+99"),
         (b"chr1\t\t10\n".as_slice(), 1, ""),
         (b"chr1\t1.5\t10\n".as_slice(), 1, "1.5"),
+        // `:` is the byte after `9`.
+        (b"c\t1:\t200\n".as_slice(), 1, "1:"),
     ] {
         let error = the_error_of(bed);
         let problem = BedLineProblem::StartNotAWholeNumber {
@@ -720,6 +727,8 @@ fn keeps_none_of_by_regions_says_which_batches_the_vars_file_reader_skips() {
         ("chr2", 15800, 19463, false),
         // The edges of chr2 19001 to 30000.
         ("chr2", 15800, 19000, true),
+        // The largest position of the batch is the first of a region.
+        ("chr2", 15800, 19001, false),
         ("chr2", 30001, 40000, true),
         ("chr4", 5, 6, true),
     ] {
@@ -933,4 +942,78 @@ fn the_regions_of_one_chromosome_by_regions_answer_as_the_selection_does() {
     let outside = selection_of(&the_bed_of_the_spec(), true);
     assert!(outside.regions_of(b"chr4").keeps(1));
     assert!(outside.regions_of(b"chr3").keeps_none_of(1, 100_000));
+}
+
+/// A generator of numbers for the test below, the linear congruential one
+/// of Knuth's MMIX, so that the BEDs it draws are the same at every run.
+struct Draws(u64);
+
+impl Draws {
+    /// A number from 0 to `below - 1`.
+    fn below(&mut self, below: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33).checked_rem(below).expect("a number above 0")
+    }
+}
+
+/// Over 500 small BEDs drawn at random, of regions that overlap, touch,
+/// nest and come in any order on two chromosomes, `contains` is the set of
+/// positions the lines cover, one line at a time, and `keeps` and
+/// `keeps_none_of` of both sides and of the handle of one chromosome are
+/// what that set says of every position and of every range of positions.
+#[test]
+fn keeps_and_keeps_none_of_by_regions_agree_with_the_positions_of_the_lines() {
+    const LAST_POS: u64 = 45;
+    let mut draws = Draws(26_092_026);
+    for _ in 0..500 {
+        let mut bed = String::new();
+        let mut covered = std::collections::HashSet::new();
+        for _ in 0..=draws.below(6) {
+            let chrom = ["c1", "c2"][usize::try_from(draws.below(2)).unwrap()];
+            let start = draws.below(40);
+            let end = start + 1 + draws.below(8);
+            bed.push_str(&format!("{chrom}\t{start}\t{end}\n"));
+            for pos in start + 1..=end {
+                covered.insert((chrom, pos));
+            }
+        }
+        for exclude in [false, true] {
+            let selection = selection_of(bed.as_bytes(), exclude);
+            for chrom in ["c1", "c2", "c3"] {
+                let of_the_chrom = selection.regions_of(chrom.as_bytes());
+                for pos in 0..=LAST_POS {
+                    let inside = covered.contains(&(chrom, pos));
+                    assert_eq!(
+                        selection.regions.contains(chrom, pos),
+                        inside,
+                        "{bed}{chrom} {pos}"
+                    );
+                    assert_eq!(
+                        selection.keeps(chrom, pos),
+                        inside != exclude,
+                        "{bed}{chrom} {pos}"
+                    );
+                    assert_eq!(
+                        of_the_chrom.keeps(pos),
+                        inside != exclude,
+                        "{bed}{chrom} {pos}"
+                    );
+                }
+                for min_pos in 1..=LAST_POS {
+                    for max_pos in min_pos..=LAST_POS {
+                        let none_kept = (min_pos..=max_pos)
+                            .all(|pos| covered.contains(&(chrom, pos)) == exclude);
+                        assert_eq!(
+                            selection.keeps_none_of(chrom, min_pos, max_pos),
+                            none_kept,
+                            "{bed}{chrom} {min_pos} {max_pos} exclude {exclude}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
