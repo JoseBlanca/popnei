@@ -364,3 +364,77 @@ and a POS of `nine` are each refused. After the undo, on one thread, the
 plain write takes 0.98 to 1.00 s and the bgzipped one 10.8 to 11.0 s. The
 owner may still prefer the faster write; it is among the questions at the
 end.
+
+## 4. The filter by regions
+
+Task 4.1, commits 556e47a and c19cb56. `Regions` reads a BED, plain or
+gzipped, and `RegionsReader` keeps the variants inside its regions, or
+outside them with `exclude`, looking each position up with a binary
+search over the joined regions of its chromosome. It offers the regions
+to its source, which refuses them until work package 5, and adds to its
+counts what the source skipped when the source took them. The code is in
+`crates/popnei/src/filters/regions.rs`, a module of its own beside the
+5600 lines of `filters.rs`. `tests/reference/filters/make_reference.py`
+runs bcftools 1.24 `view -T` and `-T ^` and plink2 v2.0.0-a.7.7
+`--extract bed0` and `--exclude bed0` with the BEDs of the spec; the two
+programs agree, and give the 45 and the 455 of the spec on `many.vcf`.
+The spec gained how a BED line is read (a carriage return dropped, `+99`
+refused, names compared byte for byte) and two error cases the spec had
+not named, a second filter by regions and a block whose chromosome number
+has no name, a defect.
+
+Task 4.2, commit b5b001c. `variants.filter_by_regions(bed_path,
+exclude=False)` in Python and `variants.filterByRegions(bed, {exclude})`
+in TypeScript, with the BED as bytes; the steps are `"regions"` and
+`"excluded_regions"`. Nineteen pytest tests and five TypeScript ones.
+
+Deliverables, run at 497d712:
+
+- 1: the reference script ran, its check of the 45 and the 455 passed,
+  and it left the tree clean.
+- 2: `cargo test -p popnei --lib by_regions` gave 21 passed, where there
+  were none.
+- 3: pytest 583 passed, 6 skipped; `npm test` 455 of 456, the old
+  failure; `npm run test:browser` 8 passed. `cargo test --workspace`
+  gave 1126 passed, 2 ignored, and 150.
+
+The review ran in five reports: spec, tests, numbers, errors with api,
+and binding with architecture. A reviewer checked the filter against
+bcftools and plink2 on a BED with unsorted lines, regions that overlap,
+touch and nest, a region at a chromosome's last position, and a
+chromosome of the BED the VCF lacks and the reverse: the three kept the
+same 14 variants and excluded to the same 31. What they found:
+
+- Three ways to get the wrong variants with no error. In TypeScript an
+  option with a misspelt name, `{excluded: true}`, was dropped without a
+  word, so the filter kept the regions it was asked to take out; every
+  options object of the package did so, before this plan too. A BED line
+  whose chromosome name begins with `track` or `browser`, `tracks1`, was
+  skipped as a header line, where bcftools and plink2 keep it. And a BED
+  starting with a byte order mark gave its first chromosome a name no VCF
+  has.
+- The test that the counts are the same whether the source skips or not
+  could not fail: its source skipped exactly what the filter would drop,
+  so a filter that trusted the source and dropped nothing passed. Work
+  package 5 rests on it.
+- A BED of 89.8 MB grew the memory of wasm by 314 MB, several copies of
+  it, which a tab never gets back.
+- The docstrings said the counts are the same wherever the filter stands
+  among the steps, which is not so after a threshold filter.
+
+## 6. The density of the variants
+
+Task 6.1, commits 317ec23 and f7f7a44. `calc_var_density` counts the
+variants in windows of a size along each chromosome, up to its length
+when the source gives one and to the last variant otherwise, in
+`crates/popnei/src/stats/density.rs`. Twenty-six tests have `var_density`
+in their names; with `pos` for `pos - 1` twelve of them fail. The counts
+stay exact for lengths up to 18446744073709551615. The spec said the
+error for a variant past a length of 10000 comes at chr1 10213; it comes
+at 10028, the first of the six past it, and the spec says so now. Four
+cases the spec left open were settled with the code and written into it:
+a variant at position 0 is a `ValueError`, where tabix 1.24 counts it in
+the first window with a warning; a window of more than 4294967295
+variants is refused; a chromosome named twice in the lengths is refused;
+and the last window of a chromosome with no length ends at
+18446744073709551615 when its full width would pass it.
