@@ -1230,6 +1230,81 @@ mod tests {
         assert!(bytes.ends_with(&THE_EMPTY_MEMBER));
     }
 
+    /// A VCF of two individuals and `num_lines` data lines, whose bytes are
+    /// `num_bytes` when that is given: the id of its last line is made as
+    /// long as it takes.
+    fn vcf_of_lines(num_lines: usize, num_bytes: Option<usize>) -> String {
+        let mut vcf = String::from(
+            "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\tb\n",
+        );
+        for line in 0..num_lines {
+            let id = format!("var{line}");
+            let id = match num_bytes {
+                Some(num_bytes) if line + 1 == num_lines => {
+                    let rest = format!("chr1\t{}\t\tA\tT\t.\tPASS\t.\tGT\t0/1\t1/1\n", line + 1);
+                    "x".repeat(num_bytes - vcf.len() - rest.len())
+                }
+                _ => id,
+            };
+            vcf.push_str(&format!(
+                "chr1\t{}\t{id}\tA\tT\t.\tPASS\t.\tGT\t0/1\t1/1\n",
+                line + 1
+            ));
+        }
+        vcf
+    }
+
+    /// The bytes `write_vcf` writes of `vcf`, bgzipped, on `num_threads`.
+    #[cfg(not(target_family = "wasm"))]
+    fn bgzipped_on(vcf: &str, num_threads: usize) -> Vec<u8> {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .expect("the pool");
+        pool.install(|| {
+            let mut reader =
+                VcfReader::new(Cursor::new(vcf.as_bytes().to_vec()), VcfOptions::default())
+                    .expect("the VCF");
+            bgzipped(&mut reader).0
+        })
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn write_vcf_bgzipped_of_a_block_of_five_members_writes_them_in_order_on_any_threads() {
+        // 7000 lines of 40 to 44 bytes, in one block of the default size,
+        // 10000 variants for two individuals: five members of text.
+        let vcf = vcf_of_lines(7000, None);
+        assert!(
+            vcf.len() > 4 * 65280 && vcf.len() < 5 * 65280,
+            "{}",
+            vcf.len()
+        );
+        let one_thread = bgzipped_on(&vcf, 1);
+        let lengths: Vec<u32> = members_of(&one_thread)
+            .iter()
+            .map(|(_, length)| *length)
+            .collect();
+        assert_eq!(lengths.len(), 6);
+        assert_eq!(decompressed(&one_thread), vcf);
+        assert_eq!(bgzipped_on(&vcf, 4), one_thread);
+        assert_the_members_are_of_bgzip(&one_thread);
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn write_vcf_bgzipped_of_a_text_of_two_members_exactly_ends_with_no_member_of_the_rest() {
+        let vcf = vcf_of_lines(3000, Some(2 * 65280));
+        assert_eq!(vcf.len(), 2 * 65280);
+        let bytes = bgzipped_on(&vcf, 4);
+        let lengths: Vec<u32> = members_of(&bytes)
+            .iter()
+            .map(|(_, length)| *length)
+            .collect();
+        assert_eq!(lengths, [65280, 65280, 0]);
+        assert_eq!(decompressed(&bytes), vcf);
+    }
+
     #[test]
     fn vcf_text_num_vars_per_block_is_a_fifth_of_the_genotypes_of_a_block_from_100_to_10000() {
         assert_eq!(vcf_text_num_vars_per_block(1000), 1000);
