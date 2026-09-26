@@ -1671,7 +1671,10 @@ fn skip_outside_is_handed_on_by_reblock_and_the_reader_one_block_ahead() {
     // block built ahead holds 7 of the 45, and the counts are the same
     // whichever it was.
     let skipped = source.num_skipped();
-    assert!(skipped <= 45 && (45 - skipped).is_multiple_of(7), "{skipped}");
+    assert!(
+        skipped <= 45 && (45 - skipped).is_multiple_of(7),
+        "{skipped}"
+    );
 }
 
 /// A POS that does not parse gives its line a row, whatever the regions
