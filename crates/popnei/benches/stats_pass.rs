@@ -40,7 +40,7 @@
 //! ```
 //!
 //! `--vars` is 5000, `--individuals` 1000, `--blocks` 20, `--runs` 5,
-//! `--threads` 1, `--stats` all five and `--pops` 0 when they are not
+//! `--threads` 1, `--stats` all six and `--pops` 0 when they are not
 //! given, which is 100000 variants of 1000 diploid individuals, the dataset
 //! of `docs/reports/stats-measurement.md`. `--pops 0` is the one population
 //! of every individual of the reader, which the pass reads as a row as it
@@ -129,7 +129,7 @@ const HIGHEST_FREQUENCY: f64 = 0.9;
 /// reads every row and calculates nothing.
 const NO_STAT: &str = "none";
 
-/// What `--stats` is given to ask for the five statistics, which is what it
+/// What `--stats` is given to ask for the six statistics, which is what it
 /// is when the command line does not name it.
 const ALL_STATS: &str = "all";
 
@@ -165,8 +165,8 @@ is the loop over the rows.
   --threads n       how many threads the pool it runs in has, 1 by default
   --stats names     the statistics, by the names a user writes, separated
                     by commas: obs_het, maf, exp_het, unbiased_exp_het,
-                    poly_vars_ratio; `all` for the five, which is the
-                    default, and `none` for the pass that calculates
+                    poly_vars_ratio, missing_rate; `all` for the six,
+                    which is the default, and `none` for the pass that calculates
                     nothing
   --pops n          how many populations the individuals are split into,
                     each getting the same number of them; 0, the default,
@@ -192,7 +192,7 @@ fn number_after(name: &str, args: &mut impl Iterator<Item = String>) -> Result<u
         .map_err(|_| format!("{name} takes a number"))
 }
 
-/// The statistics `--stats` named: the five for `all`, none for `none`, and
+/// The statistics `--stats` named: the six for `all`, none for `none`, and
 /// otherwise the ones whose names are in the list, separated by commas.
 fn stats_of(named: &str) -> Result<Vec<PerVarStat>, String> {
     if named == NO_STAT {
