@@ -522,6 +522,10 @@ impl VcfText {
     pub fn fixed(&self, var: usize) -> &str;
     /// The column of the individual, `0/1:12` or `./.`.
     pub fn individual(&self, var: usize, individual: usize) -> &str;
+    /// The columns of every individual of the variant, in the order of
+    /// the block, joined by tabs as the line has them, which the writer
+    /// copies in one piece after the nine first columns.
+    pub fn individuals(&self, var: usize) -> &str;
 }
 ```
 

@@ -873,6 +873,21 @@ the same floor of 100 variants and ceiling of 10000, so that its text is
 20 to 40 MB. That fifth is decided here and has not been measured; a
 measurement can move it.
 
+Beside the text, the block keeps where each text of a line ends, a 32 bit
+number for each individual of each variant, so the 4 bytes of text of an
+individual of `big.vcf` take 8. With `VCF_TEXT` the reader checks two
+things of every line that it otherwise checks only when it is asked for
+the genotypes, or not at all, because the text of each individual has to
+be found and given as text: that the line has one column for each
+individual of the header, with the messages of a line with too few or too
+many columns that the genotypes give, and that the bytes of the columns
+of the individuals are UTF-8, as those of the nine first columns always
+have to be. A line that fails either is the wrong data line of this spec.
+So is a line of more than 4294967295 bytes, the most that the 32 bit
+numbers of its ends reach, 4 GiB in one line, which the files of
+`docs/objectives.md` do not come near. The three were decided with the
+code on 26 September 2026.
+
 The vars file reader gives no `VCF_TEXT`, since its file has none, and the
 writer then writes the lines of the table above. The two sources give the
 same variants, so a line written with the text and one written without it
