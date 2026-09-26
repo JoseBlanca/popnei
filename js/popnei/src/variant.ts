@@ -18,7 +18,10 @@ import type {
 import { Steps } from "../wasm/popnei.js";
 
 import {
+  aBoolean,
   aNumber,
+  anObjectOfOptions,
+  bytesOfAFile,
   distanceInBasePairs,
   namesOf,
   whatWasGiven,
@@ -159,12 +162,15 @@ export function passStatsOf(counts: PassCounts): PassStats {
  * The kind of an argument whose value is the threshold of a filter, which
  * is in `arg_thresholds`, of one whose value is the names of the
  * individuals to keep, which are in `arg_individuals`, and of one whose
- * value is a window of base pairs, which is in `arg_distances`. They are
- * the three numbers `arg_kinds` of the binding crate gives.
+ * value is a window of base pairs, which is in `arg_distances`, and of one
+ * whose value is a count, the number of regions of a BED, which is in
+ * `arg_counts`. They are the four numbers `arg_kinds` of the binding crate
+ * gives.
  */
 const A_THRESHOLD = 0;
 const THE_NAMES_OF_INDIVIDUALS = 1;
 const A_DISTANCE = 2;
+const A_COUNT = 3;
 
 /** The steps of the core as the steps a user reads, in their order. */
 function stepsOf(steps: StepsOfTheCore): Step[] {
@@ -182,10 +188,12 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
   const thresholds = steps.arg_thresholds();
   const individuals = steps.arg_individuals();
   const distances = steps.arg_distances();
+  const counts = steps.arg_counts();
   const ofEachStep: Step[] = [];
   let firstArg = 0;
   let nextThreshold = 0;
   let nextDistance = 0;
+  let nextCount = 0;
   let firstName = 0;
   for (const [step, kind] of kinds.entries()) {
     // The arguments of every step cross flat, the ones of the first step
@@ -228,6 +236,16 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
         }
         args[name] = distance;
         nextDistance += 1;
+      } else if (argKind === A_COUNT) {
+        const count = counts[nextCount];
+        if (count === undefined) {
+          throw new Error(
+            `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+              "variants is a count and has no number",
+          );
+        }
+        args[name] = count;
+        nextCount += 1;
       } else if (argKind === THE_NAMES_OF_INDIVIDUALS) {
         const kept = individuals.slice(firstName, firstName + numNames);
         if (kept.length !== numNames) {
@@ -563,6 +581,54 @@ export class Variants {
       aNumber("maxAllowedR2", maxAllowedR2),
       distanceInBasePairs("maxDist", maxDist),
     );
+  }
+
+  /**
+   * Keeps the variants inside the regions of the BED file whose bytes are
+   * `bed`, or, with `exclude`, those outside all of them.
+   *
+   * A BED file has one region on each line: the chromosome, the start and
+   * the end, separated by tabs, and any columns after those, which are not
+   * read. BED counts the bases from 0 and leaves the end out, so the line
+   * `chr1 0 2000` is the first 2000 bases of chr1, positions 1 to 2000 as a
+   * VCF counts them, and a line of start `s` and end `e` holds the positions
+   * from `s + 1` to `e`.
+   *
+   * A variant is inside when its chromosome has the name of the region's,
+   * written the same way, and its position, the POS of its VCF, is in the
+   * region. Only the position is looked at, as `bcftools view -T` and
+   * `plink2 --extract bed0` do, so a deletion that starts before a region
+   * and reaches into it is outside. A BED that names its chromosomes `1`
+   * where the file names them `chr1` keeps nothing. Regions that overlap or
+   * touch act as the one region they cover together. An empty line and a
+   * line that starts with `#`, `track` or `browser` are skipped, and a BED
+   * that starts with the bytes of gzip is read through gzip.
+   *
+   * The bytes are read at this call. The step's `args` are `{numRegions}`,
+   * the number of regions once those that overlap or touch are joined, and
+   * its kind is `"regions"`, or `"excluded_regions"` with `exclude`, which
+   * is also the name of its counts in the counts of a pass. A step of each
+   * kind can stand together. The source hands over only the variants the
+   * filter keeps when this is the first filter of the variants of the
+   * steps; the variants and the counts are the same wherever it is.
+   *
+   * The call adds a step and gives nothing back.
+   *
+   * @throws {Error} When `bed` is not a `Uint8Array`, when `exclude` is not
+   * a boolean, when the options are not an object, when a line of the BED
+   * has fewer than three columns separated by tabs, a start or an end that
+   * is not a whole number of 0 or more or a start that is not below its
+   * end, which the message names the line of, when the BED holds no region,
+   * and when a filter by regions of the same kind is set already. After any
+   * of them the steps are as they were. It also throws when the variants
+   * were freed and when `init` has not been awaited.
+   */
+  filterByRegions(bed: Uint8Array, options: { exclude?: boolean } = {}): void {
+    theWasmHasToBeLoaded();
+    anObjectOfOptions("filterByRegions", options);
+    const exclude =
+      options.exclude === undefined ? false : aBoolean("exclude", options.exclude);
+    this.#stepsThatWereNotFreed().filter_by_regions(bytesOfAFile("bed", bed), exclude);
   }
 
   /**

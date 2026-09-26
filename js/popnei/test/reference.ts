@@ -38,6 +38,20 @@ const REFERENCE_DISTS_DIR = new URL(
   import.meta.url,
 );
 
+const REFERENCE_FILTERS_DIR = new URL(
+  "../../../tests/reference/filters/",
+  import.meta.url,
+);
+
+/**
+ * The bytes of the reference file `name` of the filters, `regions.bed` or
+ * the `regions.txt` of the variants bcftools and plink2 keep with it, which
+ * `tests/reference/filters/make_reference.py` writes.
+ */
+export async function referenceFilters(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_FILTERS_DIR)));
+}
+
 /** The bytes of the reference VCF `name`, `cases.vcf` or `many.vcf.gz`. */
 export async function referenceVcf(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_VCF_DIR)));

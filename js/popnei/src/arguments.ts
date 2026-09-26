@@ -317,6 +317,36 @@ export function bytesOrFile(
   return value;
 }
 
+/**
+ * The bytes of `value` when it is a `Uint8Array` that can be read and that
+ * the memory of wasm takes, and an `Error` otherwise: the checks of
+ * `bytesOrFile` for an argument that is read whole at the call, and so is
+ * never the `File` of a page.
+ *
+ * @throws {Error} When `value` is not a `Uint8Array`, when its buffer was
+ * transferred, and when the memory of wasm does not take a copy of it.
+ */
+export function bytesOfAFile(argument: string, value: unknown): Uint8Array {
+  if (!(value instanceof Uint8Array)) {
+    throw new Error(
+      `popnei: \`${argument}\` is the bytes of the file, a Uint8Array, and ` +
+        `${whatWasGiven(value)} was given; text is turned into bytes with new ` +
+        "TextEncoder().encode(text), a file of node is read with new " +
+        "Uint8Array(await readFile(path)), and the File of a page with new " +
+        "Uint8Array(await file.arrayBuffer())",
+    );
+  }
+  if ((value.buffer as { detached?: unknown }).detached === true) {
+    throw new Error(
+      `popnei: the buffer of \`${argument}\` was transferred, to a web worker ` +
+        "or somewhere else, and the bytes of the file are there and not in " +
+        "this array",
+    );
+  }
+  roomForBytes(value.length);
+  return value;
+}
+
 /** What one of the names is and an example of one, for the message. */
 export interface WhatTheNamesAre {
   /** What one name is, `field` or `individual`. */

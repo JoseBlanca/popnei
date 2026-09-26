@@ -11,15 +11,16 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The five methods that add a filter are here as well, one for each of the
+//! The six methods that add a filter are here as well, one for each of the
 //! three numbers of a variant a filter compares, one for the filter by
-//! linkage disequilibrium and one for the individuals to keep, and each of
-//! them refuses at the call what a user cannot filter by: a threshold that
-//! is not a number from 0 to 1, under the name of the argument they wrote it
-//! in; a window of fewer than 1 base pairs; a name that is not an individual
-//! of the source, a name that is there twice and no name at all; and a
-//! second filter of a kind the list holds, with the threshold of the one
-//! that is set when both are threshold filters. No reader exists at that call, so
+//! linkage disequilibrium, one for the individuals to keep and one for the
+//! regions of a BED file, and each of them refuses at the call what a user
+//! cannot filter by: a threshold that is not a number from 0 to 1, under the
+//! name of the argument they wrote it in; a window of fewer than 1 base
+//! pairs; a name that is not an individual of the source, a name that is
+//! there twice and no name at all; a BED that holds a line that is not a
+//! region, or no region; and a second filter of a kind the list holds, with
+//! the threshold of the one that is set when both are threshold filters. No reader exists at that call, so
 //! none of those refusals can come from the chain, and the individuals of
 //! the source, which the names are resolved against, are held here from the
 //! moment the `Variants` is built. What is not a number at all, the
@@ -27,11 +28,13 @@
 //! package before the call, in `js/popnei/src/arguments.ts`: everything
 //! arrives here as a float64, and `null` would arrive as a threshold of 0.
 
+use std::sync::Arc;
+
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
 use popnei::filters::{
-    LdFilter, PassStep, VarFilter, VarFilteringCriterion, individuals_of,
+    LdFilter, PassStep, RegionSelection, Regions, VarFilter, VarFilteringCriterion, individuals_of,
     refuse_a_second_filter_of_a_kind, resolve_individuals,
 };
 
@@ -58,19 +61,23 @@ pub(crate) struct Step {
 /// What a user gave one argument of a step: the threshold of a filter, a
 /// number from 0 to 1, the window of the filter by linkage disequilibrium,
 /// a whole number of base pairs, or the names of the individuals to keep,
-/// in the order they named them.
+/// in the order they named them; or what the step found in what it was
+/// given, the number of regions of a BED once those that overlap or touch
+/// are joined.
 ///
 /// It is the value that argument has in the `args` of the step a user
-/// reads, a number for a threshold and for a window and an array of strings
-/// for the individuals, which is what "In Python and in TypeScript" of
-/// `docs/specs/filters.md` gives them. A window is kept apart from a
-/// threshold because the two are not the same thing: a threshold is a rate
-/// and a window is a whole number of base pairs.
+/// reads, a number for a threshold, for a window and for the number of
+/// regions, and an array of strings for the individuals, which is what "In
+/// Python and in TypeScript" of `docs/specs/filters.md` gives them. A
+/// window is kept apart from a threshold because the two are not the same
+/// thing: a threshold is a rate and a window is a whole number of base
+/// pairs. The number of regions is apart from both, since it is neither.
 #[derive(Clone)]
 enum Argument {
     Threshold(f64),
     Distance(u64),
     Individuals(Vec<String>),
+    Count(usize),
 }
 
 /// The names a TypeScript user writes the argument of each filter under,
@@ -81,6 +88,7 @@ const MAX_ALLOWED_OBS_HET: &str = "maxAllowedObsHet";
 const MAX_ALLOWED_R2: &str = "maxAllowedR2";
 const MAX_DIST: &str = "maxDist";
 const INDIVIDUALS: &str = "individuals";
+const NUM_REGIONS: &str = "numRegions";
 
 /// The largest window that crosses, 2^53 - 1 base pairs, which is
 /// `Number.MAX_SAFE_INTEGER`, the largest whole number a number of
@@ -99,12 +107,14 @@ const LARGEST_WINDOW: f64 = 9_007_199_254_740_991.0;
 /// [`Steps::arg_kinds`]: the package reads the value of an argument of
 /// `ARG_KIND_THRESHOLD` from [`Steps::arg_thresholds`] and the value of one
 /// of `ARG_KIND_INDIVIDUALS` from [`Steps::arg_individuals`], the value of
-/// one of `ARG_KIND_DISTANCE` from [`Steps::arg_distances`], and refuses a
-/// number that is none of them. A kind of its own for each is what keeps an
+/// one of `ARG_KIND_DISTANCE` from [`Steps::arg_distances`], the value of
+/// one of `ARG_KIND_COUNT` from [`Steps::arg_counts`], and refuses a number
+/// that is none of them. A kind of its own for each is what keeps an
 /// argument that is added later from being read as a threshold.
 const ARG_KIND_THRESHOLD: u8 = 0;
 const ARG_KIND_INDIVIDUALS: u8 = 1;
 const ARG_KIND_DISTANCE: u8 = 2;
+const ARG_KIND_COUNT: u8 = 3;
 
 /// The steps of one `Variants`, in the order in which they were put on it,
 /// or the copy of that list that one pass runs.
@@ -185,7 +195,7 @@ impl Steps {
             .into_iter()
             .filter_map(|(_name, value)| match value {
                 Argument::Threshold(threshold) => Some(threshold),
-                Argument::Distance(_) | Argument::Individuals(_) => None,
+                Argument::Distance(_) | Argument::Individuals(_) | Argument::Count(_) => None,
             })
             .collect()
     }
@@ -198,7 +208,7 @@ impl Steps {
         self.args()
             .into_iter()
             .filter_map(|(_name, value)| match value {
-                Argument::Threshold(_) | Argument::Distance(_) => None,
+                Argument::Threshold(_) | Argument::Distance(_) | Argument::Count(_) => None,
                 Argument::Individuals(names) => Some(names),
             })
             .flatten()
@@ -206,8 +216,10 @@ impl Steps {
     }
 
     /// What the value of each argument of `arg_names` is: 0 for the
-    /// threshold of a filter, which is in `arg_thresholds`, and 1 for the
-    /// names of the individuals to keep, which are in `arg_individuals`.
+    /// threshold of a filter, which is in `arg_thresholds`, 1 for the names
+    /// of the individuals to keep, which are in `arg_individuals`, 2 for a
+    /// window of base pairs, which is in `arg_distances`, and 3 for a count,
+    /// which is in `arg_counts`.
     ///
     /// The package switches on it and throws for a number it does not know,
     /// so an argument of a kind added later is never read as a threshold.
@@ -219,6 +231,7 @@ impl Steps {
                 Argument::Threshold(_) => ARG_KIND_THRESHOLD,
                 Argument::Individuals(_) => ARG_KIND_INDIVIDUALS,
                 Argument::Distance(_) => ARG_KIND_DISTANCE,
+                Argument::Count(_) => ARG_KIND_COUNT,
             })
             .collect()
     }
@@ -240,7 +253,29 @@ impl Steps {
             .into_iter()
             .filter_map(|(_name, value)| match value {
                 Argument::Distance(distance) => Some(distance as f64),
-                Argument::Threshold(_) | Argument::Individuals(_) => None,
+                Argument::Threshold(_) | Argument::Individuals(_) | Argument::Count(_) => None,
+            })
+            .collect()
+    }
+
+    /// The number of every argument that is a count, in the order of
+    /// `arg_names`, and nothing for an argument that is not: the number of
+    /// regions of a filter by regions.
+    ///
+    /// A count crosses as a float64, which holds every whole number up to
+    /// 2^53 exactly, and a `usize` of wasm is 32 bits wide, so a user reads
+    /// the number the core counted.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a usize of wasm is below 2^32, which a float64 holds exactly"
+    )]
+    #[must_use]
+    pub fn arg_counts(&self) -> Vec<f64> {
+        self.args()
+            .into_iter()
+            .filter_map(|(_name, value)| match value {
+                Argument::Count(count) => Some(count as f64),
+                Argument::Threshold(_) | Argument::Distance(_) | Argument::Individuals(_) => None,
             })
             .collect()
     }
@@ -259,7 +294,7 @@ impl Steps {
         self.args()
             .into_iter()
             .map(|(name, value)| match value {
-                Argument::Threshold(_) | Argument::Distance(_) => Ok(0),
+                Argument::Threshold(_) | Argument::Distance(_) | Argument::Count(_) => Ok(0),
                 Argument::Individuals(names) => {
                     let num_names = names.len();
                     u32::try_from(num_names).map_err(|_| {
@@ -381,6 +416,30 @@ impl Steps {
         let step = Step {
             pass_step: PassStep::KeepIndividuals(individuals.clone()),
             args: vec![(INDIVIDUALS, Argument::Individuals(individuals))],
+        };
+        refuse_a_second_filter_of_a_kind(&pass_steps_of(&self.steps), &step.pass_step)?;
+        self.steps.push(step);
+        Ok(())
+    }
+
+    /// The variants inside the regions of the BED file whose bytes are
+    /// `bed`, plain or gzipped, or, with `exclude`, those outside all of
+    /// them. The regions are read at this call and every pass shares them.
+    ///
+    /// # Errors
+    ///
+    /// A line of the BED that is not a region, with its number, a BED with
+    /// no region, and a filter by regions of this kind that is set already.
+    /// The BED is read first, since it is wrong whatever the list holds.
+    pub fn filter_by_regions(&mut self, bed: &[u8], exclude: bool) -> Result<(), JsPopneiError> {
+        let regions = Regions::from_bed(bed)?;
+        let num_regions = regions.num_regions();
+        let step = Step {
+            pass_step: PassStep::Regions(RegionSelection {
+                regions: Arc::new(regions),
+                exclude,
+            }),
+            args: vec![(NUM_REGIONS, Argument::Count(num_regions))],
         };
         refuse_a_second_filter_of_a_kind(&pass_steps_of(&self.steps), &step.pass_step)?;
         self.steps.push(step);

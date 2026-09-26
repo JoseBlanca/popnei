@@ -3,6 +3,7 @@ steps that were put on it, and the counts of a pass over it."""
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from popnei import _core
 from popnei.block import Block, Field, _block_of
@@ -187,7 +188,7 @@ class Variants:
         The tuple and the ``args`` dict of every step in it are built at
         each read, out of what the ``Variants`` holds, so writing into one
         of those dicts changes nothing of the steps: a step is added by one
-        of the four filter methods and by nothing else.
+        of the filter methods and by nothing else.
         """
         return tuple(
             Step(kind=kind, args=dict(args)) for kind, args in self._steps.steps()
@@ -401,6 +402,63 @@ class Variants:
                     f"{type(name).__name__}, is not one of them"
                 )
         self._steps.filter_individuals(names)
+
+    def filter_by_regions(self, bed_path: str | Path, exclude: bool = False) -> None:
+        """Keep the variants inside the regions of the BED file at
+        `bed_path`, or, with `exclude`, those outside all of them.
+
+        A BED file has one region on each line: the chromosome, the start
+        and the end, separated by tabs, and any columns after those, which
+        are not read. BED counts the bases from 0 and leaves the end out, so
+        the line ``chr1 0 2000`` is the first 2000 bases of chr1, positions
+        1 to 2000 as a VCF counts them, and a line of start ``s`` and end
+        ``e`` holds the positions from ``s + 1`` to ``e``.
+
+        A variant is inside when its chromosome has the name of the region's,
+        written the same way, and its position, the POS of its VCF, is in
+        the region. Only the position is looked at, as ``bcftools view -T``
+        and ``plink2 --extract bed0`` do, so a deletion that starts before a
+        region and reaches into it is outside. A BED that names its
+        chromosomes ``1`` where the file names them ``chr1`` keeps nothing:
+        popnei does not match one with the other. Regions that overlap or
+        touch act as the one region they cover together, and the order of
+        the lines does not matter. An empty line and a line that starts
+        with ``#``, ``track`` or ``browser`` are skipped, and a BED that
+        starts with the bytes of gzip is read through gzip.
+
+        The file is read at this call, so the regions are those it holds
+        now. The step's ``args`` are the path as it was given and the number
+        of regions once the ones that overlap or touch are joined, and its
+        kind is ``"regions"``, or ``"excluded_regions"`` with `exclude`,
+        which is also the name of its counts in the counts of a pass. A step
+        of each kind can stand together: the variants of some genes, with
+        those of the repeats among them excluded.
+
+        The source hands over only the variants inside, or outside, when
+        this filter is the first filter of the variants of the steps, so
+        putting it first is faster; the variants and the counts are the same
+        wherever it is.
+
+        The call adds a step and gives nothing back. A file that cannot be
+        opened or read is an ``OSError`` with the path in ``filename``. A
+        line of fewer than three columns separated by tabs, a start or an
+        end that is not a whole number of 0 or more, a start that is not
+        below its end and a file with no region are a ``ValueError`` that
+        names the file and the line. A second filter of the same kind is a
+        ``ValueError`` as well, and an `exclude` that is not ``True`` or
+        ``False`` is a ``TypeError``. After any of them the steps are as
+        they were. A source with no positions, which a ``Variants`` built
+        from an array of genotypes is, gives the ``ValueError`` of a field
+        the pass needs, when the pass runs.
+        """
+        if not isinstance(exclude, bool):
+            # pyo3 refuses it with `'int' object is not an instance of
+            # 'bool'`, which names neither the argument nor the call.
+            raise TypeError(
+                f"`exclude` is True or False, and {exclude!r}, a "
+                f"{type(exclude).__name__}, was given"
+            )
+        self._steps.filter_by_regions(bed_path, exclude)
 
     def iter_blocks(
         self,

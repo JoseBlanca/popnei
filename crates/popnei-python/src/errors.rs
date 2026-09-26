@@ -474,6 +474,10 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // only through a reader with a defect.
         | popnei::Error::VcfWriterFieldsMissing { .. }
         | popnei::Error::VcfWriterChromNameMissing { .. }
+        // The one of the filter by regions, which is of the same kind: a
+        // block whose chromosome number the table of its reader has no name
+        // for, which the filter looks the regions up by.
+        | popnei::Error::RegionFilterChromNameMissing { .. }
         // A member of bgzip that the writer could not put together, which
         // its cutting of the text into members and its stored block of a
         // text deflate does not shrink make impossible.
