@@ -654,7 +654,7 @@ def test_the_largest_draw_is_the_one_of_the_pass_and_not_of_the_file() -> None:
     assert PANEL.name in message
 
 
-def test_the_two_counts_of_the_variants_in_a_draw_are_of_the_draw(write_vcf) -> None:
+def test_the_two_counts_of_the_variants_in_a_draw_are_of_the_draw(vcf_of_lines) -> None:
     """Two variants of three diploid individuals in two populations at a draw
     of 2, where one population is short of the draw at the second variant, so
     that the four counts of variants come out as four different numbers and
@@ -694,7 +694,7 @@ def test_the_two_counts_of_the_variants_in_a_draw_are_of_the_draw(write_vcf) -> 
       Over the variants of each population instead, which is the divisor of the
       other two values, `pop1` would read 0.75.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT,G\t.\tPASS\t.\tGT\t0/1\t1/1\t2/2",
             "chr1\t20\t.\tA\tT,G\t.\tPASS\t.\tGT\t0/0\t0/1\t0/.",
@@ -761,7 +761,7 @@ def test_a_population_short_of_the_threshold_everywhere_counts_no_variant() -> N
 
 
 def test_the_mean_private_alleles_are_over_the_variants_every_population_counted(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """Two variants of three individuals in which one population misses the
     second, so that the variants every population counted are fewer than the
@@ -780,7 +780,7 @@ def test_the_mean_private_alleles_are_over_the_variants_every_population_counted
     called and its 1 variable variant would be 3 and 1 rather than 1.5 and
     0.5.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT,G\t.\tPASS\t.\tGT\t0/1\t2/2\t0/0",
             "chr1\t20\t.\tA\tT,G\t.\tPASS\t.\tGT\t0/0\t./.\t0/0",
@@ -807,7 +807,7 @@ def test_the_mean_private_alleles_are_over_the_variants_every_population_counted
     assert diversity.variable_vars_ratio.loc["pop1", "ratio"] == 0.5
 
 
-def test_a_pass_that_gives_no_variant_is_refused(write_vcf) -> None:
+def test_a_pass_that_gives_no_variant_is_refused(vcf_of_lines) -> None:
     """Every count of a population is over the variants of the pass, so a pass
     with none is an error, and the message says whether the source held none or
     the steps kept none, with what each filter counted."""
@@ -821,7 +821,7 @@ def test_a_pass_that_gives_no_variant_is_refused(write_vcf) -> None:
     assert "the `maf` filter was given 1200 and kept 0" in str(refusal.value)
 
     with pytest.raises(ValueError, match="its source holds none"):
-        calc_pop_diversity(open_vcf(write_vcf([])), stats=WITH_NO_SPECTRUM)
+        calc_pop_diversity(open_vcf(vcf_of_lines([])), stats=WITH_NO_SPECTRUM)
 
 
 def test_the_pass_stats_count_the_variants_the_pass_gave() -> None:

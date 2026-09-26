@@ -719,7 +719,7 @@ def test_fewer_than_twenty_groups_are_refused_with_how_many_there_were() -> None
     assert "20" in said
 
 
-def test_a_source_whose_variants_go_back_is_refused(write_vcf) -> None:
+def test_a_source_whose_variants_go_back_is_refused(vcf_of_lines) -> None:
     """Three variants of one chromosome at 1000, 3000 and 2000.
 
     The groups the standard errors are resampled over are stretches of one
@@ -729,7 +729,7 @@ def test_a_source_whose_variants_go_back_is_refused(write_vcf) -> None:
     the user asked for. The message names the chromosome and the two
     positions, and the file they were read from.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t1000\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
             "chr1\t3000\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
@@ -815,7 +815,7 @@ def test_a_name_that_is_not_an_individual_of_the_pass_is_refused() -> None:
 
 
 def test_a_pass_that_kept_no_variant_is_refused_with_the_counts_of_its_filters(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """Four variants, each with one genotype of the three missing, and a
     filter of missing data that keeps the variants with no missing genotype.
@@ -825,7 +825,7 @@ def test_a_pass_that_kept_no_variant_is_refused_with_the_counts_of_its_filters(
     none of them. A measure over no variant is no number, so it is a wrong
     input and not a vector of NaN.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t./.",
             "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t./.\t1/1",

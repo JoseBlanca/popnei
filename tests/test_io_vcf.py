@@ -47,10 +47,12 @@ def test_the_individuals_and_the_ploidy_are_known_when_the_vcf_is_opened(
 
 
 def test_the_ploidy_of_the_reader_is_the_one_that_was_asked_for(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """A tetraploid VCF read with `ploidy` 4, which is not an error."""
-    path = write_vcf(["chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0/1/1\t0/1/1/1\t0/0/0/0"])
+    path = vcf_of_lines(
+        ["chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0/1/1\t0/1/1/1\t0/0/0/0"]
+    )
     variants = open_vcf(path, ploidy=4)
     assert variants.ploidy == 4
     blocks = list(variants.iter_blocks())
@@ -168,10 +170,10 @@ def test_a_file_that_is_not_a_vcf_is_refused_when_it_is_opened(
 
 
 def test_a_genotype_of_another_ploidy_is_refused_when_the_blocks_are_asked_for(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """The line is read when the blocks are, and it names the individual."""
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
             "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/0/1/1\t1/1",
@@ -185,9 +187,9 @@ def test_a_genotype_of_another_ploidy_is_refused_when_the_blocks_are_asked_for(
     assert "line 5" in str(refusal.value)
 
 
-def test_an_allele_that_the_variant_does_not_declare_is_refused(write_vcf) -> None:
+def test_an_allele_that_the_variant_does_not_declare_is_refused(vcf_of_lines) -> None:
     """pyNei reads such an allele number; popnei refuses it."""
-    path = write_vcf(["chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/2"])
+    path = vcf_of_lines(["chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/2"])
     variants = open_vcf(path)
     with pytest.raises(ValueError, match="ind3"):
         list(variants.iter_blocks())

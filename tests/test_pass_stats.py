@@ -135,13 +135,13 @@ def test_write_vars_gives_the_counts_of_the_pass_it_made(
     )
 
 
-def test_a_source_with_no_variants_counts_none(write_vcf, tmp_path: Path) -> None:
+def test_a_source_with_no_variants_counts_none(vcf_of_lines, tmp_path: Path) -> None:
     """A VCF whose header names three individuals and that has no variant.
 
     It is not an error, so the pass is a pass like any other and its count
     is 0.
     """
-    variants = open_vcf(write_vcf([]))
+    variants = open_vcf(vcf_of_lines([]))
 
     blocks = variants.iter_blocks()
     assert list(blocks) == []
@@ -152,7 +152,7 @@ def test_a_source_with_no_variants_counts_none(write_vcf, tmp_path: Path) -> Non
 
 
 def test_the_block_a_pass_lost_with_an_error_is_not_among_its_variants(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """Three variants read in blocks of one, and a fourth line popnei
     refuses because it gives one individual four alleles.
@@ -161,7 +161,7 @@ def test_the_block_a_pass_lost_with_an_error_is_not_among_its_variants(
     of the three blocks they got and not of the four variants the file
     holds.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
             "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",

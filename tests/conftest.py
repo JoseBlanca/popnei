@@ -29,7 +29,7 @@ def reference_vcf_dir() -> Path:
 
 
 @pytest.fixture
-def write_vcf(tmp_path: Path) -> Callable[[Iterable[str]], Path]:
+def vcf_of_lines(tmp_path: Path) -> Callable[[Iterable[str]], Path]:
     """A function that writes a VCF of three individuals and gives its path.
 
     It takes the data lines, each with its columns separated by tabs, and

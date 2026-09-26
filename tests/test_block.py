@@ -158,14 +158,14 @@ def test_the_genotypes_are_an_int8_array_of_variants_individuals_and_ploidy(
         block.gts[0, 0, 0] = 1
 
 
-def test_a_block_names_the_chromosomes_of_its_own_variants(write_vcf) -> None:
+def test_a_block_names_the_chromosomes_of_its_own_variants(vcf_of_lines) -> None:
     """The names come from the table of the reader, which grows as it reads.
 
     A block holds a few of the chromosomes of a source, which in a de novo
     assembly has 10000 scaffolds or more, and each of its variants has to
     get the name of its own.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             f"chr{number}\t{10 * number}\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"
             for number in (1, 2, 3, 4, 1)
@@ -293,7 +293,7 @@ def test_blocks_of_no_variant_are_refused(reference_vcf_dir: Path) -> None:
         variants.iter_blocks(num_vars_per_block=0)
 
 
-def test_a_vcf_with_no_variant_gives_no_block(write_vcf) -> None:
-    variants = open_vcf(write_vcf([]))
+def test_a_vcf_with_no_variant_gives_no_block(vcf_of_lines) -> None:
+    variants = open_vcf(vcf_of_lines([]))
     assert list(variants.iter_blocks()) == []
     assert variants.individuals == ("ind1", "ind2", "ind3")

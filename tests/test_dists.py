@@ -315,7 +315,7 @@ def test_the_distances_of_another_ploidy_are_the_ones_r_gives(
 
 
 def test_the_worked_example_gives_the_distances_of_the_spec_and_of_pynei(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """The 4 variants of 3 individuals of "How it is verified", written as a
     VCF, with its half called genotype and its missing one.
@@ -323,7 +323,7 @@ def test_the_worked_example_gives_the_distances_of_the_spec_and_of_pynei(
     The three distances are the spec's integers divided as the spec divides
     them, and pyNei is given the same genotypes as an array.
     """
-    ours = calc_pairwise_kosman_dists(open_vcf(write_vcf(WORKED_EXAMPLE_LINES)))
+    ours = calc_pairwise_kosman_dists(open_vcf(vcf_of_lines(WORKED_EXAMPLE_LINES)))
     theirs = pynei_kosman_dists(
         PyneiVariants.from_gt_array(
             numpy.array(WORKED_EXAMPLE_GTS), samples=["ind1", "ind2", "ind3"]
@@ -336,7 +336,7 @@ def test_the_worked_example_gives_the_distances_of_the_spec_and_of_pynei(
 
 
 def test_a_pair_keeps_its_distance_at_exactly_min_num_snps_and_loses_it_below(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """The worked example with `min_num_snps` of 3 and of 4.
 
@@ -345,7 +345,7 @@ def test_a_pair_keeps_its_distance_at_exactly_min_num_snps_and_loses_it_below(
     what "strictly below" means, and 4 leaves no pair a distance.
     """
     assert WORKED_EXAMPLE_NUM_VARS == [2, 3, 3]
-    path = write_vcf(WORKED_EXAMPLE_LINES)
+    path = vcf_of_lines(WORKED_EXAMPLE_LINES)
 
     at_three = calc_pairwise_kosman_dists(open_vcf(path), min_num_snps=3)
     at_four = calc_pairwise_kosman_dists(open_vcf(path), min_num_snps=4)
@@ -450,7 +450,7 @@ def test_a_filter_that_takes_nothing_out_leaves_the_distances_and_counts_all(
         )
 
 
-def test_the_distances_are_over_the_variants_the_steps_kept(write_vcf) -> None:
+def test_the_distances_are_over_the_variants_the_steps_kept(vcf_of_lines) -> None:
     """Five variants of three individuals, two of which have a missing
     genotype, and a filter that keeps the variants with none.
 
@@ -459,7 +459,7 @@ def test_the_distances_are_over_the_variants_the_steps_kept(write_vcf) -> None:
     the source gave, which the filter reports beside it.
     """
     variants = open_vcf(
-        write_vcf(
+        vcf_of_lines(
             [
                 "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
                 "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t./.\t0/1\t1/1",
@@ -545,7 +545,7 @@ def test_the_counts_of_the_pass_hold_the_variants_of_the_dataset() -> None:
 
 
 def test_the_variants_are_as_they_were_after_the_calculation(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """One pass over the source, and a `Variants` that nothing was added to.
 
@@ -553,7 +553,7 @@ def test_the_variants_are_as_they_were_after_the_calculation(
     steps have to be what they were and the second call has to give what the
     first gave.
     """
-    variants = open_vcf(write_vcf(WORKED_EXAMPLE_LINES))
+    variants = open_vcf(vcf_of_lines(WORKED_EXAMPLE_LINES))
     variants.filter_by_missing_data(1)
     steps_before = variants.steps
 
@@ -565,7 +565,7 @@ def test_the_variants_are_as_they_were_after_the_calculation(
     assert numpy.array_equal(first.dist_vector, second.dist_vector)
 
 
-def test_a_negative_min_num_snps_is_refused(write_vcf) -> None:
+def test_a_negative_min_num_snps_is_refused(vcf_of_lines) -> None:
     """A `min_num_snps` below 0, which pyNei takes and does nothing with.
 
     How many variants a pair needs is a count, so a negative one says
@@ -575,7 +575,7 @@ def test_a_negative_min_num_snps_is_refused(write_vcf) -> None:
     for a pair, which no pair could reach and which would otherwise give a
     vector of nothing but NaN.
     """
-    variants = open_vcf(write_vcf(WORKED_EXAMPLE_LINES))
+    variants = open_vcf(vcf_of_lines(WORKED_EXAMPLE_LINES))
 
     with pytest.raises(ValueError, match="min_num_snps"):
         calc_pairwise_kosman_dists(variants, min_num_snps=-1)
@@ -595,7 +595,7 @@ def _what_it_said_of(refusal: pytest.ExceptionInfo, path: Path) -> str:
     return message.removeprefix(f"{path}: ")
 
 
-def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
+def test_a_source_with_no_variant_is_refused(vcf_of_lines) -> None:
     """A VCF whose header names three individuals and that has no data line.
 
     A calculation over no variant gives no number, so it is a wrong input
@@ -604,7 +604,7 @@ def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
     and the whole sentence is asserted, because every word of it is what
     tells the two apart.
     """
-    path = write_vcf([])
+    path = vcf_of_lines([])
 
     with pytest.raises(ValueError) as refusal:
         calc_pairwise_kosman_dists(open_vcf(path))
@@ -616,7 +616,7 @@ def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
 
 
 def test_a_source_with_no_variant_is_told_apart_from_steps_that_kept_none(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """The same VCF with no data line, with a filter on it.
 
@@ -626,7 +626,7 @@ def test_a_source_with_no_variant_is_told_apart_from_steps_that_kept_none(
     was given nothing and kept nothing, and those zeros say no more than the
     sentence does.
     """
-    path = write_vcf([])
+    path = vcf_of_lines([])
     variants = open_vcf(path)
     variants.filter_by_missing_data(0)
 
@@ -640,7 +640,7 @@ def test_a_source_with_no_variant_is_told_apart_from_steps_that_kept_none(
 
 
 def test_steps_that_kept_no_variant_are_refused_with_what_each_filter_counted(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """Four variants, each with one genotype of the three missing, and a
     missing data filter that keeps the variants with no missing genotype,
@@ -653,7 +653,7 @@ def test_steps_that_kept_no_variant_are_refused_with_what_each_filter_counted(
     itself, which is what says that the steps and not the source are what
     left the calculation with nothing.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t./.",
             "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t./.\t1/1",
@@ -822,14 +822,14 @@ def test_an_empty_vector_is_of_no_individual_or_of_one() -> None:
 
 
 def test_the_vector_of_a_distances_cannot_be_written_into(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """The array of a result, which nothing changes after it was given.
 
     A user who keeps a result and works from it reads the same numbers as
     long as they hold it.
     """
-    dists = calc_pairwise_kosman_dists(open_vcf(write_vcf(WORKED_EXAMPLE_LINES)))
+    dists = calc_pairwise_kosman_dists(open_vcf(vcf_of_lines(WORKED_EXAMPLE_LINES)))
 
     assert dists.dist_vector.dtype == numpy.float64
     with pytest.raises(ValueError):
@@ -860,7 +860,7 @@ def test_a_haploid_and_a_tetraploid_variants_are_taken(vcf_of) -> None:
 
 
 def test_a_distances_holds_the_names_as_a_tuple_and_the_counts_of_its_pass(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """What a result carries besides the distances.
 
@@ -868,7 +868,7 @@ def test_a_distances_holds_the_names_as_a_tuple_and_the_counts_of_its_pass(
     that they could write into, and `pass_stats` is `None` in a `Distances`
     that was built from distances calculated elsewhere.
     """
-    dists = calc_pairwise_kosman_dists(open_vcf(write_vcf(WORKED_EXAMPLE_LINES)))
+    dists = calc_pairwise_kosman_dists(open_vcf(vcf_of_lines(WORKED_EXAMPLE_LINES)))
 
     assert isinstance(dists.names, tuple)
     assert dists.names == ("ind1", "ind2", "ind3")
@@ -877,7 +877,7 @@ def test_a_distances_holds_the_names_as_a_tuple_and_the_counts_of_its_pass(
 
 
 def test_the_square_matrix_is_indexed_by_the_names_on_both_sides(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """The N x N frame a user gives to a tree or a principal coordinate
     analysis.
@@ -885,7 +885,7 @@ def test_the_square_matrix_is_indexed_by_the_names_on_both_sides(
     It is symmetrical, its diagonal is 0, and both of its indexes are the
     names of the individuals in the order the source has them.
     """
-    dists = calc_pairwise_kosman_dists(open_vcf(write_vcf(WORKED_EXAMPLE_LINES)))
+    dists = calc_pairwise_kosman_dists(open_vcf(vcf_of_lines(WORKED_EXAMPLE_LINES)))
 
     square = dists.square_dists
 
@@ -897,7 +897,7 @@ def test_the_square_matrix_is_indexed_by_the_names_on_both_sides(
 
 
 def test_a_variants_of_another_source_gives_the_same_distances(
-    tmp_path: Path, write_vcf
+    tmp_path: Path, vcf_of_lines
 ) -> None:
     """The worked example read from a VCF and from the vars file written
     from it.
@@ -907,7 +907,7 @@ def test_a_variants_of_another_source_gives_the_same_distances(
     from and however the blocks fall.
     """
     path = tmp_path / "worked.vars"
-    write_vars(open_vcf(write_vcf(WORKED_EXAMPLE_LINES)), path, 2)
+    write_vars(open_vcf(vcf_of_lines(WORKED_EXAMPLE_LINES)), path, 2)
 
     of_the_vars_file = calc_pairwise_kosman_dists(open_vars(path))
 
@@ -915,15 +915,15 @@ def test_a_variants_of_another_source_gives_the_same_distances(
     assert of_the_vars_file.names == ("ind1", "ind2", "ind3")
 
 
-def test_a_variants_is_what_the_calculation_takes(write_vcf) -> None:
+def test_a_variants_is_what_the_calculation_takes(vcf_of_lines) -> None:
     """A `Variants` and not a path: the mistake that is easiest to make."""
     with pytest.raises(TypeError, match="open_vcf"):
-        calc_pairwise_kosman_dists(str(write_vcf(WORKED_EXAMPLE_LINES)))
+        calc_pairwise_kosman_dists(str(vcf_of_lines(WORKED_EXAMPLE_LINES)))
 
 
-def test_the_result_is_of_the_individuals_of_the_source(write_vcf) -> None:
+def test_the_result_is_of_the_individuals_of_the_source(vcf_of_lines) -> None:
     """The names of a result and those of the `Variants` it came from."""
-    variants: Variants = open_vcf(write_vcf(WORKED_EXAMPLE_LINES))
+    variants: Variants = open_vcf(vcf_of_lines(WORKED_EXAMPLE_LINES))
 
     dists = calc_pairwise_kosman_dists(variants)
 

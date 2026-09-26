@@ -581,11 +581,11 @@ def test_per_var_distribs_of_a_pass_whose_filter_kept_no_variant_is_refused() ->
     assert "the `maf` filter was given 500 and kept 0" in str(refusal.value)
 
 
-def test_per_var_distribs_of_a_source_with_no_variant_is_refused(write_vcf) -> None:
+def test_per_var_distribs_of_a_source_with_no_variant_is_refused(vcf_of_lines) -> None:
     """A VCF with a header and no data line holds no variant, which the
     message says apart from the steps keeping none."""
     with pytest.raises(ValueError, match="its source holds none"):
-        calc_per_var_distribs(open_vcf(write_vcf([])))
+        calc_per_var_distribs(open_vcf(vcf_of_lines([])))
 
 
 def test_per_var_distribs_does_not_change_hist_kwargs() -> None:
@@ -1067,14 +1067,14 @@ def test_per_individual_stats_divide_pyneis_three_variants_by_the_called_genotyp
 
 
 def test_per_individual_stats_leave_an_individual_with_no_called_genotype_without_a_rate(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """An individual whose genotype is missing at every variant has a
     missing rate of 1 and no heterozygosity rate, NaN, since that rate is
     over the called genotypes and it has none."""
     ours = calc_per_individual_stats(
         open_vcf(
-            write_vcf(
+            vcf_of_lines(
                 [
                     "chr1\t1\t.\tA\tC\t.\tPASS\t.\tGT\t0/1\t0/0\t./.",
                     "chr1\t2\t.\tA\tC\t.\tPASS\t.\tGT\t0/0\t0/1\t./.",
@@ -1091,13 +1091,13 @@ def test_per_individual_stats_leave_an_individual_with_no_called_genotype_withou
 
 
 def test_per_individual_stats_of_a_source_with_no_variant_are_refused(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """A VCF with a header and no data line holds no variant, and a rate
     over no variant is no number: the message says that the source holds
     none."""
     with pytest.raises(ValueError, match="the pass gave no variant") as refusal:
-        calc_per_individual_stats(open_vcf(write_vcf([])))
+        calc_per_individual_stats(open_vcf(vcf_of_lines([])))
     assert "its source holds none" in str(refusal.value)
 
 

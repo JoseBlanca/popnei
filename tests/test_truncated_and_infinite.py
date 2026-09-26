@@ -165,10 +165,10 @@ def test_a_gzipped_vcf_that_bgzip_did_not_write_is_read_to_its_end(
 
 
 @pytest.mark.parametrize("quality", ["nan", "inf", "-inf", "1e400", "1e39"])
-def test_a_quality_that_is_not_finite_is_refused(write_vcf, quality: str) -> None:
+def test_a_quality_that_is_not_finite_is_refused(vcf_of_lines, quality: str) -> None:
     """`1e400` is above what a float of 64 bits holds and `1e39` above what
     the 32 bits of the column of a block hold: both read as infinite."""
-    path = write_vcf([f"chr1\t10\t.\tA\tT\t{quality}\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
+    path = vcf_of_lines([f"chr1\t10\t.\tA\tT\t{quality}\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
     variants = open_vcf(path)
     with pytest.raises(ValueError, match="QUAL") as refusal:
         list(variants.iter_blocks(fields=("qual",)))
@@ -180,12 +180,12 @@ def test_a_quality_that_is_not_finite_is_refused(write_vcf, quality: str) -> Non
 
 
 def test_a_quality_that_is_not_finite_is_read_when_the_quality_is_not_asked_for(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """A column that is not parsed is not checked, which "How it runs" of
     `docs/specs/io_vcf.md` decides, and the default `fields` of
     `iter_blocks` does not ask for the quality."""
-    path = write_vcf(["chr1\t10\t.\tA\tT\tnan\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
+    path = vcf_of_lines(["chr1\t10\t.\tA\tT\tnan\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
     variants = open_vcf(path)
     blocks = list(variants.iter_blocks())
     assert [block.num_vars for block in blocks] == [1]
