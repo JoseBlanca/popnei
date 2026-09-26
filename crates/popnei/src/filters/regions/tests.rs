@@ -1069,3 +1069,32 @@ fn the_source_of_whole_blocks_by_regions_skips_some_blocks_and_gives_others() {
         );
     }
 }
+
+/// A `regions` and an `excluded_regions` step over a source that skips:
+/// the first hands its regions to the source and the second, over it, is
+/// refused the offer it makes, so the source is offered once and the counts
+/// are those without the skip. A filter by regions that handed the second
+/// offer on would have the source pass over the variants of both, and the
+/// second would count fewer variants given than the first kept.
+#[test]
+fn a_second_filter_by_regions_over_a_source_that_skips_is_not_handed_on() {
+    let inside = PassStep::Regions(selection_of(&the_bed_of_the_spec(), false));
+    let outside = PassStep::Regions(selection_of(b"chr1\t0\t1100\n", true));
+    for skips in [TheSkip::EveryVariant, TheSkip::WholeBlocks] {
+        let source = SkippingSource::of(vcf_reader("many.vcf", Some(7)), skips);
+        let offers = Arc::clone(&source.offers);
+        let mut chain =
+            chain_of(Box::new(source), &[inside.clone(), outside.clone()]).expect("the chain");
+        assert_eq!(offers.load(Ordering::SeqCst), 1, "{skips:?}");
+        let blocks = blocks_of(&mut chain).expect("the blocks");
+        assert_eq!(named_of(&blocks, chain.chroms()).len(), 42, "{skips:?}");
+        assert_eq!(
+            chain.filtering_stats(),
+            vec![
+                ("excluded_regions", pair(45, 42)),
+                ("regions", pair(500, 45))
+            ],
+            "{skips:?}"
+        );
+    }
+}
