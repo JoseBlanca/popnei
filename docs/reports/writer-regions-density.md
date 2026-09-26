@@ -280,3 +280,52 @@ readers of bgzipped files change their inflate as well, which was not
 timed. libdeflate, `libdeflater` 1.26.1, is C: it failed to build for
 `wasm32-unknown-emscripten` without `emcc` and for
 `wasm32-unknown-unknown` without C headers.
+
+Task 3.4, commits fe5c9cb and b72ce55. `write_vcf(variants, path)` in
+Python writes the file bgzipped when the path ends in `.gz`, and
+`writeVcf(variants, {bgzip})` in TypeScript gives the bytes, bgzipped
+unless `bgzip` is false. Python shares with `write_vars` one way of
+handling the path: a path where a file already is is refused, a failed
+write is an `OSError` naming the file, and the file is taken away on an
+error or a Ctrl-C. `writeVcf` is the thirteenth consumer of the TypeScript
+package, which `docs/specs/js_sources.md` counts now. At 59c7716 the checks
+gave 1086 passed, 2 ignored, and 150 in cargo, 563 passed and 6 skipped in
+pytest, 449 of 450 in node with the old failure, and 8 in the browser.
+
+The review ran in all seven categories over the eight commits of tasks 3.1
+to 3.4. No reviewer found a wrong line in a file the tests write: one
+compared a filter of individuals followed by the missing data filter on a
+file of 3500 variants and 1200 individuals with the same steps in bcftools
+and got the same 857 lines byte for byte, in Python and in TypeScript.
+What they found, and what is being fixed:
+
+- Two ways to write a file bcftools would not. When AC and AN come out,
+  empty INFO values were kept, so `AC=1;AN=4;` became an empty INFO
+  column where bcftools writes `.`. And a vars file without the `id`
+  column, which `docs/specs/io_vars.md` calls valid and `write_vars`
+  writes, was refused by the writer as a defect of popnei; the specs
+  contradicted each other there, and the owner's convention for errors
+  settles it: a missing ID or QUAL is written `.`, and a missing
+  position, chromosome, alleles or genotypes is a `ValueError` naming
+  the file and the column.
+- A panic during a write left a partial file at the path, for `write_vars`
+  as well, which was so before this plan.
+- Tests that could not fail, each shown by a mutation that passed the
+  whole suite: the order of the bgzip members, since no test wrote more
+  than one member at once; ploidies other than 2 written from a vars
+  file; the empty member at the end, compared with the code's own
+  constant; and the member stored when deflate cannot shrink its text,
+  a branch no test reached because miniz_oxide stores such text itself.
+- Speed and memory. The writer asked a VCF source for every column and
+  then read only the text: the plain write of `big.vcf` took 0.95 s on
+  one thread where the text alone takes 0.52 s. The filter of
+  individuals rewrote the text on one thread while the genotypes beside
+  it were gathered on all, which doubled a write with that filter on 18
+  threads, 0.17 s to 0.33 s. A bgzipped write held each block's text
+  three times, 147 MB at its peak on a file whose reading with its text
+  took 56 MB.
+- Smaller: an error named `VarsFileNotWritten` that the VCF writer gives
+  too; `.gz` matched only in lower case, so `a.VCF.GZ` was written plain;
+  the choice of the writer's block size made in both binding crates
+  rather than in the core; paths that would give an empty text or a
+  default value instead of an error if a check before them moved.
