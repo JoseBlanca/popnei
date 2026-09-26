@@ -161,9 +161,7 @@ def test_write_vcf_leaves_no_file_when_the_vcf_has_a_wrong_line_after_250_good_o
     lines += [
         f"chr1\t{pos}\t.\tA\tT\t.\tPASS\t.\tGT\t{genotypes}" for pos in range(1, 251)
     ]
-    # The column of the last individual is missing, which the reader
-    # refuses from the text of the line: the writer reads a VCF for its
-    # text alone and parses no genotype.
+    # The column of the last individual is missing.
     lines.append("chr1\t251\t.\tA\tT\t.\tPASS\t.\tGT\t" + genotypes[4:])
     vcf_path = tmp_path / "wrong_after_250.vcf"
     vcf_path.write_text("\n".join(lines) + "\n")
