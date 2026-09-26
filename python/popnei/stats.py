@@ -66,16 +66,19 @@ class StatsDistrib:
     """The distribution of one statistic over the variants of a pass, per
     population.
 
-    A variant has no value of a statistic in a population when the population
-    has too little data at it, and such a variant is out of the mean and in
-    no bin, so the histograms of two populations can count different numbers
-    of variants. A value outside the range of the bins is in the mean and in
+    A variant has no value of a statistic held to `min_num_individuals` in a
+    population when the population has too little data at it, and such a
+    variant is out of the mean and in no bin, so the histograms of two
+    populations can count different numbers of variants. The missing rate is
+    not held to it: every variant has one in every population, and its mean
+    is never NaN. A value outside the range of the bins is in the mean and in
     no bin, as :func:`numpy.histogram` leaves it out too.
     """
 
     mean: pandas.Series
     """The mean over the variants that had a value, one value per
-    population, NaN for a population in which no variant had one."""
+    population, NaN for a population in which no variant had one, which
+    the missing rate never is."""
 
     hist_bin_edges: numpy.ndarray
     """The edges of the bins, one more than there are bins.
