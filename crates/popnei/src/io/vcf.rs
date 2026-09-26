@@ -43,6 +43,9 @@ use crate::filters::{FilteringStats, RegionSelection};
 use crate::io::bgzf::BgzfReader;
 use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs};
 
+mod writer;
+pub use writer::write_vcf;
+
 /// The ploidy a VCF is read with when the caller asks for no other, the
 /// ploidy of a diploid organism. pyNei has no such argument and reports 2
 /// for every file it reads.

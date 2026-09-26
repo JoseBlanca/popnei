@@ -2719,16 +2719,40 @@ pub enum Error {
         /// How many one column of a batch holds.
         largest: u64,
     },
+    /// A block given to the VCF writer holds neither the text of its lines
+    /// nor every column a line is written from without it. The writer asks
+    /// its reader for both, the text for a VCF and the columns for any
+    /// source, so a block with neither comes from a reader with a defect.
+    #[error(
+        "a block given to the VCF writer holds neither the text of its lines nor {fields}, which the writer asked its reader for"
+    )]
+    VcfWriterFieldsMissing {
+        /// The fields of the block that a line written from the columns
+        /// needs and that the block does not hold.
+        fields: Needs,
+    },
 
-    /// The vars file could not be written: the sink refused the bytes, a
-    /// disc that filled up among them, or arrow-rs could not write what it
-    /// was given.
+    /// A block given to the VCF writer holds a chromosome number that the
+    /// table of the reader it came from has no name for. That table has the
+    /// names of every block the reader gave, so a user reaches this only
+    /// through a reader with a defect.
+    #[error(
+        "a block given to the VCF writer holds the chromosome number {number}, and the table of chromosome names of its reader has no name for it"
+    )]
+    VcfWriterChromNameMissing {
+        /// The number that has no name.
+        number: u32,
+    },
+
+    /// The vars file or the VCF could not be written: the sink refused the
+    /// bytes, a disc that filled up among them, or arrow-rs could not write
+    /// what it was given. The name is of the first writer that had it.
     ///
     /// It is not [`Error::Io`], which is a source that could not be read. A
     /// call that writes a vars file reads another file, and which of the
     /// two went wrong is what a user acts on, so the write says that it was
     /// the write.
-    #[error("the vars file could not be written: {problem}")]
+    #[error("the file could not be written: {problem}")]
     VarsFileNotWritten {
         /// What went wrong, as the system or arrow-rs said it.
         problem: String,
@@ -3033,7 +3057,8 @@ impl Error {
             | Self::DiversityMoreVarsThanACountHolds { .. }
             // The defects: a reader that gave blocks which do not hold
             // one dataset, a block whose arrays are not of its size, a
-            // block of no variants, the counts and the indices a caller of
+            // block of no variants, a block that one of the two writers
+            // cannot write, the counts and the indices a caller of
             // the core passes it, a parse that did not come back, the
             // buffers and the sizes a calculation builds for itself, and an
             // operation of the linear algebra that did not run. A user who
@@ -3057,6 +3082,8 @@ impl Error {
             | Self::VarsBlockDoesNotFit { .. }
             | Self::VarsBlockColumns { .. }
             | Self::VarsChromNameMissing { .. }
+            | Self::VcfWriterFieldsMissing { .. }
+            | Self::VcfWriterChromNameMissing { .. }
             | Self::PcaTableOfAnotherSize { .. }
             | Self::PcaLinalg { .. }
             | Self::PcaSecondPassMissing { .. }
