@@ -1266,11 +1266,15 @@ pub trait BlockReader: Send {
     /// default so that one that forgets to does not compile.
     fn header(&self) -> &SourceHeader;
 
-    /// It offers the reader the regions of the filter by regions, whose
-    /// variants outside them it may pass over from the next block it
-    /// builds, and says whether it will.
+    /// It offers the reader the regions of the filter by regions, and says
+    /// whether it will pass over, from the next block it builds, the
+    /// variants the selection does not keep: those outside the regions, or
+    /// with `exclude` those inside them.
     ///
-    /// A source that can pass over them says true. A reader over another
+    /// An offer a source took holds for as long as that source lives, so
+    /// the reader that offers owns its source: a source lent as `&mut` and
+    /// read again after that reader was dropped would still pass over those
+    /// variants. A source that can pass over them says true. A reader over another
     /// reader that changes no variant, the filter of individuals,
     /// [`Reblock`] and the reader one block ahead, hands the offer to its
     /// source and says what it answers. A filter of variants says false and
