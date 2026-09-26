@@ -1795,6 +1795,8 @@ fn skip_outside_a_batch_whose_largest_position_is_the_first_of_a_region_is_read(
 /// was passed over is walked past again and counted once: in a pool of 4
 /// threads the window is of 4 batches, the fourth batch of the file is
 /// skipped, and the reader reads the three others after the first twice.
+/// Native alone: wasm has no threads and reads one batch at a time.
+#[cfg(not(target_family = "wasm"))]
 #[test]
 fn skip_outside_a_batch_walked_past_twice_after_set_needs_is_counted_once() {
     let pool = rayon::ThreadPoolBuilder::new()
