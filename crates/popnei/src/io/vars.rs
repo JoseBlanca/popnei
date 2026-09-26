@@ -716,6 +716,9 @@ impl<W: Write> VarsWriter<W> {
             id,
             alleles,
             qual,
+            // The vars file has no place for the text of the lines of a
+            // VCF, which the writer of a vars file does not ask for.
+            vcf_text: _,
         } = block;
         let mut arrays: Vec<ArrayRef> = Vec::new();
         let mut regions = Vec::new();
@@ -2583,6 +2586,7 @@ fn block_of_the_batch(
         id: None,
         alleles: None,
         qual: None,
+        vcf_text: None,
     };
     // The texts of the alleles of one variant, written over for the next
     // one: nothing is allocated for each variant of the block.
@@ -3507,6 +3511,7 @@ mod tests {
             id: Some(id),
             alleles: Some(alleles),
             qual: Some(qual),
+            vcf_text: None,
         }
     }
 
@@ -4045,6 +4050,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
         let reader = GivenBlocks {
             ploidy: 4,
@@ -6180,6 +6186,7 @@ mod tests {
             id: Some(vec![String::new(); NUM_VARS]),
             alleles: Some(alleles),
             qual: Some(vec![30.0; NUM_VARS]),
+            vcf_text: None,
         };
         let expected = block.gts.clone();
         let reader = GivenBlocks {
@@ -7705,6 +7712,7 @@ mod tests {
             // The second variant has no quality, which is a NaN in the block
             // and a null in the file.
             qual: Some(vec![quality, f32::NAN]),
+            vcf_text: None,
         }
     }
 

@@ -35,7 +35,7 @@ use std::path::Path;
 use flate2::bufread::MultiGzDecoder;
 
 use crate::block::{
-    AllelesColumn, Block, BlockReader, BlockSize, SourceHeader, check_the_size_of_a_block,
+    AllelesColumn, Block, BlockReader, BlockSize, SourceHeader, VcfText, check_the_size_of_a_block,
     default_num_vars_per_block, size_of_the_blocks,
 };
 use crate::error::{Error, Result};
@@ -525,6 +525,10 @@ struct BatchRow {
     /// What the line gave, but for its genotypes, which went into the row
     /// of the block.
     row: ParsedRow,
+    /// Where the nine first columns of the line end and where the column
+    /// of each individual ends, counted from the start of the line, when
+    /// the text of the lines was asked for, and nothing when it was not.
+    text_ends: Vec<u32>,
     /// The error of its parse, when it has one. The reader gives the error
     /// of the first line of the file that has one.
     error: Option<Error>,
@@ -538,18 +542,31 @@ impl BatchRow {
             line: 0..0,
             number: 0,
             row: ParsedRow::default(),
+            text_ends: Vec::new(),
             error: None,
         }
     }
 
     /// The line parsed into its row, with its genotypes into `gts`, the
     /// alleles of that variant in the block, and what went wrong into its
-    /// own `error`.
+    /// own `error`. When the text of the lines was asked for, the ends of
+    /// its texts too, which are found here, on the threads of the parse, so
+    /// that what the reader does serially with the text is to copy it.
     fn parse(&mut self, text: &[u8], gts: &mut [i8], rules: &RowRules<'_>) {
         #[cfg(test)]
         tests::panic_if_the_test_asked_for_it(self.number, rules);
         let line = text.get(self.line.clone()).unwrap_or_default();
-        self.error = parse_row(line, self.number, rules, gts, &mut self.row).err();
+        self.error = parse_row(line, self.number, rules, gts, &mut self.row)
+            .and_then(|()| match rules.needs.contains(Needs::VCF_TEXT) {
+                true => fill_text_ends(
+                    line,
+                    self.number,
+                    rules.individuals.len(),
+                    &mut self.text_ends,
+                ),
+                false => Ok(()),
+            })
+            .err();
     }
 }
 
@@ -951,6 +968,15 @@ impl<R: BufRead + Send> VcfReader<R> {
             true => Some(AllelesColumn::with_num_vars(num_vars).map_err(|_| too_large())?),
             false => None,
         };
+        // The ends of the texts of a full block; their bytes are asked for
+        // one batch at a time, when the reader knows how many there are.
+        let vcf_text = match self.needs.contains(Needs::VCF_TEXT) {
+            true => Some(
+                VcfText::with_num_vars(num_vars, self.individuals.len())
+                    .map_err(|_| too_large())?,
+            ),
+            false => None,
+        };
         Ok(Block {
             num_vars: 0,
             num_individuals: self.individuals.len(),
@@ -961,6 +987,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             id: self.reserved_column(Needs::ID, num_vars)?,
             alleles,
             qual: self.reserved_column(Needs::QUAL, num_vars)?,
+            vcf_text,
         })
     }
 
@@ -1085,8 +1112,17 @@ impl<R: BufRead + Send> VcfReader<R> {
     /// is the first one of the file, since the batches are parsed one after
     /// another. The block is lost with it.
     fn append_batch(&mut self, block: &mut Block) -> Result<usize> {
+        // The bytes of the lines of the batch are at most its text, which
+        // holds their ends of line too, and the memory of them is asked for
+        // before any is copied.
+        if let Some(vcf_text) = block.vcf_text.as_mut() {
+            vcf_text
+                .try_reserve(self.filled, self.text.len())
+                .map_err(|_| self.block_too_large(self.num_vars_per_block))?;
+        }
         let VcfReader {
             chroms,
+            text,
             batch,
             filled,
             ..
@@ -1111,6 +1147,10 @@ impl<R: BufRead + Send> VcfReader<R> {
             }
             if let Some(qual) = block.qual.as_mut() {
                 qual.push(row.qual);
+            }
+            if let Some(vcf_text) = block.vcf_text.as_mut() {
+                let bytes = text.get(line.line.clone()).unwrap_or_default();
+                vcf_text.push(bytes, &line.text_ends)?;
             }
         }
         Ok(*filled)
@@ -1976,6 +2016,72 @@ fn parse_row(
 fn without_the_bytes_of_the_line_end(line: &[u8]) -> &[u8] {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     line.strip_suffix(b"\r").unwrap_or(line)
+}
+
+/// Where the nine first columns of the data line `line` end and where the
+/// column of each of the `num_individuals` individuals ends, counted from
+/// the start of the line, into `ends`: what the text of the lines of
+/// `docs/specs/io_vcf.md` keeps for the VCF writer beside the bytes of the
+/// line. `line` is one that [`parse_row`] read, so it has its nine first
+/// columns and one column of an individual at least.
+///
+/// # Errors
+///
+/// The wrong data line `number` when the line has not one column for each
+/// individual, when the bytes of the columns of the individuals are not
+/// UTF-8, and when the line is longer than the 4294967295 bytes that the
+/// 32 bit numbers of its ends reach.
+fn fill_text_ends(
+    line: &[u8],
+    number: u64,
+    num_individuals: usize,
+    ends: &mut Vec<u32>,
+) -> Result<()> {
+    let wrong = |problem: String| Error::VcfDataLine {
+        line: number,
+        place: VcfPlace::Line,
+        problem,
+    };
+    ends.clear();
+    let Ok(length) = u32::try_from(line.len()) else {
+        return Err(wrong(format!(
+            "it is {length} bytes long, and the text of a line that popnei keeps for the VCF \
+             writer is {most} bytes at most",
+            length = line.len(),
+            most = u32::MAX,
+        )));
+    };
+    // The tabs after the eighth end the nine first columns and the column
+    // of each individual but the last, which the end of the line ends. A
+    // tab is inside the line, so its place is below its length.
+    for tab in memchr::memchr_iter(b'\t', line).skip(8) {
+        ends.push(u32::try_from(tab).unwrap_or(length));
+    }
+    ends.push(length);
+    let num_columns = ends.len().saturating_sub(1);
+    if num_columns < num_individuals {
+        return Err(wrong(format!(
+            "it has the columns of {num_columns} individuals and the header has {num_individuals}"
+        )));
+    }
+    if num_columns > num_individuals {
+        let left_over = num_columns.saturating_sub(num_individuals);
+        return Err(wrong(format!(
+            "it has {left_over} {columns} more than the {num_individuals} individuals of the header",
+            columns = if left_over == 1 { "column" } else { "columns" },
+        )));
+    }
+    let individual_columns = ends
+        .first()
+        .and_then(|fixed_end| usize::try_from(*fixed_end).ok())
+        .and_then(|fixed_end| line.get(fixed_end..))
+        .unwrap_or_default();
+    if std::str::from_utf8(individual_columns).is_err() {
+        return Err(wrong(
+            "its bytes are not valid UTF-8, and a VCF is text".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// The genotype of every individual of the line, into the row `gts` of the

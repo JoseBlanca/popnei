@@ -266,6 +266,7 @@ fn the_block() -> Block {
         id: None,
         alleles: None,
         qual: None,
+        vcf_text: None,
     }
 }
 
@@ -361,6 +362,7 @@ fn copy_of(block: &Block) -> Block {
         id: None,
         alleles: None,
         qual: None,
+        vcf_text: None,
     }
 }
 

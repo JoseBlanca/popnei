@@ -21,6 +21,9 @@ use crate::error::{Error, Result};
 use crate::filters::{FilteringStats, RegionSelection};
 use crate::variant::{ChromTable, Needs, VariantRef};
 
+mod vcf_text;
+pub use vcf_text::VcfText;
+
 /// How many genotypes a block holds when the caller asks for no number of
 /// variants, 5 million, which is `DEF_NUM_GTS_PER_CHUNK` of pyNei's
 /// `config.py`. At the ploidy 2 they are the 10 MB of one allocation.
@@ -601,6 +604,10 @@ pub struct Block {
     /// The quality of each variant, phred scaled as the QUAL of a VCF, and
     /// NaN for a variant that has none.
     pub qual: Option<Vec<f32>>,
+    /// The text of the line of each variant, when
+    /// [`Needs::VCF_TEXT`] was asked for and the source is a VCF, which the
+    /// VCF writer writes the lines from.
+    pub vcf_text: Option<VcfText>,
 }
 
 impl Block {
@@ -625,6 +632,7 @@ impl Block {
             id,
             alleles,
             qual,
+            vcf_text,
         } = self;
         let mut fields = Needs::empty();
         if !gts.is_empty() || *num_vars == 0 {
@@ -645,16 +653,19 @@ impl Block {
         if qual.is_some() {
             fields |= Needs::QUAL;
         }
+        if vcf_text.is_some() {
+            fields |= Needs::VCF_TEXT;
+        }
         fields
     }
 
     /// Which columns the block has, one flag for the genotypes and one for
-    /// each of the five, so that two blocks are joined only when every
+    /// each of the six others, so that two blocks are joined only when every
     /// column of the one is a column of the other.
     ///
     /// It is not [`Block::fields`]: that one answers what a consumer can
     /// read, and puts the chromosome and the position together.
-    fn columns(&self) -> [bool; 6] {
+    fn columns(&self) -> [bool; 7] {
         let Block {
             num_vars: _,
             num_individuals: _,
@@ -665,6 +676,7 @@ impl Block {
             id,
             alleles,
             qual,
+            vcf_text,
         } = self;
         [
             !gts.is_empty(),
@@ -673,6 +685,7 @@ impl Block {
             id.is_some(),
             alleles.is_some(),
             qual.is_some(),
+            vcf_text.is_some(),
         ]
     }
 
@@ -730,6 +743,7 @@ impl Block {
             id,
             alleles,
             qual,
+            vcf_text: _,
         } = self;
         if var >= *num_vars {
             return None;
@@ -790,6 +804,7 @@ impl Block {
             id,
             alleles,
             qual,
+            vcf_text,
         } = self;
         if !gts.is_empty() {
             let mut write = 0usize;
@@ -815,6 +830,9 @@ impl Block {
         if let Some(alleles) = alleles.as_mut() {
             alleles.retain_vars(keep);
         }
+        if let Some(vcf_text) = vcf_text.as_mut() {
+            vcf_text.retain_vars(keep);
+        }
         *num_vars = keep.iter().filter(|keep_it| **keep_it).count();
         Ok(())
     }
@@ -825,7 +843,9 @@ impl Block {
     /// individuals of `docs/specs/filters.md` compacts every block it takes
     /// with.
     ///
-    /// Every variant stays, and so does every column of the block. The kept
+    /// Every variant stays, and so does every column of the block; the text
+    /// of the lines of a VCF, when the block has it, keeps the columns of
+    /// the kept individuals in the order of `keep`. The kept
     /// individuals come in the order of `keep`, which is the order the user
     /// named them in, so the genotypes are gathered in two passes over the
     /// array: first the kept genotypes of each row are gathered to the front
@@ -847,7 +867,8 @@ impl Block {
     /// And when the arrays of the block are not of its size, which
     /// [`Block::check`] finds, since the rows are cut out of the genotypes
     /// by the sizes the block states. After any of them the block is as it
-    /// was.
+    /// was. And when the text of the lines is not of its lines, a defect
+    /// of popnei that no call reaches, after which the block is lost.
     pub fn retain_individuals(&mut self, keep: &[usize]) -> Result<()> {
         if keep.is_empty() {
             return Err(Error::NoIndividualToKeep);
@@ -876,6 +897,9 @@ impl Block {
         self.check()?;
         if self.gts.is_empty() && self.num_vars > 0 {
             return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
+        }
+        if let Some(vcf_text) = self.vcf_text.as_mut() {
+            vcf_text.retain_individuals(keep)?;
         }
         if !self.gts.is_empty() {
             // `check` passed and the genotypes are not empty, so they are
@@ -922,6 +946,7 @@ impl Block {
             id,
             alleles,
             qual,
+            vcf_text,
         } = self;
         let alleles_of_the_block =
             num_vars
@@ -945,6 +970,7 @@ impl Block {
             ("id", id.as_ref().map(Vec::len)),
             ("qual", qual.as_ref().map(Vec::len)),
             ("alleles", alleles.as_ref().map(AllelesColumn::num_vars)),
+            ("vcf_text", vcf_text.as_ref().map(VcfText::num_vars)),
         ];
         for (array, length) in lengths {
             if let Some(length) = length
@@ -956,6 +982,15 @@ impl Block {
                     expected: *num_vars,
                 });
             }
+        }
+        if let Some(vcf_text) = vcf_text
+            && vcf_text.num_individuals() != *num_individuals
+        {
+            return Err(Error::BlockArrayOfAnotherSize {
+                array: "individuals of vcf_text",
+                found: vcf_text.num_individuals(),
+                expected: *num_individuals,
+            });
         }
         Ok(())
     }
@@ -1488,6 +1523,7 @@ impl<R: BlockReader> Reblock<R> {
             id,
             alleles,
             qual,
+            vcf_text,
         } = block;
         let num_vars = waiting
             .num_vars
@@ -1499,6 +1535,9 @@ impl<R: BlockReader> Reblock<R> {
         try_extend_column(waiting.id.as_mut(), id).map_err(|_| self.too_large())?;
         try_extend_column(waiting.qual.as_mut(), qual).map_err(|_| self.too_large())?;
         if let (Some(waiting), Some(arrived)) = (waiting.alleles.as_mut(), alleles.as_ref()) {
+            waiting.try_append(arrived).map_err(|_| self.too_large())?;
+        }
+        if let (Some(waiting), Some(arrived)) = (waiting.vcf_text.as_mut(), vcf_text.as_ref()) {
             waiting.try_append(arrived).map_err(|_| self.too_large())?;
         }
         waiting.num_vars = num_vars;
@@ -1815,6 +1854,13 @@ pub fn with_one_block_ahead<R: BlockReader, T>(
 /// What the reading thread of [`with_one_block_ahead`] sends for each call
 /// it makes on the chain of readers.
 #[cfg(not(target_family = "wasm"))]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one of these crosses the channel for each block of the pass, so the bytes of a \
+              block moved beside the few of the other variants are paid once per block, \
+              where a box would add an allocation per block for nothing; the lint fired on \
+              26 September 2026 when the block gained its text of the lines of a VCF"
+)]
 enum ABlockRead {
     /// A block, and what the chain had to say when it gave it.
     Block(Block, TheChainNow),
@@ -2198,6 +2244,10 @@ fn take_rows(
         Some(column) => Some(column.try_rows(from, count)?),
         None => None,
     };
+    let vcf_text = match block.vcf_text.as_ref() {
+        Some(text) => Some(text.try_rows(from, count)?),
+        None => None,
+    };
     let id = taken_rows(block.id.as_mut(), from, count)?;
     Ok(Block {
         num_vars: count,
@@ -2209,6 +2259,7 @@ fn take_rows(
         id,
         alleles,
         qual,
+        vcf_text,
     })
 }
 
@@ -2966,6 +3017,7 @@ mod tests {
             id: Some(id),
             alleles: Some(alleles),
             qual: Some(qual),
+            vcf_text: None,
         }
     }
 
@@ -3148,6 +3200,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
 
         // The individuals times the ploidy, the alleles of one variant.
@@ -3324,6 +3377,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         }
     }
 
@@ -3403,6 +3457,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
 
         block
@@ -3601,6 +3656,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
         let kept = |threads| {
             let pool = rayon::ThreadPoolBuilder::new()

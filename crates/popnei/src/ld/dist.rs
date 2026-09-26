@@ -734,6 +734,7 @@ impl ThePopOverTheWindow {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
         // The genotypes held are those of the individuals of this
         // population and of no others, in the order they were given, so the
@@ -2242,6 +2243,7 @@ pub(super) mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         }
     }
 
@@ -2672,6 +2674,7 @@ pub(super) mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         }
     }
 

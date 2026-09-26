@@ -277,6 +277,9 @@ impl Blocks {
             id,
             alleles,
             qual,
+            // The text of the lines of a VCF is for its writer, and not a
+            // field that `iter_blocks` gives.
+            vcf_text: _,
         } = block;
         // The three dimensions are given to the array as it is built and
         // not by reshaping one of a single dimension, whose array would

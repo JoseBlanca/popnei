@@ -373,6 +373,7 @@ impl Digest {
             id,
             alleles,
             qual,
+            vcf_text,
         } = block;
         self.number(place);
         self.count(*num_vars);
@@ -422,6 +423,15 @@ impl Digest {
                 // The bits, because a quality that no variant has is NaN and
                 // NaN is equal to nothing, itself included.
                 self.number(u64::from(quality.to_bits()));
+            }
+        }
+        self.there(vcf_text.is_some());
+        if let Some(vcf_text) = vcf_text {
+            self.count(vcf_text.num_vars());
+            self.count(vcf_text.num_individuals());
+            for var in 0..vcf_text.num_vars() {
+                self.text(vcf_text.fixed(var));
+                self.text(vcf_text.individuals(var));
             }
         }
     }

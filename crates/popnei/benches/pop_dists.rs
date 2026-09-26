@@ -500,6 +500,7 @@ fn block_of(gts: &[i8], chrom: u32, first_var: usize) -> Block {
         id: None,
         alleles: None,
         qual: None,
+        vcf_text: None,
     }
 }
 

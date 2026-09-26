@@ -1371,6 +1371,7 @@ impl TheTilesOfThePass {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
         let tile = LdDosages::of_block(&block, &[])?;
         // The buffer is taken back with the memory it has and the tile
@@ -1946,6 +1947,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         }
     }
 
