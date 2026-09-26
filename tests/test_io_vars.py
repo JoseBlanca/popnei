@@ -47,7 +47,7 @@ REFERENCE_VCF_DIR = Path(__file__).parent / "reference" / "vcf"
 # the schema a reader of another version looks at first.
 POPNEI_KEY = b"popnei"
 POPNEI_BATCHES_KEY = b"popnei_batches"
-FORMAT_VERSION = "1.0"
+FORMAT_VERSION = "1.1"
 
 # An allele that was not called, which bcftools prints as a dot.
 MISSING_ALLELE = -1
@@ -275,6 +275,8 @@ def test_write_vars_writes_many_vcf_as_pyarrow_reads_it_back(
     assert len(read.popnei["individuals"]) == MANY_NUM_INDIVIDUALS
     assert read.popnei["ploidy"] == 2
     assert read.popnei["num_vars_per_block"] == size_of_the_key
+    # The `##contig` lines of `many.vcf` give no length.
+    assert read.popnei["chrom_lengths"] == []
     assert [batch["num_vars"] for batch in read.batches] == num_vars_of_each_batch
     assert read.num_vars_of_each_batch == num_vars_of_each_batch
     assert _regions_found(read) == regions
@@ -291,6 +293,19 @@ def test_write_vars_writes_many_vcf_as_pyarrow_reads_it_back(
     for index, row in enumerate(expected):
         found = {name: columns[name][index] for name in row}
         assert found == row, f"the variant {index}, counted from 0"
+
+
+def test_write_vars_keeps_the_chrom_lengths_of_the_contig_lines_of_write_vcf(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """The two `##contig` lines of `write.vcf` with a length, in their order."""
+    path = tmp_path / "write.vars"
+
+    write_vars(open_vcf(reference_vcf_dir / "write.vcf"), path)
+
+    read = _pyarrow_reads(path)
+    assert read.popnei["format_version"] == FORMAT_VERSION
+    assert read.popnei["chrom_lengths"] == [["chr1", 2000], ["chr2", 1500]]
 
 
 def test_write_vars_writes_a_file_of_no_batch_for_a_source_with_no_variants(
@@ -314,6 +329,7 @@ def test_write_vars_writes_a_file_of_no_batch_for_a_source_with_no_variants(
         "individuals": ["ind1", "ind2", "ind3"],
         "ploidy": 2,
         "num_vars_per_block": LARGEST_NUM_VARS_PER_BLOCK,
+        "chrom_lengths": [],
     }
     assert read.batches == []
     assert read.num_vars_of_each_batch == []

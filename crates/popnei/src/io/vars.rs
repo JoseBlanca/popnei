@@ -67,7 +67,7 @@ const POPNEI_BATCHES_KEY: &str = "popnei_batches";
 /// later one than its own too, ignoring the keys and the columns it does
 /// not know: that is what lets a later version of the format add a column
 /// without making the files or the readers that are there useless.
-pub const FORMAT_VERSION: &str = "1.0";
+pub const FORMAT_VERSION: &str = "1.1";
 
 /// The major version of the format that popnei reads, the part of
 /// [`FORMAT_VERSION`] before the dot.
@@ -77,7 +77,7 @@ pub(crate) const FORMAT_VERSION_READ: &str = "1";
 /// of the `popnei` key of its schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarsMetadata {
-    /// The whole string, "1.0". Only the part before the dot is checked.
+    /// The whole string, "1.1". Only the part before the dot is checked.
     pub format_version: String,
     /// The names of the individuals, in the order of their genotypes in
     /// every row of `gts`.
@@ -86,6 +86,9 @@ pub struct VarsMetadata {
     pub ploidy: usize,
     /// How many variants a batch of the file holds, the last one aside.
     pub num_vars_per_block: usize,
+    /// The length of each chromosome the source of the file gave one for,
+    /// in its order. Empty in a file of 1.0, which has no such key.
+    pub chrom_lengths: Vec<(String, u64)>,
 }
 
 /// What the footer of a vars file says of one of its batches, one entry of
@@ -133,6 +136,11 @@ pub(crate) fn metadata_as_json(metadata: &VarsMetadata) -> String {
         .iter()
         .map(|name| json_text(name))
         .collect();
+    let chrom_lengths: Vec<String> = metadata
+        .chrom_lengths
+        .iter()
+        .map(|(chrom, length)| json_array(&[json_text(chrom), length.to_string()]))
+        .collect();
     json_object(&[
         ("format_version", json_text(&metadata.format_version)),
         ("individuals", json_array(&individuals)),
@@ -141,6 +149,7 @@ pub(crate) fn metadata_as_json(metadata: &VarsMetadata) -> String {
             "num_vars_per_block",
             metadata.num_vars_per_block.to_string(),
         ),
+        ("chrom_lengths", json_array(&chrom_lengths)),
     ])
 }
 
@@ -155,9 +164,11 @@ pub(crate) fn batches_as_json(batches: &[BatchInfo]) -> String {
 ///
 /// # Errors
 ///
-/// The source is not a vars file when that value is not a json object or
+/// The source is not a vars file when that value is not a json object,
 /// when one of its four keys is missing or does not hold what that key
-/// holds.
+/// holds, and when `chrom_lengths`, which a file of 1.0 does not have, is
+/// there and is not a list of pairs of a name and a length above 0, one
+/// for each chromosome.
 pub(crate) fn metadata_from_json(text: &str) -> Result<VarsMetadata> {
     let value = json_of_the_popnei_key(text)?;
     let Some(object) = value.as_object() else {
@@ -170,6 +181,7 @@ pub(crate) fn metadata_from_json(text: &str) -> Result<VarsMetadata> {
         individuals: individuals_of(object)?,
         ploidy: count_of(object, "ploidy")?,
         num_vars_per_block: count_of(object, "num_vars_per_block")?,
+        chrom_lengths: chrom_lengths_of(object)?,
     })
 }
 
@@ -285,6 +297,43 @@ fn individuals_of(object: &Map<String, Value>) -> Result<Vec<String>> {
             ))),
         })
         .collect()
+}
+
+/// The lengths of the chromosomes, in the order the file gives them, and
+/// none in a file of 1.0, which has no such key.
+fn chrom_lengths_of(object: &Map<String, Value>) -> Result<Vec<(String, u64)>> {
+    let Some(value) = object.get("chrom_lengths") else {
+        return Ok(Vec::new());
+    };
+    let not_lengths = || {
+        not_a_vars_file(format!(
+            "`chrom_lengths` of the `{POPNEI_KEY}` key of its schema is {value} and not a json array of pairs of a chromosome and a length above 0"
+        ))
+    };
+    let Some(pairs) = value.as_array() else {
+        return Err(not_lengths());
+    };
+    let mut lengths: Vec<(String, u64)> = Vec::new();
+    for pair in pairs {
+        let (Some(chrom), Some(length)) = (
+            pair.get(0).and_then(Value::as_str),
+            pair.get(1)
+                .and_then(Value::as_u64)
+                .filter(|length| *length > 0),
+        ) else {
+            return Err(not_lengths());
+        };
+        if pair.as_array().map(Vec::len) != Some(2) {
+            return Err(not_lengths());
+        }
+        if lengths.iter().any(|(named, _)| named == chrom) {
+            return Err(not_a_vars_file(format!(
+                "`chrom_lengths` of the `{POPNEI_KEY}` key of its schema gives the chromosome {chrom} twice"
+            )));
+        }
+        lengths.push((chrom.to_owned(), length));
+    }
+    Ok(lengths)
 }
 
 /// A value of the `popnei` key that says how many of something there are,
@@ -543,12 +592,21 @@ impl<W: Write> VarsWriter<W> {
                 individuals: individuals.to_vec(),
                 ploidy,
                 num_vars_per_block,
+                chrom_lengths: Vec::new(),
             },
             alleles_per_var,
             options,
             columns: None,
             batches: Vec::new(),
         })
+    }
+
+    /// The lengths of the chromosomes that the `popnei` key will say, which
+    /// [`write_vars`] takes from the header of its source. None until this
+    /// is called. It holds when it is called before the first block, which
+    /// writes the key with the schema.
+    pub(crate) fn set_chrom_lengths(&mut self, chrom_lengths: Vec<(String, u64)>) {
+        self.metadata.chrom_lengths = chrom_lengths;
     }
 
     /// It writes `block` as one batch, of whatever size the block has.
@@ -757,6 +815,7 @@ pub fn write_vars<R: BlockReader, W: Write>(
     let (num_vars_per_block, _) =
         size_of_the_blocks(num_vars_per_block, individuals.len(), ploidy)?;
     let mut writer = VarsWriter::new(sink, &individuals, ploidy, num_vars_per_block)?;
+    writer.set_chrom_lengths(reader.header().chrom_lengths.clone());
     let mut blocks = Reblock::new(reader, Some(num_vars_per_block))?;
     let mut num_vars: u64 = 0;
     while let Some(block) = blocks.next_block()? {
@@ -1354,8 +1413,8 @@ pub struct VarsReader<R: Read + Seek> {
     columns: VarsColumns,
     /// What the `popnei` key of the schema says.
     metadata: VarsMetadata,
-    /// What the file said of itself: the individuals of `metadata`, for
-    /// now.
+    /// What the file said of itself: the individuals and the lengths of the
+    /// chromosomes of `metadata`.
     header: SourceHeader,
     /// What the `popnei_batches` key of the footer says of each batch.
     batches: Vec<BatchInfo>,
@@ -1444,7 +1503,7 @@ impl<R: Read + Seek> VarsReader<R> {
         let vars_before = vars_before_each_batch(&batches);
         let header = SourceHeader {
             individuals: metadata.individuals.clone(),
-            chrom_lengths: Vec::new(),
+            chrom_lengths: metadata.chrom_lengths.clone(),
             vcf_meta_lines: None,
         };
         Ok(VarsReader {
@@ -3847,6 +3906,7 @@ mod tests {
                 individuals: cases_individuals(),
                 ploidy: 2,
                 num_vars_per_block: 3,
+                chrom_lengths: Vec::new(),
             }
         );
         assert_eq!(
@@ -4478,6 +4538,7 @@ mod tests {
             individuals: vec!["ind1".to_owned(), "ind2".to_owned(), "ind3".to_owned()],
             ploidy: 2,
             num_vars_per_block: 3,
+            chrom_lengths: Vec::new(),
         }
     }
 
@@ -4487,7 +4548,7 @@ mod tests {
     #[test]
     fn the_version_that_is_written_starts_with_the_part_that_is_read() {
         assert_eq!(FORMAT_VERSION.split('.').next(), Some(FORMAT_VERSION_READ));
-        assert_eq!(FORMAT_VERSION, "1.0");
+        assert_eq!(FORMAT_VERSION, "1.1");
     }
 
     /// The text of the key is what another program that opens the file
@@ -4499,7 +4560,7 @@ mod tests {
         let written = metadata_as_json(&metadata);
         assert_eq!(
             written,
-            r#"{"format_version":"1.0","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3}"#
+            r#"{"format_version":"1.1","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[]}"#
         );
         let parsed = metadata_from_json(&written).expect("the key written is parsed back");
         assert_eq!(parsed, metadata);
@@ -4516,11 +4577,12 @@ mod tests {
             individuals: vec![r#"the "first" one"#.to_owned(), "ind\\2".to_owned()],
             ploidy: 4,
             num_vars_per_block: 100,
+            chrom_lengths: Vec::new(),
         };
         let written = metadata_as_json(&metadata);
         assert_eq!(
             written,
-            r#"{"format_version":"1.7","individuals":["the \"first\" one","ind\\2"],"ploidy":4,"num_vars_per_block":100}"#
+            r#"{"format_version":"1.7","individuals":["the \"first\" one","ind\\2"],"ploidy":4,"num_vars_per_block":100,"chrom_lengths":[]}"#
         );
         let parsed = metadata_from_json(&written).expect("the key written is parsed back");
         assert_eq!(parsed, metadata);
@@ -4964,6 +5026,118 @@ mod tests {
         }
     }
 
+    /// The text of the `popnei` key of the schema of the vars file of
+    /// `bytes`, as another program that opens the file reads it.
+    fn the_popnei_key_of(bytes: Vec<u8>) -> String {
+        let read =
+            FileReader::try_new(Cursor::new(bytes), None).expect("the bytes are an arrow file");
+        read.schema()
+            .metadata()
+            .get(POPNEI_KEY)
+            .expect("the file has the `popnei` key")
+            .clone()
+    }
+
+    /// The vars file written from `write.vcf` of "How it is verified" of the
+    /// VCF writer of `docs/specs/io_vcf.md` keeps the lengths of its two
+    /// `##contig` lines, in the text of the key, in its metadata and in the
+    /// header of its reader, which has no meta lines of a VCF.
+    #[test]
+    fn source_header_of_write_vcf_goes_into_the_popnei_key_of_its_vars_file() {
+        let path = reference("vcf", "write.vcf");
+        let vcf = VcfReader::from_path(&path, VcfOptions::default()).expect("write.vcf");
+        let (bytes, num_vars) = write_vars(vcf, Vec::new(), None).expect("the file");
+        assert_eq!(num_vars, 5);
+
+        let key = the_popnei_key_of(bytes.clone());
+        assert!(key.contains(r#""format_version":"1.1""#), "{key}");
+        assert!(
+            key.contains(r#""chrom_lengths":[["chr1",2000],["chr2",1500]]"#),
+            "{key}"
+        );
+        let expected = vec![("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)];
+        let reader = opened(bytes).expect("the file is a vars file");
+        assert_eq!(reader.metadata().format_version, "1.1");
+        assert_eq!(reader.metadata().chrom_lengths, expected);
+        assert_eq!(reader.header().chrom_lengths, expected);
+        assert_eq!(reader.header().individuals, ["a", "b", "c"]);
+        assert_eq!(reader.header().vcf_meta_lines, None);
+    }
+
+    /// The vars file of a VCF whose `##contig` lines have no length says
+    /// `chrom_lengths` `[]`.
+    #[test]
+    fn source_header_of_many_vcf_gives_its_vars_file_no_chrom_lengths() {
+        let key = the_popnei_key_of(many_vcf_written(Some(100)));
+        assert!(key.contains(r#""chrom_lengths":[]"#), "{key}");
+    }
+
+    /// A file of 1.0, whose `popnei` key has no `chrom_lengths`, is read
+    /// with no lengths.
+    #[test]
+    fn source_header_of_a_file_of_1_0_has_no_chrom_lengths() {
+        let mut parts = FileParts::of_cases();
+        parts.popnei = Some(
+            r#"{"format_version":"1.0","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3}"#
+                .to_owned(),
+        );
+        let reader = opened(parts.written()).expect("a file of 1.0 is a vars file");
+        assert_eq!(reader.metadata().format_version, "1.0");
+        assert!(reader.metadata().chrom_lengths.is_empty());
+        assert!(reader.header().chrom_lengths.is_empty());
+        assert_eq!(reader.header().individuals, cases_individuals());
+    }
+
+    /// The lengths are written as pairs of a name and a number, with the
+    /// escapes a name can need, and parsed back in their order.
+    #[test]
+    fn source_header_chrom_lengths_are_written_in_the_popnei_key_and_parsed_back() {
+        let metadata = VarsMetadata {
+            chrom_lengths: vec![("chr\"2".to_owned(), 1500), ("chr1".to_owned(), 2000)],
+            ..metadata_of_cases()
+        };
+        let written = metadata_as_json(&metadata);
+        assert_eq!(
+            written,
+            r#"{"format_version":"1.1","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[["chr\"2",1500],["chr1",2000]]}"#
+        );
+        assert_eq!(metadata_from_json(&written).expect("parsed back"), metadata);
+    }
+
+    /// A `chrom_lengths` that is not a list of pairs of a name and a length
+    /// above 0, or that gives one chromosome twice, is not a vars file.
+    #[test]
+    fn source_header_chrom_lengths_that_are_not_pairs_of_a_name_and_a_length_are_refused() {
+        let key_with = |lengths: &str| {
+            format!(
+                r#"{{"format_version":"1.1","individuals":["ind1"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":{lengths}}}"#
+            )
+        };
+        for lengths in [
+            r#""chr1""#,
+            r#"[["chr1",0]]"#,
+            r#"[["chr1",-5]]"#,
+            r#"[["chr1","2000"]]"#,
+            r#"[[1,2000]]"#,
+            r#"[["chr1"]]"#,
+            r#"[["chr1",2000,7]]"#,
+        ] {
+            let error = metadata_from_json(&key_with(lengths)).unwrap_err();
+            let Error::NotAVarsFile { problem } = &error else {
+                panic!("{lengths} gave {error}");
+            };
+            assert!(problem.contains("chrom_lengths"), "{problem}");
+        }
+        let error = metadata_from_json(&key_with(r#"[["chr1",5],["chr1",6]]"#)).unwrap_err();
+        let Error::NotAVarsFile { problem } = &error else {
+            panic!("{error}");
+        };
+        assert!(
+            problem.contains("gives the chromosome chr1 twice"),
+            "{problem}"
+        );
+    }
+
     /// The bytes of the vars file of `many.vcf`, written from the VCF
     /// reader with batches of that many variants.
     fn many_vcf_written(num_vars_per_block: Option<usize>) -> Vec<u8> {
@@ -5149,6 +5323,7 @@ mod tests {
                 individuals: cases_individuals(),
                 ploidy: 2,
                 num_vars_per_block: 3,
+                chrom_lengths: Vec::new(),
             }
         );
         assert_eq!(
