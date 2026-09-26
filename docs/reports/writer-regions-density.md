@@ -49,3 +49,40 @@ answer, and gives first a block the thread built before it saw the offer.
 `crates/popnei/src/filters.rs`, with no constructor outside the tests;
 task 4.1 fills them in. Four tests under `filters::tests::source_header`;
 the subagent broke the code three ways and each broke them.
+
+Tasks 1.2 and 1.3, commits f6393b4 and 3ba0021, 2c46528 and 343bc4f, and
+f60c4e3. The VCF reader keeps the lines of its header before `#CHROM` and
+the length of each `##contig` line, in the order of the file.
+`tests/reference/vcf/write.vcf` is the file of "How it is verified" of the
+writer, and gives chr1 2000 and chr2 1500 and its nine meta lines. A vars
+file keeps the lengths in `chrom_lengths` of its `popnei` key and says
+`format_version` 1.1; a file of 1.0 reads with no lengths.
+
+Six cases the spec did not settle were settled with the code and written
+into `docs/specs/io_vcf.md` and `docs/specs/io_vars.md`. A length is
+written in digits alone, so `+5` is the wrong header, as `0` and `abc`
+are. Two lines of one ID with the same length give it once. A comma
+inside quotes, in a `Description="a, b"`, does not end a field. A
+`##contig` line with a length and no ID is the wrong header. The
+subagent had first made this last one give no length and no error; it was
+sent back, because the VCF format requires the ID and an error in popnei
+never passes silently. In a vars file, a `chrom_lengths` that is not a
+list of names with whole numbers above 0, or that gives one chromosome
+twice, makes the file not a vars file.
+
+Deliverable 1 said that no test of before would change but for the
+version. The longer key made a few more change, none of them an
+assertion made weaker: the literals that hold the key whole gained
+`"chrom_lengths": []`, and the sizes of the vars files in
+`js/popnei/test/progress.test.ts` grew by 16 and 24 bytes. The plan says
+so now.
+
+Deliverables, run at f60c4e3:
+
+- 1: `cargo test --workspace` gave 1035 passed, 2 ignored, and 150
+  passed; `--no-default-features` 1035 passed; pytest 551 passed and 6
+  skipped, which is the 551 of before, one test added, and one more skip
+  of the interrupt tests by timing; `npm test` 443 of 444, the old
+  failure. fmt, clippy, both wasm checks and ruff clean.
+- 2 and 3: `cargo test -p popnei --lib source_header -- --list` counts 13
+  tests, where it counted 0 before, and all 13 pass.

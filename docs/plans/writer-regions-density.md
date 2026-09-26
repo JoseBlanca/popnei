@@ -78,7 +78,10 @@ do.
 Deliverables:
 
 1. Every existing test passes untouched: the counts above, no fewer, and no test file of before changed but for the
-   `format_version` `"1.1"` that `docs/specs/io_vars.md` now asserts.
+   `format_version` `"1.1"` that `docs/specs/io_vars.md` now asserts, and
+   for what the longer `popnei` key forces: `"chrom_lengths": []` in the
+   literals that hold the key whole, and the byte sizes of vars files in
+   `js/popnei/test/progress.test.ts`, 16 and 24 bytes more.
 2. Cargo tests whose names contain `source_header`, in `io::vcf` and `io::vars`:
    `write.vcf` of "How it is verified" of the writer gives the lengths
    chr1 2000 and chr2 1500 and its nine meta lines; a `##contig` length of
@@ -104,10 +107,10 @@ Tasks:
   crate and of `crates/popnei/benches/`: the readers over a reader pass the
   header on, and the filters of variants refuse the offer. The sources
   answer false for now. Deliverables 1 and 3.
-- [ ] 1.2 The header of the VCF reader, from "What the reader keeps for
+- [x] 1.2 The header of the VCF reader, from "What the reader keeps for
   the writer" of `docs/specs/io_vcf.md`: the meta lines, the lengths of
   the `##contig` lines and their refusals. Deliverables 1 and 2.
-- [ ] 1.3 `chrom_lengths` in the `popnei` key and the version 1.1, from
+- [x] 1.3 `chrom_lengths` in the `popnei` key and the version 1.1, from
   the table of that key in `docs/specs/io_vars.md`: the writer takes the
   lengths from the header of its source, the reader gives them in
   `header()` and in `VarsMetadata`. Deliverables 1 and 2. Needs 1.2 for the
