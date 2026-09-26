@@ -9,7 +9,10 @@
 
 use std::io::Write;
 
-use crate::block::{Block, BlockReader, VcfText};
+use crate::block::{
+    Block, BlockReader, GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK,
+    VcfText,
+};
 use crate::error::{Error, Result};
 use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
@@ -36,8 +39,45 @@ const GT_FORMAT_LINE: &str = "##FORMAT=<ID=GT,Number=1,Type=String,Description=\
 /// number.
 const ROWS_PER_FORMAT_JOB: usize = 64;
 
-/// Every variant of `reader` into a VCF on `sink`, as plain text, and the
-/// sink back with how many variants were written.
+mod bgzip;
+
+use bgzip::BgzipOut;
+
+/// How the VCF writer writes its file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VcfWriteOptions {
+    /// Members of bgzip, which tabix indexes and bcftools asks a region
+    /// of, or plain text.
+    pub bgzip: bool,
+}
+
+/// What share of the genotypes of a block of the default size,
+/// [`GENOTYPES_PER_BLOCK`], a block of a pass of [`write_vcf`] over a VCF
+/// holds: a fifth, so that the text of its lines, 20 to 40 bytes for each
+/// genotype of a VCF with depths and likelihoods, is 20 to 40 MB. Decided
+/// in `docs/specs/io_vcf.md` and not measured.
+const SHARE_OF_THE_GENOTYPES_OF_A_BLOCK: usize = 5;
+
+/// The size of the blocks of a pass of [`write_vcf`] over a VCF of
+/// `num_individuals` individuals: a fifth of [`GENOTYPES_PER_BLOCK`]
+/// divided by the individuals, no fewer than [`MIN_NUM_VARS_PER_BLOCK`] and
+/// no more than [`MAX_NUM_VARS_PER_BLOCK`] variants. A source of no
+/// individual gives the most, as
+/// [`default_num_vars_per_block`](crate::block::default_num_vars_per_block)
+/// does.
+///
+/// A binding crate opens a VCF for a pass of the writer with it, since the
+/// block then holds the text of every line beside the genotypes.
+#[must_use]
+pub fn vcf_text_num_vars_per_block(num_individuals: usize) -> usize {
+    (GENOTYPES_PER_BLOCK / SHARE_OF_THE_GENOTYPES_OF_A_BLOCK)
+        .checked_div(num_individuals)
+        .unwrap_or(MAX_NUM_VARS_PER_BLOCK)
+        .clamp(MIN_NUM_VARS_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK)
+}
+
+/// Every variant of `reader` into a VCF on `sink`, bgzipped or plain as
+/// `options` say, and the sink back with how many variants were written.
 ///
 /// It asks `reader` for every field and for the text of the lines,
 /// [`Needs::VCF_TEXT`]. The header is that of `reader.header()`: the lines
@@ -51,6 +91,11 @@ const ROWS_PER_FORMAT_JOB: usize = 64;
 /// of every line and their `##INFO` lines out of the header, since they are
 /// counts over individuals that are no longer in the file. A source with no
 /// variants gives the header alone. Nothing needs a [`Reblock`] before it.
+///
+/// A bgzipped file is members of 65280 bytes of text, the last one aside,
+/// compressed on the threads of rayon and written in order, and the empty
+/// member of 28 bytes at the end, which is what tabix indexes and what the
+/// reader of popnei refuses a bgzipped file without.
 ///
 /// It borrows the reader, so that the caller reads the counts of the
 /// filters of the pass from the chain when it returns.
@@ -69,13 +114,18 @@ const ROWS_PER_FORMAT_JOB: usize = 64;
 pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
     reader: &mut R,
     sink: W,
+    options: VcfWriteOptions,
 ) -> Result<(W, u64)> {
     reader.set_needs(Needs::ALL | Needs::VCF_TEXT);
     let num_individuals = reader.individuals().len();
     let ploidy = reader.ploidy();
     let without_counts = num_individuals < reader.header().individuals.len();
-    let mut out = VcfOut::new(sink);
+    let mut out = match options.bgzip {
+        true => VcfOut::Bgzip(BgzipOut::new(sink)),
+        false => VcfOut::Plain(sink),
+    };
     out.write(&header_of(reader, without_counts))?;
+    out.end_of_a_block()?;
     let mut buffers: Vec<Vec<u8>> = Vec::new();
     let mut num_vars: u64 = 0;
     while let Some(block) = reader.next_block()? {
@@ -93,6 +143,7 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
         for buffer in &buffers {
             out.write(buffer)?;
         }
+        out.end_of_a_block()?;
         // A variant is a line of the file, so a pass of the
         // 18446744073709551615 variants this count holds is more lines than
         // any file system takes: the sum cannot reach its end. A `usize` is
@@ -102,38 +153,59 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
     Ok((out.finish()?, num_vars))
 }
 
-/// Where the bytes of the file go, in the order of the file.
-///
-/// It writes plain text, as it comes, to the sink. It is the one place the
-/// bytes pass through, so it is where a bgzipped file is to be cut into its
-/// members, which `docs/specs/io_vcf.md` asks for and which is not written
-/// yet.
-struct VcfOut<W: Write> {
-    sink: W,
+/// Where the bytes of the file go, in the order of the file: to the sink as
+/// they come, or into the members of bgzip.
+enum VcfOut<W: Write> {
+    Plain(W),
+    Bgzip(BgzipOut<W>),
 }
 
 impl<W: Write> VcfOut<W> {
-    fn new(sink: W) -> VcfOut<W> {
-        VcfOut { sink }
-    }
-
     /// `bytes`, after the ones written before.
     ///
     /// # Errors
     ///
     /// When the sink refuses them.
     fn write(&mut self, bytes: &[u8]) -> Result<()> {
-        self.sink.write_all(bytes).map_err(not_written)
+        match self {
+            VcfOut::Plain(sink) => sink.write_all(bytes).map_err(not_written),
+            VcfOut::Bgzip(out) => {
+                out.write(bytes);
+                Ok(())
+            }
+        }
     }
 
-    /// The sink, with every byte it was given flushed to it.
+    /// The text of the block that was written, compressed into the members
+    /// it fills, which is where the threads compress the members of a
+    /// bgzipped file; the text that fills no member waits for the next
+    /// block.
     ///
     /// # Errors
     ///
-    /// When the sink refuses the flush.
-    fn finish(mut self) -> Result<W> {
-        self.sink.flush().map_err(not_written)?;
-        Ok(self.sink)
+    /// When the sink refuses a member.
+    fn end_of_a_block(&mut self) -> Result<()> {
+        match self {
+            VcfOut::Plain(_) => Ok(()),
+            VcfOut::Bgzip(out) => out.write_the_full_members(),
+        }
+    }
+
+    /// The sink, with every byte it was given flushed to it, and in a
+    /// bgzipped file the member of the text that was left and the empty
+    /// member of the end.
+    ///
+    /// # Errors
+    ///
+    /// When the sink refuses them.
+    fn finish(self) -> Result<W> {
+        match self {
+            VcfOut::Plain(mut sink) => {
+                sink.flush().map_err(not_written)?;
+                Ok(sink)
+            }
+            VcfOut::Bgzip(out) => out.finish(),
+        }
     }
 }
 
@@ -429,11 +501,22 @@ fn format_rows(how: &LinesOf<'_>, num_vars: usize, buffers: &mut Vec<Vec<u8>>) -
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        reason = "the sizes and the places of the members of the small files of the tests"
+    )]
+
     use std::fs::File;
     use std::io::{BufReader, Cursor, Write};
     use std::path::{Path, PathBuf};
 
-    use super::write_vcf;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use flate2::read::MultiGzDecoder;
+
+    use super::bgzip::{TEXT_OF_A_MEMBER, THE_EMPTY_MEMBER};
+    use super::{VcfWriteOptions, vcf_text_num_vars_per_block, write_vcf};
     use crate::block::{Block, BlockReader, SourceHeader};
     use crate::error::{Error, Result};
     use crate::filters::{
@@ -471,11 +554,139 @@ mod tests {
         VcfReader::from_path(&reference_vcf(name), options).expect("the reference VCF")
     }
 
-    /// The text `write_vcf` writes of `reader`, and how many variants it
-    /// says it wrote.
-    fn written(reader: &mut dyn BlockReader) -> (String, u64) {
-        let (bytes, num_vars) = write_vcf(reader, Vec::new()).expect("the VCF was written");
+    const PLAIN: VcfWriteOptions = VcfWriteOptions { bgzip: false };
+    const BGZIP: VcfWriteOptions = VcfWriteOptions { bgzip: true };
+
+    /// The text `write_vcf` writes of `reader` as plain text, and how many
+    /// variants it says it wrote.
+    fn plain(reader: &mut dyn BlockReader) -> (String, u64) {
+        let (bytes, num_vars) = write_vcf(reader, Vec::new(), PLAIN).expect("the VCF was written");
         (String::from_utf8(bytes).expect("text"), num_vars)
+    }
+
+    /// The bytes `write_vcf` writes of `reader` bgzipped, and how many
+    /// variants it says it wrote.
+    fn bgzipped(reader: &mut dyn BlockReader) -> (Vec<u8>, u64) {
+        write_vcf(reader, Vec::new(), BGZIP).expect("the VCF was written")
+    }
+
+    /// The text `write_vcf` writes of a reader that `make` builds, plain,
+    /// and how many variants it says it wrote, after it wrote the same
+    /// variants of a second reader of `make` bgzipped and checked that file:
+    /// its members, the text they decompress to, which is the plain text,
+    /// and what bgzip and tabix say of it.
+    fn written(mut make: impl FnMut() -> Box<dyn BlockReader>) -> (String, u64) {
+        let (text, num_vars) = plain(&mut *make());
+        let (bytes, num_bgzipped) = bgzipped(&mut *make());
+        assert_eq!(num_bgzipped, num_vars);
+        assert_the_members_are_of_bgzip(&bytes);
+        assert_eq!(decompressed(&bytes), text);
+        assert_what_bgzip_and_tabix_say(&bytes, &text);
+        (text, num_vars)
+    }
+
+    /// The text of the members of a bgzipped file, decompressed by flate2
+    /// as a gzip stream of many members, which knows nothing of bgzip.
+    fn decompressed(bytes: &[u8]) -> String {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut MultiGzDecoder::new(bytes), &mut text)
+            .expect("the members decompress");
+        text
+    }
+
+    /// The members of a bgzipped file, one after another: the bytes of
+    /// each and the length of its text, which its last four bytes state.
+    /// Each is checked to have the header bgzip writes, with the size of
+    /// the member in its extra field `BC`.
+    fn members_of(bytes: &[u8]) -> Vec<(&[u8], u32)> {
+        let mut members = Vec::new();
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            assert_eq!(rest[..4], [0x1f, 0x8b, 0x08, 0x04], "the start of a member");
+            assert_eq!(
+                rest[10..16],
+                [0x06, 0x00, b'B', b'C', 0x02, 0x00],
+                "the extra field"
+            );
+            let size = usize::from(u16::from_le_bytes([rest[16], rest[17]])) + 1;
+            let (member, after) = rest.split_at(size);
+            let length = u32::from_le_bytes(member[size - 4..].try_into().expect("four bytes"));
+            members.push((member, length));
+            rest = after;
+        }
+        members
+    }
+
+    /// That every member of a bgzipped file but the last two holds 65280
+    /// bytes of text, that the one before the last holds the rest, and
+    /// that the last is the empty member of 28 bytes that htslib writes.
+    fn assert_the_members_are_of_bgzip(bytes: &[u8]) {
+        let members = members_of(bytes);
+        let (last, texts) = members.split_last().expect("a member");
+        assert_eq!(last.0, THE_EMPTY_MEMBER);
+        assert_eq!(last.0.len(), 28);
+        let (rest, full) = texts.split_last().expect("a member of text");
+        assert!(rest.1 > 0 && rest.1 as usize <= TEXT_OF_A_MEMBER);
+        for (_, length) in full {
+            assert_eq!(*length as usize, TEXT_OF_A_MEMBER);
+        }
+    }
+
+    /// Which of the files of these tests this is, so that two tests that
+    /// run at the same time write two files.
+    static FILES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
+
+    /// Whether `program` can be run, which is how a test that runs it says
+    /// that it is skipped: cargo has no way to mark a test skipped, so the
+    /// test passes and prints the program that was not there.
+    fn can_run(program: &str) -> bool {
+        let found = Command::new(program).arg("--version").output().is_ok();
+        if !found {
+            eprintln!("skipped: {program} is not in the PATH");
+        }
+        found
+    }
+
+    /// That `bgzip -t` finds the bgzipped file whole, that `tabix -p vcf`
+    /// indexes it, and that `tabix` on `chr1:900-1100` gives the lines of
+    /// the plain `text` on chr1 from 900 to 1100, each with its end. The
+    /// tests that write `write.vcf` and `many.vcf` check those lines
+    /// against the files.
+    fn assert_what_bgzip_and_tabix_say(bytes: &[u8], text: &str) {
+        if !can_run("bgzip") || !can_run("tabix") {
+            return;
+        }
+        let path = std::env::temp_dir().join(format!(
+            "popnei-write-vcf-{}-{}.vcf.gz",
+            std::process::id(),
+            FILES_WRITTEN.fetch_add(1, Ordering::SeqCst)
+        ));
+        let index = path.with_extension("gz.tbi");
+        std::fs::write(&path, bytes).expect("the file was written");
+        let file = path.to_str().expect("a path of text");
+        let run = |program: &str, args: &[&str]| {
+            let output = Command::new(program)
+                .args(args)
+                .output()
+                .expect("the program ran");
+            assert!(output.status.success(), "{program} {args:?}: {output:?}");
+            String::from_utf8(output.stdout).expect("text")
+        };
+        run("bgzip", &["-t", file]);
+        run("tabix", &["-f", "-p", "vcf", file]);
+        let region = run("tabix", &[file, "chr1:900-1100"]);
+        let expected: String = text
+            .split_inclusive('\n')
+            .filter(|line| {
+                let mut columns = line.split('\t');
+                let chrom = columns.next();
+                let pos = columns.next().and_then(|pos| pos.parse::<u64>().ok());
+                chrom == Some("chr1") && pos.is_some_and(|pos| (900..=1100).contains(&pos))
+            })
+            .collect();
+        assert_eq!(region, expected);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&index);
     }
 
     /// The text of `write.vcf` of "How it is verified" of the writer in
@@ -487,8 +698,8 @@ mod tests {
     #[test]
     fn write_vcf_of_write_vcf_read_with_every_line_gives_its_bytes_in_blocks_of_any_size() {
         for num_vars_per_block in [None, Some(1), Some(4)] {
-            let mut reader = reader_of("write.vcf", false, num_vars_per_block);
-            let (text, num_vars) = written(&mut reader);
+            let (text, num_vars) =
+                written(|| Box::new(reader_of("write.vcf", false, num_vars_per_block)));
             assert_eq!(text, write_vcf_text(), "blocks of {num_vars_per_block:?}");
             assert_eq!(num_vars, 6);
         }
@@ -497,6 +708,7 @@ mod tests {
     #[test]
     fn write_vcf_of_many_vcf_in_blocks_of_7_and_of_the_default_gives_its_bytes_on_any_threads() {
         let many = text_of("many.vcf");
+        let mut one_thread_bytes: Option<Vec<u8>> = None;
         for num_vars_per_block in [Some(7), None] {
             for num_threads in [1, 4] {
                 #[cfg(not(target_family = "wasm"))]
@@ -504,24 +716,30 @@ mod tests {
                     .num_threads(num_threads)
                     .build()
                     .expect("the pool");
-                let mut reader = reader_of("many.vcf", false, num_vars_per_block);
+                let make = || -> Box<dyn BlockReader> {
+                    Box::new(reader_of("many.vcf", false, num_vars_per_block))
+                };
                 #[cfg(not(target_family = "wasm"))]
-                let (text, num_vars) = pool.install(|| written(&mut reader));
+                let ((text, num_vars), bytes) =
+                    pool.install(|| (written(make), bgzipped(&mut *make()).0));
                 #[cfg(target_family = "wasm")]
-                let (text, num_vars) = {
+                let ((text, num_vars), bytes) = {
                     let _ = num_threads;
-                    written(&mut reader)
+                    (written(make), bgzipped(&mut *make()).0)
                 };
                 assert_eq!(text, many, "blocks of {num_vars_per_block:?}");
                 assert_eq!(num_vars, 500);
+                // The bytes of the members do not depend on the threads
+                // that compressed them.
+                let first = one_thread_bytes.get_or_insert_with(|| bytes.clone());
+                assert_eq!(*first, bytes);
             }
         }
     }
 
     #[test]
     fn write_vcf_of_write_vcf_read_with_the_default_leaves_out_the_line_whose_filter_failed() {
-        let mut reader = reader_of("write.vcf", true, None);
-        let (text, num_vars) = written(&mut reader);
+        let (text, num_vars) = written(|| Box::new(reader_of("write.vcf", true, None)));
         let expected: String = write_vcf_text()
             .split_inclusive('\n')
             .filter(|line| !line.starts_with("chr1\t250\t"))
@@ -534,11 +752,16 @@ mod tests {
     /// The text `write_vcf` writes of `write.vcf` read with every line and
     /// with the filter of individuals that keeps `names`.
     fn written_with_the_individuals(names: &[&str]) -> String {
-        let reader = reader_of("write.vcf", false, None);
-        let names = names.iter().map(|name| (*name).to_owned()).collect();
-        let mut chain =
-            chain_of(Box::new(reader), &[PassStep::KeepIndividuals(names)]).expect("the chain");
-        written(&mut chain).0
+        let names: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();
+        written(|| {
+            let reader = reader_of("write.vcf", false, None);
+            chain_of(
+                Box::new(reader),
+                &[PassStep::KeepIndividuals(names.clone())],
+            )
+            .expect("the chain")
+        })
+        .0
     }
 
     #[test]
@@ -576,8 +799,9 @@ mod tests {
     fn write_vcf_from_the_vars_file_of_write_vcf_gives_the_five_lines_of_the_spec() {
         let reader = reader_of("write.vcf", true, None);
         let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
-        let mut reader = VarsReader::new(Cursor::new(vars)).expect("the vars file");
-        let (text, num_vars) = written(&mut reader);
+        let (text, num_vars) = written(|| {
+            Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
+        });
         let expected = "##fileformat=VCFv4.3\n\
             ##contig=<ID=chr1,length=2000>\n\
             ##contig=<ID=chr2,length=1500>\n\
@@ -612,15 +836,16 @@ mod tests {
 
     #[test]
     fn write_vcf_of_many_vcf_with_the_missing_data_filter_at_0_04_is_the_215_lines_of_bcftools() {
-        let reader = reader_of("many.vcf", false, Some(7));
-        let mut chain = chain_of(
-            Box::new(reader),
-            &[PassStep::VarFilter(VarFilteringCriterion::MaxMissingRate(
-                0.04,
-            ))],
-        )
-        .expect("the chain");
-        let (text, num_vars) = written(&mut chain);
+        let (text, num_vars) = written(|| {
+            let reader = reader_of("many.vcf", false, Some(7));
+            chain_of(
+                Box::new(reader),
+                &[PassStep::VarFilter(VarFilteringCriterion::MaxMissingRate(
+                    0.04,
+                ))],
+            )
+            .expect("the chain")
+        });
         let header: String = text_of("many.vcf")
             .split_inclusive('\n')
             .take_while(|line| line.starts_with('#'))
@@ -636,12 +861,16 @@ mod tests {
         let header = "##fileformat=VCFv4.3\n\
             ##FILTER=<ID=q10,Description=\"Quality below 10\">\n\
             #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\tb\n";
-        let mut reader = VcfReader::new(
-            Cursor::new(header.as_bytes().to_vec()),
-            VcfOptions::default(),
-        )
-        .expect("the VCF");
-        assert_eq!(written(&mut reader), (header.to_owned(), 0));
+        let written = written(|| {
+            Box::new(
+                VcfReader::new(
+                    Cursor::new(header.as_bytes().to_vec()),
+                    VcfOptions::default(),
+                )
+                .expect("the VCF"),
+            )
+        });
+        assert_eq!(written, (header.to_owned(), 0));
     }
 
     #[test]
@@ -657,13 +886,16 @@ mod tests {
             "chr1\t6\t.\tA\tT\t.\tPASS\tAN=4\tGT\t0/0\t1/1",
         ];
         let vcf = lines.join("\n") + "\n";
-        let reader =
-            VcfReader::new(Cursor::new(vcf.into_bytes()), VcfOptions::default()).expect("the VCF");
-        let mut chain = chain_of(
-            Box::new(reader),
-            &[PassStep::KeepIndividuals(vec!["b".to_owned()])],
-        )
-        .expect("the chain");
+        let make = || {
+            let reader =
+                VcfReader::new(Cursor::new(vcf.clone().into_bytes()), VcfOptions::default())
+                    .expect("the VCF");
+            chain_of(
+                Box::new(reader),
+                &[PassStep::KeepIndividuals(vec!["b".to_owned()])],
+            )
+            .expect("the chain")
+        };
         let expected = [
             "##fileformat=VCFv4.3",
             "##INFO=<ID=ACX,Number=1,Type=Integer,Description=\"ID=AC, not AC\">",
@@ -672,7 +904,7 @@ mod tests {
             "chr1\t5\t.\tA\tT\t.\tPASS\tACX=2;AF=0.5\tGT\t1/1",
             "chr1\t6\t.\tA\tT\t.\tPASS\t.\tGT\t1/1",
         ];
-        assert_eq!(written(&mut chain).0, expected.join("\n") + "\n");
+        assert_eq!(written(make).0, expected.join("\n") + "\n");
     }
 
     /// A reader that gives one block it was built with, over the individuals
@@ -738,8 +970,7 @@ mod tests {
 
     #[test]
     fn write_vcf_writes_a_block_without_its_text_from_its_columns() {
-        let mut reader = OneBlock::of_write_vcf(Needs::ALL);
-        let text = written(&mut reader).0;
+        let text = written(|| Box::new(OneBlock::of_write_vcf(Needs::ALL))).0;
         assert!(text.contains("\nchr1\t100\trs1\tA\tT\t29.5\t.\t.\tGT\t0/1\t0/1\t1/1\n"));
         assert!(text.contains("\nchr1\t250\t.\tAT\tA\t.\t.\t.\tGT\t./.\t0/1\t0/0\n"));
     }
@@ -747,7 +978,7 @@ mod tests {
     #[test]
     fn write_vcf_refuses_a_block_with_neither_its_text_nor_every_column() {
         let mut reader = OneBlock::of_write_vcf(Needs::GTS | Needs::CHROM_POS | Needs::ID);
-        match write_vcf(&mut reader, Vec::new()) {
+        match write_vcf(&mut reader, Vec::new(), PLAIN) {
             Err(Error::VcfWriterFieldsMissing { fields }) => {
                 assert_eq!(fields, Needs::ALLELES | Needs::QUAL);
             }
@@ -781,9 +1012,15 @@ mod tests {
 
     #[test]
     fn write_vcf_into_a_sink_that_fills_is_the_error_of_a_file_not_written() {
-        for room in [0, 100, 800] {
+        for (room, options) in [
+            (0, PLAIN),
+            (100, PLAIN),
+            (800, PLAIN),
+            (0, BGZIP),
+            (300, BGZIP),
+        ] {
             let mut reader = reader_of("write.vcf", false, None);
-            match write_vcf(&mut reader, SinkThatFills { room }) {
+            match write_vcf(&mut reader, SinkThatFills { room }, options) {
                 Err(Error::VarsFileNotWritten { source, .. }) => {
                     let kind = source.map(|source| source.kind());
                     assert_eq!(kind, Some(std::io::ErrorKind::StorageFull));
@@ -791,5 +1028,38 @@ mod tests {
                 other => panic!("not the error of a file not written: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn write_vcf_bgzipped_of_many_vcf_is_a_member_of_65280_bytes_the_rest_and_the_empty_one() {
+        let (bytes, _) = bgzipped(&mut reader_of("many.vcf", false, Some(7)));
+        let lengths: Vec<u32> = members_of(&bytes)
+            .iter()
+            .map(|(_, length)| *length)
+            .collect();
+        // many.vcf is 117346 bytes.
+        assert_eq!(lengths, [65280, 52066, 0]);
+        assert_eq!(members_of(&bytes)[2].0, THE_EMPTY_MEMBER);
+        assert_eq!(decompressed(&bytes), text_of("many.vcf"));
+    }
+
+    #[test]
+    fn write_vcf_bgzipped_of_the_six_lines_of_write_vcf_is_one_member_and_the_empty_one() {
+        let (bytes, _) = bgzipped(&mut reader_of("write.vcf", false, None));
+        let lengths: Vec<u32> = members_of(&bytes)
+            .iter()
+            .map(|(_, length)| *length)
+            .collect();
+        assert_eq!(lengths, [845, 0]);
+        assert!(bytes.ends_with(&THE_EMPTY_MEMBER));
+    }
+
+    #[test]
+    fn vcf_text_num_vars_per_block_is_a_fifth_of_the_genotypes_of_a_block_from_100_to_10000() {
+        assert_eq!(vcf_text_num_vars_per_block(1000), 1000);
+        assert_eq!(vcf_text_num_vars_per_block(3000), 333);
+        assert_eq!(vcf_text_num_vars_per_block(50), 10000);
+        assert_eq!(vcf_text_num_vars_per_block(20000), 100);
+        assert_eq!(vcf_text_num_vars_per_block(0), 10000);
     }
 }
