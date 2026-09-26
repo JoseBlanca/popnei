@@ -203,7 +203,7 @@ Tasks:
   `reblock`, from "What the reader keeps for the writer" of
   `docs/specs/io_vcf.md` and the paragraph of `docs/specs/block.md` that
   begins "A block can hold one more column". Deliverable 2.
-- [ ] 3.2 `write_vcf` in `crates/popnei/src/io/vcf.rs`, the lines from the
+- [x] 3.2 `write_vcf` in `crates/popnei/src/io/vcf.rs`, the lines from the
   text and from the columns and the header, with AC and AN taken out when
   the pass has fewer individuals than its source, from "What it gives" and
   "How it runs" of the writer. `write.vcf`, the script and its outputs.
