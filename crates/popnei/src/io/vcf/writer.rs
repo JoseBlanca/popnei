@@ -1414,6 +1414,7 @@ mod tests {
     /// A VCF of two individuals and `num_lines` data lines, whose bytes are
     /// `num_bytes` when that is given: the id of its last line is made as
     /// long as it takes.
+    #[cfg(not(target_family = "wasm"))]
     fn vcf_of_lines(num_lines: usize, num_bytes: Option<usize>) -> String {
         let mut vcf = String::from(
             "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\tb\n",
