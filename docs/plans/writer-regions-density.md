@@ -252,7 +252,7 @@ package 5.
 
 Tasks:
 
-- [ ] 4.1 `Regions`, `RegionSelection`, `RegionFilter` and `RegionsReader`
+- [x] 4.1 `Regions`, `RegionSelection`, `RegionFilter` and `RegionsReader`
   in `crates/popnei/src/filters.rs`, and `PassStep::Regions` in
   `chain_of` and `refuse_a_second_filter_of_a_kind`, from "The filter by
   regions" and its part of "The Rust interface" of `docs/specs/filters.md`.
