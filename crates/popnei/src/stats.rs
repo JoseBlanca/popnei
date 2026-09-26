@@ -1282,8 +1282,10 @@ impl Totals {
 /// fails with; a block that holds no genotypes, which is a reader that was
 /// asked for them and gave none, a block of no variants and a block whose
 /// individuals or ploidy are not the ones the reader says its source has,
-/// each a defect of a reader too; and a pass that gave no variant, whether
-/// its source holds none or its steps kept none of them.
+/// each a defect of a reader too; the missing rate asked for over a
+/// population of no individual, which `Pops::from_names` never builds; and
+/// a pass that gave no variant, whether its source holds none or its steps
+/// kept none of them.
 pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
     reader: &mut R,
     config: &PerVarDistribsConfig,
@@ -1514,9 +1516,8 @@ fn add_the_rows(
                 {
                     of_the_pop.obs_het.add(value, &config.bins);
                 }
-                if asked.missing_rate
-                    && let Some(value) = missing_rate_of_var(of_the_gts)
-                {
+                if asked.missing_rate {
+                    let value = missing_rate_of_var(of_the_gts, || config.pops.name(pop))?;
                     of_the_pop.missing_rate.add(value, &config.bins);
                 }
             }
@@ -1559,21 +1560,31 @@ fn add_the_rows(
 ///
 /// It is not held to `min_num_individuals`: a population has one individual
 /// at least, so every variant has a rate, and one with nothing called has a
-/// rate of 1. `None` is for counts of no genotype at all, which no
-/// population of a pass gives.
-fn missing_rate_of_var(counts: GtCounts) -> Option<f64> {
+/// rate of 1.
+///
+/// # Errors
+///
+/// Counts of no genotype at all, a population of no individual, which
+/// `Pops::from_names` refuses: `name_of_the_pop` gives its name for the
+/// message, and is called only then.
+fn missing_rate_of_var<'pops>(
+    counts: GtCounts,
+    name_of_the_pop: impl FnOnce() -> &'pops str,
+) -> Result<f64> {
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "two u32 widened to u64, whose sum is below 2^33"
     )]
     let num_individuals = u64::from(counts.called) + u64::from(counts.missing);
     if num_individuals == 0 {
-        return None;
+        return Err(Error::MissingRateOfAPopOfNoIndividual {
+            pop: name_of_the_pop().to_owned(),
+        });
     }
     // Both counts are below 2^53, where a `f64` holds the whole numbers
     // exactly, so the rate is the one division of the two, which is what
     // `numpy.histogram` bins in the reference.
-    Some(f64::from(counts.missing) / num_individuals as f64)
+    Ok(f64::from(counts.missing) / num_individuals as f64)
 }
 
 /// The result of a pass, with the statistics that were asked for and
@@ -3790,6 +3801,27 @@ mod distribs {
             assert_mean(found.missing_rate.as_ref(), pop, mean, what);
             assert_hist(found.missing_rate.as_ref(), pop, &hist, what);
         }
+    }
+
+    /// A population of no individual has no missing rate, 0 missing
+    /// genotypes over 0 individuals, and the pass refuses it as the defect
+    /// it is instead of leaving every variant out of the mean and the bins:
+    /// `Pops::from_names` refuses such a population, and `Pops::all(0)` is
+    /// the one way to build one.
+    #[test]
+    fn per_var_missing_rate_of_a_population_of_no_individual_is_refused() {
+        let mut reader = the_worked_example(6);
+        let mut config = config_of(Pops::all(0), 1);
+        config.stats = vec![PerVarStat::MissingRate];
+        let error = calc_per_var_distribs(&mut reader, &config)
+            .expect_err("the missing rate of a population of no individual");
+        assert!(
+            matches!(
+                &error,
+                Error::MissingRateOfAPopOfNoIndividual { pop } if pop == "pop"
+            ),
+            "{error:?}"
+        );
     }
 
     /// A block of `num_individuals` diploid individuals, one row of

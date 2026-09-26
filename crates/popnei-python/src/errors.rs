@@ -453,6 +453,10 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::MoreAllelesThanACountHolds { .. }
         | popnei::Error::AlleleBelowTheMissingOne { .. }
         | popnei::Error::IndividualBeyondTheVariant { .. }
+        // The missing rate of a population of no individual, which only a
+        // caller of the core that built its populations without
+        // `Pops::from_names` gives.
+        | popnei::Error::MissingRateOfAPopOfNoIndividual { .. }
         | popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants

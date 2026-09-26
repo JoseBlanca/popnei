@@ -669,6 +669,21 @@ pub enum Error {
         filters: Vec<(&'static str, FilteringStats)>,
     },
 
+    /// The missing rate of a variant was asked for over a population that
+    /// holds no individual, whose missing genotypes over its individuals
+    /// are 0 over 0. `Pops::from_names` refuses a population of no
+    /// individual and every reader of popnei refuses a source of none, so
+    /// only a caller of the core that built its populations otherwise, a
+    /// `Pops::all(0)`, reaches this: it is a defect of popnei, a
+    /// `RuntimeError` in Python.
+    #[error(
+        "the missing rate of a variant was asked for over the population {pop}, which holds no individual, and the rate is the missing genotypes of a population over its individuals; every population of a pass holds one individual at least, so this is a defect of popnei"
+    )]
+    MissingRateOfAPopOfNoIndividual {
+        /// The name of the population.
+        pop: String,
+    },
+
     /// A value of the table of a principal component analysis is not
     /// finite, an infinity or a NaN, with the place where it is. There is
     /// nothing to give for such a table: the mean of that trait, and with
@@ -3031,6 +3046,7 @@ impl Error {
             | Self::MoreAllelesThanACountHolds { .. }
             | Self::AlleleBelowTheMissingOne { .. }
             | Self::IndividualBeyondTheVariant { .. }
+            | Self::MissingRateOfAPopOfNoIndividual { .. }
             | Self::BlocksDoNotFitTogether { .. }
             | Self::BlockArrayOfAnotherSize { .. }
             | Self::ReaderGaveABlockOfNoVariants
