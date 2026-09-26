@@ -1208,6 +1208,12 @@ known, which the owner decided on the same day:
 A window with no variant is in the result with a count of 0, from the
 first window of the chromosome, since a gap is what a user looks for.
 
+A variant is counted in the one window that holds its position, the POS of
+the VCF, whatever the length of its REF: a deletion `ACGT` at 1999 is
+counted in 1001 to 2000 alone in windows of 1000, although its REF covers
+2000 to 2002 as well. The density counts variants, and a variant counted
+once is what makes the counts add up to the variants of the pass.
+
 The length of a chromosome is the one the user gives in `chrom_lengths`,
 and when they give none, the one the source has: the `##contig` lines of
 the VCF that have a `length`, and the lengths the vars file keeps of the
@@ -1278,7 +1284,15 @@ each so that no count is wrong in silence:
   only with windows of more than 1.8 x 10^12 base pairs.
 
 In TypeScript it is `calcVarDensity(variants, windowSize, {chromLengths})`,
-with `chromLengths` an object of chromosome name to length, and it gives
+with `chromLengths` a plain object of chromosome name to length, one whose
+prototype is `Object.prototype` or `null`; anything else, a `Map` among
+it, which has no own keys and would be read as no lengths, is an `Error`
+that names `chromLengths`. The order of the lengths is the order
+JavaScript gives the keys of the object, which puts the keys that are
+whole numbers first, in ascending order, and then the others in the order
+they were written: `{X: 1, "10": 1, "2": 1}` gives 2, 10 and X, where the
+same dict in Python gives X, 10 and 2. That was noted on 27 September
+2026 and is the owner's to weigh against taking a `Map` or pairs. It gives
 `chroms`, the name of each window's chromosome as an array of strings,
 `start` and `end` as `Float64Array`, as `iterBlocks` gives the positions,
 `numVars` as a `Uint32Array`, and `passStats`. A float64 holds every
@@ -1312,7 +1326,11 @@ Against tabix 1.24, which counts the variants of any region of a
 bgzipped VCF with an index: `tabix many.vcf.gz chr1:1-1000 | wc -l` for
 each window, run on 26 September 2026 on `many.vcf.gz` with an index that
 `tabix -p vcf` made, and a count of the positions of the file window by
-window, worked out with `awk`, gave the same numbers. With windows of 1000
+window, worked out with `awk`, gave the same numbers. tabix counts a line
+in every region its REF overlaps, where the density counts it in the
+window of its POS alone, so the two agree on `many.vcf` because every
+variant of it has a REF of one base; a deletion `ACGT` at 1999 is in
+1001-2000 and in 2001-3000 for tabix 1.24. With windows of 1000
 and no lengths, since the `##contig` lines of `many.vcf` have none, and
 with every variant given:
 
@@ -1678,15 +1696,18 @@ pub fn calc_var_density<R: BlockReader + ?Sized>(
 ```
 
 Its errors are new cases of the error of the crate, each a `ValueError`
-in Python: a `window_size` of 0; a length of 0, with the chromosome and
-where the length came from; a chromosome named twice among the lengths,
-with the same; a variant past the length of its chromosome, with the
+in Python but where this paragraph says otherwise: a `window_size` of 0;
+a length of 0, with the chromosome and where the length came from; a
+chromosome named twice among the lengths, with the same; a variant past the length of its chromosome, with the
 chromosome, the position, the length and where the length came from; a
 variant at position 0, with the chromosome; more than `MAX_NUM_WINDOWS`
 windows, with the number; and a window of more than 4294967295
 variants, with the chromosome and the window. A source gives no length of
 0 and no chromosome twice, the VCF reader and the vars file reader refuse
-both, and the density refuses them from any source all the same. A block
+both, and the density refuses them from any source all the same: from the
+lengths of a source the two are a defect of its reader, a `RuntimeError`
+in Python, as the owner's convention has a defect of popnei, and from
+`chrom_lengths` a `ValueError`. A block
 whose chromosome number has no name in the table of its reader is a
 defect of that reader, a `RuntimeError` in Python. It gives two that are
 there already: the error of a pass that gave no variant, and, for a
