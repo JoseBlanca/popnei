@@ -104,7 +104,12 @@ writer of `docs/specs/io_vcf.md`, and with it the version went from 1.0 to
 1.1. The writer takes it from the header of its source, which for a VCF
 is its `##contig` lines with a `length`. A file of 1.0 has no such key and
 is read with no lengths, and a reader of 1.0 reads a file of 1.1 and
-ignores the key, by the rule of the version below.
+ignores the key, by the rule of the version below. A file with the key is not a
+vars file, the error of a file as a whole, when the key is not a list of
+pairs of a name and a whole number above 0, or when it gives one
+chromosome twice, which the VCF reader refuses too; a file without it is
+read with no lengths whatever its version says. This was decided on 26
+September 2026 with the code.
 
 What is known only after the last variant goes in the footer, under the key
 `popnei_batches`: arrow-rs writes the metadata of the footer when the file is
