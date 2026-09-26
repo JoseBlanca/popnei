@@ -831,7 +831,7 @@ impl Block {
             alleles.retain_vars(keep);
         }
         if let Some(vcf_text) = vcf_text.as_mut() {
-            vcf_text.retain_vars(keep);
+            vcf_text.retain_vars(keep)?;
         }
         *num_vars = keep.iter().filter(|keep_it| **keep_it).count();
         Ok(())
@@ -983,14 +983,8 @@ impl Block {
                 });
             }
         }
-        if let Some(vcf_text) = vcf_text
-            && vcf_text.num_individuals() != *num_individuals
-        {
-            return Err(Error::BlockArrayOfAnotherSize {
-                array: "individuals of vcf_text",
-                found: vcf_text.num_individuals(),
-                expected: *num_individuals,
-            });
+        if let Some(vcf_text) = vcf_text {
+            vcf_text.check(*num_vars, *num_individuals)?;
         }
         Ok(())
     }

@@ -160,6 +160,64 @@ impl VcfText {
         self.line_of(var).map_or(&[], |(_, ends)| ends)
     }
 
+    /// That the text holds `num_vars` lines of `num_individuals`
+    /// individuals, and that its places are those of its lines: one end for
+    /// the nine first columns and one for each individual of each line, the
+    /// last of them where the line ends, and the last line where the bytes
+    /// end. [`Block::check`](super::Block::check) asks it of the text of
+    /// every block, so the compactions and the writer read a text that is
+    /// of its lines.
+    ///
+    /// It reads the ends of the lines and the last end of the texts of each
+    /// line, one number of each variant, and not every end of every text.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BlockArrayOfAnotherSize`], which names the text, when any
+    /// of that is not so.
+    pub(crate) fn check(&self, num_vars: usize, num_individuals: usize) -> Result<()> {
+        let wrong = |found: usize, expected: usize| Error::BlockArrayOfAnotherSize {
+            array: "vcf_text",
+            found,
+            expected,
+        };
+        if self.line_ends.len() != num_vars {
+            return Err(wrong(self.line_ends.len(), num_vars));
+        }
+        if self.num_individuals != num_individuals {
+            return Err(Error::BlockArrayOfAnotherSize {
+                array: "individuals of vcf_text",
+                found: self.num_individuals,
+                expected: num_individuals,
+            });
+        }
+        let ends_of_the_texts = num_vars.saturating_mul(self.ends_per_line());
+        if self.text_ends.len() != ends_of_the_texts {
+            return Err(wrong(self.text_ends.len(), ends_of_the_texts));
+        }
+        let last_line_end = self.line_ends.last().copied().unwrap_or(0);
+        if last_line_end != self.bytes.len() {
+            return Err(wrong(last_line_end, self.bytes.len()));
+        }
+        let mut start = 0usize;
+        for (line_end, ends) in self
+            .line_ends
+            .iter()
+            .zip(self.text_ends.chunks(self.ends_per_line()))
+        {
+            let length = line_end.checked_sub(start).ok_or(wrong(*line_end, start))?;
+            let last_end = ends
+                .last()
+                .and_then(|end| usize::try_from(*end).ok())
+                .unwrap_or(usize::MAX);
+            if last_end != length {
+                return Err(wrong(last_end, length));
+            }
+            start = *line_end;
+        }
+        Ok(())
+    }
+
     /// How many variants the text holds a line for.
     #[must_use]
     pub fn num_vars(&self) -> usize {
@@ -215,8 +273,14 @@ impl VcfText {
     /// text. The buffers keep their capacity, and the bytes and the ends of
     /// a line that stays move over the ones of a line that goes.
     ///
-    /// `keep` has one value for each line, which the block checked.
-    pub(crate) fn retain_vars(&mut self, keep: &[bool]) {
+    /// # Errors
+    ///
+    /// When the text is not of its lines, which [`VcfText::check`] finds,
+    /// and when `keep` has not one value for each line: the block checks
+    /// both before, so no call reaches them, and the text is left as it
+    /// was.
+    pub(crate) fn retain_vars(&mut self, keep: &[bool]) -> Result<()> {
+        self.check(keep.len(), self.num_individuals)?;
         let per_line = self.ends_per_line();
         let mut write_byte = 0usize;
         let mut write_var = 0usize;
@@ -226,18 +290,16 @@ impl VcfText {
                 break;
             };
             if *keep_it {
-                // The write position is never past the read one, so no copy
-                // writes over bytes or ends that have not been moved yet.
-                if read_byte <= line_end && line_end <= self.bytes.len() {
-                    self.bytes.copy_within(read_byte..line_end, write_byte);
-                }
+                // `check` said that every line and its ends are inside the
+                // buffers, and the write position is never past the read
+                // one, so no copy writes over bytes or ends that have not
+                // been moved yet.
+                self.bytes.copy_within(read_byte..line_end, write_byte);
                 write_byte = write_byte.saturating_add(line_end.saturating_sub(read_byte));
                 let read_ends = var.saturating_mul(per_line);
                 let read_ends_end = read_ends.saturating_add(per_line);
-                if read_ends_end <= self.text_ends.len() {
-                    self.text_ends
-                        .copy_within(read_ends..read_ends_end, write_var.saturating_mul(per_line));
-                }
+                self.text_ends
+                    .copy_within(read_ends..read_ends_end, write_var.saturating_mul(per_line));
                 if let Some(slot) = self.line_ends.get_mut(write_var) {
                     *slot = write_byte;
                 }
@@ -248,6 +310,7 @@ impl VcfText {
         self.bytes.truncate(write_byte);
         self.line_ends.truncate(write_var);
         self.text_ends.truncate(write_var.saturating_mul(per_line));
+        Ok(())
     }
 
     /// The columns of the individuals `keep`, indices into the individuals
@@ -448,6 +511,7 @@ mod tests {
     use std::io::{BufReader, Cursor};
     use std::path::{Path, PathBuf};
 
+    use super::VcfText;
     use crate::block::{Block, BlockReader, Reblock, SourceHeader};
     use crate::error::{Error, Result};
     use crate::filters::{FilteringStats, RegionSelection};
@@ -808,6 +872,45 @@ mod tests {
             }
             other => panic!("not the error of a line too long: {other:?}"),
         }
+    }
+
+    /// That `check` of the block refuses its text as it is after `break_it`.
+    fn assert_check_refuses_the_text(break_it: impl Fn(&mut VcfText)) {
+        let mut block = the_block_of_write_vcf();
+        break_it(block.vcf_text.as_mut().expect("the text"));
+        match block.check() {
+            Err(Error::BlockArrayOfAnotherSize { array, .. }) => assert_eq!(array, "vcf_text"),
+            other => panic!("not the error of a text that is not of its lines: {other:?}"),
+        }
+        let keep = [true, false, true, false, true, false];
+        assert!(block.retain_vars(&keep).is_err());
+        assert!(
+            block
+                .vcf_text
+                .as_mut()
+                .expect("the text")
+                .retain_vars(&keep)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn vcf_text_whose_ends_are_not_of_its_lines_is_refused_by_check_and_by_retain_vars() {
+        // One end of a text too few, as a line of two individuals among
+        // lines of three would leave.
+        assert_check_refuses_the_text(|text| {
+            text.text_ends.pop();
+        });
+        // The last line ends before the bytes do.
+        assert_check_refuses_the_text(|text| {
+            text.bytes.push(b'x');
+        });
+        // The last text of a line does not end where the line does.
+        assert_check_refuses_the_text(|text| {
+            if let Some(end) = text.text_ends.last_mut() {
+                *end -= 1;
+            }
+        });
     }
 
     #[test]
