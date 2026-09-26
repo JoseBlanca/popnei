@@ -67,7 +67,7 @@ end of `iter_blocks`. A block that already has the size, with nothing
 waiting from the one before, goes through as it is, with no copy.
 
 A reader gives two things more, added on 26 September 2026 with the VCF
-writer and the filter by regions, which have no code yet. It gives what
+writer and the filter by regions. It gives what
 its source said of itself before the first variant, the header: the
 length of each chromosome that the source gives one for, and, for a VCF,
 the lines of its header before `#CHROM`. A reader over another reader

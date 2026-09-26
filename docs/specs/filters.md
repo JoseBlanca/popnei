@@ -1162,12 +1162,23 @@ source and the second looks at every variant.
 
 A line that the VCF reader skips is not parsed past CHROM, POS and FILTER,
 so a wrong genotype, a genotype of another ploidy or an undeclared allele
-in it is an error with the skip and is one without it when a filter of
-variants comes first. This is decided here, and it is what the reader
+in it is no error with the skip and is one without it, and when a filter
+of variants comes first. This is decided here, and it is what the reader
 does already for a column that no consumer asked for: "How it runs" of
 the reader in `docs/specs/io_vcf.md` does not check a column it does not
 parse. A line outside the regions holds no variant of the pass either
-way. A POS that does not parse as a number gives the line a row, so the
+way.
+
+What the reader checks of every line whatever is asked for, the shape of
+the line of "How it runs" of `docs/specs/io_vcf.md`, it checks of a line
+it skips too: the nine first columns are there and are UTF-8, the FORMAT
+has a `GT` key, and, when the genotypes or the text of the lines are asked
+for, the line has one column after the FORMAT for each individual of the
+header. A line that fails any of them gets a row, so the parse gives its
+error with the skip as without it. A plain VCF that was cut inside its
+last line has nothing else that says it was cut, and that line has too
+few columns. The checks count the tabs of the line, which the skip reads
+whole. A POS that does not parse as a number gives the line a row, so the
 parse gives the error of that column whatever the regions are. The serial
 pass reads a POS written in digits alone that fit in 64 bits, and any
 other gets a row: `+5`, which the parse reads as 5, reaches the filter,
