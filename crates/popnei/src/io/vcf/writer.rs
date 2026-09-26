@@ -566,7 +566,15 @@ mod tests {
 
     use flate2::read::MultiGzDecoder;
 
-    use super::bgzip::{TEXT_OF_A_MEMBER, THE_EMPTY_MEMBER};
+    use super::bgzip::TEXT_OF_A_MEMBER;
+
+    /// The empty member that ends a file bgzip wrote, as the bytes of
+    /// `printf '' | bgzip -c` of bgzip 1.24, and not the constant of the
+    /// writer, which a test would then compare with itself.
+    const THE_EMPTY_MEMBER: [u8; 28] = [
+        0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02,
+        0x00, 0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
     use super::{VcfWriteOptions, vcf_text_num_vars_per_block, write_vcf};
     use crate::block::{Block, BlockReader, SourceHeader};
     use crate::error::{Error, Result};
