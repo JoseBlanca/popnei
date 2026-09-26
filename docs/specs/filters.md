@@ -1077,6 +1077,16 @@ and the line, and in TypeScript an `Error` that names the line:
   for a point between two bases, which holds no position of popnei's.
 - A BED with no region.
 
+The lines are counted from 1 over the whole file, the skipped ones among
+them, so the number in a message is the one an editor shows. A line that
+ends in a carriage return before its newline, as a file written on
+Windows does, is read without it, as bcftools 1.24 and plink2
+v2.0.0-a.7.7 read one, tried on 26 September 2026. A start and an end are
+written in digits alone and fit in 64 bits: `+99`, which bcftools reads
+as 99, is refused. The name of a chromosome is compared with the name the
+source gives byte for byte, so a name that is not UTF-8 text is not
+refused and matches no variant.
+
 ### The cases a reader of the rules would not guess
 
 - The filter needs the chromosome and the position. It asks its source
@@ -1568,10 +1578,17 @@ step of the same kind:
 The two methods this filter adds to `BlockReader` are in
 `docs/specs/block.md`: `skip_outside`, which a source takes and a filter
 of variants refuses, and `num_skipped`. The cases it adds to the error of
-the crate are two, each a `ValueError` in Python: a wrong line of a BED
-file, with the number of the line and what is wrong with it, and a BED
-with no region. The binding crate puts the path of the file in front of
-the message, as it does for a VCF.
+the crate are four. Three are a `ValueError` in Python: a wrong line of a
+BED file, with the number of the line and what is wrong with it, and a
+BED with no region, in front of whose message the binding crate puts the
+path of the file, as it does for a VCF; and a second filter by regions of
+one kind, with the kind, which names no file, as the second threshold
+filter does not. Neither case of a second filter that there is fits it:
+one carries two thresholds and the other says that two lists of
+individuals are one. The fourth is a defect, a `RuntimeError`: a block
+given to `RegionFilter` whose chromosome number the table of its reader
+has no name for, which the two writers refuse in the same words, since
+the regions are looked up by the name.
 
 ## Speed
 
