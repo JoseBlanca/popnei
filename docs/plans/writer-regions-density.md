@@ -330,7 +330,7 @@ committed; otherwise work package 6 can run side by side with 3, 4 and 5.
 
 Tasks:
 
-- [ ] 6.1 `calc_var_density` in `crates/popnei/src/stats.rs`, from its
+- [x] 6.1 `calc_var_density` in `crates/popnei/src/stats.rs`, from its
   item and its part of "The Rust interface". Deliverable 1.
 - [ ] 6.2 Both binding crates, both packages, the reference counts, the
   tests and the measurement. Deliverables 2, 3 and 4.
