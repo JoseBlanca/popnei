@@ -532,8 +532,10 @@ impl ColumnsOfABlock<'_> {
 ///
 /// # Errors
 ///
-/// What [`LinesOf::write_line`] refuses, the error of the first run that
-/// has one.
+/// What [`LinesOf::write_line`] refuses. Natively it is the error of one
+/// of the runs that have one, which rayon chooses, and not always the
+/// first: every error a line can give is a defect of the block or of its
+/// reader, so which one of them is said does not change what a user does.
 fn format_rows(how: &LinesOf<'_>, num_vars: usize, buffers: &mut Vec<Vec<u8>>) -> Result<()> {
     let num_runs = num_vars.div_ceil(ROWS_PER_FORMAT_JOB);
     buffers.truncate(num_runs);
