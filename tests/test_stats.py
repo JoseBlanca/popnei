@@ -361,7 +361,7 @@ def test_per_var_distribs_give_every_count_as_a_signed_number() -> None:
     assert int((poly.num_poly - poly.num_variable)["pop"]) == -16
     for counts in (poly.num_poly, poly.num_variable, poly.tot_num_variants_with_data):
         assert counts.dtype == numpy.int64
-    for stat in DISTRIBS:
+    for stat in ALL_DISTRIBS:
         counts = getattr(ours, stat).hist_counts["pop"]
         assert counts.dtype == numpy.int64, stat
         assert int((counts - int(counts.max())).min()) < 0, stat
@@ -729,7 +729,7 @@ def test_per_var_distribs_keep_the_populations_in_the_order_of_the_keys() -> Non
         _many(), pops=backwards, min_num_individuals=MANY_MIN_NUM_INDIVIDUALS
     )
 
-    for stat in DISTRIBS:
+    for stat in ALL_DISTRIBS:
         distrib = getattr(ours, stat)
         assert list(distrib.mean.index) == ["popB", "popA"]
         assert list(distrib.hist_counts.columns) == ["popB", "popA"]
