@@ -62,10 +62,13 @@ struct Region {
 /// `Arc` by the step and by every pass built from it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Regions {
-    /// The regions of each chromosome, by its name as the BED writes it,
-    /// sorted by their first position, none of them overlapping or touching
-    /// the next.
-    of_each_chrom: HashMap<Vec<u8>, Vec<Region>>,
+    /// The place in `regions` of each chromosome, by its name as the BED
+    /// writes it.
+    of_each_chrom: HashMap<Vec<u8>, usize>,
+    /// The regions of each chromosome, sorted by their first position, none
+    /// of them overlapping or touching the next, in the order the BED first
+    /// names the chromosomes.
+    regions: Vec<Vec<Region>>,
     /// How many regions there are over every chromosome.
     num_regions: usize,
 }
@@ -228,7 +231,8 @@ impl Regions {
         // The byte order mark of UTF-8, which some editors of Windows write
         // at the start of a text, would be the start of the first name.
         let text = text.strip_prefix(UTF8_BYTE_ORDER_MARK).unwrap_or(text);
-        let mut of_each_chrom: HashMap<Vec<u8>, Vec<Region>> = HashMap::new();
+        let mut of_each_chrom: HashMap<Vec<u8>, usize> = HashMap::new();
+        let mut of_each_place: Vec<Vec<Region>> = Vec::new();
         let mut regions_read = false;
         for (index, line) in text.split(|byte| *byte == b'\n').enumerate() {
             // An index of a slice held in memory fits in a `u64` on every
@@ -244,10 +248,14 @@ impl Regions {
             })?;
             // The name is copied once for its chromosome and not for each of
             // its lines.
-            match of_each_chrom.get_mut(chrom) {
+            match of_each_chrom
+                .get(chrom)
+                .and_then(|place| of_each_place.get_mut(*place))
+            {
                 Some(regions) => regions.push(region),
                 None => {
-                    of_each_chrom.insert(chrom.to_vec(), vec![region]);
+                    of_each_chrom.insert(chrom.to_vec(), of_each_place.len());
+                    of_each_place.push(vec![region]);
                 }
             }
             regions_read = true;
@@ -256,12 +264,13 @@ impl Regions {
             return Err(Error::BedWithNoRegion);
         }
         let mut num_regions: usize = 0;
-        for regions in of_each_chrom.values_mut() {
+        for regions in &mut of_each_place {
             join(regions);
             num_regions = num_regions.saturating_add(regions.len());
         }
         Ok(Regions {
             of_each_chrom,
+            regions: of_each_place,
             num_regions,
         })
     }
@@ -272,6 +281,7 @@ impl Regions {
     pub(crate) fn none_for_the_tests() -> Regions {
         Regions {
             of_each_chrom: HashMap::new(),
+            regions: Vec::new(),
             num_regions: 0,
         }
     }
@@ -295,7 +305,21 @@ impl Regions {
     /// The regions of the chromosome of that name, sorted, or None when
     /// the BED names no region of it.
     fn of_the_chrom(&self, chrom: &[u8]) -> Option<&[Region]> {
-        self.of_each_chrom.get(chrom).map(Vec::as_slice)
+        self.at(self.place_of(chrom))
+    }
+
+    /// Where the regions of the chromosome of that name are, which does not
+    /// borrow the regions and so can be kept from one call to the next.
+    fn place_of(&self, chrom: &[u8]) -> PlaceOfAChrom {
+        PlaceOfAChrom(self.of_each_chrom.get(chrom).copied())
+    }
+
+    /// The regions at `place`, None for a chromosome the BED does not name.
+    fn at(&self, place: PlaceOfAChrom) -> Option<&[Region]> {
+        place
+            .0
+            .and_then(|place| self.regions.get(place))
+            .map(Vec::as_slice)
     }
 }
 
@@ -484,12 +508,31 @@ impl RegionSelection {
     /// name the BED does not have is a chromosome of no region.
     #[must_use]
     pub fn regions_of(&self, chrom: &[u8]) -> SelectionOfAChrom<'_> {
+        self.regions_at(self.place_of(chrom))
+    }
+
+    /// Where the regions of the chromosome named `chrom` are, a handle that
+    /// does not borrow the selection, so that a reader keeps it with the
+    /// name from one call to the next and gets the regions back with
+    /// [`RegionSelection::regions_at`] without looking the name up again.
+    pub(crate) fn place_of(&self, chrom: &[u8]) -> PlaceOfAChrom {
+        self.regions.place_of(chrom)
+    }
+
+    /// The selection on the chromosome at `place`, which
+    /// [`RegionSelection::place_of`] gave for this selection.
+    pub(crate) fn regions_at(&self, place: PlaceOfAChrom) -> SelectionOfAChrom<'_> {
         SelectionOfAChrom {
-            regions: self.regions.of_the_chrom(chrom).unwrap_or(&[]),
+            regions: self.regions.at(place).unwrap_or(&[]),
             exclude: self.exclude,
         }
     }
 }
+
+/// Where the regions of one chromosome are among those of a [`Regions`],
+/// or that the BED does not name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaceOfAChrom(Option<usize>);
 
 /// A [`RegionSelection`] on one chromosome: its regions, sorted and joined,
 /// and which side of them is kept.

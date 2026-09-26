@@ -54,6 +54,7 @@ use crate::variant::{
 };
 
 mod regions;
+pub(crate) use regions::PlaceOfAChrom;
 pub use regions::{
     BedLineProblem, RegionFilter, RegionSelection, Regions, RegionsReader, SelectionOfAChrom,
 };

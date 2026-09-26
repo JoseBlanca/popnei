@@ -39,7 +39,7 @@ use crate::block::{
     default_num_vars_per_block, size_of_the_blocks,
 };
 use crate::error::{Error, Result};
-use crate::filters::{FilteringStats, RegionSelection, SelectionOfAChrom};
+use crate::filters::{FilteringStats, PlaceOfAChrom, RegionSelection};
 use crate::io::bgzf::BgzfReader;
 use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs};
 
@@ -734,6 +734,12 @@ pub struct VcfReader<R: BufRead + Send> {
     /// How many lines were passed over for those regions since the reader
     /// was built.
     num_skipped: u64,
+    /// The CHROM of the last line the serial pass looked the regions up
+    /// for, and where its regions are, kept from one batch to the next so
+    /// that a run of lines of one chromosome looks its name up once, also
+    /// in wasm, whose batches are of one line.
+    chrom_of_the_line_before: Vec<u8>,
+    place_of_the_chrom_before: Option<PlaceOfAChrom>,
 }
 
 impl<R: BufRead + Send> VcfReader<R> {
@@ -788,6 +794,8 @@ impl<R: BufRead + Send> VcfReader<R> {
             panic_at_line: None,
             skip_outside: None,
             num_skipped: 0,
+            chrom_of_the_line_before: Vec::new(),
+            place_of_the_chrom_before: None,
         };
         reader.read_header()?;
         // The individuals are known now, so the alleles of one variant and
@@ -1049,6 +1057,8 @@ impl<R: BufRead + Send> VcfReader<R> {
             source_done,
             skip_outside,
             num_skipped,
+            chrom_of_the_line_before,
+            place_of_the_chrom_before,
             individuals,
             needs,
             #[cfg(test)]
@@ -1062,11 +1072,6 @@ impl<R: BufRead + Send> VcfReader<R> {
             || needs.contains(Needs::VCF_TEXT))
         .then_some(individuals.len());
         *filled = 0;
-        // The regions of the chromosome of the line before, with its name,
-        // so that a run of lines of one chromosome looks its name up once.
-        // A batch starts with none, which costs one lookup a batch.
-        let mut of_the_chrom: Option<SelectionOfAChrom<'_>> = None;
-        let mut chrom_of_the_line_before: Vec<u8> = Vec::new();
         text.clear();
         #[cfg(test)]
         {
@@ -1130,16 +1135,17 @@ impl<R: BufRead + Send> VcfReader<R> {
             if let Some(selection) = skip_outside.as_ref()
                 && let Some((chrom, pos)) = chrom_and_pos_of(line)
             {
-                let regions = match of_the_chrom {
-                    Some(regions) if chrom == chrom_of_the_line_before.as_slice() => regions,
+                let place = match *place_of_the_chrom_before {
+                    Some(place) if chrom == chrom_of_the_line_before.as_slice() => place,
                     Some(_) | None => {
                         chrom_of_the_line_before.clear();
                         chrom_of_the_line_before.extend_from_slice(chrom);
-                        let regions = selection.regions_of(chrom);
-                        of_the_chrom = Some(regions);
-                        regions
+                        let place = selection.place_of(chrom);
+                        *place_of_the_chrom_before = Some(place);
+                        place
                     }
                 };
+                let regions = selection.regions_at(place);
                 if !regions.keeps(pos) && has_the_shape_of_a_line(line, columns_of_individuals) {
                     text.truncate(start);
                     // A line of a source held in memory, so the count does
@@ -1473,6 +1479,8 @@ impl<R: BufRead + Send> BlockReader for VcfReader<R> {
     /// parse gives the error of that column.
     fn skip_outside(&mut self, selection: RegionSelection) -> bool {
         self.skip_outside = Some(selection);
+        // A place is of the regions it was looked up in.
+        self.place_of_the_chrom_before = None;
         true
     }
 
