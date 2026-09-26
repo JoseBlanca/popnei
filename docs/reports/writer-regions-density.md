@@ -329,3 +329,38 @@ What they found, and what is being fixed:
   the choice of the writer's block size made in both binding crates
   rather than in the core; paths that would give an empty text or a
   default value instead of an error if a check before them moved.
+
+The fixes are the 33 commits from 5cd7d40 to 586828e. Each finding that
+changed a behaviour has a test that failed before its fix. Not fixed as
+asked:
+
+- The removal of a partial file after a panic, and the mapping of the
+  writer's two defects to `RuntimeError`, have no automated test: no
+  input makes the core panic or reach those defects, and a test would
+  need an entry point of `_core` for tests only. The first was checked by
+  hand with a panic put into the code: two calls in a row each raised a
+  `PanicException` and left no file.
+- The block size of the writer is now chosen by one function of the core,
+  tested there; no test of either binding counts the blocks, because the
+  progress of a pass counts bytes.
+- The comment that said one deflate per thread says one per job of rayon
+  now; nothing else changed there.
+
+Peak memory of a bgzipped write fell from 366 MB to 341 MB on 18 threads,
+on a VCF of 245 MB, 2000 lines of 5000 individuals with GT, AD, DP, GQ and
+PL. The plain write of that file peaks at 314 MB, which nobody has looked
+into yet. The filter of individuals now writes its text on the threads:
+keeping 500 of the 1000 individuals of `big.vcf` on 18 threads, the
+write went from 0.336 to 0.379 s to 0.268 to 0.286 s.
+
+The subagent also made the writer ask a VCF source for the text of its
+lines alone. That took the plain write of `big.vcf` from 0.96 to 0.98 s
+down to 0.52 to 0.54 s on one thread, but a line whose POS is not a
+number, or whose genotype does not parse, was then copied into the output
+without an error. The owner's rule is that a corrupt input is reported
+even when the check costs time, so that change was undone in db0d83b and
+d03d89a. Three tests now hold it: `0/x`, three alleles in a diploid VCF
+and a POS of `nine` are each refused. After the undo, on one thread, the
+plain write takes 0.98 to 1.00 s and the bgzipped one 10.8 to 11.0 s. The
+owner may still prefer the faster write; it is among the questions at the
+end.
