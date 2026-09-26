@@ -288,7 +288,7 @@ Stands on: work package 4.
 
 Tasks:
 
-- [ ] 5.1 The skip of the VCF reader in its serial pass, and of the vars
+- [x] 5.1 The skip of the VCF reader in its serial pass, and of the vars
   file reader by the footer, with `num_skipped`, from "How it runs" of the
   filter by regions and the paragraph of the reader of
   `docs/specs/io_vars.md` that begins "The reader answers". Deliverables 1
