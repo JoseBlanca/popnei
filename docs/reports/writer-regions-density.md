@@ -87,6 +87,54 @@ Deliverables, run at f60c4e3:
 - 2 and 3: `cargo test -p popnei --lib source_header -- --list` counts 13
   tests, where it counted 0 before, and all 13 pass.
 
+The review ran in six categories, spec, tests, errors, api, architecture
+and numbers, over 838459f..f60c4e3; the binding category was left out
+because neither binding crate changed. What it found that mattered, all of
+it fixed in bba6e43 to 1d3a003 and one commit after them:
+
+- The `##contig` lines were read by a parser stricter than htslib in some
+  places and looser in others, and four reviewers found it from four
+  sides. A space after a comma, a blank after the `>`, or an escaped quote
+  `\"` inside a Description made a length go missing with no error, or
+  gave a wrong one. When one line gave `length=` twice the last one won,
+  where bcftools 1.24 keeps the first. The reader now trims the blanks as
+  htslib does and takes `\"` as text. It refuses, as the wrong header with
+  the line, a line with two `length=` or two `ID=` fields, an empty ID, no
+  closing `>`, an unclosed quote, or no `<`. `docs/specs/io_vcf.md` records
+  these as decisions of 26 September 2026.
+- The test that a comma inside quotes does not end a field could not
+  fail: its fixture had a space before the second `length=` and the real
+  length last, and a reviewer who broke the quote handling saw all 1035
+  tests pass. With the fixture changed, 4 tests fail on that breakage.
+- Each new chromosome name was looked up in a list, so the time to open a
+  file grew with the square of its `##contig` lines. A VCF with 200000 of
+  them opened in 13.37 s; it opens in 0.030 s now, with the names in a
+  hash, where `bcftools view -H` takes 0.086 s (release build, Apple M5
+  Pro, the fastest of 3 runs). Draft plant assemblies have 1e5 to 1e6
+  scaffolds.
+- The reader one block ahead stopped serving the questions of its caller
+  once its source had given its last block, so an offer of regions made
+  at that moment was answered true or false by the timing of the threads:
+  a reviewer counted 161 of 600 rounds one way and 439 the other. The
+  thread now answers until its caller lets it go, and the test that its
+  held block is not lost no longer depends on the scheduler.
+- An offer of regions a source accepts holds for the life of that source.
+  The trait says so now, and `docs/specs/block.md` says that the variants
+  a source may skip are those the selection does not keep, which with
+  `exclude` are the ones inside the regions. Every pass of popnei builds
+  its chain with `chain_of`, which owns its source, so no pass can meet a
+  source that skips after its filter is gone; a Rust caller that builds
+  the filter by regions over a borrowed source and reads the source again
+  can, and the doc is what warns them.
+- Smaller: an answer arriving where the reader one block ahead waits for
+  a block is now an error of popnei's own, a `RuntimeError` in Python; a
+  wrong `chrom_lengths` names its pair and not the whole list; the error
+  for a length past 18446744073709551615 says so; and three doc comments
+  were put right.
+
+Not taken: the test sources that give a header with no individuals, which
+no test reads.
+
 ## 2. The missing rate
 
 Task 2.1, commit ecfc6cf. The missing rate is the sixth statistic of
