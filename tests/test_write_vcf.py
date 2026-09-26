@@ -68,6 +68,21 @@ def test_write_vcf_writes_write_vcf_back_as_it_was_plain_and_bgzipped(
     )
 
 
+def test_write_vcf_bgzips_a_path_that_ends_in_gz_in_any_case(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """`.GZ` and `.Gz` are read as `.gz`, and `.gzip` is not."""
+    source = reference_vcf_dir / "write.vcf"
+    variants = open_vcf(source, only_passed=False)
+    for name in ("a.VCF.GZ", "b.vcf.Gz"):
+        path = tmp_path / name
+        write_vcf(variants, path)
+        assert gzip.decompress(path.read_bytes()) == source.read_bytes()
+    plain = tmp_path / "c.vcf.gzip"
+    write_vcf(variants, plain)
+    assert plain.read_bytes() == source.read_bytes()
+
+
 def test_write_vcf_writes_the_five_lines_of_the_vars_file_of_write_vcf(
     reference_vcf_dir: Path, tmp_path: Path
 ) -> None:

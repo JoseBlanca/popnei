@@ -133,7 +133,8 @@ pub(crate) fn open_vcf(
 }
 
 // Every variant of `source` into a VCF at `path`, through the steps of
-// `steps`, bgzipped when the path ends in `.gz` and plain otherwise.
+// `steps`, bgzipped when the path ends in `.gz`, in any case, and plain
+// otherwise.
 // `source` is a VCF that `open_vcf` opened or a vars file that `open_vars`
 // did, and what it gives back is the counts of the pass it made. The path
 // is handled as `write_vars` handles its own: a path a file is at is
@@ -150,8 +151,14 @@ pub(crate) fn write_vcf(
 ) -> Result<PassCounts, PyPopneiError> {
     let source = source_of(source)?;
     let steps = steps.get().of_a_pass()?;
+    // `.gz` in any case of its two letters, `a.VCF.GZ` among them.
+    let bytes = path.as_os_str().as_encoded_bytes();
     let options = VcfWriteOptions {
-        bgzip: path.as_os_str().as_encoded_bytes().ends_with(b".gz"),
+        bgzip: bytes
+            .len()
+            .checked_sub(3)
+            .and_then(|start| bytes.get(start..))
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(b".gz")),
     };
     write_the_pass(
         py,

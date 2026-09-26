@@ -59,9 +59,10 @@ def write_vcf(variants: Variants, path: str | Path) -> VcfWritten:
 
     It is how the variants popnei kept, filtered by missing data, by
     individual or by any other step, reach plink2, bcftools or a program of
-    the user's own. The file is compressed with bgzip when the path ends in
-    ``.gz``, which is what tabix indexes and what bcftools asks a region of,
-    and it is plain text otherwise.
+    the user's own. The file is compressed with bgzip, which is what tabix
+    indexes and what bcftools asks a region of, when the path ends in
+    ``.gz``, in any case of its two letters, ``a.VCF.GZ`` among them, and it
+    is plain text otherwise.
 
     When the source is a VCF, each variant is written as its line was,
     every column of it, INFO, FILTER, the phase and the values of each
