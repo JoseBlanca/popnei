@@ -29,7 +29,9 @@ yet: `docs/specs/dists.md`, the distances, on the branch
 on `plan/pca`.
 
 The missing rate and the density of the variants were added on 26
-September 2026, and have no code; the rest of the module has. The density
+September 2026. The missing rate has code since that day, on
+`plan/writer-regions-density`; the density has none yet; the rest of the
+module has. The density
 depends on the length of each chromosome that a source keeps, which
 `docs/specs/io_vcf.md` and `docs/specs/io_vars.md` have.
 
@@ -977,10 +979,10 @@ ones this histogram is looked at for, and a threshold on the called
 genotypes would take out exactly those. A variant with nothing called has
 a missing rate of 1, in the last bin.
 
-### In Python
+### In Python and in TypeScript
 
-Asked for as `stats="missing_rate"`, the member `MISSING_RATE` of
-`PerVarStat`, and given back as the field `missing_rate` of the result, a
+Asked for as `stats=(PerVarStat.MISSING_RATE,)`, the member
+`MISSING_RATE` of `PerVarStat`, and given back as the field `missing_rate` of the result, a
 `StatsDistrib` like the others; in TypeScript `"missing_rate"` and
 `missingRate`. pyNei's `calc_per_var_distribs` has no missing rate, so
 nothing is mirrored, and the pytest test that compares the pass with pyNei
