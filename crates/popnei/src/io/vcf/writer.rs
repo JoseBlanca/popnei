@@ -76,11 +76,39 @@ pub fn vcf_text_num_vars_per_block(num_individuals: usize) -> usize {
         .clamp(MIN_NUM_VARS_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK)
 }
 
+/// What a pass of [`write_vcf`] reads, which is what the size of its blocks
+/// depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriterSource {
+    /// A VCF of that many individuals, whose blocks hold the text of their
+    /// lines beside the genotypes.
+    Vcf {
+        /// How many individuals its header names.
+        num_individuals: usize,
+    },
+    /// A vars file, whose blocks are its batches.
+    VarsFile,
+}
+
+/// The size a binding crate opens the source of a pass of [`write_vcf`]
+/// with: [`vcf_text_num_vars_per_block`] for a VCF, since each of its
+/// blocks holds the text of its lines, and `None`, the size of its own
+/// batches, for a vars file, whose blocks the writer takes as they are.
+#[must_use]
+pub fn num_vars_per_block_of_write_vcf(source: WriterSource) -> Option<usize> {
+    match source {
+        WriterSource::Vcf { num_individuals } => Some(vcf_text_num_vars_per_block(num_individuals)),
+        WriterSource::VarsFile => None,
+    }
+}
+
 /// Every variant of `reader` into a VCF on `sink`, bgzipped or plain as
 /// `options` say, and the sink back with how many variants were written.
 ///
-/// It asks `reader` for every field and for the text of the lines,
-/// [`Needs::VCF_TEXT`]. The header is that of `reader.header()`: the lines
+/// It asks a VCF, a source whose header has the lines of one, for the text
+/// of its lines alone, [`Needs::VCF_TEXT`], and any other source for every
+/// field. A binding crate opens the source with the size of blocks that
+/// [`num_vars_per_block_of_write_vcf`] gives. The header is that of `reader.header()`: the lines
 /// before `#CHROM` of a VCF, or, from any other source, a `##fileformat`
 /// line, one `##contig` line for each chromosome of known length and the
 /// `##FORMAT` line of GT; then a `#CHROM` line of `reader.individuals()`.
@@ -118,14 +146,22 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
     sink: W,
     options: VcfWriteOptions,
 ) -> Result<(W, u64)> {
-    reader.set_needs(Needs::ALL | Needs::VCF_TEXT);
-    let num_individuals = reader.individuals().len();
-    let ploidy = reader.ploidy();
-    let without_counts = num_individuals < reader.header().individuals.len();
     let from = match reader.header().vcf_meta_lines {
         Some(_) => LinesFrom::Text,
         None => LinesFrom::Columns,
     };
+    // The lines of a VCF are written from their text alone, so its reader
+    // parses no genotype and no column for them: a filter of the pass asks
+    // for what it reads itself. On `big.vcf` of "Speed" the pass took
+    // 0.95 s on one thread with every field asked for too and 0.52 s
+    // without.
+    reader.set_needs(match from {
+        LinesFrom::Text => Needs::VCF_TEXT,
+        LinesFrom::Columns => Needs::ALL,
+    });
+    let num_individuals = reader.individuals().len();
+    let ploidy = reader.ploidy();
+    let without_counts = num_individuals < reader.header().individuals.len();
     let mut out = match options.bgzip {
         true => VcfOut::Bgzip(BgzipOut::new(sink)),
         false => VcfOut::Plain(sink),
@@ -585,7 +621,10 @@ mod tests {
         0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02,
         0x00, 0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
-    use super::{LinesFrom, LinesOf, VcfWriteOptions, vcf_text_num_vars_per_block, write_vcf};
+    use super::{
+        LinesFrom, LinesOf, VcfWriteOptions, WriterSource, num_vars_per_block_of_write_vcf,
+        vcf_text_num_vars_per_block, write_vcf,
+    };
     use crate::block::{Block, BlockReader, SourceHeader};
     use crate::error::{Error, Result};
     use crate::filters::{
@@ -1445,6 +1484,92 @@ mod tests {
             .collect();
         assert_eq!(lengths, [65280, 65280, 0]);
         assert_eq!(decompressed(&bytes), vcf);
+    }
+
+    #[test]
+    fn num_vars_per_block_of_write_vcf_is_the_text_size_for_a_vcf_and_none_for_a_vars_file() {
+        assert_eq!(
+            num_vars_per_block_of_write_vcf(WriterSource::Vcf {
+                num_individuals: 1000
+            }),
+            Some(1000)
+        );
+        assert_eq!(
+            num_vars_per_block_of_write_vcf(WriterSource::Vcf {
+                num_individuals: 50
+            }),
+            Some(10000)
+        );
+        assert_eq!(
+            num_vars_per_block_of_write_vcf(WriterSource::VarsFile),
+            None
+        );
+    }
+
+    /// A reader over `write.vcf`, or over its vars file, that keeps what it
+    /// was asked for.
+    struct ThatKeepsItsNeeds {
+        reader: Box<dyn BlockReader>,
+        asked_for: Vec<Needs>,
+    }
+
+    impl BlockReader for ThatKeepsItsNeeds {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            self.reader.next_block()
+        }
+
+        fn individuals(&self) -> &[String] {
+            self.reader.individuals()
+        }
+
+        fn ploidy(&self) -> usize {
+            self.reader.ploidy()
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            self.reader.chroms()
+        }
+
+        fn set_needs(&mut self, needs: Needs) {
+            self.asked_for.push(needs);
+            self.reader.set_needs(needs);
+        }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
+
+        fn header(&self) -> &SourceHeader {
+            self.reader.header()
+        }
+
+        fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+            false
+        }
+
+        fn num_skipped(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn write_vcf_asks_a_vcf_for_its_text_alone_and_any_other_source_for_every_field() {
+        let mut of_the_vcf = ThatKeepsItsNeeds {
+            reader: Box::new(reader_of("write.vcf", false, None)),
+            asked_for: Vec::new(),
+        };
+        let (text, _) = plain(&mut of_the_vcf);
+        assert_eq!(of_the_vcf.asked_for, [Needs::VCF_TEXT]);
+        assert_eq!(text, write_vcf_text());
+
+        let (vars, _) = write_vars(reader_of("write.vcf", true, None), Vec::new(), None)
+            .expect("the vars file");
+        let mut of_the_vars_file = ThatKeepsItsNeeds {
+            reader: Box::new(VarsReader::new(Cursor::new(vars)).expect("the vars file")),
+            asked_for: Vec::new(),
+        };
+        plain(&mut of_the_vars_file);
+        assert_eq!(of_the_vars_file.asked_for, [Needs::ALL]);
     }
 
     #[test]

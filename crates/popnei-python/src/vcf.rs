@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use pyo3::prelude::*;
 
 use popnei::block::BlockReader;
-use popnei::io::vcf::{VcfOptions, VcfReader, VcfWriteOptions, vcf_text_num_vars_per_block};
+use popnei::io::vcf::{
+    VcfOptions, VcfReader, VcfWriteOptions, WriterSource, num_vars_per_block_of_write_vcf,
+};
 
 use crate::errors::PyPopneiError;
 use crate::source::{Blocks, OpenSource, PassCounts, blocks_of, count_of, source_of};
@@ -95,7 +97,9 @@ impl OpenSource for VcfSource {
     }
 
     fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize> {
-        Some(vcf_text_num_vars_per_block(self.individuals.len()))
+        num_vars_per_block_of_write_vcf(WriterSource::Vcf {
+            num_individuals: self.individuals.len(),
+        })
     }
 }
 

@@ -44,7 +44,10 @@ use crate::io::bgzf::BgzfReader;
 use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs};
 
 mod writer;
-pub use writer::{VcfWriteOptions, vcf_text_num_vars_per_block, write_vcf};
+pub use writer::{
+    VcfWriteOptions, WriterSource, num_vars_per_block_of_write_vcf, vcf_text_num_vars_per_block,
+    write_vcf,
+};
 
 /// The ploidy a VCF is read with when the caller asks for no other, the
 /// ploidy of a diploid organism. pyNei has no such argument and reports 2

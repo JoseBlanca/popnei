@@ -559,9 +559,9 @@ impl OpenSource for VcfSource {
     }
 
     fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize> {
-        Some(popnei::io::vcf::vcf_text_num_vars_per_block(
-            self.individuals.len(),
-        ))
+        popnei::io::vcf::num_vars_per_block_of_write_vcf(popnei::io::vcf::WriterSource::Vcf {
+            num_individuals: self.individuals.len(),
+        })
     }
 }
 

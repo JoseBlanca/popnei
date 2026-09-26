@@ -567,7 +567,7 @@ impl OpenSource for VarsSource {
     }
 
     fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize> {
-        None
+        popnei::io::vcf::num_vars_per_block_of_write_vcf(popnei::io::vcf::WriterSource::VarsFile)
     }
 }
 

@@ -299,10 +299,9 @@ pub(crate) trait OpenSource {
         num_vars_per_block: Option<usize>,
     ) -> Result<Box<dyn BlockReader>, popnei::Error>;
 
-    /// The size of the blocks that a pass of `writeVcf` opens the source
-    /// with: the smaller blocks of `vcf_text_num_vars_per_block` for a VCF,
-    /// whose blocks then hold the text of its lines, and `None`, the size
-    /// of its own blocks, for a source that has no text to keep.
+    /// The size of the blocks that a pass of the VCF writer opens the
+    /// source with, which `num_vars_per_block_of_write_vcf` of the core
+    /// chooses for the kind of source this is.
     fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize>;
 }
 
