@@ -1,6 +1,6 @@
 # Plan: the VCF writer, the filter by regions, the missing rate and the density of the variants
 
-26 September 2026. State: **draft**, for the owner to approve. It builds
+26 September 2026. State: **under way**, approved by the owner on 26 September 2026. It builds
 four items that the specs gained on 26 September 2026, on the branch
 `spec/writer-regions-density`, which is not on `main`:
 
