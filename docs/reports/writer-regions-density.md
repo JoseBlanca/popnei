@@ -450,6 +450,62 @@ After the fixes: `cargo test --workspace` 1165 passed, 2 ignored, and 150;
 pytest 586 passed, 6 skipped; `npm test` 460 of 461, the old failure;
 `npm run test:browser` 8 passed.
 
+## 5. The skip of the sources
+
+Task 5.1, commits e543c6b and 7b50d43. When the filter by regions is the
+first filter of variants, the VCF reader reads CHROM and POS of each line
+in its serial pass and gives no row to a line the regions keep none of,
+so its individuals' columns are not parsed; the vars file reader does not
+seek to nor decompress a batch whose footer says each of its chromosomes
+lies outside what the regions keep. Both count what they pass over, and
+the filter adds it to its counts. The vars file of `many.vcf` in batches
+of 100 reads its batches 0, 1, 2 and 4 with the BED of the spec, the
+fourth batch skipped, and all five with `exclude`. The tests of work
+package 4 run with the skip and with the offer refused and give the same
+positions, compared by chromosome name, and the same counts.
+
+The review ran in four reports, spec, tests, numbers with errors, and
+architecture. It found the skip less careful than the spec in two ways,
+both of them a wrong result with no error, and both fixed in the ten
+commits from 4d6925a to 8063d1d:
+
+- A line outside the regions was passed over before any check of its
+  shape, while `docs/specs/io_vcf.md` checks the nine first columns of
+  every line and the skip gives up only the checks of the genotypes. A
+  plain VCF cut inside such a line, whose cut last line is the only sign
+  it was cut, read as whole. A skipped line now keeps those checks: the
+  nine columns, UTF-8 in them, a `GT` in FORMAT and, when the genotypes
+  or the text are asked for, one column per individual of the header; a
+  line that fails gets a row and its error. Counting the columns costs
+  time: the read of the plain `big.vcf` with a BED that keeps 1000 of
+  its variants went from 0.036 to 0.037 s to 0.044 s on one thread, at
+  load averages of 6 to 9, under the 0.15 s of "Speed" of
+  `docs/specs/filters.md`.
+- The vars reader trusted its footer. Editing the smallest position of
+  one batch in the footer from 1000 to 2100 gave 17 variants in place of
+  45. The footer is now checked against every batch that is read, a
+  batch that is skipped has the count of its rows checked against the
+  footer without being decompressed, and a range whose smallest position
+  is above its largest is refused at open. What cannot be caught without
+  reading the batch, a footer that lies about the positions of a batch
+  the regions skip, is written into `docs/specs/io_vars.md` as the one
+  place the footer is trusted, and is among the questions at the end.
+- Five tests could not fail, each shown by a change of the code that
+  passed all 1173 tests: a vars file without positions under the skip,
+  which gave no variant and no error; a batch whose largest position
+  touches a region at one position; a batch counted twice after the
+  columns asked for change in the middle of a pass; an empty POS; and the
+  skip with `only_passed`, the default in Python, which gives 42 and 433
+  kept of 475, as `bcftools view -f PASS,. -T` does.
+- In wasm the reader reads one line at a time, so the skip allocated and
+  hashed the chromosome name for every line; the reader now keeps both
+  from line to line.
+
+The read of the whole plain `big.vcf` with no regions is unchanged by the
+skip: 0.572 to 0.600 s on one thread against the target of 0.594 s, the
+same as before the change under the same load of 3 to 6, and 0.088 to
+0.089 s on 18 threads against 0.108 s.
+
 ## 6. The density of the variants
 
 Task 6.1, commits 317ec23 and f7f7a44. `calc_var_density` counts the
@@ -466,3 +522,34 @@ the first window with a warning; a window of more than 4294967295
 variants is refused; a chromosome named twice in the lengths is refused;
 and the last window of a chromosome with no length ends at
 18446744073709551615 when its full width would pass it.
+
+Task 6.2, commits 4713c52, eedb0f3 and 3316fc0. `calc_var_density(variants,
+window_size, chrom_lengths=None)` in Python gives a frame of the
+chromosome, the start and the end of each window and its count, and
+`calcVarDensity(variants, windowSize, {chromLengths})` in TypeScript the
+same; `calcVarDensity` is the fourteenth consumer of the TypeScript
+package. `tests/reference/stats/make_reference.py` keeps the counts of
+tabix 1.24 for each window of 1000 of `many.vcf.gz`. Twenty pytest tests
+and five TypeScript ones. In TypeScript a window that ends past 2^53 is an
+error, since the ends are numbers of JavaScript, which are exact only up
+to 2^53; the core is exact to 18446744073709551615.
+
+The review ran in four reports, spec, tests, numbers, and errors with api
+and binding. No reviewer found a wrong count: 20000 random cases agreed
+with a count made window by window, and the 31 windows of `many.vcf`
+agree with tabix. What they found:
+
+- In TypeScript a `Map` given as `chromLengths` was read as no lengths,
+  with no error; and names that are whole numbers, "1" to "22", come out
+  first and in ascending order, where Python keeps the order they were
+  given, because that is the order in which JavaScript lists the keys of
+  an object.
+- No test at any layer held the order of `chrom_lengths`: a sort put into
+  the core, into Python or into TypeScript passed every test.
+- Two errors that only a reader with a defect can give reached Python as
+  a `ValueError`, where the owner's convention makes a defect of popnei a
+  `RuntimeError`.
+- The spec did not say that a variant is counted in the window of its
+  POS whatever the length of its REF, where tabix counts a deletion in
+  every window it overlaps; the two agree on `many.vcf` only because all
+  its variants are one base long.
