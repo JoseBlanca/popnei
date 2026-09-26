@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use thiserror::Error as ThisError;
 
 use crate::block::BlockSize;
-use crate::filters::FilteringStats;
+use crate::filters::{BedLineProblem, FilteringStats};
 use crate::io::vcf::VcfPlace;
 use crate::ld::{MAX_ALLELES_OF_A_VARIANT, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES};
 use crate::variant::{MAX_ALLELE, MISSING_ALLELE, Needs};
@@ -460,6 +460,58 @@ pub enum Error {
         /// The kind of the step, which is `individuals`: the name a Python
         /// and a TypeScript user reads for it.
         kind: &'static str,
+    },
+
+    /// A line of a BED file given to the filter by regions is not a region
+    /// popnei can read: it has fewer than three columns separated by tabs,
+    /// its start or its end is not a whole number of 0 or more, or its
+    /// start is not below its end. The binding crate puts the path of the
+    /// file in front of the message.
+    #[error("line {line} of the BED file: {problem}")]
+    BedLine {
+        /// The number of the line in the file, counted from 1 over every
+        /// line, the empty ones and the comments among them.
+        line: u64,
+        /// What is wrong with it.
+        problem: BedLineProblem,
+    },
+
+    /// A BED file given to the filter by regions holds no region: every
+    /// line of it is empty, a comment, or a `track` or a `browser` line.
+    /// The filter would keep no variant, or with `exclude` every one, and
+    /// say nothing of why.
+    #[error(
+        "the BED file holds no region: each of its lines is empty or starts with `#`, `track` or `browser`, which are not regions"
+    )]
+    BedWithNoRegion,
+
+    /// A second filter by regions of a kind the variants are filtered by
+    /// already: two sets of regions whose variants are kept keep those in
+    /// both, and two whose variants are excluded exclude those in either,
+    /// which one BED file says in either case. It is what a user wrote, so
+    /// it names no file. A `regions` and an `excluded_regions` step stand
+    /// together.
+    #[error(
+        "the variants are filtered by {kind} already, and a second filter of that kind is one set of regions, which one BED file holds; a filter that keeps the variants inside regions and one that excludes them can stand together"
+    )]
+    RegionFilterOfAKindThatIsSet {
+        /// The kind that is filtered twice: `regions` or
+        /// `excluded_regions`.
+        kind: &'static str,
+    },
+
+    /// A block given to the filter by regions holds a chromosome number
+    /// that the table of names given with it has no name for. The regions
+    /// are looked up by the name of the chromosome, so the variant could be
+    /// put on neither side of them. The table is the one of the reader the
+    /// block came from and has the names of every block that reader gave,
+    /// so a user reaches this only through a reader with a defect.
+    #[error(
+        "a block given to the filter by regions holds the chromosome number {number}, and the table of chromosome names of its reader has no name for it"
+    )]
+    RegionFilterChromNameMissing {
+        /// The number that has no name.
+        number: u32,
     },
 
     /// A name in one of the populations of `pops` is not an individual of
@@ -2860,6 +2912,7 @@ impl Error {
             | Self::VcfPloidyOutOfRange { .. }
             | Self::VarFilterThresholdOutOfRange { .. }
             | Self::VarFilterOfAKindThatIsSet { .. }
+            | Self::RegionFilterOfAKindThatIsSet { .. }
             | Self::LdFilterMaxDistTooSmall { .. }
             | Self::IndividualNotInTheSource { .. }
             | Self::IndividualNamedTwice { .. }
@@ -3084,6 +3137,7 @@ impl Error {
             | Self::VarsChromNameMissing { .. }
             | Self::VcfWriterFieldsMissing { .. }
             | Self::VcfWriterChromNameMissing { .. }
+            | Self::RegionFilterChromNameMissing { .. }
             | Self::PcaTableOfAnotherSize { .. }
             | Self::PcaLinalg { .. }
             | Self::PcaSecondPassMissing { .. }
@@ -3115,7 +3169,8 @@ impl Error {
             // What a reader found in what it read, or was asked of a
             // file it had read: a source that is not a VCF and one that is
             // not a vars file, a header popnei cannot read, a wrong data
-            // line, a genotype of the wrong ploidy, the thirteen of the
+            // line, a genotype of the wrong ploidy, a wrong line of a BED
+            // file and one with no region, the thirteen of the
             // vars file that "The Rust interface" of `docs/specs/io_vars.md`
             // lists, a variant whose position goes back within its
             // chromosome, which the filter by linkage disequilibrium is the
@@ -3141,6 +3196,8 @@ impl Error {
             | Self::VcfHeader { .. }
             | Self::VcfDataLine { .. }
             | Self::VcfGenotypePloidy { .. }
+            | Self::BedLine { .. }
+            | Self::BedWithNoRegion
             | Self::NotAVarsFile { .. }
             | Self::VarsFormatVersion { .. }
             | Self::VarsColumnType { .. }

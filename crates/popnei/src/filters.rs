@@ -34,6 +34,12 @@
 //! has no counts, and a filter of the variants after it in the steps counts
 //! over the kept individuals alone.
 //!
+//! The filter by regions keeps the variants inside the regions of a BED
+//! file, or those outside them: [`Regions`] reads the BED, and
+//! [`RegionsReader`] is the reader over another reader that filters by
+//! them and offers them to its source, so that a source that can pass over
+//! the variants outside does not build them.
+//!
 //! `docs/specs/filters.md` has the design, and the row `filters` of section
 //! 9 of `docs/architecture.md` where the module sits.
 
@@ -46,6 +52,9 @@ use crate::ld::{LdDosages, r2_between};
 use crate::variant::{
     AlleleCounts, ChromTable, Needs, count_alleles, count_gts, the_major_allele_frequency,
 };
+
+mod regions;
+pub use regions::{BedLineProblem, RegionFilter, RegionSelection, Regions, RegionsReader};
 
 /// How many variants a filter was given and how many of them it kept, over
 /// every block it has taken since it was built.
@@ -61,44 +70,6 @@ pub struct FilteringStats {
     pub vars_processed: u64,
     /// Those of them that passed its threshold.
     pub vars_kept: u64,
-}
-
-/// The regions of a BED file, joined where they overlap or touch and
-/// sorted within each chromosome, which the filter by regions of
-/// `docs/specs/filters.md` keeps the variants inside or outside of.
-///
-/// Only the type is here yet, so that [`BlockReader::skip_outside`] can be
-/// offered a [`RegionSelection`]: the regions themselves, and the reader of
-/// a BED that gives them, come with that filter.
-#[derive(Debug)]
-pub struct Regions {
-    /// Nothing yet, and private, so that no region can be built before the
-    /// reader of a BED is there to build it.
-    _none_yet: (),
-}
-
-impl Regions {
-    /// No region, which only the tests of the readers can build: they offer
-    /// it to [`BlockReader::skip_outside`] and look at the answer.
-    #[cfg(test)]
-    pub(crate) fn none_for_the_tests() -> Regions {
-        Regions { _none_yet: () }
-    }
-}
-
-/// Which variants the filter by regions keeps: those inside the regions,
-/// or, with `exclude`, those outside all of them.
-///
-/// It is what a reader is offered with [`BlockReader::skip_outside`], so
-/// that a source that can pass over the variants the filter would take out
-/// does not build them.
-#[derive(Debug, Clone)]
-pub struct RegionSelection {
-    /// The regions, shared by the step and by every pass built from it.
-    pub regions: std::sync::Arc<Regions>,
-    /// Whether the filter keeps the variants outside the regions and not
-    /// those inside.
-    pub exclude: bool,
 }
 
 /// What a filter compares with a threshold, with the largest value that
@@ -1716,18 +1687,23 @@ pub enum PassStep {
     /// every variant stays, and of each one the genotypes of these
     /// individuals alone go on.
     KeepIndividuals(Vec<String>),
+    /// The variants the selection keeps, those inside its regions or, with
+    /// `exclude`, those outside all of them, and the others are left out of
+    /// every block of the pass.
+    Regions(RegionSelection),
 }
 
 impl PassStep {
-    /// `"missing_data"`, `"maf"`, `"obs_het"` or `"individuals"`: the name
-    /// the step has for a Python and a TypeScript user, under which the
-    /// counts of a filter reach them and by which a second step of the same
-    /// kind is refused.
+    /// `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`, `"individuals"`,
+    /// `"regions"` or `"excluded_regions"`: the name the step has for a
+    /// Python and a TypeScript user, under which the counts of a filter
+    /// reach them and by which a second step of the same kind is refused.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
             PassStep::VarFilter(criterion) => criterion.kind(),
             PassStep::KeepIndividuals(_) => "individuals",
+            PassStep::Regions(selection) => selection.kind(),
         }
     }
 }
@@ -1751,7 +1727,7 @@ pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<Strin
         .rev()
         .find_map(|step| match step {
             PassStep::KeepIndividuals(names) => Some(names.clone()),
-            PassStep::VarFilter(_) => None,
+            PassStep::VarFilter(_) | PassStep::Regions(_) => None,
         })
         .unwrap_or_else(|| of_the_source.to_vec())
 }
@@ -1760,7 +1736,10 @@ pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<Strin
 /// step sees what the one before it gave: the chain of one pass. A
 /// [`PassStep::VarFilter`] becomes a [`FilteredReader`], except for the
 /// criterion [`MaxLdR2`](VarFilteringCriterion::MaxLdR2), which becomes an
-/// [`LdFilteredReader`], and no step gives `reader` as it is.
+/// [`LdFilteredReader`]; a [`PassStep::KeepIndividuals`] an
+/// [`IndividualsReader`]; and a [`PassStep::Regions`] a [`RegionsReader`],
+/// which offers its regions to what is below it as it is built. No step
+/// gives `reader` as it is.
 ///
 /// Both binding crates build the chain of a pass with this, and neither
 /// writes the loop: in which order the steps go, and what comes out while
@@ -1779,7 +1758,8 @@ pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<Strin
 /// is NaN, below 0 or above 1 and a `max_dist` below 1, and what
 /// [`FilteredReader::new`] and [`LdFilteredReader::new`] refuse, a filter of
 /// the kind of one before it in `steps` or of a filter that `reader` holds
-/// already, which a chain built over a chain has. What
+/// already, which a chain built over a chain has, and what
+/// [`RegionsReader::new`] refuses, the same for a filter by regions. What
 /// [`IndividualsReader::new`] refuses, a name that is not an individual of
 /// what the step is put on, a name that is there twice and no name at all.
 /// And a second [`PassStep::KeepIndividuals`] among `steps`, which the
@@ -1821,6 +1801,14 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
                 refuse_a_second_filter_of_a_kind(steps.split_at(index).0, step)?;
                 chain = Box::new(IndividualsReader::new(chain, names)?);
             }
+            // The filter by regions has counts, so a second one of a kind
+            // is found in the chain below it, as a threshold filter is.
+            PassStep::Regions(selection) => {
+                chain = Box::new(RegionsReader::new(
+                    chain,
+                    RegionFilter::new(selection.clone()),
+                )?);
+            }
         }
     }
     Ok(chain)
@@ -1844,7 +1832,10 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
 /// alone: a chain of readers says which kinds of filter it holds and not
 /// with which thresholds. For the filter of individuals it carries the
 /// kind, since a list of individuals has no number to name it by, and two
-/// lists keep the individuals that are in both, which is one list.
+/// lists keep the individuals that are in both, which is one list. For the
+/// filter by regions it carries the kind, `regions` or `excluded_regions`:
+/// two sets of regions on one side are one set, and a step of each kind can
+/// stand together.
 pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Result<()> {
     let criterion = match new {
         PassStep::VarFilter(criterion) => criterion,
@@ -1857,13 +1848,23 @@ pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Res
                 false => Ok(()),
             };
         }
+        PassStep::Regions(selection) => {
+            let kind = selection.kind();
+            return match set.iter().any(|step| match step {
+                PassStep::Regions(of_the_step) => of_the_step.kind() == kind,
+                PassStep::VarFilter(_) | PassStep::KeepIndividuals(_) => false,
+            }) {
+                true => Err(Error::RegionFilterOfAKindThatIsSet { kind }),
+                false => Ok(()),
+            };
+        }
     };
     let kind = criterion.kind();
     let that_is_set = set
         .iter()
         .filter_map(|step| match step {
             PassStep::VarFilter(of_the_step) => Some(of_the_step),
-            PassStep::KeepIndividuals(_) => None,
+            PassStep::KeepIndividuals(_) | PassStep::Regions(_) => None,
         })
         .find(|of_the_step| of_the_step.kind() == kind);
     if let Some(that_is_set) = that_is_set {
