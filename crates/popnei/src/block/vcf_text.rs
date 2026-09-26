@@ -218,6 +218,22 @@ impl VcfText {
         Ok(())
     }
 
+    /// CHROM to FORMAT of the line of `var`, and the columns of its
+    /// individuals joined by tabs, which the writer copies in one piece, or
+    /// `None` for a variant the text does not hold: the path the writer
+    /// reaches the text through, where the three getters below give an
+    /// empty text.
+    pub(crate) fn line(&self, var: usize) -> Option<(&str, &str)> {
+        let (bytes, ends) = self.line_of(var)?;
+        let fixed_end = usize::try_from(*ends.first()?).ok()?;
+        let fixed = bytes.get(..fixed_end)?;
+        let individuals = bytes.get(fixed_end.checked_add(1)?..)?;
+        Some((
+            std::str::from_utf8(fixed).ok()?,
+            std::str::from_utf8(individuals).ok()?,
+        ))
+    }
+
     /// How many variants the text holds a line for.
     #[must_use]
     pub fn num_vars(&self) -> usize {
@@ -232,7 +248,8 @@ impl VcfText {
 
     /// CHROM to FORMAT of the variant `var`, counted from 0 in the block,
     /// joined by tabs as the line has them. An empty text for a variant the
-    /// block does not hold.
+    /// block does not hold, which no line is: the writer reads the text
+    /// through a path that refuses such a variant.
     #[must_use]
     pub fn fixed(&self, var: usize) -> &str {
         self.part_of(var, Some(0), self.ends_of(var).first().copied())

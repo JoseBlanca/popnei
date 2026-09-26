@@ -373,20 +373,28 @@ impl<'a> LinesOf<'a> {
     ///
     /// # Errors
     ///
-    /// What [`ColumnsOfABlock::write_line`] refuses.
+    /// What [`ColumnsOfABlock::write_line`] refuses, and
+    /// [`Error::BlockArrayOfAnotherSize`] for a variant the text of the
+    /// block holds no line of, which [`Block::check`] made impossible for a
+    /// variant of the block.
     fn write_line(&self, var: usize, out: &mut Vec<u8>) -> Result<()> {
         match self {
             LinesOf::Text {
                 text,
                 without_counts,
             } => {
-                let fixed = text.fixed(var);
+                let (fixed, individuals) =
+                    text.line(var).ok_or(Error::BlockArrayOfAnotherSize {
+                        array: "vcf_text",
+                        found: text.num_vars(),
+                        expected: var.saturating_add(1),
+                    })?;
                 match without_counts {
                     true => write_fixed_without_counts(fixed, out),
                     false => out.extend_from_slice(fixed.as_bytes()),
                 }
                 out.push(b'\t');
-                out.extend_from_slice(text.individuals(var).as_bytes());
+                out.extend_from_slice(individuals.as_bytes());
             }
             LinesOf::Columns(columns) => columns.write_line(var, out)?,
         }
@@ -575,7 +583,7 @@ mod tests {
         0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02,
         0x00, 0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
-    use super::{VcfWriteOptions, vcf_text_num_vars_per_block, write_vcf};
+    use super::{LinesFrom, LinesOf, VcfWriteOptions, vcf_text_num_vars_per_block, write_vcf};
     use crate::block::{Block, BlockReader, SourceHeader};
     use crate::error::{Error, Result};
     use crate::filters::{
@@ -1216,6 +1224,27 @@ mod tests {
             chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\n\
             chr2\t7\t.\tA\tT\t.\t.\t.\tGT\t1/1\n";
         assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn write_vcf_refuses_a_line_of_a_variant_its_text_does_not_hold() {
+        let mut reader = reader_of("write.vcf", false, None);
+        reader.set_needs(Needs::VCF_TEXT);
+        let block = reader.next_block().expect("write.vcf").expect("a block");
+        let lines = LinesOf::block(&block, reader.chroms(), false, LinesFrom::Text).expect("lines");
+        let mut out = Vec::new();
+        lines.write_line(5, &mut out).expect("the last line");
+        assert!(out.starts_with(b"chr2\t1500\t"));
+        match lines.write_line(6, &mut out) {
+            Err(Error::BlockArrayOfAnotherSize {
+                array,
+                found,
+                expected,
+            }) => {
+                assert_eq!((array, found, expected), ("vcf_text", 6, 7));
+            }
+            other => panic!("not the error of a line the text does not hold: {other:?}"),
+        }
     }
 
     /// A sink that takes `room` bytes and refuses the rest.
