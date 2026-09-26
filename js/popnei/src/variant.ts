@@ -608,9 +608,13 @@ export class Variants {
    * the number of regions once those that overlap or touch are joined, and
    * its kind is `"regions"`, or `"excluded_regions"` with `exclude`, which
    * is also the name of its counts in the counts of a pass. A step of each
-   * kind can stand together. The source hands over only the variants the
-   * filter keeps when this is the first filter of the variants of the
-   * steps; the variants and the counts are the same wherever it is.
+   * kind can stand together. Its counts are those of the variants it was
+   * given and kept: every variant of the source when it is the first filter
+   * of the variants of the steps, and those the filter before it kept
+   * otherwise, so its place among the steps changes its counts, as it
+   * changes those of any filter. When it is the first, the source hands
+   * over only the variants it keeps, which is faster, and its counts are
+   * the same as if the source had handed over every one.
    *
    * The call adds a step and gives nothing back.
    *

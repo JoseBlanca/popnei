@@ -436,10 +436,13 @@ class Variants:
         of each kind can stand together: the variants of some genes, with
         those of the repeats among them excluded.
 
-        The source hands over only the variants inside, or outside, when
-        this filter is the first filter of the variants of the steps, so
-        putting it first is faster; the variants and the counts are the same
-        wherever it is.
+        Its counts are those of the variants it was given and kept: every
+        variant of the source when it is the first filter of the variants of
+        the steps, and those the filter before it kept otherwise, so its
+        place among the steps changes its counts, as it changes those of any
+        filter. When it is the first, the source hands over only the
+        variants it keeps, which is faster, and its counts are the same as
+        if the source had handed over every one.
 
         The call adds a step and gives nothing back. A file that cannot be
         opened or read is an ``OSError`` with the path in ``filename``. A
@@ -450,9 +453,9 @@ class Variants:
         ``ValueError`` as well, and an `exclude` that is not ``True`` or
         ``False`` is a ``TypeError``, and so is a `bed_path` that is neither a
         ``str`` nor a :class:`pathlib.Path`. After any of them the steps are as
-        they were. A source with no positions, which a ``Variants`` built
-        from an array of genotypes is, gives the ``ValueError`` of a field
-        the pass needs, when the pass runs.
+        they were. A source with no positions, a vars file written without
+        its ``chrom`` and ``pos`` columns, gives the ``ValueError`` of a
+        field the pass needs, when the pass runs.
         """
         if not isinstance(bed_path, str | os.PathLike):
             # pyo3 refuses it with `argument 'bed_path': 'int' object cannot
