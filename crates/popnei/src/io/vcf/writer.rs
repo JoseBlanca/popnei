@@ -1170,6 +1170,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn write_vcf_refuses_a_chromosome_number_its_reader_has_no_name_for() {
+        let mut reader = OneBlock::of_write_vcf(Needs::ALL);
+        reader.header.vcf_meta_lines = None;
+        reader.chroms = ChromTable::new();
+        match write_vcf(&mut reader, Vec::new(), PLAIN) {
+            Err(Error::VcfWriterChromNameMissing { number }) => assert_eq!(number, 0),
+            other => panic!("not the error of a chromosome with no name: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_vcf_refuses_a_block_of_other_individuals_than_its_reader_gives() {
+        let mut reader = OneBlock::of_write_vcf(Needs::ALL | Needs::VCF_TEXT);
+        reader.individuals.pop();
+        match write_vcf(&mut reader, Vec::new(), PLAIN) {
+            Err(Error::BlocksDoNotFitTogether {
+                num_individuals,
+                found_num_individuals,
+                ..
+            }) => assert_eq!((num_individuals, found_num_individuals), (2, 3)),
+            other => panic!("not the error of blocks that do not fit: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_vcf_from_a_vars_file_writes_no_contig_line_for_a_chromosome_with_no_length() {
+        let vcf = "##fileformat=VCFv4.3\n\
+            ##contig=<ID=chr1,length=2000>\n\
+            ##contig=<ID=chr2>\n\
+            #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\n\
+            chr1\t5\t.\tA\tT\t.\tPASS\t.\tGT\t0/1\n\
+            chr2\t7\t.\tA\tT\t.\tPASS\t.\tGT\t1/1\n";
+        let reader = VcfReader::new(Cursor::new(vcf.as_bytes().to_vec()), VcfOptions::default())
+            .expect("the VCF");
+        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (text, _) = written(|| {
+            Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
+        });
+        let expected = "##fileformat=VCFv4.3\n\
+            ##contig=<ID=chr1,length=2000>\n\
+            ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+            #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\n\
+            chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\n\
+            chr2\t7\t.\tA\tT\t.\t.\t.\tGT\t1/1\n";
+        assert_eq!(text, expected);
+    }
+
     /// A sink that takes `room` bytes and refuses the rest.
     #[derive(Debug)]
     struct SinkThatFills {
