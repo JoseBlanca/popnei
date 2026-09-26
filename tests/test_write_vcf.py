@@ -144,7 +144,7 @@ INDIVIDUALS_OF_THE_WRONG_LINE = 5000
 def test_write_vcf_leaves_no_file_when_the_vcf_has_a_wrong_line_after_250_good_ones(
     tmp_path: Path,
 ) -> None:
-    """A tetraploid genotype in the 251st variant of a diploid VCF.
+    """A line of the columns of 4999 individuals, the 251st of a VCF of 5000.
 
     The first block of 200 lines is written before the error, which is the
     one of the source and names the VCF, and the path the user wrote to is
@@ -161,12 +161,15 @@ def test_write_vcf_leaves_no_file_when_the_vcf_has_a_wrong_line_after_250_good_o
     lines += [
         f"chr1\t{pos}\t.\tA\tT\t.\tPASS\t.\tGT\t{genotypes}" for pos in range(1, 251)
     ]
-    lines.append("chr1\t251\t.\tA\tT\t.\tPASS\t.\tGT\t0/0/1/1\t" + genotypes[4:])
+    # The column of the last individual is missing, which the reader
+    # refuses from the text of the line: the writer reads a VCF for its
+    # text alone and parses no genotype.
+    lines.append("chr1\t251\t.\tA\tT\t.\tPASS\t.\tGT\t" + genotypes[4:])
     vcf_path = tmp_path / "wrong_after_250.vcf"
     vcf_path.write_text("\n".join(lines) + "\n")
     for name in ("half_way.vcf", "half_way.vcf.gz"):
         path = tmp_path / name
-        with pytest.raises(ValueError, match="i0") as refusal:
+        with pytest.raises(ValueError, match="4999 individuals") as refusal:
             write_vcf(open_vcf(vcf_path), path)
         assert str(refusal.value).startswith(str(vcf_path))
         # The header is the lines 1 and 2, so the 251st variant is line 253.
