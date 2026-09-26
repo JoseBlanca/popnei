@@ -1,14 +1,18 @@
-# The io::vcf module: the VCF reader
+# The io::vcf module: the VCF reader and the VCF writer
 
 September 2026. The VCF reader is how variants get into popnei: it reads a
 VCF, plain or gzipped, and gives its variants in blocks, runs of
 consecutive variants held as arrays, with the genotypes as small integers.
-This spec develops the reader of the row `io::vcf` of the table in section
+The VCF writer is how they leave it for other programs, after popnei has
+filtered them. This spec develops the row `io::vcf` of the table in section
 9 of `docs/architecture.md`. It depends on `docs/specs/block.md`, which has
 the `Block` that the reader gives and the `BlockReader` trait that it
 implements, and on `docs/specs/variant.md`, which has the `Needs` that say
 which fields a consumer wants and the table of the chromosome names. The
-VCF writer of the same row is an item that is not written yet.
+VCF writer was added on 26 September 2026, and there is no code of it. It
+also depends on `docs/specs/filters.md`, whose chain of filters it writes
+the variants of, and it brings to the reader two things the reader
+otherwise drops, the header of the file and the text of its lines.
 
 There is code, built from the first version of this spec, in which the
 reader filled one `Variant` at a time for its caller. The owner dropped the
@@ -37,7 +41,7 @@ From each data line of a VCF, one variant, a row of the block:
 | QUAL | `qual`, NaN when the column is `.` |
 | the GT of each individual | `gts` |
 | FILTER | decides whether the variant is given at all |
-| INFO and the other values of each individual | not read |
+| INFO and the other values of each individual | not read, unless the writer asks for the text of the lines ("The VCF writer") |
 
 An allele is kept as the text the VCF has, so a symbolic allele, `<DEL>`,
 and the allele of an overlapping deletion, `*`, are alleles like any
@@ -373,8 +377,9 @@ empty ALT or a trailing comma in ALT gives, is an error of its column;
 bcftools reads no alternative allele in `T,`.
 
 The chromosomes get their numbers in the order in which they first appear
-in the data lines that are given. The `##contig` lines of the header are
-not used, since a VCF does not have to have them.
+in the data lines that are given. The `##contig` lines of the header give
+no number, since a VCF does not have to have them; the length a `##contig`
+line may hold is kept, under "What the reader keeps for the writer".
 
 ### What pyNei does that is odd
 
@@ -416,7 +421,10 @@ code parses one line after another.
 Which row a line gets is known before it is parsed. A line that is skipped
 for its FILTER and an empty line have no row, so while the lines are cut
 from the source a serial pass finds the FILTER of each, the text between
-its sixth and its seventh tab, and numbers the ones that will be given.
+its sixth and its seventh tab, and numbers the ones that will be given. The same pass reads CHROM and POS
+when the reader was handed the regions of the filter by regions, and a
+line outside them gets no row either: "How it runs" of that filter, in
+`docs/specs/filters.md`, says when and what it counts.
 The pass gives no error. A line with fewer than seven columns has no
 FILTER to find, so it gets a row, and the parse gives the error of a line
 with too few columns, the same one whatever `only_passed` is. With
@@ -703,6 +711,249 @@ TypeScript test, under node, reads `cases.vcf` and `differences.vcf` with
 `openVcf` from a `Uint8Array` and compares their blocks with the two
 tables above, with the default and with `onlyPassed` false.
 
+## The VCF writer
+
+### What it gives
+
+It writes the variants of a `Variants`, after its steps, into a VCF, the
+file every other program of the field reads. It is how a user hands the
+variants that popnei kept, filtered by missing data, by region or by
+individual, to plink2, to bcftools or to a program of their own. What a
+line holds depends on where the variants came from. The owner decided on
+26 September 2026 that a VCF read and written again keeps what it had,
+and that a VCF written from a vars file has what the vars file holds and
+no more.
+
+When the source is a VCF, each variant is written as its line was, every
+column of it, INFO, FILTER, the phase and the values of each individual
+other than `GT` among them. The steps change only which lines are there
+and, with the filter of individuals, which columns of individuals: those
+that were kept, in the order the user named them. The header is the
+source's, every line before `#CHROM` as it was, and a `#CHROM` line with
+the kept individuals. For that the reader keeps two things that it
+otherwise drops, which "What the reader keeps for the writer" below
+describes: the header, and the text of every line.
+
+When the filter of individuals took some out, the counts in INFO that are
+over the individuals are the ones of the whole file, unless they are
+worked out again. What the writer does with AC, how often each
+alternative allele was called, and AN, the called alleles, is **Open 1**,
+below. The other values of INFO, a depth DP or a frequency AF, are
+written as the source had them, as `bcftools view -s` writes them: they
+are of every individual of the source.
+
+When the source is a vars file, the lines hold what the file holds:
+
+| column | written |
+|---|---|
+| CHROM | the name of the chromosome |
+| POS | the position |
+| ID | the id, `.` when it is empty |
+| REF and ALT | the alleles, the reference first; ALT `.` for a variant with the reference alone |
+| QUAL | the shortest decimal text that reads back as the same `f32`, `29.5` and not `29.500000`; `.` for NaN |
+| FILTER | `.` |
+| INFO | `.` |
+| FORMAT | `GT` |
+| each individual | the alleles joined by `/`, `.` for a missing one, so `0/.` and `./.` |
+
+FILTER is `.` because the vars file does not keep it, and `.` says that
+no filter was applied, which is the most a writer that does not know can
+say. A variant written with `PASS` would claim that it passed a filter
+that nobody knows was run. The alleles are joined by `/` because a block
+holds no phase. The header is `##fileformat=VCFv4.3`, one
+`##contig=<ID=chr1,length=2000>` for each chromosome that the vars file
+keeps a length for, in the order the file keeps them (`docs/specs/io_vars.md`),
+`##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">` and the
+`#CHROM` line. A chromosome with no length gets no `##contig` line:
+bcftools 1.24 and tabix 1.24 read, index and query a VCF that has none,
+tried on 26 September 2026 on the six line VCF of "How it is verified"
+with its two `##contig` lines taken out.
+
+The file is compressed with bgzip when the path ends in `.gz` and is
+plain otherwise. The owner decided on 26 September 2026 that popnei
+writes bgzip where it can: a bgzipped VCF is what tabix indexes and what
+bcftools asks for a region of. The file is what the bgzip program writes,
+members of at most 65280 bytes of text, each a gzip stream that states
+its own size, and the empty member at the end that marks where the file
+ends, which the reader of this spec refuses a file without.
+
+### Its Python and TypeScript functions
+
+```python
+def write_vcf(variants: Variants, path: str | Path) -> VcfWritten
+```
+
+`VcfWritten` is a frozen dataclass with one field, `pass_stats`, the
+`PassStats` of `docs/specs/variant.md`, as every consumer of a `Variants`
+gives. The call reads the source once. A path that already exists, a
+source that fails halfway, a Ctrl-C, a file that could not be written and
+a file that a failed call could not take away are handled as `write_vars`
+handles them, in "Its Python and TypeScript functions" of the writer of
+`docs/specs/io_vars.md`: nothing is written over a file that is there, the
+file of a call that failed is removed, and the error names the file it is
+about. A source with no variants gives the header alone, as `write_vars`
+writes a file with no batch.
+
+In TypeScript, `writeVcf(variants, {bgzip = true})` gives back an object
+with `bytes`, a `Uint8Array` with the bytes of the file, and `passStats`.
+There is no path to read the compression from, so it is an option, and
+bgzip is the default for the reason above. A `bgzip` that is not a
+boolean is an `Error` at the call.
+
+pyNei has no VCF writer, so nothing is mirrored and nothing differs. The
+name follows `write_vars`.
+
+### What the reader keeps for the writer
+
+The reader of this spec drops the header and every column it does not
+turn into a column of a block. For the writer it keeps both, and only
+when it is asked to.
+
+The header is kept by every reader, since it is small and read at once:
+the lines before `#CHROM`, as the file has them, and the length of each
+chromosome whose `##contig` line has one, `##contig=<ID=chr1,length=2000>`,
+which the density of `docs/specs/stats.md` reads too. A `##contig` line
+without a length gives no length. A length that is not a whole number
+above 0, and two `##contig` lines of one ID with two lengths, are a wrong
+header, the `ValueError` of this spec, with the line. The numbers of the
+chromosomes still come from the data lines, as "The cases a reader of the
+rules would not guess" says, and a `##contig` line whose chromosome has no
+variant gives it no number.
+
+The text of the lines is a field of `Needs`, `VCF_TEXT`, which
+`write_vcf` asks for and nothing else does. With it, the block holds, for
+each variant, the text of its first nine columns, CHROM to FORMAT, and the
+text of the column of each individual, as the line has them. It is not in
+`Needs::ALL`, the set of every field that `write_vars` asks for, because
+the vars file has no place for it, and because of its memory: a column of
+an individual is 4 bytes of text in `big.vcf` of "Speed", `0/1` and a tab,
+2 bytes more than the genotype, and 20 to 40 in a VCF with depths and
+likelihoods, `0/1:12,9:21:99:255,0,255`. A block of 5 million genotypes
+holds 100 to 200 MB of text for such a file. A pass of `write_vcf` with a
+VCF as its source asks for blocks of a fifth of the size that
+`docs/specs/block.md` gives by default, about 1 million genotypes, with
+the same floor of 100 variants and ceiling of 10000, so that its text is
+20 to 40 MB. That fifth is decided here and has not been measured; a
+measurement can move it.
+
+The vars file reader gives no `VCF_TEXT`, since its file has none, and the
+writer then writes the lines of the table above. The two sources give the
+same variants, so a line written with the text and one written without it
+differ in the columns the vars file lacks and nowhere else.
+
+The filters compact the text as they compact every column: a filter of
+variants takes the text of the variants it drops, and the filter of
+individuals keeps the columns of the kept individuals in the order it
+keeps their genotypes. `reblock` joins and cuts it with the rest of the
+block.
+
+### The cases a reader of the rules would not guess
+
+- The lines are written in the order the source gives them. The writer
+  does not sort, so a source that is not sorted gives a file that tabix
+  refuses to index.
+- An alternative allele that no kept individual carries stays in ALT, as
+  `bcftools view -s` leaves it without `-a`, and as the reader of this
+  spec reads such an allele.
+- A VCF read with `only_passed` false is written with the lines whose
+  FILTER failed too, each with its FILTER as it was.
+- The text of a genotype is written as the source had it, so a `/0/1` of
+  VCF 4.4 is written `/0/1`, which bcftools 1.24 refuses, and not the
+  `0/1` that the reader reads it as. A file read and written again with
+  no step is the same file, byte for byte.
+- A vars file written from a VCF keeps the lengths of its chromosomes, and
+  a VCF written from that vars file has them in its `##contig` lines.
+
+### How it runs
+
+Over the blocks of the chain that `chain_of` of `docs/specs/filters.md`
+built from the steps, borrowed as `write_vars` borrows it, into any
+`Write`. Natively the rows of a block are formatted on the threads of
+rayon, each thread into a buffer of its own, and the buffers are written
+in the order of the rows, as section 3 of the architecture says. A
+bgzipped file is cut into members of 65280 bytes of text, which are
+compressed on the same threads and written in order. In wasm both run one
+after the other. Nothing needs a `reblock` before it, and what is kept
+from one block to the next is the text that does not yet fill a member.
+
+With the text of the lines, a row is its nine first columns and the
+columns of the kept individuals, joined by tabs, and the genotypes of the
+block are read only for Open 1. Without it, a row is formatted from the
+columns of the block.
+
+### How it is verified
+
+There is no pyNei to compare with. The reference is bcftools 1.24 and
+tabix 1.24, on the owner's machine, and the reader of this spec, which is
+verified against bcftools already.
+
+A VCF of six lines, which goes into `tests/reference/vcf/write.vcf`, is
+the worked example and the first cargo tests. It has what `many.vcf`
+lacks: INFO values, a second value for each individual, phase, a FILTER
+that failed, a deletion, and chromosome lengths.
+
+    ##fileformat=VCFv4.3
+    ##contig=<ID=chr1,length=2000>
+    ##contig=<ID=chr2,length=1500>
+    ##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count">
+    ##INFO=<ID=AN,Number=1,Type=Integer,Description="Allele number">
+    ##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">
+    ##FILTER=<ID=q10,Description="Quality below 10">
+    ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+    ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+    #CHROM  POS   ID   REF  ALT  QUAL  FILTER  INFO               FORMAT  a      b      c
+    chr1    100   rs1  A    T    29.5  PASS    AC=4;AN=6;DP=12    GT:DP   0/1:4  0|1:5  1/1:3
+    chr1    250   .    AT   A    .     q10     AC=1;AN=4;DP=5     GT:DP   ./.:0  0/1:3  0/0:2
+    chr1    1000  rs3  G    C,T  50    PASS    AC=2,1;AN=6;DP=20  GT:DP   1/2:7  0/1:6  0/0:7
+    chr1    1001  .    C    .    12    .       DP=9               GT      0/0    0/0    0/0
+    chr2    1     .    T    G    40    PASS    AC=2;AN=5;DP=8     GT:DP   1|1:4  0/.:2  0/0:2
+    chr2    1500  rs6  A    G    33    PASS    AC=1;AN=6          GT      0/0    1/0    0/0
+
+The columns are separated by one tab in the file and aligned here to be
+read. The cargo tests, made at `write_vcf` of "The Rust interface":
+
+- Read with `only_passed` false and written with no step, plain and
+  bgzipped, the bytes are those of the file, and the bgzipped one
+  decompresses to them.
+- Read with the default, the line of chr1 250, whose FILTER is `q10`, is
+  not there and the other five are as they were.
+- With the filter of individuals keeping `c` and `a`, the header and the
+  lines are what `bcftools view --no-version -s c,a write.vcf` writes,
+  under the meanwhile of Open 1. The first line is
+  `chr1 100 rs1 A T 29.5 PASS AC=3;AN=4;DP=12 GT:DP 1/1:3 0/1:4`.
+- Read with the default, written as a vars file and written back from it
+  with `write_vcf`, the file is the header of the vars file case above,
+  with the two `##contig` lines of the lengths, and these five lines:
+
+      chr1  100   rs1  A  T    29.5  .  .  GT  0/1  0/1  1/1
+      chr1  1000  rs3  G  C,T  50    .  .  GT  1/2  0/1  0/0
+      chr1  1001  .    C  .    12    .  .  GT  0/0  0/0  0/0
+      chr2  1     .    T  G    40    .  .  GT  1/1  0/.  0/0
+      chr2  1500  rs6  A  G    33    .  .  GT  0/0  1/0  0/0
+
+  The `0|1` of `b` in the first line and the `1|1` of `a` in the fourth
+  are written `0/1` and `1/1`. `bcftools query -f
+  '%CHROM\t%POS\t%ID\t%REF\t%ALT\t%QUAL[\t%GT]\n'` prints the same rows
+  for this file as for `write.vcf` read with the default, but for those
+  two separators.
+- The bgzipped file of each case passes `bgzip -t`, `tabix -p vcf`
+  indexes it, and `tabix` on `chr1:900-1100` gives the lines of chr1 1000
+  and chr1 1001.
+
+On `many.vcf`, read with `only_passed` false, in blocks of 7 variants and
+of the default size, written with no step, the bytes are those of the
+file. With the missing data filter at 0.04, the 215 lines are those that
+`bcftools view -H -i 'F_MISSING<=0.04' many.vcf` prints, and the header
+that of `many.vcf`.
+
+The pytest tests, made at `write_vcf`, repeat the first and the fourth
+case, and assert the `ValueError` of a path that is there and the removal
+of the file of a VCF with a wrong line after 250 good ones. The
+TypeScript test, under node, reads `many.vcf` from a `Uint8Array` with
+`onlyPassed` false, writes it with `writeVcf` and its default, bgzipped,
+and asserts that the bytes decompress to those of the file, and that
+`{bgzip: false}` gives them as they are.
+
 ## The Rust interface
 
 What the caller says about the file. The default is a ploidy of 2 and
@@ -826,7 +1077,57 @@ the path. An `OSError` carries it in `filename`, which is where a Python
 user of any library looks for it and which Python prints after the message
 of the exception, so putting it in the message too would say it twice.
 
+The writer. `write_vcf` is what both binding crates call, as they call
+`write_vars` of `docs/specs/io_vars.md`: it asks `reader` for every field
+and for `VCF_TEXT`, and borrows it, so that the binding crate reads the
+counts of the filters from the chain when it returns. The Python binding
+crate opens the file, refuses a path that exists, and removes the file
+when this returns an error. A binding crate that opens a VCF for a pass
+of `write_vcf` opens it with `num_vars_per_block` set to
+`vcf_text_num_vars_per_block`, the fifth of "What the reader keeps for
+the writer".
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VcfWriteOptions {
+    /// Members of bgzip, or plain text.
+    pub bgzip: bool,
+}
+
+/// Every variant of `reader` into a VCF on `sink`, and the sink back with
+/// how many variants were written. The header is that of
+/// `reader.header()`, of `docs/specs/block.md`, with a `#CHROM` line of
+/// `reader.individuals()`. A block with the text of its lines is written
+/// from that text; one without it is written from its columns, and then
+/// every block of the pass has to have the chromosome, the position, the
+/// id, the alleles, the quality and the genotypes, or the error names the
+/// field that is missing.
+pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
+    reader: &mut R, sink: W, options: VcfWriteOptions,
+) -> Result<(W, u64)>;
+
+/// The size of the blocks of a pass of `write_vcf` over a VCF: a fifth of
+/// `default_num_vars_per_block` of `docs/specs/block.md`, no fewer than
+/// 100 and no more than 10000 variants.
+pub fn vcf_text_num_vars_per_block(num_individuals: usize) -> usize;
+```
+
+The reader fills `header()` of `BlockReader` from the lines before
+`#CHROM`, the meta lines and the lengths of the `##contig` lines, and the
+`vcf_text` column of `docs/specs/block.md` when `VCF_TEXT` is asked for.
+
+The writer adds no case to the error of the crate that a user can reach.
+A file that could not be written is the case that `docs/specs/io_vars.md`
+adds for its writer, an `OSError` in Python that names the path; a
+`##contig` length that is wrong is the wrong header of the reader, a
+`ValueError`. A block that lacks a field the writer needs, and a block
+whose text is not of its individuals, are a defect of popnei, a
+`RuntimeError`, since `write_vcf` asks for every field and the filters
+compact the text with the genotypes.
+
 ## Speed
+
+### The reader
 
 The number to reach is that of the spike, the trial parser in Rust of
 section 3 of `docs/rust_core.md`, which parses a chunk of lines with rayon
@@ -902,9 +1203,58 @@ three changes the read. The constants are 4096 lines, 16 MiB and 256 KiB,
 each with its measurement in its doc comment in
 `crates/popnei/src/io/vcf.rs`.
 
+### The writer
+
+There is no number for popnei yet, and the measurement comes first, on
+`big.vcf` read with the text of its lines and on the vars file written
+from it, `big.vars` of `docs/specs/stats.md`. The program to compare with
+is bcftools 1.24, which reads a VCF and writes it again with `bcftools
+view`. On `big.vcf`, in the page cache, on the owner's Apple M5 Pro, 18
+cores, at a load average of 1.1 to 1.5, on 26 September 2026, three runs
+of each:
+
+| | the three runs |
+|---|---|
+| `bcftools view --no-version -Ov`, plain, 1 thread | 1.78, 1.63, 1.65 s |
+| `bcftools view --no-version -Oz`, bgzipped, 1 thread | 8.88, 8.88, 8.91 s |
+| `bcftools view --no-version --threads 18 -Oz`, bgzipped | 1.61, 1.63, 1.66 s |
+
+The plain file it writes is 403573006 bytes and the bgzipped one
+37695742, the sizes of the source but for the lines that bcftools adds to
+the header. The numbers to reach, which are decided here, are those of
+bcftools, 1.65 s plain on one thread and 8.9 s and 1.63 s bgzipped on one
+thread and on 18 threads, with `write_vcf` from `big.vcf` read with its
+text and from `big.vars`. The reader alone takes 0.563 s of the plain
+read on one thread and 0.093 s on 18, by the table of the reader above,
+so what the writer adds is what the measurement has to find.
+
 ## Open points
 
-None. The owner decided on 20 September 2026 the six that there were:
+The owner decides the point below, and the implementer follows its
+"meanwhile" until they do.
+
+1. **AC and AN after the filter of individuals.** When the filter of
+   individuals takes individuals out, the AC and AN of a line are counts
+   over individuals that are no longer in the file. The options:
+   - (a) As `bcftools view -s` does: AC and AN are worked out again from
+     the genotypes of the kept individuals in every line, added to a line
+     that lacks them and to the header when it does not declare them, with
+     the two `##INFO` lines bcftools writes. A half called genotype counts
+     its called allele in both, as the rest of popnei does. The file is the
+     one bcftools writes, so the test compares whole files; a line gets two
+     values it may not have had, as chr1 1001 of `write.vcf` gets `AN=4`.
+   - (b) Worked out again only where the line has them. The file keeps its
+     shape, and differs from what bcftools writes in the lines without
+     them.
+   - (c) As the source had them, what `bcftools view -I` does. The counts
+     are of the whole file, and nothing in the file says so.
+
+   Recommended: (a), because it is the reference program's behaviour and
+   no count in the file is of individuals that are not in it. Meanwhile,
+   (a), whenever the chain has a filter of individuals, as bcftools does
+   whenever `-s` is given.
+
+The owner decided on 20 September 2026 the six points the reader had:
 the ploidy as an argument and the refusal of mixed ploidies, the variants
 that failed a filter left out by default, an allele number that is not
 declared as an error, no error for a VCF with no variants, a quality that
@@ -914,11 +1264,13 @@ not taken when there was one.
 
 ## Not in this spec
 
-- The VCF writer: a later item of this spec. pyNei has none.
 - BCF, the binary form of VCF, and reading a region of an indexed file:
   not planned.
-- The values of INFO and of the individuals other than `GT`: popnei has
-  no use for them.
+- The values of INFO and of the individuals other than `GT` as numbers:
+  no calculation of popnei uses them. The writer carries their text.
+- INFO, FILTER or the phase in the vars file, so that a VCF written from
+  it keeps them: the owner said on 26 September 2026 that it will be
+  considered later, weighed against the size of the file.
 - Choosing variants by the name of the filter they failed: `only_passed`
   is all there is.
 - `Variants`, the handle that `open_vcf` returns: `docs/specs/variant.md`.
