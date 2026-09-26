@@ -1148,8 +1148,9 @@ impl<R: BufRead + Send> VcfReader<R> {
                 let regions = selection.regions_at(place);
                 if !regions.keeps(pos) && has_the_shape_of_a_line(line, columns_of_individuals) {
                     text.truncate(start);
-                    // A line of a source held in memory, so the count does
-                    // not reach the largest `u64`.
+                    // A line is one byte at least of what was read, and
+                    // no source gives the reader 2^64 bytes, so the count
+                    // does not reach the largest `u64`.
                     *num_skipped = num_skipped.saturating_add(1);
                     continue;
                 }
