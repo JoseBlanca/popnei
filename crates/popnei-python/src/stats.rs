@@ -1,7 +1,7 @@
 //! The statistics of the variants and of the individuals, per population,
 //! on their way between Python and the core.
 //!
-//! It builds the two passes of the module. One calculates up to five
+//! It builds the two passes of the module. One calculates up to six
 //! statistics for every variant and every population and gives back, for
 //! each of them, the mean over the variants that had a value and a
 //! histogram of them; the other gives the share of the variants at which
@@ -73,8 +73,10 @@ type PolyCountsOfAPass<'py> = (
 );
 
 /// What one pass gives Python: the names of the populations in their order,
-/// the edges of the bins, the four distributions and the polymorphism
-/// ratio, each `None` when nobody asked for it, and the counts of the pass.
+/// the edges of the bins, the four distributions of the observed and the
+/// expected heterozygosities and the maf, the polymorphism ratio and the
+/// distribution of the missing rate, each `None` when nobody asked for it,
+/// and the counts of the pass.
 type DistribsOfAPass<'py> = (
     Vec<String>,
     Bound<'py, PyArray1<f64>>,
@@ -83,10 +85,11 @@ type DistribsOfAPass<'py> = (
     Option<DistribOfAStat<'py>>,
     Option<DistribOfAStat<'py>>,
     Option<PolyCountsOfAPass<'py>>,
+    Option<DistribOfAStat<'py>>,
     PassCounts,
 );
 
-// The five per variant statistics of one pass over `source`, through the
+// The six per variant statistics of one pass over `source`, through the
 // steps of `steps`. A `///` comment here would become the `__doc__` of
 // `popnei._core.calc_per_var_distribs`, and what a Python user reads belongs
 // to the package, which is the API.
@@ -186,17 +189,14 @@ pub(crate) fn calc_per_var_distribs<'py>(
         exp_het,
         unbiased_exp_het,
         poly_vars_ratio,
-        // The missing rate reaches Python with task 2.2 of
-        // `docs/plans/writer-regions-density.md`; until then no member of
-        // `PerVarStat` in Python asks for it.
-        missing_rate: _,
+        missing_rate,
         num_vars,
     } = distribs;
     Ok((
         pop_names,
-        // The four distributions of the result share this one array, as
+        // The five distributions of the result share this one array, as
         // pyNei's do, so nothing writes into it: a number written into the
-        // edges of one statistic would be in the edges of the other three.
+        // edges of one statistic would be in the edges of the other four.
         read_only(edges.into_pyarray(py))?,
         distrib_of(py, obs_het.as_ref())?,
         distrib_of(py, maf.as_ref())?,
@@ -206,6 +206,7 @@ pub(crate) fn calc_per_var_distribs<'py>(
             .as_ref()
             .map(|poly| poly_counts_of(py, poly))
             .transpose()?,
+        distrib_of(py, missing_rate.as_ref())?,
         (num_vars, filtering),
     ))
 }

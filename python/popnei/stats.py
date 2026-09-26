@@ -32,7 +32,7 @@ from popnei.variant import PassStats, Variants, _pass_stats_of
 
 
 class PerVarStat(StrEnum):
-    """The five statistics :func:`popnei.calc_per_var_distribs` calculates.
+    """The six statistics :func:`popnei.calc_per_var_distribs` calculates.
 
     The value of each member is the name of the field of
     :class:`PerVarDistribs` that holds its result.
@@ -56,6 +56,10 @@ class PerVarStat(StrEnum):
     """How many of the variants vary in a population, in three counts and two
     ratios, which is a count and not a distribution."""
 
+    MISSING_RATE = "missing_rate"
+    """The missing genotypes of a population over its individuals, called or
+    not, a half called genotype being missing."""
+
 
 @dataclass(frozen=True)
 class StatsDistrib:
@@ -76,9 +80,9 @@ class StatsDistrib:
     hist_bin_edges: numpy.ndarray
     """The edges of the bins, one more than there are bins.
 
-    The four distributions of one result share this array, as pyNei's do, so
+    The five distributions of one result share this array, as pyNei's do, so
     it is read only: a number written into the edges of one statistic would
-    be in the edges of the other three."""
+    be in the edges of the other four."""
 
     hist_counts: pandas.DataFrame
     """How many variants fell in each bin, one row per bin and one column
@@ -135,6 +139,10 @@ class PerVarDistribs:
     poly_vars_ratio: PolyVarsStats | None
     """The counts of the polymorphism ratio."""
 
+    missing_rate: StatsDistrib | None
+    """The distribution of the missing rate, which every variant has in every
+    population."""
+
     pass_stats: PassStats
     """How many variants the pass gave, after the steps of the ``Variants``,
     and what each filter of it was given and kept."""
@@ -149,7 +157,7 @@ def calc_per_var_distribs(
     ploidy: int | None = None,
     poly_threshold: float = _core.DEFAULT_POLY_THRESHOLD,
 ) -> PerVarDistribs:
-    """Up to five statistics of every variant and every population, in one
+    """Up to six statistics of every variant and every population, in one
     pass over `variants`, as a mean and a histogram each.
 
     The statistics are the observed heterozygosity, the heterozygous
@@ -158,15 +166,19 @@ def calc_per_var_distribs(
     the expected heterozygosity, the chance that gene copies taken at random
     from the population are not all of the same allele, plain and corrected
     for the frequencies being estimated from the copies the statistic is
-    computed over; and the polymorphism ratio, how many of the variants vary
-    in the population, which is a count and not a distribution.
+    computed over; the polymorphism ratio, how many of the variants vary in
+    the population, which is a count and not a distribution; and the missing
+    rate, the missing genotypes of the population over its individuals,
+    called or not, a half called genotype being missing. The missing rate
+    has a value at every variant, whatever `min_num_individuals` is, and a
+    variant with nothing called in a population has a rate of 1 there.
 
     It is a consumer of the `variants`: it makes one pass over the source
     through the steps the ``Variants`` has when it is called, and the
     ``Variants`` is as it was afterwards.
 
-    `stats` says which of the five to calculate, as members of
-    :class:`popnei.PerVarStat`, all five by default. Anything that is not a
+    `stats` says which of the six to calculate, as members of
+    :class:`popnei.PerVarStat`, all six by default. Anything that is not a
     member, a name written as a string among them, is a ``TypeError``, so
     that a name with a typo in it cannot pass; no statistic at all is a
     ``ValueError``. Asking for fewer is a saving of work and changes no
@@ -185,8 +197,9 @@ def calc_per_var_distribs(
     is on the called data counted in genotypes, the called alleles of the
     population over the ploidy, which is a half when a genotype is half
     called, and the variant has no value when that number is strictly less
-    than the threshold. A variant with no value in a population is out of
-    the mean and in no bin of the histogram of that population.
+    than the threshold, for every statistic but the missing rate. A variant
+    with no value in a population is out of the mean and in no bin of the
+    histogram of that population.
 
     `hist_kwargs` is the histogram, under three keys: ``range``, the two
     ends, ``(0, 1)`` by default, which is where the statistics live;
@@ -228,7 +241,8 @@ def calc_per_var_distribs(
     to hold; a duplicated name in a population, an empty population and an
     empty `pops` are refused; the result has `pass_stats`; and the
     populations of every statistic are in the order of the keys of `pops`,
-    where pyNei sorts them for the expected heterozygosity alone.
+    where pyNei sorts them for the expected heterozygosity alone; and pyNei
+    has no missing rate.
     """
     if not isinstance(variants, Variants):
         # The path of the VCF whose variants are read is the mistake that is
@@ -251,6 +265,7 @@ def calc_per_var_distribs(
         exp_het,
         unbiased_exp_het,
         poly_vars_ratio,
+        missing_rate,
         counts,
     ) = _core.calc_per_var_distribs(
         variants._source,
@@ -270,6 +285,7 @@ def calc_per_var_distribs(
         exp_het=_distrib_of(pop_names, hist_bin_edges, exp_het),
         unbiased_exp_het=_distrib_of(pop_names, hist_bin_edges, unbiased_exp_het),
         poly_vars_ratio=_poly_vars_stats_of(pop_names, poly_vars_ratio),
+        missing_rate=_distrib_of(pop_names, hist_bin_edges, missing_rate),
         pass_stats=_pass_stats_of(counts),
     )
 
@@ -316,7 +332,7 @@ def _the_stats(stats: Iterable[PerVarStat]) -> list[str]:
     if not asked_for:
         raise ValueError(
             "`stats` names no statistic, and a result holds the ones that were "
-            "asked for: leave `stats` out for the five of `PerVarStat`"
+            "asked for: leave `stats` out for the six of `PerVarStat`"
         )
     return asked_for
 

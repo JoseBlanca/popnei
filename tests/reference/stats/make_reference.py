@@ -31,10 +31,14 @@ their reports beside itself:
 and on many.vcf the bcftools commands of the maf and of the observed
 heterozygosity, whose counts go into `many.counts.tsv`, one line per variant
 with the position, AN and AC of popA, of popB and of all, and the
-heterozygous and the called genotypes, and the plink2 command of the per
-individual statistics with a half called genotype read as missing:
+heterozygous and the called genotypes, the plink2 command of the per
+individual statistics with a half called genotype read as missing, and the
+plink2 command of the missing rate of each variant, with a half called
+genotype read as missing too, over every individual and, with `--keep`,
+over popA and over popB:
 
     many.counts.tsv  many.smiss  many.scount
+    many.vmiss       many.popA.vmiss  many.popB.vmiss
 
 The script checks what it got against the literals the spec gives, and stops
 at the first one that differs.
@@ -44,6 +48,7 @@ import csv
 import gzip
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy
@@ -164,8 +169,23 @@ def run_bcftools_on_many():
 def run_plink2_on_many():
     run(["plink2", "--vcf", str(MANY_VCF), "--vcf-half-call", "m", "--missing",
          "--sample-counts", "cols=+hom,+het,+missing", "--nonfounders", "--out", str(HERE / "many")])
-    for name in ("many.log", "many.vmiss"):
-        (HERE / name).unlink(missing_ok=True)
+    (HERE / "many.log").unlink(missing_ok=True)
+    (HERE / "many.vmiss").unlink(missing_ok=True)
+    # The missing rate of each variant, the command of "How it is verified"
+    # of the missing rate, over every individual and over each population.
+    # `--keep` reads one IID a line, which many_pops.txt, IID and population,
+    # is not, so the two lists are written apart and thrown away.
+    run(["plink2", "--vcf", str(MANY_VCF), "--vcf-half-call", "m", "--missing", "variant-only",
+         "--out", str(HERE / "many")])
+    pops = [line.split("\t") for line in (HERE / "many_pops.txt").read_text().splitlines()]
+    with tempfile.TemporaryDirectory() as keep_dir:
+        for pop in ("popA", "popB"):
+            keep = Path(keep_dir) / f"{pop}.txt"
+            keep.write_text("".join(f"{name}\n" for name, of_the_pop in pops if of_the_pop == pop))
+            run(["plink2", "--vcf", str(MANY_VCF), "--vcf-half-call", "m", "--missing", "variant-only",
+                 "--keep", str(keep), "--out", str(HERE / f"many.{pop}")])
+    for log in HERE.glob("many*.log"):
+        log.unlink()
 
 
 def read_table(path):
@@ -216,6 +236,31 @@ def check():
     many_scount = read_table(HERE / "many.scount")
     assert (many_smiss[0]["MISSING_CT"], many_smiss[0]["OBS_CT"], many_scount[0]["HET_CT"]) == ("29", "500", "201"), (many_smiss[0], many_scount[0])
     assert (many_smiss[1]["MISSING_CT"], many_scount[1]["HET_CT"]) == ("25", "195"), (many_smiss[1], many_scount[1])
+    check_the_missing_rate_of_many()
+
+
+def check_the_missing_rate_of_many():
+    """The table of "How it is verified" of the missing rate: the individuals,
+    the mean and the bins with a count of the 40 from 0 to 1 over every
+    individual, popA and popB, and the first five missing genotypes of each."""
+    expected = {
+        "all": ("many.vmiss", 50, "0.06044", {0: 101, 1: 114, 2: 102, 3: 88, 4: 77, 5: 10, 6: 6, 7: 1, 8: 1},
+                [4, 3, 3, 1, 3]),
+        "popA": ("many.popA.vmiss", 20, "0.0602", {0: 144, 2: 180, 4: 116, 5: 51, 8: 8, 10: 1}, [2, 1, 0, 1, 2]),
+        "popB": ("many.popB.vmiss", 30, "0.0606",
+                 {0: 88, 1: 146, 2: 124, 4: 84, 5: 41, 6: 9, 8: 5, 9: 1, 10: 1, 11: 1}, [2, 2, 3, 0, 1]),
+    }
+    for pop, (name, num_individuals, mean, bins, first_five) in expected.items():
+        rows = read_table(HERE / name)
+        assert len(rows) == 500, (pop, len(rows))
+        assert {int(row["OBS_CT"]) for row in rows} == {num_individuals}, pop
+        assert [int(row["MISSING_CT"]) for row in rows[:5]] == first_five, pop
+        rates = numpy.array([int(row["MISSING_CT"]) / int(row["OBS_CT"]) for row in rows])
+        # The mean is printed to the digits it has: a whole number of missing
+        # genotypes over 500 variants of these individuals.
+        assert f"{rates.mean():.12g}" == mean, (pop, rates.mean())
+        counts, _ = numpy.histogram(rates, bins=40, range=(0, 1))
+        assert {bin: int(count) for bin, count in enumerate(counts) if count} == bins, (pop, counts)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 /**
- * The two passes of the stats module from TypeScript: the five statistics of
+ * The two passes of the stats module from TypeScript: the six statistics of
  * every variant, per population, the missing rate and the heterozygosity
  * rate of every individual, and what each call refuses.
  *
@@ -28,6 +28,11 @@
  * `tests/reference/vcf/`, 500 variants of 50 diploid individuals with 257
  * half called genotypes, which the same commands read with `--vcf-half-call
  * m`.
+ *
+ * The missing rate of the variants of `many.vcf` is read through its means
+ * over every individual and over `popA`, its first 20, which are the table
+ * of "How it is verified" of the missing rate, from the `--missing
+ * variant-only` reports of the same plink2 with `--vcf-half-call m`.
  */
 
 import assert from "node:assert/strict";
@@ -515,6 +520,7 @@ test("only the statistics that were asked for are calculated", () => {
   assert.equal(distribs.obsHet, null);
   assert.equal(distribs.expHet, null);
   assert.equal(distribs.unbiasedExpHet, null);
+  assert.equal(distribs.missingRate, null);
   assert.notEqual(distribs.polyVarsRatio, null);
   assertValue(
     meanOf(distribs, distribs.maf, "major allele frequency", "p0"),
@@ -743,8 +749,8 @@ test("a pass that calculates no statistic at all is refused", () => {
   variants.free();
 });
 
-test("a statistic that is not one of the five is refused", () => {
-  // The five are a union of string literals in TypeScript, so a typo does
+test("a statistic that is not one of the six is refused", () => {
+  // The six are a union of string literals in TypeScript, so a typo does
   // not compile; what reaches the call is a name written in JavaScript.
   const variants = theFirstVariant();
 
@@ -757,7 +763,8 @@ test("a statistic that is not one of the five is refused", () => {
     (error: unknown) =>
       error instanceof Error &&
       error.message.includes("obs_hets") &&
-      error.message.includes("poly_vars_ratio"),
+      error.message.includes("poly_vars_ratio") &&
+      error.message.includes("missing_rate"),
   );
 
   variants.free();
@@ -772,6 +779,45 @@ test("a statistic that is not one of the five is refused", () => {
 function many(): Variants {
   return openVcf(MANY, { onlyPassed: false });
 }
+
+test("the mean missing rate of many.vcf over all and in popA is plink2's", () => {
+  // The means of the table of the spec: 1511 missing genotypes of the 500
+  // variants of 50 individuals and 602 of the 500 of the 20 of `popA`, a
+  // half called genotype among the missing ones. Each is a quotient of
+  // whole counts, so what is left to allow for is the last bits of the sum.
+  // The 51 variants of `popA` in bin 5 of the 40 are 3 missing genotypes of
+  // 20, whose rate is below the edge 6 x 0.025 as float64 numbers are.
+  const overAll = many();
+  const inPopA = many();
+  const popA = Array.from(
+    { length: 20 },
+    (_, individual) => `ind${String(individual).padStart(2, "0")}`,
+  );
+
+  const ofAll = calcPerVarDistribs(overAll, { stats: ["missing_rate"] });
+  const ofPopA = calcPerVarDistribs(inPopA, {
+    stats: ["missing_rate"],
+    pops: { popA },
+  });
+
+  for (const [distribs, pop, expected] of [
+    [ofAll, "pop", 0.06044],
+    [ofPopA, "popA", 0.0602],
+  ] as const) {
+    assertValue(
+      meanOf(distribs, distribs.missingRate, "missing rate", pop),
+      expected,
+      OF_A_QUOTIENT_OF_COUNTS * expected,
+      `the mean missing rate of ${pop}`,
+    );
+    assert.equal(distribs.obsHet, null);
+  }
+  const ofTheBins = distribOf(ofPopA.missingRate, "missing rate").histCounts;
+  assert.equal(variantsInTheHistogram(ofTheBins), MANY_NUM_VARS);
+  assert.equal(ofTheBins[5], 51);
+  overAll.free();
+  inPopA.free();
+});
 
 /** The missing rate and the heterozygosity rate of the individual `name` of
  * a result, in that order. */

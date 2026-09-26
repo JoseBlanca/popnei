@@ -1,7 +1,7 @@
 //! The statistics of the variants and of the individuals, per population,
 //! on their way between TypeScript and the core.
 //!
-//! It builds the two passes of the module. One calculates up to five
+//! It builds the two passes of the module. One calculates up to six
 //! statistics for every variant and every population and gives back, for
 //! each of them, the mean over the variants that had a value and a histogram
 //! of them; the other gives the share of the variants at which every
@@ -94,7 +94,7 @@ pub(crate) struct ArgumentsOfThePass {
     pub(crate) poly_threshold: f64,
 }
 
-/// The five per variant statistics of one pass over `source`, through the
+/// The six per variant statistics of one pass over `source`, through the
 /// steps of `steps`.
 ///
 /// The chain of readers of the pass is built here and stays here, lent to
@@ -163,9 +163,7 @@ pub(crate) fn per_var_distribs_of(
             exp_het,
             unbiased_exp_het,
             poly_vars_ratio,
-            // The missing rate reaches TypeScript with task 2.2 of
-            // `docs/plans/writer-regions-density.md`.
-            missing_rate: _,
+            missing_rate,
             num_vars: _,
         } = distribs;
         Ok(PerVarDistribs {
@@ -176,6 +174,7 @@ pub(crate) fn per_var_distribs_of(
             exp_het: distrib_of(exp_het.as_ref(), PerVarStat::ExpHet)?,
             unbiased_exp_het: distrib_of(unbiased_exp_het.as_ref(), PerVarStat::UnbiasedExpHet)?,
             poly_vars_ratio: poly_counts_of(poly_vars_ratio.as_ref())?,
+            missing_rate: distrib_of(missing_rate.as_ref(), PerVarStat::MissingRate)?,
             counts,
         })
     })
@@ -187,7 +186,7 @@ pub(crate) fn per_var_distribs_of(
 /// # Errors
 ///
 /// A name that is of no statistic, which a user reaches by writing one in
-/// JavaScript: in TypeScript the five are a union of string literals.
+/// JavaScript: in TypeScript the six are a union of string literals.
 fn the_stats(names: &[String]) -> Result<Vec<PerVarStat>, JsPopneiError> {
     let mut asked_for = Vec::with_capacity(names.len());
     for name in names {
@@ -462,6 +461,7 @@ pub struct PerVarDistribs {
     exp_het: Option<Distrib>,
     unbiased_exp_het: Option<Distrib>,
     poly_vars_ratio: Option<PolyCounts>,
+    missing_rate: Option<Distrib>,
     counts: PassCounts,
 }
 
@@ -535,6 +535,23 @@ impl PerVarDistribs {
     #[must_use]
     pub fn unbiased_exp_het_hist_counts(&self) -> Option<Vec<u32>> {
         self.unbiased_exp_het
+            .as_ref()
+            .map(|distrib| distrib.hist_counts.clone())
+    }
+
+    /// The mean missing rate of each population, and nothing when nobody
+    /// asked for that statistic.
+    #[must_use]
+    pub fn missing_rate_mean(&self) -> Option<Vec<f64>> {
+        self.missing_rate
+            .as_ref()
+            .map(|distrib| distrib.mean.clone())
+    }
+
+    /// Its histogram counts.
+    #[must_use]
+    pub fn missing_rate_hist_counts(&self) -> Option<Vec<u32>> {
+        self.missing_rate
             .as_ref()
             .map(|distrib| distrib.hist_counts.clone())
     }

@@ -42,7 +42,7 @@ import type { PassStats, Variants } from "./variant.js";
 import { passStatsOf, sourceOfTheVariants } from "./variant.js";
 
 /**
- * The five statistics `calcPerVarDistribs` calculates, each named as the
+ * The six statistics `calcPerVarDistribs` calculates, each named as the
  * field of the result that holds it is named in Python.
  */
 const THE_STATISTICS = [
@@ -51,18 +51,20 @@ const THE_STATISTICS = [
   "exp_het",
   "unbiased_exp_het",
   "poly_vars_ratio",
+  "missing_rate",
 ] as const;
 
 /**
- * The name of one of the five statistics of a variant: the observed
+ * The name of one of the six statistics of a variant: the observed
  * heterozygosity, the heterozygous genotypes of a population over its called
  * ones; the major allele frequency, the count of its commonest allele over
  * its called alleles; the expected heterozygosity, the chance that gene
  * copies taken at random from the population are not all of the same allele,
  * plain and corrected for the frequencies being estimated from the copies
- * the statistic is computed over; and the polymorphism ratio, how many of
- * the variants vary in the population, which is a count and not a
- * distribution.
+ * the statistic is computed over; the polymorphism ratio, how many of the
+ * variants vary in the population, which is a count and not a distribution;
+ * and the missing rate, the missing genotypes of the population over its
+ * individuals, called or not, a half called genotype being missing.
  */
 export type PerVarStat = (typeof THE_STATISTICS)[number];
 
@@ -91,7 +93,7 @@ export interface HistKwargs {
 /** What `calcPerVarDistribs` calculates, for which populations and how. */
 export interface PerVarDistribsOptions {
   /**
-   * Which of the five statistics to calculate, all of them when it is not
+   * Which of the six statistics to calculate, all of them when it is not
    * given. Asking for fewer is a saving of work and changes no value, and a
    * result holds `null` for one nobody asked for.
    */
@@ -114,7 +116,8 @@ export interface PerVarDistribsOptions {
    * the called data counted in genotypes, the called alleles of the
    * population over the ploidy, which is a half when a genotype is half
    * called, and the variant has no value when that number is strictly less
-   * than the threshold. A variant with no value in a population is out of
+   * than the threshold, for every statistic but the missing rate, which
+   * every variant has. A variant with no value in a population is out of
    * the mean and in no bin of the histogram of that population.
    */
   minNumIndividuals?: number;
@@ -158,9 +161,9 @@ export interface StatsDistrib {
   /**
    * The edges of the bins, one more number than there are bins.
    *
-   * The four distributions of one result share this array, as pyNei's do,
+   * The five distributions of one result share this array, as pyNei's do,
    * so it is read only: a number written into the edges of one statistic
-   * would be in the edges of the other three.
+   * would be in the edges of the other four.
    */
   histBinEdges: Readonly<Float64Array>;
 
@@ -228,6 +231,12 @@ export interface PerVarDistribs {
   polyVarsRatio: PolyVarsStats | null;
 
   /**
+   * The distribution of the missing rate, which every variant has in every
+   * population.
+   */
+  missingRate: StatsDistrib | null;
+
+  /**
    * How many variants the pass gave, after the steps of the `Variants`, and
    * what each filter of it was given and kept.
    */
@@ -235,7 +244,7 @@ export interface PerVarDistribs {
 }
 
 /**
- * Up to five statistics of every variant and every population of `variants`,
+ * Up to six statistics of every variant and every population of `variants`,
  * in one pass over them, as a mean and a histogram each.
  *
  * The statistics are the observed heterozygosity, the heterozygous genotypes
@@ -244,8 +253,12 @@ export interface PerVarDistribs {
  * heterozygosity, the chance that gene copies taken at random from the
  * population are not all of the same allele, plain and corrected for the
  * frequencies being estimated from the copies the statistic is computed
- * over; and the polymorphism ratio, how many of the variants vary in the
- * population, which is a count and not a distribution.
+ * over; the polymorphism ratio, how many of the variants vary in the
+ * population, which is a count and not a distribution; and the missing
+ * rate, the missing genotypes of the population over its individuals, called
+ * or not, a half called genotype being missing. The missing rate has a value
+ * at every variant, whatever `minNumIndividuals` is, and a variant with
+ * nothing called in a population has a rate of 1 there.
  *
  * It is a consumer of the `variants`: it makes one pass over the source
  * through the steps the `Variants` has when it is called, and the `Variants`
@@ -271,7 +284,7 @@ export interface PerVarDistribs {
  * diploid one at every ploidy; `ploidy` is the exponent alone, where pyNei
  * also counts with it the alleles the individuals are expected to hold; a
  * duplicated name in a population, an empty population and an empty `pops`
- * are refused; and the result has `passStats`.
+ * are refused; the result has `passStats`; and pyNei has no missing rate.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed; when
  * `stats` is not an array of names, when a name of it is of no statistic and
@@ -368,6 +381,12 @@ export function calcPerVarDistribs(
         distribs.num_variable(),
         distribs.num_vars_with_data(),
       ),
+      missingRate: distribOf(
+        edges,
+        distribs.missing_rate_mean(),
+        distribs.missing_rate_hist_counts(),
+        "missing_rate",
+      ),
       passStats: passStatsOf(distribs.pass_stats()),
     };
   } finally {
@@ -377,7 +396,7 @@ export function calcPerVarDistribs(
 
 /**
  * The names of the statistics a user asked for, each once and in the order
- * they named them, and the five of them when they named none.
+ * they named them, and the six of them when they named none.
  *
  * Which names there are is the binding crate's rule, as the two kinds of
  * bins are: what is refused here is what is no array of names and an array
@@ -394,7 +413,7 @@ function theStats(stats: readonly PerVarStat[] | undefined): string[] {
   if (asked.length === 0) {
     throw new Error(
       "popnei: `stats` names no statistic, and a result holds the ones that " +
-        "were asked for: leave `stats` out for the five of them",
+        "were asked for: leave `stats` out for the six of them",
     );
   }
   return [...new Set(asked)];
