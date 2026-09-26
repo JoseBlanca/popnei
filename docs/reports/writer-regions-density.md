@@ -172,3 +172,61 @@ Deliverables, run at 78a214f:
   150; pytest 555 passed, 5 skipped; `npm test` 444 of 445, the old
   failure; `npm run test:browser` 8 passed; fmt, clippy, both wasm checks
   and ruff clean.
+
+The review ran in five categories, spec, tests, numbers, errors with api,
+and binding, over ecfc6cf and 833da72; architecture was left out, since
+nothing there touches the readers or the threads. No reviewer found a
+wrong number: a sweep against `numpy.histogram` over populations of 1 to
+61 individuals, 1 to 1000 bins and three ranges gave no difference, and
+the mutants each reviewer tried in the core and in Python were caught.
+What they found, all fixed in 752d12b to 9b0038e:
+
+- The TypeScript tests could not see two mistakes a reviewer made on
+  purpose: the missing rate dropped from the statistics computed when
+  none are named, and the means of two populations swapped in the binding
+  crate. Each now makes a test fail; the test of plink2's table asks for
+  popA and popB in one call and asserts the whole histogram of each.
+- A population with no individual left its variants out of the mean of
+  the missing rate with no error. No reader gives such a population, but
+  the Rust `Pops::all(0)` builds one; it is now an error of popnei's own,
+  a `RuntimeError` in Python.
+- A missing rate asked for with the string `"missing_rate"` got a hint to
+  write `PerVarStat.MAF`; it names `PerVarStat.MISSING_RATE` now.
+- Two Python tests, of the type of the counts and of the order of the
+  populations, left the missing rate out; the README of the TypeScript
+  package, the help of the benchmark of the pass and a docstring still
+  spoke of five statistics, or of a mean that can be NaN; two lines of
+  `docs/specs/stats.md` asked for the rate with a string the code refuses
+  and said it had no code.
+- `tests/reference/stats/make_reference.py` rewrote
+  `tests/reference/stats/panel.vcf.gz` at every run with other bytes and
+  the same content, which left the checkout changed; it leaves the file
+  alone now. This was so before this plan.
+
+Seen outside this plan and not fixed: `stats: [5]` in TypeScript is
+refused with a message that says an `Array` was given, where a number was.
+It gives no wrong result, and it can become a GitHub issue if the owner
+wants one.
+
+After the fixes, `cargo test --workspace` gave 1067 passed, 2 ignored, and
+150; pytest 555 passed, 6 skipped; `npm test` 444 of 445, the old failure;
+`npm run test:browser` 8 passed.
+
+What the owner should know: the pass that `calc_per_var_distribs` makes
+when no statistic is named now computes six, so a time taken of it from
+now on is of one more statistic than the times in "Speed" of
+`docs/specs/stats.md`. It was not measured again.
+
+## 3. The VCF writer
+
+Task 3.1, commits 9af8d7a and ab9666f. The VCF reader keeps the text of
+each line when it is asked for `Needs::VCF_TEXT`, and `retain_vars`,
+`retain_individuals` and `reblock` keep each line's text with its
+variant. Sixteen tests have `vcf_text` in their names, on `write.vcf` and
+on `many.vcf` in blocks of 7, and each checks every line's text against
+the file and against the position and genotypes at its place in the
+block. With the text, the reader also counts the columns of the
+individuals and checks that they are UTF-8, and refuses a line longer
+than 4294967295 bytes; the spec says so now. Reading all of `big.vcf`
+takes 0.575 to 0.604 s on one thread and 0.083 to 0.085 s on 18, with and
+without the change, at a load average of 5.
