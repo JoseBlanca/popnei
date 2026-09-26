@@ -198,15 +198,28 @@ impl Regions {
     pub fn from_bed<S: Read>(mut source: S) -> Result<Regions> {
         let mut bytes = Vec::new();
         source.read_to_end(&mut bytes)?;
+        Regions::from_bed_bytes(&bytes)
+    }
+
+    /// The regions of the BED whose bytes are `bytes`, plain or gzipped,
+    /// which is [`Regions::from_bed`] for a caller that holds the bytes
+    /// already: a plain BED is read where it is, with no copy of it, which
+    /// in wasm, whose memory never shrinks, is memory the page keeps.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Regions::from_bed`], of which [`Error::Io`] only for a
+    /// gzip stream that ends in the middle or is damaged.
+    pub fn from_bed_bytes(bytes: &[u8]) -> Result<Regions> {
         if bytes.starts_with(&GZIP_BYTES) {
             // `MultiGzDecoder` goes on to the next member of the file when
             // one ends, so a BED that bgzip wrote, many members one after
             // another, is read to its end.
             let mut text = Vec::new();
-            MultiGzDecoder::new(bytes.as_slice()).read_to_end(&mut text)?;
-            bytes = text;
+            MultiGzDecoder::new(bytes).read_to_end(&mut text)?;
+            return Regions::of_the_text(&text);
         }
-        Regions::of_the_text(&bytes)
+        Regions::of_the_text(bytes)
     }
 
     /// The regions of the lines of `text`, which [`Regions::from_bed`]
@@ -229,10 +242,14 @@ impl Regions {
                 line: number,
                 problem,
             })?;
-            of_each_chrom
-                .entry(chrom.to_vec())
-                .or_default()
-                .push(region);
+            // The name is copied once for its chromosome and not for each of
+            // its lines.
+            match of_each_chrom.get_mut(chrom) {
+                Some(regions) => regions.push(region),
+                None => {
+                    of_each_chrom.insert(chrom.to_vec(), vec![region]);
+                }
+            }
             regions_read = true;
         }
         if !regions_read {
@@ -370,21 +387,41 @@ fn whole_number(digits: &[u8]) -> std::result::Result<u64, NotANumberOf64Bits> {
 /// The regions sorted by their first position and joined where they
 /// overlap or touch, in place: two regions touch when the first position of
 /// one is the one after the last of the other.
+///
+/// The joined regions are written over the front of the vector, which is
+/// then cut to them and given back the room it no longer needs, so no
+/// second vector is built.
 fn join(regions: &mut Vec<Region>) {
     regions.sort_unstable_by_key(|region| region.first);
-    let mut joined: Vec<Region> = Vec::with_capacity(regions.len());
-    for region in regions.iter() {
-        match joined.last_mut() {
+    let mut num_joined: usize = 0;
+    for next in 0..regions.len() {
+        let Some(region) = regions.get(next).copied() else {
+            break;
+        };
+        // The region the ones before `next` were joined into, which is at
+        // `num_joined - 1` once there is one.
+        let before = num_joined
+            .checked_sub(1)
+            .and_then(|last| regions.get_mut(last));
+        match before {
             // The last position of a region is at most `u64::MAX`, and one
             // that ends there reaches every position after it, which the
             // saturated sum says too.
             Some(before) if region.first <= before.last.saturating_add(1) => {
                 before.last = before.last.max(region.last);
             }
-            Some(_) | None => joined.push(*region),
+            Some(_) | None => {
+                if let Some(slot) = regions.get_mut(num_joined) {
+                    *slot = region;
+                }
+                // `num_joined` is at most `next`, which is below the length
+                // of the vector, so this does not saturate.
+                num_joined = num_joined.saturating_add(1);
+            }
         }
     }
-    *regions = joined;
+    regions.truncate(num_joined);
+    regions.shrink_to_fit();
 }
 
 /// Whether `pos` is in one of `regions`, which are sorted and joined, by a

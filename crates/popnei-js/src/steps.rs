@@ -432,7 +432,7 @@ impl Steps {
     /// no region, and a filter by regions of this kind that is set already.
     /// The BED is read first, since it is wrong whatever the list holds.
     pub fn filter_by_regions(&mut self, bed: &[u8], exclude: bool) -> Result<(), JsPopneiError> {
-        let regions = Regions::from_bed(bed)?;
+        let regions = Regions::from_bed_bytes(bed)?;
         let num_regions = regions.num_regions();
         let step = Step {
             pass_step: PassStep::Regions(RegionSelection {
