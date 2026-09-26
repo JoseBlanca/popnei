@@ -931,6 +931,26 @@ compressed on the same threads and written in order. In wasm both run one
 after the other. Nothing needs a `reblock` before it, and what is kept
 from one block to the next is the text that does not yet fill a member.
 
+Each member is compressed with the deflate the core already has, flate2
+over miniz_oxide, at level 6, the level bgzip 1.24 uses when it is given
+none, which is zlib's default. The compressed bytes are not those of
+bgzip, whose deflate is zlib's, and the text they decompress to is the
+same. A member whose 65280 bytes deflate compresses to more than a member
+holds, 65536 bytes with its header and its end, is written at level 0,
+which stores the text as it is and always fits, as htslib does with a
+block that does not shrink. The file ends with the empty member of 28
+bytes that htslib writes, the same bytes. Decided with the code on 26
+September 2026.
+
+The size of the blocks of a pass of `write_vcf` over a VCF,
+`vcf_text_num_vars_per_block`, is a fifth of the genotypes of a block of
+`docs/specs/block.md`, 1 million, divided by the individuals, and then
+no fewer than 100 variants and no more than 10000: 1000 variants for the
+1000 individuals of `big.vcf`, 10000 for the 50 of `many.vcf`. It is the
+fifth of the genotypes and not of the number of variants that the
+default gives, since the memory of the text is what the genotypes are,
+and the ceiling of 10000 is reached only that way.
+
 With the text of the lines, a row is its nine first columns and the
 columns of the kept individuals, joined by tabs, less AC and AN when
 individuals were taken out, and the genotypes of the block are not read.
@@ -1178,8 +1198,8 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
 ) -> Result<(W, u64)>;
 
 /// The size of the blocks of a pass of `write_vcf` over a VCF: a fifth of
-/// `default_num_vars_per_block` of `docs/specs/block.md`, no fewer than
-/// 100 and no more than 10000 variants.
+/// the genotypes of a block of `docs/specs/block.md` divided by the
+/// individuals, no fewer than 100 and no more than 10000 variants.
 pub fn vcf_text_num_vars_per_block(num_individuals: usize) -> usize;
 ```
 
