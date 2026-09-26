@@ -68,7 +68,7 @@ def test_write_vcf_writes_write_vcf_back_as_it_was_plain_and_bgzipped(
     )
 
 
-def test_write_vcf_writes_the_five_lines_of_the_vars_file_of_write_vcf(
+def test_write_vcf_writes_the_five_lines_of_the_vars_file_ofwrite_vcf(
     reference_vcf_dir: Path, tmp_path: Path
 ) -> None:
     """Read with the default, written as a vars file and written back.
@@ -119,24 +119,43 @@ def test_write_vcf_refuses_a_path_that_a_file_is_already_at(
     assert path.read_bytes() == written
 
 
+# How many individuals the VCF of the test of a wrong line has: the writer
+# reads a VCF of 5000 individuals in blocks of 200 variants, a fifth of 5
+# million genotypes over them, so the 200 lines of its first block, 4 MB of
+# text, reach the file before the block of the wrong line is read.
+INDIVIDUALS_OF_THE_WRONG_LINE = 5000
+
+
 def test_write_vcf_leaves_no_file_when_the_vcf_has_a_wrong_line_after_250_good_ones(
-    write_vcf: object, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     """A tetraploid genotype in the 251st variant of a diploid VCF.
 
-    The fixture `write_vcf` of `conftest.py` writes the VCF; the error is
-    the one of the source and names the VCF, and the path the user wrote to
-    is free afterwards, plain and bgzipped."""
-    good = [
-        f"chr1\t{pos}\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1" for pos in range(1, 251)
+    The first block of 200 lines is written before the error, which is the
+    one of the source and names the VCF, and the path the user wrote to is
+    free afterwards, plain and bgzipped."""
+    individuals = [f"i{index}" for index in range(INDIVIDUALS_OF_THE_WRONG_LINE)]
+    genotypes = "\t".join(["0/1"] * INDIVIDUALS_OF_THE_WRONG_LINE)
+    lines = [
+        "##fileformat=VCFv4.3",
+        "\t".join(
+            ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO", "FORMAT"]
+            + individuals
+        ),
     ]
-    wrong = "chr1\t251\t.\tA\tT\t.\tPASS\t.\tGT\t0/0/1/1\t0/1\t1/1"
-    vcf_path = write_vcf([*good, wrong])  # type: ignore[operator]
+    lines += [
+        f"chr1\t{pos}\t.\tA\tT\t.\tPASS\t.\tGT\t{genotypes}" for pos in range(1, 251)
+    ]
+    lines.append("chr1\t251\t.\tA\tT\t.\tPASS\t.\tGT\t0/0/1/1\t" + genotypes[4:])
+    vcf_path = tmp_path / "wrong_after_250.vcf"
+    vcf_path.write_text("\n".join(lines) + "\n")
     for name in ("half_way.vcf", "half_way.vcf.gz"):
         path = tmp_path / name
-        with pytest.raises(ValueError, match="ind1") as refusal:
-            _write_vcf(open_vcf(vcf_path), path)
+        with pytest.raises(ValueError, match="i0") as refusal:
+            write_vcf(open_vcf(vcf_path), path)
         assert str(refusal.value).startswith(str(vcf_path))
+        # The header is the lines 1 and 2, so the 251st variant is line 253.
+        assert "line 253 " in str(refusal.value)
         assert not path.exists()
 
 
@@ -148,13 +167,13 @@ def test_write_vcf_gives_the_error_of_the_file_system_for_a_path_of_no_file(
     variants = open_vcf(reference_vcf_dir / "write.vcf")
 
     with pytest.raises(IsADirectoryError) as refusal:
-        _write_vcf(variants, tmp_path)
+        write_vcf(variants, tmp_path)
     assert refusal.value.errno == errno.EISDIR
     assert refusal.value.filename == str(tmp_path)
 
     of_no_directory = tmp_path / "no_such_directory" / "write.vcf.gz"
     with pytest.raises(FileNotFoundError) as refusal:
-        _write_vcf(variants, of_no_directory)
+        write_vcf(variants, of_no_directory)
     assert refusal.value.filename == str(of_no_directory)
 
 
@@ -166,7 +185,7 @@ def test_write_vcf_says_what_it_takes_when_it_is_given_a_path(
     path = tmp_path / "write.vcf"
 
     with pytest.raises(TypeError, match="open_vcf"):
-        _write_vcf(str(reference_vcf_dir / "write.vcf"), path)  # type: ignore[arg-type]
+        write_vcf(str(reference_vcf_dir / "write.vcf"), path)  # type: ignore[arg-type]
 
     assert not path.exists()
 
@@ -174,10 +193,4 @@ def test_write_vcf_says_what_it_takes_when_it_is_given_a_path(
 def test_what_a_user_reads_of_write_vcf_is_written_in_the_package() -> None:
     """The private module explains nothing; the package is the API."""
     assert _core.write_vcf.__doc__ is None
-    assert _write_vcf.__doc__ is not None
-
-
-# The writer of the package under a name that the fixture `write_vcf` of
-# `conftest.py`, a writer of small VCFs, does not hide inside a test that
-# takes that fixture.
-_write_vcf = write_vcf
+    assert write_vcf.__doc__ is not None
