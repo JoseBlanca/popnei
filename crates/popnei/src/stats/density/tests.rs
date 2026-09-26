@@ -867,3 +867,14 @@ fn var_density_refuses_a_block_whose_positions_are_not_one_for_each_variant() {
         "{error:?}"
     );
 }
+
+/// The chromosomes of the lengths come in the order of the lengths, which
+/// is not the order of their names nor that of the variants of the source.
+#[test]
+fn var_density_gives_the_chromosomes_in_the_order_of_chrom_lengths() {
+    let given = lengths(&[("chr2", 1500), ("chr1", 2000)]);
+    let density = density_of(write_vcf(), 500, Some(&given));
+    let mut expected = laid_end_to_end("chr2", 500, 1500, &[1, 0, 1]);
+    expected.extend(laid_end_to_end("chr1", 500, 2000, &[1, 1, 1, 0]));
+    assert_eq!(windows(&density), expected);
+}
