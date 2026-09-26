@@ -6,7 +6,7 @@
 
 use std::io::Write;
 
-use flate2::{Compress, Compression, Crc, FlushCompress, Status};
+use flate2::{Compress, CompressError, Compression, Crc, FlushCompress, Status};
 
 use super::not_written;
 use crate::error::{Error, Result};
@@ -172,10 +172,13 @@ fn compress_the_members(text: &[u8], members: &mut [Vec<u8>]) -> Result<()> {
 /// held: the header with the size of the member, the text deflated, and
 /// its CRC32 and length.
 ///
-/// A text that deflate does not shrink into the data a member holds, and a
-/// deflate that fails, which miniz_oxide does not do on a buffer it has
-/// room in, give a member that stores the text as it is: it always fits,
-/// and it decompresses to the same text.
+/// A deflate whose data do not fit the member, or whose stream did not end,
+/// gives a member in which the writer stores the text as it is, one stored
+/// block of deflate, which always fits and decompresses to the same text.
+/// miniz_oxide stores a text it cannot shrink on its own, 65321 bytes of
+/// member for 65280 bytes of random text, so this is for a deflate that
+/// does otherwise, which none of the tests reaches: [`the_deflate_fits`] is
+/// tested on its own.
 ///
 /// # Errors
 ///
@@ -198,11 +201,19 @@ fn compress_a_member(compress: &mut Compress, text: &[u8], member: &mut Vec<u8>)
     compress.reset();
     let deflated = compress.compress_vec(text, member, FlushCompress::Finish);
     let data = member.len().saturating_sub(BYTES_OF_THE_HEADER);
-    if !matches!(deflated, Ok(Status::StreamEnd)) || data > MOST_DATA_OF_A_MEMBER {
+    if !the_deflate_fits(&deflated, data) {
         member.truncate(BYTES_OF_THE_HEADER);
         store(text, length, member);
     }
     end_the_member(text, length, member)
+}
+
+/// Whether a deflate that gave `deflated` and `data` bytes goes into the
+/// member: its stream ended, and its data leave room in the 65536 bytes of
+/// a member for the header and the end, 65510 bytes at most. Otherwise the
+/// writer stores the text itself.
+fn the_deflate_fits(deflated: &std::result::Result<Status, CompressError>, data: usize) -> bool {
+    matches!(deflated, Ok(Status::StreamEnd)) && data <= MOST_DATA_OF_A_MEMBER
 }
 
 /// The data of a member that stores `text`, of `length` bytes, as it is: one
@@ -256,9 +267,11 @@ mod tests {
     use flate2::read::MultiGzDecoder;
     use flate2::{Compress, Compression};
 
+    use flate2::Status;
+
     use super::{
         BYTES_OF_THE_HEADER, COMPRESSION_LEVEL, HEADER_BEFORE_THE_SIZE, MOST_BYTES_OF_A_MEMBER,
-        TEXT_OF_A_MEMBER, compress_a_member, end_the_member, store,
+        TEXT_OF_A_MEMBER, compress_a_member, end_the_member, store, the_deflate_fits,
     };
 
     /// The member of `text`, and the text it decompresses to.
@@ -288,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn a_member_of_text_that_deflate_cannot_shrink_fits_in_the_bytes_of_a_member() {
+    fn a_member_of_text_miniz_cannot_shrink_is_stored_by_miniz_and_fits() {
         let text = bytes_that_do_not_shrink();
         let (member, back) = member_and_text(&text);
         assert_eq!(back, text);
@@ -313,6 +326,14 @@ mod tests {
             .read_to_end(&mut back)
             .expect("the member decompresses");
         assert_eq!(back, text);
+    }
+
+    #[test]
+    fn the_deflate_is_kept_up_to_65510_bytes_of_data_of_a_stream_that_ended() {
+        assert!(the_deflate_fits(&Ok(Status::StreamEnd), 65510));
+        assert!(!the_deflate_fits(&Ok(Status::StreamEnd), 65511));
+        assert!(!the_deflate_fits(&Ok(Status::Ok), 100));
+        assert!(!the_deflate_fits(&Ok(Status::BufError), 100));
     }
 
     #[test]
