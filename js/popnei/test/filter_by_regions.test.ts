@@ -17,6 +17,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { gzipSync } from "node:zlib";
 
 import type { PassStats, Variants } from "popnei";
 import { init, openVcf } from "popnei";
@@ -169,5 +170,15 @@ test("an option of filterByRegions that is not one is refused and named", () => 
         "popnei: `excluded` is not an option of `filterByRegions`, whose options are `exclude`",
     },
   );
+  assert.deepEqual(variants.steps, []);
+});
+
+test("a gzipped BED cut short is an Error that says the BED could not be read", () => {
+  const gzipped = gzipSync(REGIONS_BED);
+  const cut = gzipped.subarray(0, gzipped.length - 10);
+  const variants = theDataset();
+  assert.throws(() => variants.filterByRegions(new Uint8Array(cut)), {
+    message: /^the BED could not be read: /,
+  });
   assert.deepEqual(variants.steps, []);
 });

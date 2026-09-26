@@ -1,6 +1,7 @@
 """The handle a user holds: a source of variants, its individuals and the
 steps that were put on it, and the counts of a pass over it."""
 
+import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -427,8 +428,9 @@ class Variants:
         starts with the bytes of gzip is read through gzip.
 
         The file is read at this call, so the regions are those it holds
-        now. The step's ``args`` are the path as it was given and the number
-        of regions once the ones that overlap or touch are joined, and its
+        now. The step's ``args`` are the path as it was given, as a ``str``
+        also when it was given as a :class:`pathlib.Path`, and the number of
+        regions once the ones that overlap or touch are joined, and its
         kind is ``"regions"``, or ``"excluded_regions"`` with `exclude`,
         which is also the name of its counts in the counts of a pass. A step
         of each kind can stand together: the variants of some genes, with
@@ -446,11 +448,19 @@ class Variants:
         below its end and a file with no region are a ``ValueError`` that
         names the file and the line. A second filter of the same kind is a
         ``ValueError`` as well, and an `exclude` that is not ``True`` or
-        ``False`` is a ``TypeError``. After any of them the steps are as
+        ``False`` is a ``TypeError``, and so is a `bed_path` that is neither a
+        ``str`` nor a :class:`pathlib.Path`. After any of them the steps are as
         they were. A source with no positions, which a ``Variants`` built
         from an array of genotypes is, gives the ``ValueError`` of a field
         the pass needs, when the pass runs.
         """
+        if not isinstance(bed_path, str | os.PathLike):
+            # pyo3 refuses it with `argument 'bed_path': 'int' object cannot
+            # be converted to 'PyString'`, which reads as a defect of popnei.
+            raise TypeError(
+                f"`bed_path` is the path of a BED file, a str or a pathlib.Path, "
+                f"and {bed_path!r}, of the type {type(bed_path).__name__}, was given"
+            )
         if not isinstance(exclude, bool):
             # pyo3 refuses it with `'int' object is not an instance of
             # 'bool'`, which names neither the argument nor the call.

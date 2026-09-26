@@ -318,3 +318,31 @@ def test_filter_by_regions_over_a_source_with_no_positions_is_a_value_error(
     message = str(refusal.value)
     assert message.startswith(str(without)), message
     assert "`chrom and pos`" in message
+
+
+@pytest.mark.parametrize(
+    ("bed_path", "given"),
+    [(3, "3, of the type int"), (b"x.bed", "b'x.bed', of the type bytes")],
+)
+def test_a_bed_path_that_is_not_a_path_is_a_type_error_that_names_the_argument(
+    reference_vcf_dir: Path, bed_path: object, given: str
+) -> None:
+    variants = _many(reference_vcf_dir)
+
+    with pytest.raises(TypeError) as refusal:
+        variants.filter_by_regions(bed_path)
+
+    assert str(refusal.value) == (
+        f"`bed_path` is the path of a BED file, a str or a pathlib.Path, and "
+        f"{given}, was given"
+    )
+    assert variants.steps == ()
+
+
+def test_a_bed_path_given_as_a_path_is_a_str_in_the_args(
+    reference_vcf_dir: Path,
+) -> None:
+    variants = _many(reference_vcf_dir)
+    variants.filter_by_regions(REGIONS_BED)
+
+    assert variants.steps[0].args["bed_path"] == str(REGIONS_BED)
