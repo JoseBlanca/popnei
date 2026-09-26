@@ -2338,7 +2338,9 @@ pub enum Error {
 
     /// The header of the VCF is not one popnei can read. It needs the
     /// `#CHROM` line, its nine first columns and one individual or more
-    /// after them, each with its own name.
+    /// after them, each with its own name; and the length of a `##contig`
+    /// line, when it has one, a whole number above 0, one for each
+    /// chromosome.
     #[error("the header of the VCF cannot be read: {problem}")]
     VcfHeader {
         /// What is wrong with the header.
