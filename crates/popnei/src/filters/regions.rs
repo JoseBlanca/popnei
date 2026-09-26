@@ -30,10 +30,10 @@ use crate::variant::{ChromTable, Needs};
 /// The two bytes every gzipped file starts with.
 const GZIP_BYTES: [u8; 2] = [0x1f, 0x8b];
 
-/// What a line of a BED starts with when it is not a region: a comment, and
-/// the two lines the tools of the UCSC genome browser write, which bedtools
-/// skips too. An empty line is skipped as well.
-const STARTS_OF_THE_LINES_SKIPPED: [&[u8]; 3] = [b"#", b"track", b"browser"];
+/// The first words of the two lines the tools of the UCSC genome browser
+/// write, which are not regions and which bedtools skips too. A comment and
+/// an empty line are skipped as well.
+const WORDS_OF_THE_LINES_SKIPPED: [&[u8]; 2] = [b"track", b"browser"];
 
 /// The kind of the filter that keeps the variants inside the regions, and
 /// of the one that keeps those outside them: the names its counts and its
@@ -147,8 +147,8 @@ impl Regions {
     /// when it starts with the two bytes of gzip, whatever the name of its
     /// file.
     ///
-    /// A line that is empty, or that starts with `#`, `track` or `browser`,
-    /// is skipped. A carriage return before the end of a line is dropped,
+    /// A line that is empty, that starts with `#`, or whose first word is
+    /// `track` or `browser`, is skipped. A carriage return before the end of a line is dropped,
     /// as bcftools and plink2 drop it. The columns after the third are not
     /// read. The lines are counted from 1 over the whole file, the skipped
     /// ones among them.
@@ -185,11 +185,7 @@ impl Regions {
             // target popnei builds for, so this does not saturate.
             let number = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
             let line = line.strip_suffix(b"\r").unwrap_or(line);
-            if line.is_empty()
-                || STARTS_OF_THE_LINES_SKIPPED
-                    .iter()
-                    .any(|start| line.starts_with(start))
-            {
+            if is_not_a_region(line) {
                 continue;
             }
             let (chrom, region) = region_of_the_line(line).map_err(|problem| Error::BedLine {
@@ -259,6 +255,18 @@ impl fmt::Debug for Regions {
             .field("num_chroms", &self.of_each_chrom.len())
             .finish()
     }
+}
+
+/// Whether a line of a BED, without its end of line, is one that is
+/// skipped: an empty one, a comment, and one whose first word, what comes
+/// before the first space or tab, is `track` or `browser`. A chromosome
+/// named `tracks1` is a region.
+fn is_not_a_region(line: &[u8]) -> bool {
+    let first_word = line
+        .split(|byte| *byte == b' ' || *byte == b'\t')
+        .next()
+        .unwrap_or_default();
+    line.is_empty() || line.starts_with(b"#") || WORDS_OF_THE_LINES_SKIPPED.contains(&first_word)
 }
 
 /// The chromosome and the region of one line of a BED that is not skipped,

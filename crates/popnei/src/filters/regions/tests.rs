@@ -839,3 +839,15 @@ fn the_rows_read_on_the_threads_and_one_by_one_by_regions_give_the_same_values()
         }
     }
 }
+
+/// A line is a header of the genome browser when its first word is `track`
+/// or `browser`, and a chromosome whose name starts with one of the two is
+/// a region, as bcftools 1.24 and plink2 v2.0.0-a.7.7 read it.
+#[test]
+fn a_chromosome_whose_name_starts_with_track_by_regions_is_a_region() {
+    let bed = b"track\tname=x\ntrack\nbrowser position chr1\ntracks1\t0\t5\nbrowsers\t1\t3\n";
+    let regions = Regions::from_bed(bed.as_slice()).expect("the regions");
+    assert_eq!(regions.num_regions(), 2);
+    assert!(regions.contains("tracks1", 5));
+    assert!(regions.contains("browsers", 2));
+}
