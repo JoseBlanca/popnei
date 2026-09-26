@@ -1253,6 +1253,29 @@ goes, and the error comes when it passes that number. A pass that gives
 no variant is a `ValueError`, as for the other calculations of this
 spec, whatever the lengths.
 
+Four more cases, decided on 26 September 2026 when the code was written,
+each so that no count is wrong in silence:
+
+- A variant at position 0 is a `ValueError` that names the chromosome.
+  The VCF format allows it for a telomere, and it lies in no window,
+  since the first starts at 1. tabix 1.24 counts such a line in the
+  region 1 to 1000, with the warning `Coordinate <= 0 detected`, and a
+  window that counts a variant outside it is as wrong as one that counts
+  a variant beyond the length, which the telomere at the length plus 1 is.
+- A window that would count more than 4294967295 variants, the most its
+  `u32` holds, is a `ValueError` that names the chromosome and the
+  window. Only a source of more than 4 billion variants at the positions
+  of one window reaches it.
+- A chromosome named twice in `chrom_lengths` is a `ValueError` that
+  names it. A Python dict and a TypeScript object cannot hold a name
+  twice, so only a caller of the core crate reaches it.
+- The last window of a chromosome with no length ends at its full width,
+  or at 18446744073709551615, the largest position a source holds, when
+  the full width would pass it: windows of 10^19 and a variant at 1.5 x
+  10^19 give the windows 1 to 10^19 and 10^19 + 1 to
+  18446744073709551615. The count of windows is bounded, so this happens
+  only with windows of more than 1.8 x 10^12 base pairs.
+
 In TypeScript it is `calcVarDensity(variants, windowSize, {chromLengths})`,
 with `chromLengths` an object of chromosome name to length, and it gives
 `chroms`, the name of each window's chromosome as an array of strings,
@@ -1293,7 +1316,8 @@ chr2 at 10250 and 19463. With `chrom_lengths={"chr1": 12000, "chr2":
 19500}`, chr1 has one window more, 11001 to 12000, with 0, and the last
 window of chr2 is 19001 to 19500, still with 13. With
 `chrom_lengths={"chr1": 10000, "chr2": 20000}` the pass is the
-`ValueError` of the variant at chr1 10213, past 10000. The pytest tests,
+`ValueError` of the variant at chr1 10028, the first of the six past
+10000, which is where the pass stops. The pytest tests,
 made at `calc_var_density`, assert the two tables, the error and a
 `window_size` of 0.
 
@@ -1308,7 +1332,11 @@ Windows of 600 give chr1 1 to 600 with 1, 601 to 1200 with 2, 1201 to
 1800 with 0 and 1801 to 2000 with 0; and chr2 1 to 600 with 1, 601 to
 1200 with 0 and 1201 to 1500 with 1. The same file with its `##contig`
 lines taken out, in windows of 500, gives chr1 three windows, 1 to 1500,
-with 1, 1 and 1, and chr2 three, with 1, 0 and 1. The TypeScript test
+with 1, 1 and 1, and chr2 three, with 1, 0 and 1; in windows of 600 it
+gives chr1 two, 1 to 1200, with 1 and 2, and chr2 three, 1 to 1800, with
+1, 0 and 1. tabix 1.24 gave those counts on 26 September 2026 for each
+window, over the file bgzipped with its `##contig` lines and its line of
+chr1 250 taken out. The TypeScript test
 asserts the first table of `many.vcf`.
 
 ## The Rust interface
@@ -1584,12 +1612,21 @@ pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(reader: &mut R)
 
 The density of the variants. The start of window k of a chromosome is k x
 `window_size` + 1 and its end (k + 1) x `window_size`, except for the last
-window of a chromosome with a length, which ends at the length. The binding crates build the
-frame and the arrays from these.
+window of a chromosome with a length, which ends at the length, and the
+last of one with no length whose full width would pass
+18446744073709551615, which ends there. `windows()` gives each window
+with its chromosome, its start, its end and its count, and the binding
+crates build the frame and the arrays from it, so that neither works out
+a start or an end.
 
 ```rust
 /// The most windows a density has, over all its chromosomes.
 pub const MAX_NUM_WINDOWS: usize = 10_000_000;
+
+/// Where the length of a chromosome came from, which the error of a
+/// variant past it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LengthsFrom { ChromLengths, Source }
 
 pub struct VarDensity { /* private */ }
 impl VarDensity {
@@ -1597,6 +1634,11 @@ impl VarDensity {
     /// The chromosomes in the order of the result.
     pub fn chroms(&self) -> &[DensityOfChrom];
     pub fn num_vars(&self) -> u64;
+    /// The windows over all the chromosomes, `MAX_NUM_WINDOWS` at most.
+    pub fn num_windows(&self) -> usize;
+    /// Every window, the chromosomes in the order of the result and the
+    /// windows of each in the order of their positions.
+    pub fn windows(&self) -> impl Iterator<Item = DensityWindow<'_>>;
 }
 
 pub struct DensityOfChrom {
@@ -1607,6 +1649,16 @@ pub struct DensityOfChrom {
     pub counts: Vec<u32>,
 }
 
+/// One window, a row of the frame of Python.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DensityWindow<'a> {
+    pub chrom: &'a str,
+    /// The first and the last position of the window, both included.
+    pub start: u64,
+    pub end: u64,
+    pub num_vars: u32,
+}
+
 /// One pass over `reader`, asking it for the chromosome and the position
 /// alone. `chrom_lengths` of None reads the lengths of
 /// `reader.header()`, of `docs/specs/block.md`.
@@ -1615,12 +1667,19 @@ pub fn calc_var_density<R: BlockReader + ?Sized>(
 ) -> Result<VarDensity>;
 ```
 
-Its errors are three new cases of the error of the crate, each a
-`ValueError` in Python: a `window_size` or a length of 0, with the
-argument; a variant past the length of its chromosome, with the
-chromosome, the position, the length and where the length came from; and
-more than `MAX_NUM_WINDOWS` windows, with the number. It gives two that
-are there already: the error of a pass that gave no variant, and, for a
+Its errors are new cases of the error of the crate, each a `ValueError`
+in Python: a `window_size` of 0; a length of 0, with the chromosome and
+where the length came from; a chromosome named twice among the lengths,
+with the same; a variant past the length of its chromosome, with the
+chromosome, the position, the length and where the length came from; a
+variant at position 0, with the chromosome; more than `MAX_NUM_WINDOWS`
+windows, with the number; and a window of more than 4294967295
+variants, with the chromosome and the window. A source gives no length of
+0 and no chromosome twice, the VCF reader and the vars file reader refuse
+both, and the density refuses them from any source all the same. A block
+whose chromosome number has no name in the table of its reader is a
+defect of that reader, a `RuntimeError` in Python. It gives two that are
+there already: the error of a pass that gave no variant, and, for a
 source with no chromosome and position, a vars file written without them
 or a `Variants` built from an array of genotypes, the error of
 `docs/specs/variant.md` for a field that a consumer depends on and did not
