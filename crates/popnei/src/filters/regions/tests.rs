@@ -1354,3 +1354,359 @@ fn a_bed_of_other_names_by_regions_is_the_error_of_a_pass_that_gave_no_variant()
         "{error}"
     );
 }
+
+/// A reader over a source that refuses the offer of the regions for it, and
+/// hands on everything else: the source then gives every variant, which is
+/// the pass without the skip.
+struct RefusesTheOffer<R: BlockReader>(R);
+
+impl<R: BlockReader> BlockReader for RefusesTheOffer<R> {
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        self.0.next_block()
+    }
+
+    fn individuals(&self) -> &[String] {
+        self.0.individuals()
+    }
+
+    fn ploidy(&self) -> usize {
+        self.0.ploidy()
+    }
+
+    fn chroms(&self) -> &ChromTable {
+        self.0.chroms()
+    }
+
+    fn set_needs(&mut self, needs: Needs) {
+        self.0.set_needs(needs);
+    }
+
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.0.filtering_stats()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        self.0.header()
+    }
+
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    fn num_skipped(&self) -> u64 {
+        0
+    }
+}
+
+/// The bytes of the vars file of `many.vcf`, every variant of it, in
+/// batches of `num_vars_per_batch`.
+fn vars_file_of_many_vcf(num_vars_per_batch: usize) -> Vec<u8> {
+    let (bytes, num_vars) = crate::io::vars::write_vars(
+        vcf_reader("many.vcf", None),
+        Vec::new(),
+        Some(num_vars_per_batch),
+    )
+    .expect("the vars file");
+    assert_eq!(num_vars, 500);
+    bytes
+}
+
+fn vars_reader(bytes: &[u8]) -> crate::io::vars::VarsReader<std::io::Cursor<Vec<u8>>> {
+    crate::io::vars::VarsReader::new(std::io::Cursor::new(bytes.to_vec())).expect("the reader")
+}
+
+/// The sources of `many.vcf` a test of the skip runs over: the VCF in
+/// blocks of 7 and of the default size, and its vars file in batches of 100
+/// and of 7, each named for the message of an assertion.
+fn the_sources_of_many_vcf() -> Vec<(String, Box<dyn BlockReader>)> {
+    let of_100 = vars_file_of_many_vcf(100);
+    let of_7 = vars_file_of_many_vcf(7);
+    vec![
+        (
+            "the VCF in blocks of 7".to_owned(),
+            Box::new(vcf_reader("many.vcf", Some(7))),
+        ),
+        ("the VCF".to_owned(), Box::new(vcf_reader("many.vcf", None))),
+        (
+            "the vars file in batches of 100".to_owned(),
+            Box::new(vars_reader(&of_100)),
+        ),
+        (
+            "the vars file in batches of 7".to_owned(),
+            Box::new(vars_reader(&of_7)),
+        ),
+    ]
+}
+
+/// Deliverable 1 of work package 5: the 45 and the 455 of bcftools and
+/// plink2, and the counts of 500 given, from the VCF and from its vars file
+/// with the skip of the source and without it, the variants compared by the
+/// names of their chromosomes and their positions. Both sources take the
+/// offer.
+#[test]
+fn skip_outside_gives_the_45_and_the_455_with_the_skip_and_without() {
+    for (exclude, name, num_kept) in [(false, "regions", 45_u64), (true, "excluded_regions", 455)] {
+        let expected = the_reference(name);
+        for skips in [true, false] {
+            for (source_name, mut source) in the_sources_of_many_vcf() {
+                let what = format!("{source_name}, exclude {exclude}, skips {skips}");
+                let selection = selection_of(&the_bed_of_the_spec(), exclude);
+                if skips {
+                    assert!(source.skip_outside(selection.clone()), "{what}");
+                    // The offer taken, the one of the filter is taken too.
+                } else {
+                    source = Box::new(RefusesTheOffer(source));
+                }
+                let mut reader =
+                    RegionsReader::new(source, RegionFilter::new(selection)).expect("the reader");
+                reader.set_needs(Needs::GTS);
+                let blocks = blocks_of(&mut reader).expect("the blocks");
+                assert_eq!(named_of(&blocks, reader.chroms()), expected, "{what}");
+                assert_eq!(
+                    reader.filtering_stats(),
+                    vec![(name, pair(500, num_kept))],
+                    "{what}"
+                );
+            }
+        }
+    }
+}
+
+/// The VCF reader passes over the 455 lines outside the regions, and the
+/// 45 inside with `exclude`, and gives the rest with their genotypes, their
+/// columns and the text of their lines.
+#[test]
+fn skip_outside_the_vcf_reader_passes_over_the_lines_the_selection_keeps_none_of() {
+    for (exclude, skipped) in [(false, 455_u64), (true, 45)] {
+        for num_vars_per_block in [Some(7), None] {
+            let mut source = vcf_reader("many.vcf", num_vars_per_block);
+            source.set_needs(Needs::ALL | Needs::VCF_TEXT);
+            assert!(source.skip_outside(selection_of(&the_bed_of_the_spec(), exclude)));
+            let blocks = blocks_of(&mut source).expect("the blocks");
+            assert_eq!(source.num_skipped(), skipped, "exclude {exclude}");
+            let given: usize = blocks.iter().map(|block| block.num_vars).sum();
+            assert_eq!(u64::try_from(given).unwrap() + skipped, 500);
+            for block in &blocks {
+                block.check().expect("a block of its size");
+                let text = block.vcf_text.as_ref().expect("the text");
+                assert_eq!(text.num_vars(), block.num_vars);
+                // The text of each line is that of its variant.
+                for (row, pos) in block.pos.as_ref().unwrap().iter().enumerate() {
+                    let pos_of_the_line: u64 =
+                        text.fixed(row).split('\t').nth(1).unwrap().parse().unwrap();
+                    assert_eq!(pos_of_the_line, *pos);
+                }
+            }
+            let expected = the_reference(if exclude {
+                "excluded_regions"
+            } else {
+                "regions"
+            });
+            assert_eq!(named_of(&blocks, source.chroms()), expected);
+        }
+    }
+}
+
+/// Deliverable 1 of work package 5: the vars file of `many.vcf` in batches
+/// of 100 has five, whose regions in the footer are chr1 1000 to 4663; chr1
+/// 4700 to 8363; chr1 8400 to 10213 and chr2 10250 to 12063; chr2 12100 to
+/// 15763; and chr2 15800 to 19463. The BED of the spec keeps nothing of the
+/// fourth alone, which the reader does not read, and with `exclude` no
+/// batch lies inside one region.
+#[test]
+fn skip_outside_the_vars_reader_does_not_read_the_fourth_batch_of_many_vcf() {
+    let bytes = vars_file_of_many_vcf(100);
+    for (exclude, read, skipped) in [
+        (false, vec![0, 1, 2, 4], 100_u64),
+        (true, vec![0, 1, 2, 3, 4], 0),
+    ] {
+        let mut source = vars_reader(&bytes);
+        assert!(source.skip_outside(selection_of(&the_bed_of_the_spec(), exclude)));
+        let blocks = blocks_of(&mut source).expect("the blocks");
+        assert_eq!(source.batches_read(), read.as_slice(), "exclude {exclude}");
+        assert_eq!(source.num_skipped(), skipped, "exclude {exclude}");
+        let given: usize = blocks.iter().map(|block| block.num_vars).sum();
+        assert_eq!(u64::try_from(given).unwrap() + skipped, 500);
+    }
+    // Without the offer every batch is read.
+    let mut source = vars_reader(&bytes);
+    blocks_of(&mut source).expect("the blocks");
+    assert_eq!(source.batches_read(), [0, 1, 2, 3, 4].as_slice());
+    assert_eq!(source.num_skipped(), 0);
+}
+
+/// A threshold filter before the filter by regions: the source is not
+/// handed the regions, so the threshold filter counts every variant, and
+/// the filter by regions counts what it kept.
+#[test]
+fn skip_outside_is_not_offered_through_a_threshold_filter_before_the_filter() {
+    let steps = [
+        PassStep::VarFilter(VarFilteringCriterion::MaxMaf(0.8)),
+        PassStep::Regions(selection_of(&the_bed_of_the_spec(), false)),
+    ];
+    for (source_name, source) in the_sources_of_many_vcf() {
+        let mut chain = chain_of(source, &steps).expect("the chain");
+        chain.set_needs(Needs::CHROM_POS);
+        let blocks = blocks_of(&mut chain).expect("the blocks");
+        let stats = chain.filtering_stats();
+        // 384 of the 500 pass the maf filter at 0.8, which the table of the
+        // threshold filters of the spec gives.
+        assert_eq!(
+            stats.get(1),
+            Some(&("maf", pair(500, 384))),
+            "{source_name}"
+        );
+        let (kind, of_the_regions) = stats.first().copied().unwrap();
+        assert_eq!(kind, "regions");
+        assert_eq!(of_the_regions.vars_processed, 384, "{source_name}");
+        let kept = named_of(&blocks, chain.chroms());
+        assert_eq!(u64::try_from(kept.len()).unwrap(), of_the_regions.vars_kept);
+        // What is kept is of the 45 and passed the maf filter.
+        let the_45 = the_reference("regions");
+        assert!(
+            kept.iter().all(|variant| the_45.contains(variant)),
+            "{source_name}"
+        );
+    }
+}
+
+/// A `regions` and an `excluded_regions` step together over the real
+/// sources: the first hands its regions to the source, the second looks at
+/// every variant it gets, and the counts are those without the skip.
+#[test]
+fn skip_outside_with_a_regions_and_an_excluded_regions_step_gives_the_counts_of_both() {
+    let steps = [
+        PassStep::Regions(selection_of(&the_bed_of_the_spec(), false)),
+        PassStep::Regions(selection_of(b"chr1\t0\t1100\n", true)),
+    ];
+    for (source_name, source) in the_sources_of_many_vcf() {
+        let mut chain = chain_of(source, &steps).expect("the chain");
+        chain.set_needs(Needs::GTS);
+        let blocks = blocks_of(&mut chain).expect("the blocks");
+        assert_eq!(named_of(&blocks, chain.chroms()).len(), 42, "{source_name}");
+        assert_eq!(
+            chain.filtering_stats(),
+            vec![
+                ("excluded_regions", pair(45, 42)),
+                ("regions", pair(500, 45))
+            ],
+            "{source_name}"
+        );
+    }
+}
+
+/// The filter of individuals between the filter and the source hands the
+/// regions on: the source passes over the 455, and the pass keeps the 45
+/// with the genotypes of the three individuals.
+#[test]
+fn skip_outside_is_handed_on_by_the_filter_of_individuals() {
+    let three: Vec<String> = ["ind05", "ind00", "ind49"].map(str::to_owned).to_vec();
+    let mut under = IndividualsReader::new(vcf_reader("many.vcf", Some(7)), &three)
+        .expect("the filter of individuals");
+    assert!(under.skip_outside(selection_of(&the_bed_of_the_spec(), false)));
+    let blocks = blocks_of(&mut under).expect("the blocks");
+    assert_eq!(under.num_skipped(), 455);
+    assert_eq!(named_of(&blocks, under.chroms()), the_reference("regions"));
+    assert!(blocks.iter().all(|block| block.num_individuals == 3));
+
+    let steps = [
+        PassStep::KeepIndividuals(three),
+        PassStep::Regions(selection_of(&the_bed_of_the_spec(), false)),
+    ];
+    for (source_name, source) in the_sources_of_many_vcf() {
+        let mut chain = chain_of(source, &steps).expect("the chain");
+        let blocks = blocks_of(&mut chain).expect("the blocks");
+        assert_eq!(
+            named_of(&blocks, chain.chroms()),
+            the_reference("regions"),
+            "{source_name}"
+        );
+        assert_eq!(
+            chain.filtering_stats(),
+            vec![("regions", pair(500, 45))],
+            "{source_name}"
+        );
+    }
+}
+
+/// `Reblock` and the reader one block ahead hand the offer on to the
+/// source, the second to its thread, and the pass gives the 45 with the
+/// counts of 500.
+#[test]
+fn skip_outside_is_handed_on_by_reblock_and_the_reader_one_block_ahead() {
+    let reblocked =
+        crate::block::Reblock::new(vcf_reader("many.vcf", Some(7)), Some(10)).expect("the reblock");
+    let mut reader = RegionsReader::new(
+        reblocked,
+        RegionFilter::new(selection_of(&the_bed_of_the_spec(), false)),
+    )
+    .expect("the reader");
+    let blocks = blocks_of(&mut reader).expect("the blocks");
+    assert_eq!(named_of(&blocks, reader.chroms()), the_reference("regions"));
+    assert_eq!(reader.filtering_stats(), vec![("regions", pair(500, 45))]);
+
+    let mut source = vcf_reader("many.vcf", Some(7));
+    let (kept, stats, answered) = crate::block::with_one_block_ahead(&mut source, |ahead| {
+        let answered = ahead.skip_outside(selection_of(&the_bed_of_the_spec(), true));
+        let mut reader = RegionsReader::new(
+            ahead,
+            RegionFilter::new(selection_of(&the_bed_of_the_spec(), true)),
+        )?;
+        let blocks = blocks_of(&mut reader)?;
+        Ok((
+            named_of(&blocks, reader.chroms()),
+            reader.filtering_stats(),
+            answered,
+        ))
+    })
+    .expect("the pass");
+    assert!(answered);
+    assert_eq!(kept, the_reference("excluded_regions"));
+    assert_eq!(stats, vec![("excluded_regions", pair(500, 455))]);
+    // The thread had built the block ahead before the offer reached it,
+    // and the offer holds from the next block the source builds, so of the
+    // 45 the source passed over those after that block, which the counts
+    // hold whatever their number.
+    let skipped = source.num_skipped();
+    assert!(skipped > 0 && skipped <= 45, "{skipped}");
+}
+
+/// A POS that does not parse gives its line a row, whatever the regions
+/// are, so the parse gives the error of that column with the skip; a line
+/// outside the regions whose genotypes are wrong is passed over and not
+/// parsed.
+#[test]
+fn skip_outside_a_pos_that_does_not_parse_is_the_error_of_that_column() {
+    let vcf = "##fileformat=VCFv4.3\n\
+               #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\n\
+               chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\n\
+               chr1\t500\t.\tA\tT\t.\t.\t.\tGT\t0/7\n\
+               chr2\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\n\
+               chr1\tx5\t.\tA\tT\t.\t.\t.\tGT\t0/1\n";
+    let options = VcfOptions {
+        ploidy: 2,
+        only_passed: false,
+        num_vars_per_block: None,
+    };
+    let mut reader =
+        VcfReader::new(std::io::Cursor::new(vcf.as_bytes().to_vec()), options).expect("the reader");
+    assert!(reader.skip_outside(selection_of(b"chr1\t0\t10\n", false)));
+    let error = reader.next_block().expect_err("a POS that does not parse");
+    assert!(
+        matches!(&error, Error::VcfDataLine { line: 6, .. }),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("POS"), "{error}");
+
+    // Without the POS that does not parse, the wrong genotype of chr1 500,
+    // outside the regions, is never parsed.
+    let vcf = vcf.rsplit_once("chr1\tx5").unwrap().0;
+    let mut reader =
+        VcfReader::new(std::io::Cursor::new(vcf.as_bytes().to_vec()), options).expect("the reader");
+    assert!(reader.skip_outside(selection_of(b"chr1\t0\t10\n", false)));
+    let blocks = blocks_of(&mut reader).expect("the blocks");
+    assert_eq!(named_of(&blocks, reader.chroms()), vec![named("chr1", 5)]);
+    assert_eq!(reader.num_skipped(), 2);
+    // chr2 had no line given, so it has no number.
+    assert_eq!(reader.chroms().len(), 1);
+}

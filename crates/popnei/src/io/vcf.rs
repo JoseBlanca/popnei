@@ -39,7 +39,7 @@ use crate::block::{
     default_num_vars_per_block, size_of_the_blocks,
 };
 use crate::error::{Error, Result};
-use crate::filters::{FilteringStats, RegionSelection};
+use crate::filters::{FilteringStats, RegionSelection, SelectionOfAChrom};
 use crate::io::bgzf::BgzfReader;
 use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs};
 
@@ -726,6 +726,14 @@ pub struct VcfReader<R: BufRead + Send> {
     /// after a panic in its parse sets and nothing else can.
     #[cfg(test)]
     panic_at_line: Option<u64>,
+    /// The regions of the filter by regions over this reader, once it took
+    /// them with [`BlockReader::skip_outside`]: a line whose CHROM and POS
+    /// they keep none of is passed over in the serial pass and given no
+    /// row.
+    skip_outside: Option<RegionSelection>,
+    /// How many lines were passed over for those regions since the reader
+    /// was built.
+    num_skipped: u64,
 }
 
 impl<R: BufRead + Send> VcfReader<R> {
@@ -778,6 +786,8 @@ impl<R: BufRead + Send> VcfReader<R> {
             parsing: false,
             #[cfg(test)]
             panic_at_line: None,
+            skip_outside: None,
+            num_skipped: 0,
         };
         reader.read_header()?;
         // The individuals are known now, so the alleles of one variant and
@@ -1037,11 +1047,18 @@ impl<R: BufRead + Send> VcfReader<R> {
             line_error,
             end_error,
             source_done,
+            skip_outside,
+            num_skipped,
             #[cfg(test)]
             batches_filled,
             ..
         } = self;
         *filled = 0;
+        // The regions of the chromosome of the line before, with its name,
+        // so that a run of lines of one chromosome looks its name up once.
+        // A batch starts with none, which costs one lookup a batch.
+        let mut of_the_chrom: Option<SelectionOfAChrom<'_>> = None;
+        let mut chrom_of_the_line_before: Vec<u8> = Vec::new();
         text.clear();
         #[cfg(test)]
         {
@@ -1101,6 +1118,27 @@ impl<R: BufRead + Send> VcfReader<R> {
             if line.is_empty() || (options.only_passed && !filter_passed(line)) {
                 text.truncate(start);
                 continue;
+            }
+            if let Some(selection) = skip_outside.as_ref()
+                && let Some((chrom, pos)) = chrom_and_pos_of(line)
+            {
+                let regions = match of_the_chrom {
+                    Some(regions) if chrom == chrom_of_the_line_before.as_slice() => regions,
+                    Some(_) | None => {
+                        chrom_of_the_line_before.clear();
+                        chrom_of_the_line_before.extend_from_slice(chrom);
+                        let regions = selection.regions_of(chrom);
+                        of_the_chrom = Some(regions);
+                        regions
+                    }
+                };
+                if !regions.keeps(pos) {
+                    text.truncate(start);
+                    // A line of a source held in memory, so the count does
+                    // not reach the largest `u64`.
+                    *num_skipped = num_skipped.saturating_add(1);
+                    continue;
+                }
             }
             if batch.len() <= *filled {
                 batch.push(BatchRow::new());
@@ -1260,6 +1298,28 @@ impl<R: BufRead + Send> VcfReader<R> {
     }
 }
 
+/// The CHROM and the POS of a data line, for the serial pass that passes
+/// over the lines outside the regions of the filter by regions, or None
+/// when the line has fewer than three columns or a POS that is not digits
+/// alone that fit in a `u64`: such a line is given a row, so that its parse
+/// gives the error of its column, or reads the POS the serial pass could
+/// not, whatever the regions are.
+fn chrom_and_pos_of(line: &[u8]) -> Option<(&[u8], u64)> {
+    let mut tabs = memchr::memchr_iter(b'\t', line);
+    let first = tabs.next()?;
+    let second = tabs.next()?;
+    let chrom = line.get(..first)?;
+    let pos = line.get(first.saturating_add(1)..second)?;
+    if pos.is_empty() {
+        return None;
+    }
+    let pos = pos.iter().try_fold(0_u64, |number, byte| {
+        let digit = byte.checked_sub(b'0').filter(|digit| *digit <= 9)?;
+        number.checked_mul(10)?.checked_add(u64::from(digit))
+    })?;
+    Some((chrom, pos))
+}
+
 /// Whether the line is given a row: its FILTER, the bytes between its sixth
 /// and its seventh tab, is `PASS` or a dot, which says that no filter was
 /// applied to it.
@@ -1362,15 +1422,22 @@ impl<R: BufRead + Send> BlockReader for VcfReader<R> {
         &self.header
     }
 
-    /// False: this source reads every variant, and the filter by regions
-    /// over it takes out those outside the regions.
-    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
-        false
+    /// True: from the next batch it reads, a line whose CHROM and POS the
+    /// selection keeps none of is read, and decompressed when the file is
+    /// bgzipped, and not parsed past those two columns and its FILTER: its
+    /// columns of individuals, most of the time of a read, are never
+    /// parsed. A line whose POS is not a number is given a row, so the
+    /// parse gives the error of that column.
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool {
+        self.skip_outside = Some(selection);
+        true
     }
 
-    /// 0, since this source passes over no variant.
+    /// The lines passed over for the regions since the reader was built. A
+    /// line left out for its FILTER is not one of them: it is not a variant
+    /// of the source.
     fn num_skipped(&self) -> u64 {
-        0
+        self.num_skipped
     }
 }
 

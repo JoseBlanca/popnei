@@ -1456,6 +1456,21 @@ pub struct VarsReader<R: Read + Seek> {
     /// Whether the reader gave its last block or an error. After either,
     /// every call gives no block.
     finished: bool,
+    /// The regions of the filter by regions over this reader, once it took
+    /// them with [`BlockReader::skip_outside`]: a batch whose regions in the
+    /// footer they keep none of is not read.
+    skip_outside: Option<RegionSelection>,
+    /// How many variants the batches that were passed over hold.
+    num_skipped: u64,
+    /// Whether each batch of the file was counted in `num_skipped`, so that
+    /// a batch walked past a second time, after the queue of decoded
+    /// batches was thrown away, is counted once.
+    counted_as_skipped: Vec<bool>,
+    /// The place of each batch whose bytes were read, in the order they
+    /// were read, which is how the tests see which batches the skip passed
+    /// over.
+    #[cfg(test)]
+    batches_read: Vec<usize>,
 }
 
 impl<R: Read + Seek> VarsReader<R> {
@@ -1526,6 +1541,11 @@ impl<R: Read + Seek> VarsReader<R> {
             chroms: ChromTable::new(),
             vars_before,
             finished: false,
+            skip_outside: None,
+            num_skipped: 0,
+            counted_as_skipped: Vec::new(),
+            #[cfg(test)]
+            batches_read: Vec::new(),
         })
     }
 
@@ -1550,6 +1570,50 @@ impl<R: Read + Seek> VarsReader<R> {
     #[must_use]
     pub fn num_vars(&self) -> usize {
         self.num_vars
+    }
+
+    /// The place of each batch whose bytes were read, in the order they
+    /// were read.
+    #[cfg(test)]
+    pub(crate) fn batches_read(&self) -> &[usize] {
+        &self.batches_read
+    }
+
+    /// Whether the batch at `index` is one the regions the reader was
+    /// handed keep no variant of, which is then not read: for each
+    /// chromosome of its entry in the footer, from its smallest to its
+    /// largest position, the selection keeps none. Its variants go into
+    /// `num_skipped` the first time it is passed over.
+    ///
+    /// A batch with no regions in the footer, of a file with no `chrom` and
+    /// `pos` columns or of no variant, is read: nothing says it can be
+    /// passed over, and the filter refuses the first of them for the field
+    /// it depends on.
+    fn passes_over(&mut self, index: usize) -> bool {
+        let (Some(selection), Some(batch)) = (self.skip_outside.as_ref(), self.batches.get(index))
+        else {
+            return false;
+        };
+        if batch.regions.is_empty()
+            || !batch.regions.iter().all(|region| {
+                selection.keeps_none_of(&region.chrom, region.min_pos, region.max_pos)
+            })
+        {
+            return false;
+        }
+        let num_vars = u64::try_from(batch.num_vars).unwrap_or(u64::MAX);
+        if self.counted_as_skipped.len() < self.batches.len() {
+            self.counted_as_skipped.resize(self.batches.len(), false);
+        }
+        if let Some(counted) = self.counted_as_skipped.get_mut(index)
+            && !*counted
+        {
+            *counted = true;
+            // The variants of a file are as many as a `usize` counts, which
+            // a `u64` holds, so this does not saturate.
+            self.num_skipped = self.num_skipped.saturating_add(num_vars);
+        }
+        true
     }
 }
 
@@ -1833,6 +1897,14 @@ impl<R: Read + Seek> VarsReader<R> {
                 break;
             };
             let index = self.next;
+            if self.passes_over(index) {
+                // The batches of a file are as many as the machine counts,
+                // so this never saturates.
+                self.next = self.next.saturating_add(1);
+                continue;
+            }
+            #[cfg(test)]
+            self.batches_read.push(index);
             let fetch = self
                 .place_of(index)
                 .and_then(|place| Ok((place, self.bytes_of_the_batch(at, place)?)));
@@ -1908,6 +1980,14 @@ impl<R: Read + Seek> VarsReader<R> {
                 return Ok(None);
             };
             let index = self.next;
+            if self.passes_over(index) {
+                // The batches of a file are as many as the machine counts,
+                // so this never saturates.
+                self.next = self.next.saturating_add(1);
+                continue;
+            }
+            #[cfg(test)]
+            self.batches_read.push(index);
             let place = self.place_of(index)?;
             let bytes = self.bytes_of_the_batch(at, place)?;
             // The batches of a file are as many as the machine counts, so
@@ -2065,15 +2145,19 @@ impl<R: Read + Seek + Send> BlockReader for VarsReader<R> {
         &self.header
     }
 
-    /// False: this source reads every variant, and the filter by regions
-    /// over it takes out those outside the regions.
-    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
-        false
+    /// True: from the next batch it reads, a batch whose regions in the
+    /// footer the selection keeps none of is not read, sought to or
+    /// decompressed. In the other batches every variant is given, and the
+    /// filter takes out the ones it does not keep.
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool {
+        self.skip_outside = Some(selection);
+        true
     }
 
-    /// 0, since this source passes over no variant.
+    /// The variants of the batches passed over for the regions since the
+    /// reader was built.
     fn num_skipped(&self) -> u64 {
-        0
+        self.num_skipped
     }
 }
 
