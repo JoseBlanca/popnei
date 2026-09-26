@@ -35,11 +35,11 @@ use std::path::Path;
 use flate2::bufread::MultiGzDecoder;
 
 use crate::block::{
-    AllelesColumn, Block, BlockReader, BlockSize, check_the_size_of_a_block,
+    AllelesColumn, Block, BlockReader, BlockSize, SourceHeader, check_the_size_of_a_block,
     default_num_vars_per_block, size_of_the_blocks,
 };
 use crate::error::{Error, Result};
-use crate::filters::FilteringStats;
+use crate::filters::{FilteringStats, RegionSelection};
 use crate::io::bgzf::BgzfReader;
 use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs};
 
@@ -635,6 +635,8 @@ pub struct VcfReader<R: BufRead + Send> {
     source: VcfSource<R>,
     options: VcfOptions,
     individuals: Vec<String>,
+    /// What the header said of the file: its individuals, for now.
+    header: SourceHeader,
     chroms: ChromTable,
     needs: Needs,
     /// How many variants a block holds: the size the caller asked for, or
@@ -721,6 +723,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             source,
             options,
             individuals: Vec::new(),
+            header: SourceHeader::default(),
             chroms: ChromTable::new(),
             needs: Needs::ALL,
             num_vars_per_block: 0,
@@ -743,6 +746,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             panic_at_line: None,
         };
         reader.read_header()?;
+        reader.header.individuals.clone_from(&reader.individuals);
         // The individuals are known now, so the alleles of one variant and
         // the size of a block are too. A size the caller wrote is checked
         // here, before a line of the file is read; the one popnei chooses
@@ -1244,6 +1248,21 @@ impl<R: BufRead + Send> BlockReader for VcfReader<R> {
     /// None: a source has no filter over it.
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         Vec::new()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        &self.header
+    }
+
+    /// False: this source reads every variant, and the filter by regions
+    /// over it takes out those outside the regions.
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    /// 0, since this source passes over no variant.
+    fn num_skipped(&self) -> u64 {
+        0
     }
 }
 

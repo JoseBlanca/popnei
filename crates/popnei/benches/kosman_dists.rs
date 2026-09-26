@@ -82,9 +82,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use popnei::block::{Block, BlockReader};
+use popnei::block::{Block, BlockReader, SourceHeader};
 use popnei::dists::calc_kosman_sums;
-use popnei::filters::FilteringStats;
+use popnei::filters::{FilteringStats, RegionSelection};
 use popnei::io::vars::VarsReader;
 use popnei::variant::{ChromTable, MISSING_ALLELE, Needs};
 
@@ -297,6 +297,13 @@ impl BlocksInMemory {
     }
 }
 
+/// The header of a source in memory, which says nothing of itself.
+static NO_HEADER: SourceHeader = SourceHeader {
+    individuals: Vec::new(),
+    chrom_lengths: Vec::new(),
+    vcf_meta_lines: None,
+};
+
 impl BlockReader for BlocksInMemory {
     fn next_block(&mut self) -> popnei::Result<Option<Block>> {
         Ok(self.blocks.next())
@@ -321,6 +328,19 @@ impl BlockReader for BlocksInMemory {
 
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         Vec::new()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        &NO_HEADER
+    }
+
+    /// False: the blocks are in memory and every one is given.
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    fn num_skipped(&self) -> u64 {
+        0
     }
 }
 

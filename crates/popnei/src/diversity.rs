@@ -2544,6 +2544,18 @@ mod fixtures {
         fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
             Vec::new()
         }
+
+        fn header(&self) -> &crate::block::SourceHeader {
+            &crate::block::AN_EMPTY_HEADER
+        }
+
+        fn skip_outside(&mut self, _selection: crate::filters::RegionSelection) -> bool {
+            false
+        }
+
+        fn num_skipped(&self) -> u64 {
+            0
+        }
     }
 
     /// The blocks of `num_vars_per_block` variants that hold `variants`,

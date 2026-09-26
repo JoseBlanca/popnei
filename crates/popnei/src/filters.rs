@@ -40,7 +40,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::block::{Block, BlockReader};
+use crate::block::{Block, BlockReader, SourceHeader};
 use crate::error::{Error, Result};
 use crate::ld::{LdDosages, r2_between};
 use crate::variant::{
@@ -61,6 +61,44 @@ pub struct FilteringStats {
     pub vars_processed: u64,
     /// Those of them that passed its threshold.
     pub vars_kept: u64,
+}
+
+/// The regions of a BED file, joined where they overlap or touch and
+/// sorted within each chromosome, which the filter by regions of
+/// `docs/specs/filters.md` keeps the variants inside or outside of.
+///
+/// Only the type is here yet, so that [`BlockReader::skip_outside`] can be
+/// offered a [`RegionSelection`]: the regions themselves, and the reader of
+/// a BED that gives them, come with that filter.
+#[derive(Debug)]
+pub struct Regions {
+    /// Nothing yet, and private, so that no region can be built before the
+    /// reader of a BED is there to build it.
+    _none_yet: (),
+}
+
+impl Regions {
+    /// No region, which only the tests of the readers can build: they offer
+    /// it to [`BlockReader::skip_outside`] and look at the answer.
+    #[cfg(test)]
+    pub(crate) fn none_for_the_tests() -> Regions {
+        Regions { _none_yet: () }
+    }
+}
+
+/// Which variants the filter by regions keeps: those inside the regions,
+/// or, with `exclude`, those outside all of them.
+///
+/// It is what a reader is offered with [`BlockReader::skip_outside`], so
+/// that a source that can pass over the variants the filter would take out
+/// does not build them.
+#[derive(Debug, Clone)]
+pub struct RegionSelection {
+    /// The regions, shared by the step and by every pass built from it.
+    pub regions: std::sync::Arc<Regions>,
+    /// Whether the filter keeps the variants outside the regions and not
+    /// those inside.
+    pub exclude: bool,
 }
 
 /// What a filter compares with a threshold, with the largest value that
@@ -1431,6 +1469,22 @@ impl<R: BlockReader> BlockReader for FilteredReader<R> {
         stats.extend(self.reader.filtering_stats());
         stats
     }
+
+    fn header(&self) -> &SourceHeader {
+        self.reader.header()
+    }
+
+    /// False, and the source is not offered the regions: the variants it
+    /// passed over would never reach this filter, and its counts would be
+    /// of fewer variants than the source gave.
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    /// 0, since this filter hands no regions to its source.
+    fn num_skipped(&self) -> u64 {
+        0
+    }
 }
 
 /// A reader that gives the variants of its source that the filter by
@@ -1611,6 +1665,22 @@ impl<R: BlockReader> BlockReader for LdFilteredReader<R> {
         let mut stats = vec![(THE_KIND_OF_THE_LD_FILTER, self.filter.stats())];
         stats.extend(self.reader.filtering_stats());
         stats
+    }
+
+    fn header(&self) -> &SourceHeader {
+        self.reader.header()
+    }
+
+    /// False, and the source is not offered the regions: the variants it
+    /// passed over would never reach this filter, and its counts would be
+    /// of fewer variants than the source gave.
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    /// 0, since this filter hands no regions to its source.
+    fn num_skipped(&self) -> u64 {
+        0
     }
 }
 
@@ -1983,6 +2053,23 @@ impl<R: BlockReader> BlockReader for IndividualsReader<R> {
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         self.reader.filtering_stats()
     }
+
+    /// The header of the source, whose individuals are all of them and not
+    /// the kept ones: those are [`BlockReader::individuals`].
+    fn header(&self) -> &SourceHeader {
+        self.reader.header()
+    }
+
+    /// The answer of the source: this reader changes no variant, so the
+    /// variants the source passes over are the ones the filter by regions
+    /// over it would take out.
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool {
+        self.reader.skip_outside(selection)
+    }
+
+    fn num_skipped(&self) -> u64 {
+        self.reader.num_skipped()
+    }
 }
 
 impl<R: BlockReader> fmt::Debug for FilteredReader<R> {
@@ -2166,8 +2253,9 @@ mod tests {
         VarFilteringCriterion, chain_of, individuals_of, keep_of_the_rows,
         keep_of_the_rows_one_by_one, refuse_a_second_filter_of_a_kind, resolve_individuals,
     };
-    use crate::block::{Block, BlockReader};
+    use crate::block::{Block, BlockReader, SourceHeader};
     use crate::error::{Error, Result};
+    use crate::filters::RegionSelection;
     use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
@@ -3032,6 +3120,15 @@ mod tests {
         fails_at: Option<usize>,
         /// What it was last asked to fill.
         needs: Needs,
+        /// What it says of itself, which is not empty, so that a reader over
+        /// it that gives a header of its own is told apart from one that
+        /// gives this one.
+        header: SourceHeader,
+        /// How many times it was offered the regions of the filter by
+        /// regions, which it always takes, held by the test too.
+        offers: Arc<AtomicUsize>,
+        /// How many variants it says it passed over for those regions.
+        num_skipped: u64,
     }
 
     impl GivenBlocks {
@@ -3050,7 +3147,20 @@ mod tests {
                 calls: Arc::new(AtomicUsize::new(0)),
                 fails_at: None,
                 needs: Needs::ALL,
+                header: SourceHeader {
+                    individuals: (1..=5).map(|number| format!("ind{number}")).collect(),
+                    chrom_lengths: vec![("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)],
+                    vcf_meta_lines: Some(vec!["##fileformat=VCFv4.3".to_owned()]),
+                },
+                offers: Arc::new(AtomicUsize::new(0)),
+                num_skipped: 0,
             }
+        }
+
+        /// How many times it has been offered the regions, which the test
+        /// reads after the reader over it took it.
+        fn offers(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.offers)
         }
 
         /// The same reader, whose call number `call` is an error.
@@ -3108,6 +3218,222 @@ mod tests {
 
         fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
             Vec::new()
+        }
+
+        fn header(&self) -> &SourceHeader {
+            &self.header
+        }
+
+        /// True, as a source that can pass over the variants outside the
+        /// regions answers, although it gives every block it was built with.
+        fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+            self.offers.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        fn num_skipped(&self) -> u64 {
+            self.num_skipped
+        }
+    }
+
+    /// What each reader over a reader says of its source: the header, which
+    /// it passes on, and the regions of the filter by regions, which the
+    /// filters of variants refuse and the other readers hand on.
+    mod source_header {
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+
+        use super::super::{
+            FilteredReader, IndividualsReader, LdFilter, LdFilteredReader, RegionSelection,
+            Regions, VarFilter,
+        };
+        use super::{
+            GivenBlocks, MaxMaf, MaxMissingRate, MaxObsHet, block_of_the_worked_example,
+            positions_of_blocks,
+        };
+        use crate::block::{BlockReader, Reblock, SourceHeader, with_one_block_ahead};
+
+        /// The header of [`GivenBlocks`], written out.
+        fn the_header_of_the_source() -> SourceHeader {
+            SourceHeader {
+                individuals: ["ind1", "ind2", "ind3", "ind4", "ind5"]
+                    .map(str::to_owned)
+                    .to_vec(),
+                chrom_lengths: vec![("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)],
+                vcf_meta_lines: Some(vec!["##fileformat=VCFv4.3".to_owned()]),
+            }
+        }
+
+        /// The header of `reader` through the implementation for its type,
+        /// which for a `&mut` is the one of a borrowed reader.
+        fn the_header_of<R: BlockReader>(reader: R) -> SourceHeader {
+            reader.header().clone()
+        }
+
+        /// What `reader` answers to the offer of the regions, and the
+        /// variants it then says were skipped, through the implementation
+        /// for its type.
+        fn the_answer_of<R: BlockReader>(mut reader: R) -> (bool, u64) {
+            (reader.skip_outside(a_selection()), reader.num_skipped())
+        }
+
+        fn a_selection() -> RegionSelection {
+            RegionSelection {
+                regions: Arc::new(Regions::none_for_the_tests()),
+                exclude: false,
+            }
+        }
+
+        /// A source that says it passed over 7 variants, so that a reader
+        /// that answers 0 of its own is told apart from one that asks its
+        /// source.
+        fn a_source_that_skipped_seven() -> GivenBlocks {
+            GivenBlocks {
+                num_skipped: 7,
+                ..GivenBlocks::of(vec![block_of_the_worked_example(&[0, 1])])
+            }
+        }
+
+        /// Every reader over a reader gives the header of its source, and
+        /// the filter of individuals gives all the individuals of the
+        /// source in it, not the ones it keeps.
+        #[test]
+        fn each_reader_over_a_reader_gives_the_header_of_its_source() {
+            let expected = the_header_of_the_source();
+            for criterion in [MaxMissingRate(0.2), MaxMaf(0.8), MaxObsHet(0.5)] {
+                let filtered = FilteredReader::new(
+                    GivenBlocks::of(Vec::new()),
+                    VarFilter::new(criterion).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(filtered.header(), &expected, "{criterion:?}");
+            }
+            let by_ld = LdFilteredReader::new(
+                GivenBlocks::of_the_r2_example(Vec::new()),
+                LdFilter::new(0.5, 5000).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(by_ld.header(), &expected);
+
+            let of_two = IndividualsReader::new(
+                GivenBlocks::of(Vec::new()),
+                &["ind3".to_owned(), "ind1".to_owned()],
+            )
+            .unwrap();
+            assert_eq!(of_two.header(), &expected);
+            assert_eq!(of_two.individuals(), ["ind3", "ind1"]);
+
+            let reblocked = Reblock::new(GivenBlocks::of(Vec::new()), Some(3)).unwrap();
+            assert_eq!(reblocked.header(), &expected);
+
+            let mut source = GivenBlocks::of(vec![block_of_the_worked_example(&[0, 1])]);
+            let ahead = with_one_block_ahead(&mut source, |ahead| Ok(ahead.header().clone()));
+            assert_eq!(ahead.unwrap(), expected);
+
+            let mut boxed: Box<dyn BlockReader> = Box::new(GivenBlocks::of(Vec::new()));
+            assert_eq!(boxed.header(), &expected);
+            assert_eq!(the_header_of(&mut boxed), expected);
+        }
+
+        /// A filter of variants answers false and does not offer the regions
+        /// to its source, whose skipped variants would not reach its counts,
+        /// and says it skipped none although its source says 7.
+        #[test]
+        fn the_filters_of_variants_refuse_the_regions_and_skip_nothing() {
+            for criterion in [MaxMissingRate(0.2), MaxMaf(0.8), MaxObsHet(0.5)] {
+                let source = a_source_that_skipped_seven();
+                let offers = source.offers();
+                let mut filtered =
+                    FilteredReader::new(source, VarFilter::new(criterion).unwrap()).unwrap();
+                assert!(!filtered.skip_outside(a_selection()), "{criterion:?}");
+                assert_eq!(filtered.num_skipped(), 0, "{criterion:?}");
+                assert_eq!(offers.load(Ordering::SeqCst), 0, "{criterion:?}");
+            }
+            let source = GivenBlocks {
+                num_skipped: 7,
+                ..GivenBlocks::of_the_r2_example(Vec::new())
+            };
+            let offers = source.offers();
+            let mut by_ld =
+                LdFilteredReader::new(source, LdFilter::new(0.5, 5000).unwrap()).unwrap();
+            assert!(!by_ld.skip_outside(a_selection()));
+            assert_eq!(by_ld.num_skipped(), 0);
+            assert_eq!(offers.load(Ordering::SeqCst), 0);
+
+            // Readers that hand the offer on, over a filter, get its refusal.
+            let source = a_source_that_skipped_seven();
+            let offers = source.offers();
+            let filtered =
+                FilteredReader::new(source, VarFilter::new(MaxMaf(0.8)).unwrap()).unwrap();
+            let of_two = IndividualsReader::new(filtered, &["ind3".to_owned()]).unwrap();
+            let mut reblocked = Reblock::new(of_two, Some(3)).unwrap();
+            assert!(!reblocked.skip_outside(a_selection()));
+            assert_eq!(reblocked.num_skipped(), 0);
+            assert_eq!(offers.load(Ordering::SeqCst), 0);
+        }
+
+        /// The readers that change no variant hand the regions to their
+        /// source once, give its answer, and give the variants it says it
+        /// skipped.
+        #[test]
+        fn the_readers_that_change_no_variant_hand_the_regions_to_their_source() {
+            let source = a_source_that_skipped_seven();
+            let offers = source.offers();
+            let mut of_two = IndividualsReader::new(source, &["ind3".to_owned()]).unwrap();
+            assert!(of_two.skip_outside(a_selection()));
+            assert_eq!(of_two.num_skipped(), 7);
+            assert_eq!(offers.load(Ordering::SeqCst), 1);
+
+            let source = a_source_that_skipped_seven();
+            let offers = source.offers();
+            let mut reblocked = Reblock::new(source, Some(3)).unwrap();
+            assert!(reblocked.skip_outside(a_selection()));
+            assert_eq!(reblocked.num_skipped(), 7);
+            assert_eq!(offers.load(Ordering::SeqCst), 1);
+
+            let source = a_source_that_skipped_seven();
+            let offers = source.offers();
+            let mut boxed: Box<dyn BlockReader> = Box::new(source);
+            assert!(boxed.skip_outside(a_selection()));
+            assert_eq!(boxed.num_skipped(), 7);
+            assert_eq!(the_answer_of(&mut boxed), (true, 7));
+            assert_eq!(offers.load(Ordering::SeqCst), 2);
+        }
+
+        /// The reader one block ahead hands the offer to the chain on its
+        /// thread and gives its answer, then every block of the chain in
+        /// its order, the one the thread had built before it saw the offer
+        /// among them, and the variants the chain skipped once the blocks
+        /// are over.
+        #[test]
+        fn the_reader_one_block_ahead_hands_the_regions_on_and_loses_no_block() {
+            for blocks_read_before in 0..3 {
+                let mut source = GivenBlocks {
+                    num_skipped: 7,
+                    ..GivenBlocks::of(vec![
+                        block_of_the_worked_example(&[0, 1]),
+                        block_of_the_worked_example(&[2, 3]),
+                        block_of_the_worked_example(&[4, 5]),
+                    ])
+                };
+                let offers = source.offers();
+                let (answer, positions, num_skipped) = with_one_block_ahead(&mut source, |ahead| {
+                    let mut blocks = Vec::new();
+                    for _ in 0..blocks_read_before {
+                        blocks.extend(ahead.next_block()?);
+                    }
+                    let answer = ahead.skip_outside(a_selection());
+                    while let Some(block) = ahead.next_block()? {
+                        blocks.push(block);
+                    }
+                    Ok((answer, positions_of_blocks(&blocks), ahead.num_skipped()))
+                })
+                .unwrap();
+                assert!(answer, "{blocks_read_before}");
+                assert_eq!(positions, [1, 2, 3, 4, 5, 6], "{blocks_read_before}");
+                assert_eq!(num_skipped, 7, "{blocks_read_before}");
+                assert_eq!(offers.load(Ordering::SeqCst), 1, "{blocks_read_before}");
+            }
         }
     }
 

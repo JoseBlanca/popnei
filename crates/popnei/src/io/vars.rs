@@ -43,9 +43,11 @@ use arrow_ipc::{
 use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef};
 use serde_json::{Map, Value};
 
-use crate::block::{AllelesColumn, Block, BlockReader, BlockSize, Reblock, size_of_the_blocks};
+use crate::block::{
+    AllelesColumn, Block, BlockReader, BlockSize, Reblock, SourceHeader, size_of_the_blocks,
+};
 use crate::error::{Error, Result};
-use crate::filters::FilteringStats;
+use crate::filters::{FilteringStats, RegionSelection};
 use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
 /// The key of the schema of a vars file whose value says what is known
@@ -1352,6 +1354,9 @@ pub struct VarsReader<R: Read + Seek> {
     columns: VarsColumns,
     /// What the `popnei` key of the schema says.
     metadata: VarsMetadata,
+    /// What the file said of itself: the individuals of `metadata`, for
+    /// now.
+    header: SourceHeader,
     /// What the `popnei_batches` key of the footer says of each batch.
     batches: Vec<BatchInfo>,
     /// The variants of the whole file, the sum of those of its batches.
@@ -1437,6 +1442,11 @@ impl<R: Read + Seek> VarsReader<R> {
         let batches = batch_info_of_the_footer(&footer, blocks.len())?;
         let num_vars = num_vars_of_the_file(&batches, &metadata)?;
         let vars_before = vars_before_each_batch(&batches);
+        let header = SourceHeader {
+            individuals: metadata.individuals.clone(),
+            chrom_lengths: Vec::new(),
+            vcf_meta_lines: None,
+        };
         Ok(VarsReader {
             source,
             schema,
@@ -1444,6 +1454,7 @@ impl<R: Read + Seek> VarsReader<R> {
             blocks,
             columns,
             metadata,
+            header,
             batches,
             num_vars,
             needs: Needs::ALL,
@@ -1986,6 +1997,21 @@ impl<R: Read + Seek + Send> BlockReader for VarsReader<R> {
     /// None: a source has no filter over it.
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         Vec::new()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        &self.header
+    }
+
+    /// False: this source reads every variant, and the filter by regions
+    /// over it takes out those outside the regions.
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    /// 0, since this source passes over no variant.
+    fn num_skipped(&self) -> u64 {
+        0
     }
 }
 
@@ -3501,6 +3527,18 @@ mod tests {
 
         fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
             Vec::new()
+        }
+
+        fn header(&self) -> &crate::block::SourceHeader {
+            &crate::block::AN_EMPTY_HEADER
+        }
+
+        fn skip_outside(&mut self, _selection: crate::filters::RegionSelection) -> bool {
+            false
+        }
+
+        fn num_skipped(&self) -> u64 {
+            0
         }
     }
 

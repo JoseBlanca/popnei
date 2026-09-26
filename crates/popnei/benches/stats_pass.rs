@@ -78,8 +78,8 @@ use std::hint::black_box;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use popnei::block::{Block, BlockReader};
-use popnei::filters::FilteringStats;
+use popnei::block::{Block, BlockReader, SourceHeader};
+use popnei::filters::{FilteringStats, RegionSelection};
 use popnei::stats::{
     DEFAULT_HIST_RANGE, DEFAULT_MIN_NUM_INDIVIDUALS, DEFAULT_NUM_BINS, DEFAULT_POLY_THRESHOLD,
     ExpHet, HistBins, Maf, ObsHet, PerVarDistribs, PerVarDistribsConfig, PerVarStat, Pops,
@@ -366,6 +366,13 @@ struct TheSameBlockAgain<'a> {
     blocks_left: usize,
 }
 
+/// The header of a source in memory, which says nothing of itself.
+static NO_HEADER: SourceHeader = SourceHeader {
+    individuals: Vec::new(),
+    chrom_lengths: Vec::new(),
+    vcf_meta_lines: None,
+};
+
 impl BlockReader for TheSameBlockAgain<'_> {
     fn next_block(&mut self) -> popnei::Result<Option<Block>> {
         let Some(left) = self.blocks_left.checked_sub(1) else {
@@ -403,6 +410,19 @@ impl BlockReader for TheSameBlockAgain<'_> {
 
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         Vec::new()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        &NO_HEADER
+    }
+
+    /// False: the blocks are in memory and every one is given.
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    fn num_skipped(&self) -> u64 {
+        0
     }
 }
 

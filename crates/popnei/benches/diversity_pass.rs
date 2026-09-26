@@ -161,9 +161,9 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use popnei::block::{Block, BlockReader, default_num_vars_per_block};
+use popnei::block::{Block, BlockReader, SourceHeader, default_num_vars_per_block};
 use popnei::diversity::{DiversityOptions, DiversityStats, PopDiversity, calc_pop_diversity};
-use popnei::filters::FilteringStats;
+use popnei::filters::{FilteringStats, RegionSelection};
 use popnei::stats::DEFAULT_MIN_NUM_INDIVIDUALS;
 use popnei::variant::{ChromTable, MISSING_ALLELE, Needs};
 
@@ -562,6 +562,13 @@ struct TheSameBlockAgain<'a> {
     blocks_left: usize,
 }
 
+/// The header of a source in memory, which says nothing of itself.
+static NO_HEADER: SourceHeader = SourceHeader {
+    individuals: Vec::new(),
+    chrom_lengths: Vec::new(),
+    vcf_meta_lines: None,
+};
+
 impl BlockReader for TheSameBlockAgain<'_> {
     fn next_block(&mut self) -> popnei::Result<Option<Block>> {
         let Some(left) = self.blocks_left.checked_sub(1) else {
@@ -599,6 +606,19 @@ impl BlockReader for TheSameBlockAgain<'_> {
 
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         Vec::new()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        &NO_HEADER
+    }
+
+    /// False: the blocks are in memory and every one is given.
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    fn num_skipped(&self) -> u64 {
+        0
     }
 }
 
