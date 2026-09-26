@@ -24,8 +24,8 @@ spec stands beside; `docs/specs/block.md` has `iterBlocks`.
 Three words of `docs/glossary.md` are used throughout. A **pass** is one
 reading of a source of variants from its start to its end. A **consumer** is
 what takes a `Variants`, makes the passes it needs and gives a result: a
-calculation, the writer `writeVars`, or `iterBlocks`; the package has twelve
-of them. A **run** is one call of one consumer, with the passes it makes.
+calculation, the writers `writeVars` and `writeVcf`, or `iterBlocks`; the
+package has thirteen of them, `writeVcf` among them since 26 September 2026. A **run** is one call of one consumer, with the passes it makes.
 
 What the user of an application pays today, with the file taken whole:
 
@@ -297,7 +297,7 @@ Every consumer of the package can throw the value that `told` threw:
 `calcPerVarDistribs`, `calcPerIndividualStats`, `calcPairwiseKosmanDists`,
 `calcPopDists`, `calcPopDiversity`, `calcRogersHuffR2Matrix`,
 `calcLdAndDistPerPop`, `calcKinship`, `doPcaFromVariants`, `calcGwas`,
-`writeVars` and the iteration of `iterBlocks`.
+`writeVars`, `writeVcf` and the iteration of `iterBlocks`.
 
 `onProgress` has no Python counterpart, and neither has `numPassesOf` of the
 item below. Goal 2 of `docs/objectives.md` asks for every difference between
@@ -417,12 +417,12 @@ from it, with ranges of the size popnei chose:
   is one pass.
 - Twelve `iterBlocks` over one source, opened together and read one after
   another, give calls of `pass` 1 and `numPasses` 1 for each of the twelve.
-- For each of the twelve consumers, a function that throws on its first
+- For each of the thirteen consumers, a function that throws on its first
   call: the consumer throws that same value, checked with `===` and not by
   its message, and the same `Variants` then gives its variants through
   `iterBlocks`, the 475 of `many.vcf` that passed a filter of the file, or
   the 500 it holds when it was opened with `onlyPassed` false.
-- For each of the twelve consumers, a function that calls the `free()` of
+- For each of the thirteen consumers, a function that calls the `free()` of
   the variants the run is reading: the `free()` is refused with popnei's own
   `Error`, that error leaves the function as any other thrown value does and
   the consumer gives it back, and the same `Variants` then gives its
