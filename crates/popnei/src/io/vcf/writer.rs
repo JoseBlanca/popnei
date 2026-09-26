@@ -352,7 +352,7 @@ impl<'a> LinesOf<'a> {
 }
 
 /// CHROM to FORMAT of a line, with the values of INFO whose key is AC or AN
-/// taken out and `.` for an INFO left with nothing, as `bcftools annotate -x
+/// and the empty ones taken out and `.` for an INFO left with nothing, as `bcftools annotate -x
 /// INFO/AC,INFO/AN` writes it.
 fn write_fixed_without_counts(fixed: &str, out: &mut Vec<u8>) {
     for (column, text) in fixed.split('\t').enumerate() {
@@ -367,7 +367,9 @@ fn write_fixed_without_counts(fixed: &str, out: &mut Vec<u8>) {
         let mut written = false;
         for value in text.split(';') {
             let key = value.split_once('=').map_or(value, |(key, _)| key);
-            if COUNTS_OF_THE_INDIVIDUALS.contains(&key) {
+            // An empty value, of two `;` side by side or of a `;` at the
+            // end, goes as well, as bcftools 1.24 drops it.
+            if value.is_empty() || COUNTS_OF_THE_INDIVIDUALS.contains(&key) {
                 continue;
             }
             if written {
@@ -884,6 +886,8 @@ mod tests {
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\tb",
             "chr1\t5\t.\tA\tT\t.\tPASS\tAC;ACX=2;AN=4;AF=0.5\tGT\t0/1\t1/1",
             "chr1\t6\t.\tA\tT\t.\tPASS\tAN=4\tGT\t0/0\t1/1",
+            "chr1\t7\t.\tA\tT\t.\tPASS\tAC=1;AN=4;\tGT\t0/0\t1/1",
+            "chr1\t8\t.\tA\tT\t.\tPASS\tAC=1;;DP=3\tGT\t0/0\t1/1",
         ];
         let vcf = lines.join("\n") + "\n";
         let make = || {
@@ -903,6 +907,11 @@ mod tests {
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tb",
             "chr1\t5\t.\tA\tT\t.\tPASS\tACX=2;AF=0.5\tGT\t1/1",
             "chr1\t6\t.\tA\tT\t.\tPASS\t.\tGT\t1/1",
+            // bcftools 1.24 writes the INFO of these two as `.` and `DP=3`:
+            // the empty values a `;` at the end and two side by side leave
+            // go with AC and AN.
+            "chr1\t7\t.\tA\tT\t.\tPASS\t.\tGT\t1/1",
+            "chr1\t8\t.\tA\tT\t.\tPASS\tDP=3\tGT\t1/1",
         ];
         assert_eq!(written(make).0, expected.join("\n") + "\n");
     }
