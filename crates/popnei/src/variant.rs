@@ -75,9 +75,11 @@ impl Needs {
     /// It is not in [`Needs::ALL`], the fields that the writer of a vars
     /// file asks for, since that file has no place for it.
     pub const VCF_TEXT: Needs = Needs(32);
-    /// The five fields above [`Needs::VCF_TEXT`], built from their five
-    /// constants, so that a field added to this set later cannot be left
-    /// out of it.
+    /// The five fields of a variant that a vars file holds, the genotypes to
+    /// the quality, which the writer of a vars file asks for. A field added
+    /// to `Needs` is added here by hand when a vars file holds it:
+    /// [`Needs::VCF_TEXT`] is left out, since that file has no place for
+    /// the text of the lines of a VCF.
     pub const ALL: Needs = Needs::GTS
         .union(Needs::CHROM_POS)
         .union(Needs::ID)
