@@ -30,6 +30,10 @@ use crate::variant::{ChromTable, Needs};
 /// The two bytes every gzipped file starts with.
 const GZIP_BYTES: [u8; 2] = [0x1f, 0x8b];
 
+/// The three bytes of the byte order mark of UTF-8, which are dropped from
+/// the start of the text of a BED.
+const UTF8_BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
+
 /// The first words of the two lines the tools of the UCSC genome browser
 /// write, which are not regions and which bedtools skips too. A comment and
 /// an empty line are skipped as well.
@@ -155,7 +159,9 @@ impl Regions {
     /// file.
     ///
     /// A line that is empty, that starts with `#`, or whose first word is
-    /// `track` or `browser`, is skipped. A carriage return before the end of a line is dropped,
+    /// `track` or `browser`, is skipped. A byte order mark of UTF-8 at the
+    /// start of the text is dropped. A carriage return before the end of a
+    /// line is dropped,
     /// as bcftools and plink2 drop it. The columns after the third are not
     /// read. The lines are counted from 1 over the whole file, the skipped
     /// ones among them.
@@ -185,6 +191,9 @@ impl Regions {
     /// The regions of the lines of `text`, which [`Regions::from_bed`]
     /// reads.
     fn of_the_text(text: &[u8]) -> Result<Regions> {
+        // The byte order mark of UTF-8, which some editors of Windows write
+        // at the start of a text, would be the start of the first name.
+        let text = text.strip_prefix(UTF8_BYTE_ORDER_MARK).unwrap_or(text);
         let mut of_each_chrom: HashMap<Vec<u8>, Vec<Region>> = HashMap::new();
         let mut regions_read = false;
         for (index, line) in text.split(|byte| *byte == b'\n').enumerate() {

@@ -867,3 +867,22 @@ fn an_empty_chromosome_by_regions_is_refused_with_its_line() {
          that has a name"
     );
 }
+
+/// The byte order mark some editors of Windows write at the start of a text
+/// is dropped, and is not the start of the first chromosome name; in a
+/// gzipped BED it is the start of the text inside.
+#[test]
+fn a_byte_order_mark_by_regions_is_dropped_from_the_start_of_the_bed() {
+    let with_the_mark = b"\xef\xbb\xbfchr1\t0\t5\n";
+    let regions = Regions::from_bed(with_the_mark.as_slice()).expect("the regions");
+    assert!(regions.contains("chr1", 5));
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(with_the_mark).expect("the compression");
+    let gzipped = encoder.finish().expect("the compression");
+    let regions = Regions::from_bed(gzipped.as_slice()).expect("the regions");
+    assert!(regions.contains("chr1", 5));
+    // A mark that is not at the start is part of the name.
+    let regions =
+        Regions::from_bed(b"chr1\t0\t5\n\xef\xbb\xbfchr2\t0\t5\n".as_slice()).expect("the regions");
+    assert!(!regions.contains("chr2", 5));
+}
