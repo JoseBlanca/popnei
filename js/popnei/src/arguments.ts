@@ -242,6 +242,21 @@ export function aNumber(argument: string, value: unknown): number {
  *
  * @throws {Error} When `value` is not a boolean.
  */
+/**
+ * That the options given to `functionName` are an object: `null`, which
+ * JavaScript reads a property of with its own `TypeError` that names
+ * neither popnei nor the argument, is refused with popnei's `Error`.
+ *
+ * @throws {Error} When `value` is not an object, or is `null` or an array.
+ */
+export function anObjectOfOptions(functionName: string, value: unknown): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `popnei: the options of \`${functionName}\` are an object, and ${whatWasGiven(value)} was given`,
+    );
+  }
+}
+
 export function aBoolean(argument: string, value: unknown): boolean {
   if (typeof value !== "boolean") {
     throw new Error(

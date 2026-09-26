@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { gunzipSync } from "node:zlib";
 
-import { init, openVcf, writeVcf } from "popnei";
+import { init, openVcf, writeVars, writeVcf } from "popnei";
 
 import { referenceVcf } from "./reference.ts";
 
@@ -50,6 +50,22 @@ test("writeVcf refuses a bgzip that is not a boolean", async () => {
       () => writeVcf(variants, { bgzip: "yes" }),
       /`bgzip` is true or false/,
     );
+  } finally {
+    variants.free();
+  }
+});
+
+test("writeVcf and writeVars refuse options that are null with popnei's error", async () => {
+  const variants = openVcf(await referenceVcf("many.vcf"));
+  try {
+    for (const write of [writeVcf, writeVars]) {
+      assert.throws(
+        // @ts-expect-error: the options are an object or nothing, and a page
+        // may give them null.
+        () => write(variants, null),
+        /^Error: popnei: the options of `write(Vcf|Vars)` are an object/,
+      );
+    }
   } finally {
     variants.free();
   }

@@ -6,7 +6,11 @@ import {
   open_vars_of_a_file as openVarsOfAFileOfTheCore,
 } from "../wasm/popnei.js";
 
-import { bytesOrFile as bytesOrFileOf, wholeNumberOfOneOrMore } from "./arguments.js";
+import {
+  anObjectOfOptions,
+  bytesOrFile as bytesOrFileOf,
+  wholeNumberOfOneOrMore,
+} from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
 import type { BytesOrFile } from "./io_vcf.js";
 import type { PassStats } from "./variant.js";
@@ -126,7 +130,7 @@ export function openVars(source: BytesOrFile): Variants {
  * how many variants were written and what each filter was given and kept.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
- * `numVarsPerBlock` is not a whole number of 1 or more and at most
+ * `options` is not an object, when `numVarsPerBlock` is not a whole number of 1 or more and at most
  * 4294967295, when the source cannot be read, a wrong line of a VCF among
  * the causes, when the memory of the tab does not take the file, and when
  * `init` has not been awaited.
@@ -136,6 +140,7 @@ export function writeVars(
   options: WriteVarsOptions = {},
 ): VarsWritten {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("writeVars", options);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,

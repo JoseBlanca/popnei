@@ -9,6 +9,7 @@ import {
 
 import {
   aBoolean,
+  anObjectOfOptions,
   bytesOrFile as bytesOrFileOf,
   wholeNumberOfOneOrMore,
 } from "./arguments.js";
@@ -164,7 +165,7 @@ export interface WriteVcfOptions {
  * `writeVars`.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
- * `bgzip` is not a boolean, when the source cannot be read, a wrong line of
+ * `options` is not an object, when `bgzip` is not a boolean, when the source cannot be read, a wrong line of
  * a VCF among the causes, when the memory of the tab does not take the
  * file, and when `init` has not been awaited.
  */
@@ -173,6 +174,7 @@ export function writeVcf(
   options: WriteVcfOptions = {},
 ): VcfWritten {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("writeVcf", options);
   const bgzip =
     options.bgzip === undefined ? true : aBoolean("bgzip", options.bgzip);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
