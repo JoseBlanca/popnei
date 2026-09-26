@@ -1180,7 +1180,13 @@ The writer. `write_vcf` is what both binding crates call, as they call
 its lines are written from the text and the filters of the pass ask for
 what they read themselves; with the genotypes and the other columns asked
 for too, a pass over `big.vcf` took 0.95 s on one thread against 0.52 s.
-Any other source it asks for every field. It borrows the reader, so that the binding crate reads the
+Any other source it asks for every field. What the reader checks of a
+line is then what it checks with the text alone: the nine first columns
+there, a FORMAT with GT, one column for each individual and the UTF-8
+of the columns; a position that is not a number or a genotype of
+another ploidy is written as the source had it, unless a filter of the
+pass reads it, the genotypes of the missing data filter among them, and
+refuses it. It borrows the reader, so that the binding crate reads the
 counts of the filters from the chain when it returns. The Python binding
 crate opens the file, refuses a path that exists, and removes the file
 when this returns an error. A binding crate opens the source of a pass
