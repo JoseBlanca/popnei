@@ -1230,6 +1230,61 @@ mod tests {
         assert!(bytes.ends_with(&THE_EMPTY_MEMBER));
     }
 
+    /// The data lines `write_vcf` writes from the vars file of the VCF of
+    /// two individuals whose data lines are `lines`, read with `ploidy`.
+    fn lines_from_the_vars_file(ploidy: usize, lines: &[&str]) -> Vec<String> {
+        let vcf = format!(
+            "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\tb\n{}\n",
+            lines.join("\n")
+        );
+        let options = VcfOptions {
+            ploidy,
+            only_passed: false,
+            num_vars_per_block: None,
+        };
+        let reader = VcfReader::new(Cursor::new(vcf.into_bytes()), options).expect("the VCF");
+        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (text, _) = written(|| {
+            Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
+        });
+        text.lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn write_vcf_from_a_vars_file_writes_haploid_and_tetraploid_genotypes() {
+        let haploid = lines_from_the_vars_file(
+            1,
+            &[
+                "chr1\t5\t.\tA\tT\t.\tPASS\t.\tGT\t0\t1",
+                "chr1\t9\t.\tA\tT,G\t.\tPASS\t.\tGT\t2\t.",
+            ],
+        );
+        assert_eq!(
+            haploid,
+            [
+                "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0\t1",
+                "chr1\t9\t.\tA\tT,G\t.\t.\t.\tGT\t2\t.",
+            ]
+        );
+        let tetraploid = lines_from_the_vars_file(
+            4,
+            &[
+                "chr1\t5\t.\tA\tT\t.\tPASS\t.\tGT\t0/0/1/1\t0|1|1|1",
+                "chr1\t9\t.\tA\tT\t.\tPASS\t.\tGT\t.\t0/./1/.",
+            ],
+        );
+        assert_eq!(
+            tetraploid,
+            [
+                "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/0/1/1\t0/1/1/1",
+                "chr1\t9\t.\tA\tT\t.\t.\t.\tGT\t./././.\t0/./1/.",
+            ]
+        );
+    }
+
     /// A VCF of two individuals and `num_lines` data lines, whose bytes are
     /// `num_bytes` when that is given: the id of its last line is made as
     /// long as it takes.
