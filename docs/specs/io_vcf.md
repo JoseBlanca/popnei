@@ -937,6 +937,16 @@ individuals were taken out, and the genotypes of the block are not read.
 Without it, a row is formatted from the
 columns of the block.
 
+AC and AN are found as bcftools 1.24 finds them. In INFO, a value is what
+lies between two `;`, and its key is what comes before its first `=`, or
+the whole value for a flag; the values whose key is `AC` or `AN` are
+taken out and the others are written in their order, joined by `;`. In
+the header, an `##INFO=<...>` line is taken out when its `ID` field, read
+as the fields of a `##contig` line are read above, is `AC` or `AN`. A key
+that only starts with them, `ACX`, stays. This was decided with the code on
+26 September 2026 and is what `bcftools annotate -x INFO/AC,INFO/AN`
+wrote of `write.vcf`.
+
 ### How it is verified
 
 There is no pyNei to compare with. The reference is bcftools 1.24 and
@@ -1179,7 +1189,9 @@ The reader fills `header()` of `BlockReader` from the lines before
 
 The writer adds no case to the error of the crate that a user can reach.
 A file that could not be written is the case that `docs/specs/io_vars.md`
-adds for its writer, an `OSError` in Python that names the path. A
+adds for its writer, an `OSError` in Python that names the path; its
+message says that the file could not be written, and no longer that the
+vars file could not, since it is the case of both writers. A
 `##contig` length that is wrong is the wrong header of the reader, a
 `ValueError`. A block that lacks a field the writer needs, and a block
 whose text is not of its individuals, are a defect of popnei, a
