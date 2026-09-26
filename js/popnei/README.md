@@ -37,11 +37,14 @@ components of the individuals over those same dosages, where each of them
 is a direction along which the individuals differ most: the projection of
 every individual on the first ones, how much of the variance each holds and
 the weight every variant has in them. `calcPerVarDistribs` gives, for each
-population a user names in `pops` and each of five statistics of a variant,
+population a user names in `pops` and each of six statistics of a variant,
 the mean over the variants that had a value and a histogram of them. The
-five are the observed heterozygosity, the major allele frequency, the
-expected heterozygosity, plain and unbiased, and the polymorphism ratio,
-which is three counts and two ratios per population and not a distribution.
+six are the observed heterozygosity, the major allele frequency, the
+expected heterozygosity, plain and unbiased, the polymorphism ratio, which
+is three counts and two ratios per population and not a distribution, and
+the missing rate, `missing_rate` in `stats` and `missingRate` in the
+result: the missing genotypes of a population over its individuals, which
+every variant has whatever `minNumIndividuals` is.
 `calcPerIndividualStats` gives two numbers for each individual instead of
 one for each population: the share of the variants at which its genotype is
 missing, `missingGtRate`, and the share of its called genotypes at which it
@@ -556,7 +559,7 @@ A pass that gives no variant is an `Error` that says whether the source
 held none or the steps kept none, and for the steps how many variants each
 filter was given and kept.
 
-One pass gives the five statistics of every variant and every population:
+One pass gives the six statistics of every variant and every population:
 
 ```ts
 import { calcPerVarDistribs, init, openVcf } from "popnei";
@@ -564,11 +567,11 @@ import { calcPerVarDistribs, init, openVcf } from "popnei";
 await init();
 const panel = openVcf(new Uint8Array(await readFile("panel.vcf.gz")));
 const distribs = calcPerVarDistribs(panel, {
-  // The five when `stats` is left out. The populations are looked up among
+  // The six when `stats` is left out. The populations are looked up among
   // the individuals the pass gives, which are the ones a
   // `filterIndividuals` kept when the variants carry one, and with no
   // `pops` there is one population, `pop`, of every individual.
-  stats: ["maf", "poly_vars_ratio"],
+  stats: ["maf", "poly_vars_ratio", "missing_rate"],
   pops: { p0: ["s000", "s001"], p1: ["s002", "s003"] },
   // How many called genotypes a population needs at a variant to have a
   // value there, 20 when it is left out.
@@ -585,6 +588,8 @@ console.log(distribs.maf?.histBinEdges, distribs.maf?.histCounts);
 // The polymorphic variants of each population, those that vary at all, and
 // the ones that have a major allele frequency there.
 console.log(distribs.polyVarsRatio?.numPoly, distribs.passStats.numVars);
+// The mean share of the genotypes of each population that are missing.
+console.log(distribs.missingRate?.mean);
 panel.free();
 ```
 
@@ -650,7 +655,7 @@ refused. The names given to `filterIndividuals` are read against the
 individuals of the source at the call, so a name that is not one of them, a
 name that is there twice and a call with no name are each an `Error` there
 and not when a pass runs. Which names the core knows is the core's to
-refuse: a statistic that is none of the five and a kind of bins that is
+refuse: a statistic that is none of the six and a kind of bins that is
 neither `linear` nor `logarithmic` are an `Error` of the binding crate,
 whose message writes the names there are. In TypeScript
 `fields` and `stats` take their names and nothing
