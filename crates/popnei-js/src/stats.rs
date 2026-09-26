@@ -163,6 +163,9 @@ pub(crate) fn per_var_distribs_of(
             exp_het,
             unbiased_exp_het,
             poly_vars_ratio,
+            // The missing rate reaches TypeScript with task 2.2 of
+            // `docs/plans/writer-regions-density.md`.
+            missing_rate: _,
             num_vars: _,
         } = distribs;
         Ok(PerVarDistribs {

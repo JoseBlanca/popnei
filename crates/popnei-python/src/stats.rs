@@ -186,6 +186,10 @@ pub(crate) fn calc_per_var_distribs<'py>(
         exp_het,
         unbiased_exp_het,
         poly_vars_ratio,
+        // The missing rate reaches Python with task 2.2 of
+        // `docs/plans/writer-regions-density.md`; until then no member of
+        // `PerVarStat` in Python asks for it.
+        missing_rate: _,
         num_vars,
     } = distribs;
     Ok((

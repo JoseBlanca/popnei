@@ -591,11 +591,11 @@ pub enum Error {
     },
 
     /// A user asked for a statistic of a variant under a name that is of
-    /// none of the five. The names are those of the fields of the result,
+    /// none of the six. The names are those of the fields of the result,
     /// and they are `stats::PerVarStat::NAMES`, which the message lists.
     #[error(
-        "`{name}` is not one of the statistics of a variant, which are {the_five}",
-        the_five = the_five_statistics()
+        "`{name}` is not one of the statistics of a variant, which are {the_six}",
+        the_six = the_six_statistics()
     )]
     StatOfAnUnknownName {
         /// The name the user wrote.
@@ -3210,10 +3210,11 @@ fn the_remedies_of_a_fit_that_did_not_settle(model: crate::gwas::GwasModel) -> &
     }
 }
 
-/// The five statistics of a variant under the names a user writes them, for
+/// The six statistics of a variant under the names a user writes them, for
 /// the message that refuses a name that is of none of them: "`obs_het`,
-/// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
-fn the_five_statistics() -> String {
+/// `maf`, `exp_het`, `unbiased_exp_het`, `poly_vars_ratio` and
+/// `missing_rate`".
+fn the_six_statistics() -> String {
     listed(&crate::stats::PerVarStat::NAMES)
 }
 
