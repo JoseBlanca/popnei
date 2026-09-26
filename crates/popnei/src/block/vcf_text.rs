@@ -851,7 +851,7 @@ mod tests {
         assert_eq!(blocks[0].gts, [0, 1, -1, -1, 1, 1]);
         let (line, place, problem) = wrong_line(vcf, Needs::GTS | Needs::VCF_TEXT);
         assert_eq!(line, 3);
-        assert_eq!(place, VcfPlace::Line);
+        assert_eq!(place, VcfPlace::Individual("a".to_owned()));
         assert_eq!(problem, "its bytes are not valid UTF-8, and a VCF is text");
     }
 

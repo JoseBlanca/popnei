@@ -569,7 +569,7 @@ impl BatchRow {
                 true => fill_text_ends(
                     line,
                     self.number,
-                    rules.individuals.len(),
+                    rules.individuals,
                     rules.most_bytes_of_a_line_of_text,
                     &mut self.text_ends,
                 ),
@@ -2044,22 +2044,23 @@ fn without_the_bytes_of_the_line_end(line: &[u8]) -> &[u8] {
 }
 
 /// Where the nine first columns of the data line `line` end and where the
-/// column of each of the `num_individuals` individuals ends, counted from
-/// the start of the line, into `ends`: what the text of the lines of
-/// `docs/specs/io_vcf.md` keeps for the VCF writer beside the bytes of the
-/// line. `line` is one that [`parse_row`] read, so it has its nine first
-/// columns and one column of an individual at least.
+/// column of each of the `individuals` ends, counted from the start of the
+/// line, into `ends`: what the text of the lines of `docs/specs/io_vcf.md`
+/// keeps for the VCF writer beside the bytes of the line. `line` is one
+/// that [`parse_row`] read, so it has its nine first columns and one column
+/// of an individual at least.
 ///
 /// # Errors
 ///
 /// The wrong data line `number` when the line has not one column for each
-/// individual, when the bytes of the columns of the individuals are not
-/// UTF-8, and when the line is longer than the 4294967295 bytes that the
-/// 32 bit numbers of its ends reach.
+/// individual; when the bytes of the column of an individual are not
+/// UTF-8, which names the individual; and when the line is longer than
+/// `most_bytes`, the 4294967295 bytes that the 32 bit numbers of its ends
+/// reach but in a test.
 fn fill_text_ends(
     line: &[u8],
     number: u64,
-    num_individuals: usize,
+    individuals: &[String],
     most_bytes: u32,
     ends: &mut Vec<u32>,
 ) -> Result<()> {
@@ -2069,6 +2070,7 @@ fn fill_text_ends(
         problem,
     };
     ends.clear();
+    let num_individuals = individuals.len();
     let Some(length) = u32::try_from(line.len())
         .ok()
         .filter(|length| *length <= most_bytes)
@@ -2104,12 +2106,31 @@ fn fill_text_ends(
         .and_then(|fixed_end| usize::try_from(*fixed_end).ok())
         .and_then(|fixed_end| line.get(fixed_end..))
         .unwrap_or_default();
-    if std::str::from_utf8(individual_columns).is_err() {
-        return Err(wrong(
-            "its bytes are not valid UTF-8, and a VCF is text".to_string(),
-        ));
+    if std::str::from_utf8(individual_columns).is_ok() {
+        return Ok(());
     }
-    Ok(())
+    // A character of UTF-8 holds no tab, so the columns are text when the
+    // whole of them is, and the one that is not is looked for only here.
+    let not_text = ends.windows(2).zip(individuals).find(|(pair, _)| {
+        let (Some(start), Some(end)) = (pair.first(), pair.get(1)) else {
+            return false;
+        };
+        let column = usize::try_from(*start)
+            .ok()
+            .and_then(|start| start.checked_add(1))
+            .zip(usize::try_from(*end).ok())
+            .and_then(|(start, end)| line.get(start..end))
+            .unwrap_or_default();
+        std::str::from_utf8(column).is_err()
+    });
+    Err(Error::VcfDataLine {
+        line: number,
+        place: match not_text {
+            Some((_, individual)) => VcfPlace::Individual(individual.clone()),
+            None => VcfPlace::Line,
+        },
+        problem: "its bytes are not valid UTF-8, and a VCF is text".to_string(),
+    })
 }
 
 /// The genotype of every individual of the line, into the row `gts` of the
