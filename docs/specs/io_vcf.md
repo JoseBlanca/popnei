@@ -779,8 +779,8 @@ bcftools 1.24 and tabix 1.24 read, index and query a VCF that has none,
 tried on 26 September 2026 on the six line VCF of "How it is verified"
 with its two `##contig` lines taken out.
 
-The file is compressed with bgzip when the path ends in `.gz` and is
-plain otherwise. The owner decided on 26 September 2026 that popnei
+The file is compressed with bgzip when the path ends in `.gz`, in any
+case of its two letters, `a.VCF.GZ` among them, and is plain otherwise. The owner decided on 26 September 2026 that popnei
 writes bgzip where it can: a bgzipped VCF is what tabix indexes and what
 bcftools asks for a region of. The file is what the bgzip program writes,
 members of at most 65280 bytes of text, each a gzip stream that states
@@ -936,9 +936,12 @@ over miniz_oxide, at level 6, the level bgzip 1.24 uses when it is given
 none, which is zlib's default. The compressed bytes are not those of
 bgzip, whose deflate is zlib's, and the text they decompress to is the
 same. A member whose 65280 bytes deflate compresses to more than a member
-holds, 65536 bytes with its header and its end, is written at level 0,
-which stores the text as it is and always fits, as htslib does with a
-block that does not shrink. The file ends with the empty member of 28
+holds, 65536 bytes with its header and its end, is written by the writer
+itself as one stored block of deflate, which holds the text as it is and
+always fits, as htslib does with a block that does not shrink. miniz_oxide
+stores a text it cannot shrink on its own, in 65321 bytes for 65280 bytes
+of random text, so the writer's stored block is for a deflate that gave
+more than 65510 bytes of data or did not end its stream. The file ends with the empty member of 28
 bytes that htslib writes, the same bytes. Decided with the code on 26
 September 2026.
 
@@ -960,7 +963,10 @@ columns of the block.
 AC and AN are found as bcftools 1.24 finds them. In INFO, a value is what
 lies between two `;`, and its key is what comes before its first `=`, or
 the whole value for a flag; the values whose key is `AC` or `AN` are
-taken out and the others are written in their order, joined by `;`. In
+taken out, and so are the empty values that two `;` side by side or a
+`;` at the end leave, and the others are written in their order, joined
+by `;`: `AC=1;AN=4;` becomes `.` and `AC=1;;DP=3` becomes `DP=3`, as
+bcftools 1.24 writes them. In
 the header, an `##INFO=<...>` line is taken out when its `ID` field, read
 as the fields of a `##contig` line are read above, is `AC` or `AN`. A key
 that only starts with them, `ACX`, stays. This was decided with the code on
@@ -1169,14 +1175,19 @@ user of any library looks for it and which Python prints after the message
 of the exception, so putting it in the message too would say it twice.
 
 The writer. `write_vcf` is what both binding crates call, as they call
-`write_vars` of `docs/specs/io_vars.md`: it asks `reader` for every field
-and for `VCF_TEXT`, and borrows it, so that the binding crate reads the
+`write_vars` of `docs/specs/io_vars.md`. It asks a VCF, a source whose
+`header()` has the lines of a VCF header, for `VCF_TEXT` alone, since
+its lines are written from the text and the filters of the pass ask for
+what they read themselves; with the genotypes and the other columns asked
+for too, a pass over `big.vcf` took 0.95 s on one thread against 0.52 s.
+Any other source it asks for every field. It borrows the reader, so that the binding crate reads the
 counts of the filters from the chain when it returns. The Python binding
 crate opens the file, refuses a path that exists, and removes the file
-when this returns an error. A binding crate that opens a VCF for a pass
-of `write_vcf` opens it with `num_vars_per_block` set to
-`vcf_text_num_vars_per_block`, the blocks of a fifth of the default size
-that "What the reader keeps for the writer" gives the reason for.
+when this returns an error. A binding crate opens the source of a pass
+of `write_vcf` with the size `num_vars_per_block_of_write_vcf` gives: for
+a VCF, `vcf_text_num_vars_per_block`, the blocks of a fifth of the
+default size that "What the reader keeps for the writer" gives the reason
+for, and for a vars file the size of its own batches.
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1191,8 +1202,8 @@ pub struct VcfWriteOptions {
 /// `reader.individuals()`. A block with the text of its lines is written
 /// from that text; one without it is written from its columns, and then
 /// every block of the pass has to have the chromosome, the position, the
-/// id, the alleles, the quality and the genotypes, or the error names the
-/// field that is missing.
+/// alleles and the genotypes, or the error names the column that is
+/// missing; an id or a quality that the source has no column for is `.`.
 pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
     reader: &mut R, sink: W, options: VcfWriteOptions,
 ) -> Result<(W, u64)>;
@@ -1201,22 +1212,43 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
 /// the genotypes of a block of `docs/specs/block.md` divided by the
 /// individuals, no fewer than 100 and no more than 10000 variants.
 pub fn vcf_text_num_vars_per_block(num_individuals: usize) -> usize;
+
+/// What a pass of `write_vcf` reads, for the size of its blocks.
+pub enum WriterSource {
+    /// A VCF of that many individuals.
+    Vcf { num_individuals: usize },
+    /// A vars file.
+    VarsFile,
+}
+
+/// The size a binding crate opens the source of `write_vcf` with:
+/// `vcf_text_num_vars_per_block` for a VCF, and `None`, the size of its
+/// own batches, for a vars file.
+pub fn num_vars_per_block_of_write_vcf(source: WriterSource) -> Option<usize>;
 ```
 
 The reader fills `header()` of `BlockReader` from the lines before
 `#CHROM`, the meta lines and the lengths of the `##contig` lines, and the
 `vcf_text` column of `docs/specs/block.md` when `VCF_TEXT` is asked for.
 
-The writer adds no case to the error of the crate that a user can reach.
+The writer adds one case to the error of the crate that a user can reach:
+a source with no column of the chromosome, of the position, of the
+alleles or of the genotypes, which a vars file of another writer can be,
+since `docs/specs/io_vars.md` reads a file without a column as blocks
+without it. It is a `ValueError` that names the column and, in Python,
+the file that was read. A source without the `id` or the `qual` column,
+which the vars file writer of popnei writes for a source that has no such
+field, gives `.` in those columns, as an empty id and a NaN quality do.
 A file that could not be written is the case that `docs/specs/io_vars.md`
 adds for its writer, an `OSError` in Python that names the path; its
 message says that the file could not be written, and no longer that the
 vars file could not, since it is the case of both writers. A
 `##contig` length that is wrong is the wrong header of the reader, a
-`ValueError`. A block that lacks a field the writer needs, and a block
-whose text is not of its individuals, are a defect of popnei, a
-`RuntimeError`, since `write_vcf` asks for every field and the filters
-compact the text with the genotypes.
+`ValueError`. A block of a VCF that holds no text, a block whose text is
+not of its variants or of its individuals, and a chromosome number the
+table of its reader has no name for are a defect of popnei, a
+`RuntimeError`, and so is a member of bgzip that could not be put
+together, which names the file being written.
 
 ## Speed
 

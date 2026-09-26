@@ -519,6 +519,9 @@ impl VcfText {
     pub fn num_vars(&self) -> usize;
     pub fn num_individuals(&self) -> usize;
     /// CHROM to FORMAT of the variant, joined by tabs as the line has them.
+    /// The three texts are empty for a variant or an individual the block
+    /// does not hold; the writer reaches them through a path that refuses
+    /// one instead.
     pub fn fixed(&self, var: usize) -> &str;
     /// The column of the individual, `0/1:12` or `./.`.
     pub fn individual(&self, var: usize, individual: usize) -> &str;
@@ -530,7 +533,9 @@ impl VcfText {
 ```
 
 `check` asks of it what it asks of every column, one entry for each
-variant, and one text for each individual of the block.
+variant, and one text for each individual of the block, and that the ends
+of its texts are one for the nine first columns and one for each
+individual of each variant, inside the text of their line.
 
 What a source said of itself before its first variant.
 
