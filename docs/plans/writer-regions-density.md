@@ -209,7 +209,7 @@ Tasks:
   "How it runs" of the writer. `write.vcf`, the script and its outputs.
   Deliverables 1 and 3. A line that differs from bcftools by one value is
   silent: guarded by deliverable 3.
-- [ ] 3.3 The bgzip of the writer, members of 65280 bytes compressed on the
+- [x] 3.3 The bgzip of the writer, members of 65280 bytes compressed on the
   threads of rayon and the empty member at the end, and
   `vcf_text_num_vars_per_block`. Deliverable 3, bgzipped.
 - [ ] 3.4 `write_vcf` and `writeVcf` in both binding crates and both

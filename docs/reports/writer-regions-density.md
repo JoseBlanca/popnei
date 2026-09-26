@@ -230,3 +230,53 @@ individuals and checks that they are UTF-8, and refuses a line longer
 than 4294967295 bytes; the spec says so now. Reading all of `big.vcf`
 takes 0.575 to 0.604 s on one thread and 0.083 to 0.085 s on 18, with and
 without the change, at a load average of 5.
+
+Task 3.2, commits 13bf74b and 19a7f80. `write_vcf` writes each line as the
+source VCF had it, or builds it from the columns and the header when the
+source is a vars file, and takes AC and AN out of INFO when the pass has
+fewer individuals than its source; it finds them by the INFO key and by
+the `ID` of the `##INFO` lines, as bcftools does, which the spec says now.
+`tests/reference/vcf/make_reference.py` stores the outputs of bcftools
+1.24 for the writer's cases: the filter of individuals, the rows of the
+file written from the vars file, and the 215 lines of the missing data
+filter at 0.04. Twelve tests compare whole files; a change of one byte in
+four places of the writer made 7, 2, 2 and 1 of them fail.
+
+Task 3.3, commits 7e31380 and b9c3a2b. `write_vcf` bgzips in members of
+65280 bytes of text compressed on the threads of rayon, one after another
+in wasm, with the empty member of 28 bytes at the end; a member whose
+deflate does not fit in 65536 bytes is stored. Every case of the writer is
+also written bgzipped and decompresses to the bytes of the plain case;
+`bgzip -t`, `tabix -p vcf` and the query at chr1:900-1100 pass on each
+file, and a test prints that it was skipped when a program is not in the
+PATH. `vcf_text_num_vars_per_block` is a fifth of the genotypes divided
+by the individuals, from 100 to 10000 variants.
+
+### Waiting for the owner: the deflate of the bgzip
+
+The plan asks the owner to choose when the bgzipped write of `big.vcf` on
+one thread is more than a tenth above bcftools' 8.9 s, that is above
+9.79 s. With flate2 over miniz_oxide at level 6, the deflate the core
+had, it takes 10.6 s. The times below are of `write_vcf` on one thread,
+from the VCF with its text, to a file, release build, Apple M5 Pro, three
+runs in one process, on 26 September 2026, at a load average that fell
+from 4.9 to 2.1 over the session; they are on the branch
+`exp/writer-deflate`, commit 9dbd912, in its own worktree, with the
+program in the session's scratch directory.
+
+| deflate | level | seconds, three runs | MB | builds for both wasm targets |
+|---|---|---|---|---|
+| miniz_oxide, now | 5 | 5.02, 5.01, 5.00 | 41.6 | yes |
+| miniz_oxide, now | 6 | 10.68, 10.63, 10.60 | 38.4 | yes |
+| zlib-rs | 5 | 3.12, 3.11, 3.11 | 39.8 | yes |
+| zlib-rs | 6 | 5.56, 5.55, 5.54 | 37.4 | yes |
+| libdeflate | 6 | 4.49, 4.50, 4.48 | 39.8 | no |
+
+In the same session `bcftools view -Oz` took 8.87 to 8.93 s and `bgzip
+-@1` 7.41 to 7.44 s, both for 37.7 MB, and the plain write 0.98 to 1.00 s.
+zlib-rs is pure Rust, `zlib-rs` 0.6.8 behind the `zlib-rs` feature of
+flate2 1.1.10, and with it on flate2 decompresses with it too, so the
+readers of bgzipped files change their inflate as well, which was not
+timed. libdeflate, `libdeflater` 1.26.1, is C: it failed to build for
+`wasm32-unknown-emscripten` without `emcc` and for
+`wasm32-unknown-unknown` without C headers.
