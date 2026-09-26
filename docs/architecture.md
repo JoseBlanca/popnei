@@ -27,6 +27,12 @@ pub trait BlockReader: Send {
     /// How many variants each filter between this reader and its source,
     /// this one first when it is a filter, was given and kept.
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
+    /// What the source said of itself before its first variant.
+    fn header(&self) -> &SourceHeader;
+    /// The regions of the filter by regions, whose variants outside them
+    /// a source may skip, and how many it skipped.
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool;
+    fn num_skipped(&self) -> u64;
 }
 ```
 
@@ -62,7 +68,7 @@ What this gives:
   and a count, to which it adds what rayon reduced over the rows of each
   block.
 - **Only what is asked for is filled.** `Needs` is a bit set, `GTS`,
-  `CHROM_POS`, `ID`, `ALLELES`, `QUAL`, and a column that nobody asked for
+  `CHROM_POS`, `ID`, `ALLELES`, `QUAL`, and `VCF_TEXT` for the VCF writer, and a column that nobody asked for
   is `None` in the block. Most consumers ask for the genotypes alone. The
   VCF reader then does not parse the other columns, and the vars file
   reader does not decompress them. A change of `Needs` holds from the next

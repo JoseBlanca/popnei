@@ -347,7 +347,7 @@ impl Needs {
     pub const QUAL: Needs;
     /// The text of the lines of a VCF, for its writer. Not in ALL.
     pub const VCF_TEXT: Needs;
-    /// The five above, built from them.
+    /// GTS to QUAL, the five above VCF_TEXT, built from them.
     pub const ALL: Needs;
     pub fn empty() -> Needs;
     pub fn contains(self, fields: Needs) -> bool;

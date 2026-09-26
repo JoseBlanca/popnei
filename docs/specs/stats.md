@@ -330,8 +330,8 @@ blocks of its source back to one size. For each row and each population
 the counts of "The
 counts of one variant over a population" are taken once, and the
 statistics that were asked for follow from those counts: the observed
-heterozygosity from the genotype counts, the other three from the allele
-counts. Each thread adds what it finds into accumulators of its own, and
+heterozygosity and the missing rate from the genotype counts, the other
+three from the allele counts. Each thread adds what it finds into accumulators of its own, and
 the accumulators of the threads are added when the block is done: per
 statistic and population a sum of the values as `f64`, a count of the
 variants that had a value, and the counts of the bins; for the
@@ -970,8 +970,8 @@ population it is the number that the missing data filter of
 user where to put that threshold: how many variants they keep at 0.05 and
 how many more at 0.1.
 
-Every variant has a value in every population, which has one individual
-at least, so the missing rate is not held to `min_num_individuals`, which
+A population has one individual at least, so every variant has a missing
+rate in every population, and the missing rate is not held to `min_num_individuals`, which
 is decided here: the variants with the fewest called genotypes are the
 ones this histogram is looked at for, and a threshold on the called
 genotypes would take out exactly those. A variant with nothing called has
@@ -1210,8 +1210,9 @@ The length of a chromosome is the one the user gives in `chrom_lengths`,
 and when they give none, the one the source has: the `##contig` lines of
 the VCF that have a `length`, and the lengths the vars file keeps of the
 VCF it was written from (`docs/specs/io_vcf.md`, `docs/specs/io_vars.md`).
-A `chrom_lengths` that is given is the whole of the lengths, and those of
-the source are not read, so a user knows which lengths were used. A
+A `chrom_lengths` that is given replaces the lengths of the source: those
+of the source are not read for any chromosome, and a chromosome it does
+not name has no length, so a user knows which lengths were used. A
 chromosome with a length is in the result whether or not it has a
 variant, all its windows at 0 when it has none.
 
@@ -1579,8 +1580,8 @@ pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(reader: &mut R)
 ```
 
 The density of the variants. The start of window k of a chromosome is k x
-`window_size` + 1 and its end (k + 1) x `window_size`, or the length for
-the last window of a chromosome that has one. The binding crates build the
+`window_size` + 1 and its end (k + 1) x `window_size`, except for the last
+window of a chromosome with a length, which ends at the length. The binding crates build the
 frame and the arrays from these.
 
 ```rust
@@ -1611,12 +1612,16 @@ pub fn calc_var_density<R: BlockReader + ?Sized>(
 ) -> Result<VarDensity>;
 ```
 
-Its errors are four new cases of the error of the crate, each a
+Its errors are three new cases of the error of the crate, each a
 `ValueError` in Python: a `window_size` or a length of 0, with the
 argument; a variant past the length of its chromosome, with the
-chromosome, the position, the length and where the length came from; more
-than `MAX_NUM_WINDOWS` windows, with the number; and the error of a pass
-that gave no variant, which the calculations above have already.
+chromosome, the position, the length and where the length came from; and
+more than `MAX_NUM_WINDOWS` windows, with the number. It gives two that
+are there already: the error of a pass that gave no variant, and, for a
+source with no chromosome and position, a vars file written without them
+or a `Variants` built from an array of genotypes, the error of
+`docs/specs/variant.md` for a field that a consumer depends on and did not
+get.
 
 The binding crates build the Python and TypeScript results from these,
 NaN for a `None`, and the names of the individuals from `individuals()`

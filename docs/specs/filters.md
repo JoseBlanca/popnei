@@ -1077,8 +1077,9 @@ and the line, and in TypeScript an `Error` that names the line:
 - The filter needs the chromosome and the position. It asks its source
   for them besides what its consumer asked for, and a source that lacks
   them, a vars file written without those columns or a `Variants` built
-  from an array of genotypes, is an error when the pass starts that names
-  the field.
+  from an array of genotypes, gives at its first block the error of
+  `docs/specs/variant.md` for a field that a consumer depends on and did
+  not get, a `ValueError` in Python that names the field.
 - A BED that names its chromosomes `1` where the source names them `chr1`
   keeps nothing, and the consumer then gives the error of a pass that gave
   no variant, whose message has the counts of this filter, 500 given and 0
@@ -1099,8 +1100,8 @@ The owner decided on 26 September 2026 that the source skips the variants
 this filter would take out, so that they are not built at all, where the
 option not taken was a filter that looks at every variant and leaves the
 skipping for later. When this filter is the first filter of variants of
-the chain, with nothing between it and the source or only the filter of
-individuals, it hands its regions to the source when the chain is built,
+the chain, so that nothing stands between it and the source but, at most,
+the filter of individuals, it hands its regions to the source when the chain is built,
 with `skip_outside` of `docs/specs/block.md`, and the source gives only
 the variants the filter can keep:
 
@@ -1116,18 +1117,37 @@ the variants the filter can keep:
   decompressed. In the other batches it gives every variant, and the
   filter takes them out.
 
-The source counts the variants it passed over, with `num_skipped`, and the
-filter adds them to the variants it was given, so the counts are the ones
-the filter gives without the skip. A line that the VCF reader skips for
+The source counts the variants it passed over since the pass started, and
+gives that number with `num_skipped`. The filter's count of the variants
+it was given is the variants that reached it plus that number, read when
+its counts are read, so the counts are the ones the filter gives without
+the skip. A filter of variants gives 0 as its `num_skipped`, since it
+passed its source nothing to skip, so a second filter by regions, which
+has the first below it, adds nothing that the first counted. A line that the VCF reader skips for
 its FILTER is counted by neither, as it is not a variant of the source.
 
 When a filter of variants comes before this one, the source is not handed
 the regions: skipping would take variants from that filter too and change
 its counts. This filter then looks at every variant it gets, which is the
-same variants and slower. A user who puts the filter by regions first
+same variants and slower, and it is given what the filter before it kept. A user who puts the filter by regions first
 gets the skip. When a `"regions"` and an `"excluded_regions"` step are
 both in the chain, the first of the two can hand its regions to the
 source and the second looks at every variant.
+
+A line that the VCF reader skips is not parsed past CHROM, POS and FILTER,
+so a wrong genotype, a genotype of another ploidy or an undeclared allele
+in it is an error with the skip and is one without it when a filter of
+variants comes first. This is decided here, and it is what the reader
+does already for a column that no consumer asked for: "How it runs" of
+the reader in `docs/specs/io_vcf.md` does not check a column it does not
+parse. A line outside the regions holds no variant of the pass either
+way. A POS that does not parse as a number gives the line a row, so the
+parse gives the error of that column whatever the regions are.
+
+With the skip, a chromosome whose lines are all skipped gets no number in
+the table of chromosome names, so the numbers of the chromosomes can
+differ with and without it; the names and the positions of the variants
+do not.
 
 ### How it is verified
 
@@ -1161,7 +1181,8 @@ counted from the positions of the file. chr3 has no variant. The cargo
 tests, made at `next_block` of a `RegionsReader` over a `VcfReader` on
 `many.vcf`, in blocks of 7 variants and of the default size, assert the 45
 positions and the 455, the counts 500 given and 45 kept, and the same with
-the skip of the source and without it.
+the skip of the source and without it, the variants compared by the names
+of their chromosomes and their positions.
 
 The same variants written as a vars file in batches of 100 variants have
 five batches, whose regions in the footer are chr1 1000 to 4663; chr1 4700
@@ -1513,10 +1534,9 @@ impl RegionFilter {
     /// has variants and no chromosome or no position, is an error, the
     /// block is as it was and nothing is added.
     pub fn filter_block(&mut self, block: &mut Block, chroms: &ChromTable) -> Result<()>;
-    /// `add_skipped` adds the variants its source passed over to those it
-    /// was given, which `RegionsReader` calls with what its source's
-    /// `num_skipped` says.
-    pub fn add_skipped(&mut self, num_vars: u64);
+    /// Over the blocks it was given. `RegionsReader` adds the
+    /// `num_skipped` of its source to `vars_processed` when its counts are
+    /// read.
     pub fn stats(&self) -> FilteringStats;
 }
 

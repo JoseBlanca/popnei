@@ -734,11 +734,11 @@ the kept individuals. For that the reader keeps two things that it
 otherwise drops, which "What the reader keeps for the writer" below
 describes: the header, and the text of every line.
 
-When the filter of individuals took some out, the counts in INFO that are
-over the individuals are the ones of the whole file, unless they are
-worked out again. What the writer does with AC, how often each
-alternative allele was called, and AN, the called alleles, is **Open 1**,
-below. The other values of INFO, a depth DP or a frequency AF, are
+When the filter of individuals took some out, AC, how often each
+alternative allele was called, and AN, the called alleles, are counts
+over individuals that are no longer in the file. Whether the writer works
+them out again is **Open 1**, below. The other values of INFO, a depth
+DP or a frequency AF, are
 written as the source had them, as `bcftools view -s` writes them: they
 are of every individual of the source.
 
@@ -859,8 +859,11 @@ block.
   FILTER failed too, each with its FILTER as it was.
 - The text of a genotype is written as the source had it, so a `/0/1` of
   VCF 4.4 is written `/0/1`, which bcftools 1.24 refuses, and not the
-  `0/1` that the reader reads it as. A file read and written again with
-  no step is the same file, byte for byte.
+  `0/1` that the reader reads it as. A file read with `only_passed` false
+  and written again with no step is the same file, byte for byte, when
+  its lines end in `\n` and none is empty. The reader takes lines that
+  end in `\r\n` and skips empty ones, and the writer ends every line,
+  those of the header too, with `\n` and writes no empty line.
 - A vars file written from a VCF keeps the lengths of its chromosomes, and
   a VCF written from that vars file has them in its `##contig` lines.
 
@@ -917,10 +920,15 @@ read. The cargo tests, made at `write_vcf` of "The Rust interface":
   decompresses to them.
 - Read with the default, the line of chr1 250, whose FILTER is `q10`, is
   not there and the other five are as they were.
-- With the filter of individuals keeping `c` and `a`, the header and the
-  lines are what `bcftools view --no-version -s c,a write.vcf` writes,
-  under the meanwhile of Open 1. The first line is
-  `chr1 100 rs1 A T 29.5 PASS AC=3;AN=4;DP=12 GT:DP 1/1:3 0/1:4`.
+- Read with `only_passed` false and with the filter of individuals
+  keeping `c` and `a`, the lines are those that `bcftools view
+  --no-version -s c,a write.vcf` writes, under the meanwhile of Open 1,
+  and the header is the one it writes less its
+  `##FILTER=<ID=PASS,Description="All filters passed">`, which bcftools
+  adds after `##fileformat` and popnei does not. The first line is
+  `chr1 100 rs1 A T 29.5 PASS AC=3;AN=4;DP=12 GT:DP 1/1:3 0/1:4`, the
+  line of chr1 250 has `AC=0;AN=2;DP=5`, and chr1 1001, whose ALT is `.`,
+  gets `DP=9;AN=4`.
 - Read with the default, written as a vars file and written back from it
   with `write_vcf`, the file is the header of the vars file case above,
   with the two `##contig` lines of the lengths, and these five lines:
@@ -1084,14 +1092,18 @@ counts of the filters from the chain when it returns. The Python binding
 crate opens the file, refuses a path that exists, and removes the file
 when this returns an error. A binding crate that opens a VCF for a pass
 of `write_vcf` opens it with `num_vars_per_block` set to
-`vcf_text_num_vars_per_block`, the fifth of "What the reader keeps for
-the writer".
+`vcf_text_num_vars_per_block`, the blocks of a fifth of the default size
+that "What the reader keeps for the writer" gives the reason for.
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VcfWriteOptions {
     /// Members of bgzip, or plain text.
     pub bgzip: bool,
+    /// Work AC and AN out again from the genotypes of the kept
+    /// individuals, Open 1: true when the steps have a filter of
+    /// individuals.
+    pub recount_ac_an: bool,
 }
 
 /// Every variant of `reader` into a VCF on `sink`, and the sink back with
@@ -1118,7 +1130,7 @@ The reader fills `header()` of `BlockReader` from the lines before
 
 The writer adds no case to the error of the crate that a user can reach.
 A file that could not be written is the case that `docs/specs/io_vars.md`
-adds for its writer, an `OSError` in Python that names the path; a
+adds for its writer, an `OSError` in Python that names the path. A
 `##contig` length that is wrong is the wrong header of the reader, a
 `ValueError`. A block that lacks a field the writer needs, and a block
 whose text is not of its individuals, are a defect of popnei, a
@@ -1237,12 +1249,18 @@ The owner decides the point below, and the implementer follows its
    individuals takes individuals out, the AC and AN of a line are counts
    over individuals that are no longer in the file. The options:
    - (a) As `bcftools view -s` does: AC and AN are worked out again from
-     the genotypes of the kept individuals in every line, added to a line
-     that lacks them and to the header when it does not declare them, with
-     the two `##INFO` lines bcftools writes. A half called genotype counts
-     its called allele in both, as the rest of popnei does. The file is the
-     one bcftools writes, so the test compares whole files; a line gets two
-     values it may not have had, as chr1 1001 of `write.vcf` gets `AN=4`.
+     the genotypes of the kept individuals in every line. A value that is
+     there is replaced where it stands; one that is not is appended at the
+     end of INFO, AC before AN, and an INFO of `.` becomes `AC=..;AN=..`;
+     a line whose ALT is `.` gets AN alone. A header that does not declare
+     them gets `##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele
+     count in genotypes">` and `##INFO=<ID=AN,Number=1,Type=Integer,
+     Description="Total number of alleles in called genotypes">` after its
+     last meta line. A half called genotype counts its called allele in
+     both, as the rest of popnei does. bcftools 1.24 does each of these,
+     tried on 26 September 2026. The lines are those bcftools writes, so
+     the test compares them whole; a line gets values it may not have had,
+     as chr1 1001 of `write.vcf` gets `AN=4`.
    - (b) Worked out again only where the line has them. The file keeps its
      shape, and differs from what bcftools writes in the lines without
      them.
@@ -1251,8 +1269,11 @@ The owner decides the point below, and the implementer follows its
 
    Recommended: (a), because it is the reference program's behaviour and
    no count in the file is of individuals that are not in it. Meanwhile,
-   (a), whenever the chain has a filter of individuals, as bcftools does
-   whenever `-s` is given.
+   (a), whenever the steps have a filter of individuals, also one that
+   keeps every individual in their order, as bcftools does whenever `-s`
+   is given. The binding crate, which has the steps, says so in
+   `recount_ac_an` of `VcfWriteOptions`, since the chain of readers does
+   not tell such a filter from none.
 
 The owner decided on 20 September 2026 the six points the reader had:
 the ploidy as an argument and the refusal of mixed ploidies, the variants

@@ -674,8 +674,9 @@ batch of which `keeps_none_of` of the selection says, for each chromosome
 of the batch in `popnei_batches`, from its smallest to its largest
 position, that no variant can be kept: it does not seek to it, nothing of
 it is decompressed, and its variants go into `num_skipped`. A file with no
-`chrom` and `pos` columns has no regions in its footer, and the filter
-refuses it before any batch is read. `header()` gives the individuals of
+`chrom` and `pos` columns has no regions in its footer, so the reader
+skips nothing and gives its first batch, which the filter refuses with the
+error of a field it depends on. `header()` gives the individuals of
 the file, `chrom_lengths` of its `popnei` key, and no meta lines of a
 VCF.
 
