@@ -412,6 +412,18 @@ def test_per_var_distribs_refuses_a_statistic_written_as_a_string() -> None:
         calc_per_var_distribs(_many(), stats=("mafs",))
 
 
+def test_per_var_distribs_name_the_member_of_the_string_that_was_given() -> None:
+    """A name written as a string that is the value of a member is refused
+    with that member in the example of what to write, and a name of no
+    member with the example of the major allele frequency."""
+    with pytest.raises(TypeError, match=r"stats=\(PerVarStat\.MISSING_RATE,\)"):
+        calc_per_var_distribs(_many(), stats="missing_rate")
+    with pytest.raises(TypeError, match=r"stats=\(PerVarStat\.OBS_HET,\)"):
+        calc_per_var_distribs(_many(), stats=("obs_het",))
+    with pytest.raises(TypeError, match=r"stats=\(PerVarStat\.MAF,\)"):
+        calc_per_var_distribs(_many(), stats=("missing",))
+
+
 def test_per_var_distribs_refuse_a_stats_that_names_nothing_at_all() -> None:
     """What is no sequence of members names no statistic, and the message
     says which argument it was and what was given, where Python's own says

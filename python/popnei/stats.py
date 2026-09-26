@@ -306,8 +306,7 @@ def _the_stats(stats: Iterable[PerVarStat]) -> list[str]:
         # user would read about a statistic they never wrote.
         raise TypeError(
             f"`stats` takes the members of `PerVarStat`, and {stats!r}, a "
-            f"{type(stats).__name__}, is not one of them: write "
-            f"stats=(PerVarStat.MAF,) for the major allele frequency"
+            f"{type(stats).__name__}, is not one of them: {_what_to_write(stats)}"
         )
     try:
         stats = list(stats)
@@ -324,8 +323,7 @@ def _the_stats(stats: Iterable[PerVarStat]) -> list[str]:
         if not isinstance(stat, PerVarStat):
             raise TypeError(
                 f"`stats` takes the members of `PerVarStat`, and {stat!r}, a "
-                f"{type(stat).__name__}, is not one of them: write "
-                f"stats=(PerVarStat.MAF,) for the major allele frequency"
+                f"{type(stat).__name__}, is not one of them: {_what_to_write(stat)}"
             )
         if str(stat) not in asked_for:
             asked_for.append(str(stat))
@@ -335,6 +333,20 @@ def _the_stats(stats: Iterable[PerVarStat]) -> list[str]:
             "asked for: leave `stats` out for the six of `PerVarStat`"
         )
     return asked_for
+
+
+def _what_to_write(given: object) -> str:
+    """What a message that refuses `given` in `stats` tells the user to
+    write: the member whose value it is, when it is the name of one written
+    as a string, and the major allele frequency as an example otherwise."""
+    if isinstance(given, str):
+        try:
+            member = PerVarStat(given)
+        except ValueError:
+            pass
+        else:
+            return f"write stats=(PerVarStat.{member.name},)"
+    return "write stats=(PerVarStat.MAF,) for the major allele frequency"
 
 
 def _the_pops(
