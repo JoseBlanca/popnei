@@ -1049,10 +1049,18 @@ impl<R: BufRead + Send> VcfReader<R> {
             source_done,
             skip_outside,
             num_skipped,
+            individuals,
+            needs,
             #[cfg(test)]
             batches_filled,
             ..
         } = self;
+        // The columns of individuals a line skipped for the regions has to
+        // have, which the parse checks when it reads the genotypes or the
+        // text of the line, and not otherwise.
+        let columns_of_individuals = (needs.contains(Needs::GTS)
+            || needs.contains(Needs::VCF_TEXT))
+        .then_some(individuals.len());
         *filled = 0;
         // The regions of the chromosome of the line before, with its name,
         // so that a run of lines of one chromosome looks its name up once.
@@ -1132,7 +1140,7 @@ impl<R: BufRead + Send> VcfReader<R> {
                         regions
                     }
                 };
-                if !regions.keeps(pos) {
+                if !regions.keeps(pos) && has_the_shape_of_a_line(line, columns_of_individuals) {
                     text.truncate(start);
                     // A line of a source held in memory, so the count does
                     // not reach the largest `u64`.
@@ -1318,6 +1326,41 @@ fn chrom_and_pos_of(line: &[u8]) -> Option<(&[u8], u64)> {
         number.checked_mul(10)?.checked_add(u64::from(digit))
     })?;
     Some((chrom, pos))
+}
+
+/// Whether a data line has what the reader checks of every line it gives a
+/// row, whatever is asked for, so that a line outside the regions can be
+/// passed over and give no error the parse would have given: the nine
+/// first columns, UTF-8, a FORMAT with a `GT` key, one column after it at
+/// least and, when `columns_of_individuals` is a number, that many columns
+/// after the FORMAT.
+///
+/// A line that has not is given a row, and its parse gives its error. The
+/// tabs are counted over the whole line, which is the one part of the line
+/// the skip reads past its first columns.
+fn has_the_shape_of_a_line(line: &[u8], columns_of_individuals: Option<usize>) -> bool {
+    let mut tabs = memchr::memchr_iter(b'\t', line);
+    let (Some(eighth), Some(ninth)) = (tabs.nth(7), tabs.next()) else {
+        return false;
+    };
+    let (Some(fixed), Some(format)) =
+        (line.get(..ninth), line.get(eighth.saturating_add(1)..ninth))
+    else {
+        return false;
+    };
+    if std::str::from_utf8(fixed).is_err()
+        || !format.split(|byte| *byte == b':').any(|key| key == b"GT")
+    {
+        return false;
+    }
+    match columns_of_individuals {
+        // Nine tabs before the first column of an individual and one before
+        // each of the others.
+        Some(columns) => {
+            line.iter().filter(|byte| **byte == b'\t').count() == columns.saturating_add(8)
+        }
+        None => true,
+    }
 }
 
 /// Whether the line is given a row: its FILTER, the bytes between its sixth

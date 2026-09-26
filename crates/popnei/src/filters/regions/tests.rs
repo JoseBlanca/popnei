@@ -1710,3 +1710,58 @@ fn skip_outside_a_pos_that_does_not_parse_is_the_error_of_that_column() {
     // chr2 had no line given, so it has no number.
     assert_eq!(reader.chroms().len(), 1);
 }
+
+/// The error of the first block of the VCF of `lines` under a header of
+/// two individuals, read with the genotypes asked for, with the regions of
+/// chr1 1 to 10 handed to the reader or not; `None` when it gives blocks.
+fn the_error_of_the_vcf(lines: &[u8], skips: bool) -> Option<String> {
+    let mut vcf =
+        b"##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\tb\n\
+                    chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/0\n"
+            .to_vec();
+    vcf.extend_from_slice(lines);
+    let options = VcfOptions {
+        ploidy: 2,
+        only_passed: false,
+        num_vars_per_block: None,
+    };
+    let mut reader = VcfReader::new(std::io::Cursor::new(vcf), options).expect("the reader");
+    reader.set_needs(Needs::GTS | Needs::CHROM_POS);
+    if skips {
+        assert!(reader.skip_outside(selection_of(b"chr1\t0\t10\n", false)));
+    }
+    blocks_of(&mut reader).err().map(|error| error.to_string())
+}
+
+/// A line outside the regions keeps the checks of its shape: too few
+/// columns, nine first columns that are not UTF-8, fewer and more columns
+/// of individuals than the header has, a FORMAT with no GT, and a plain VCF
+/// cut inside its last line, which is skipped, each give the error of the
+/// pass without the skip.
+#[test]
+fn skip_outside_a_line_outside_the_regions_keeps_the_checks_of_its_shape() {
+    let lines: [&[u8]; 7] = [
+        b"chr1\t500\t.\tA\tT\n",
+        b"chr1\t500\t\xff\tA\tT\t.\t.\t.\tGT\t0/1\t0/0\n",
+        b"chr1\t500\t.\tA\tT\t.\t.\t.\tGT\t0/1\n",
+        b"chr1\t500\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/0\t1/1\n",
+        b"chr1\t500\t.\tA\tT\t.\t.\t.\tDP\t3\t4\n",
+        b"chr1\t500\t.\tA\tT\t.\t.\t.\tGT\n",
+        b"chr1\t500\t.\tA\tT\t.\t.",
+    ];
+    for line in lines {
+        let without = the_error_of_the_vcf(line, false);
+        assert!(without.is_some(), "{:?}", String::from_utf8_lossy(line));
+        assert_eq!(
+            the_error_of_the_vcf(line, true),
+            without,
+            "{:?}",
+            String::from_utf8_lossy(line)
+        );
+    }
+    // A whole line outside the regions is still passed over.
+    assert_eq!(
+        the_error_of_the_vcf(b"chr1\t500\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/7\n", true),
+        None
+    );
+}
