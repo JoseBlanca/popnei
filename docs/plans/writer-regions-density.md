@@ -198,7 +198,7 @@ Stands on: work package 1, for the header.
 
 Tasks:
 
-- [ ] 3.1 `Needs::VCF_TEXT` and `VcfText`, the text the VCF reader keeps
+- [x] 3.1 `Needs::VCF_TEXT` and `VcfText`, the text the VCF reader keeps
   and the compaction of it by `retain_vars`, `retain_individuals` and
   `reblock`, from "What the reader keeps for the writer" of
   `docs/specs/io_vcf.md` and the paragraph of `docs/specs/block.md` that

@@ -151,3 +151,24 @@ they compile; until task 2.2 `stats: ["missing_rate"]` in TypeScript is
 taken and gives nothing. The spec's paragraph on `MAX_NUM_BINS` counted
 four statistics with a histogram and 3.2 MB for each chunk of rows; with
 the missing rate they are five and 4 MB, and the spec says so now.
+
+Task 2.2, commit 833da72. `PerVarStat.MISSING_RATE` in Python and
+`"missing_rate"` in TypeScript ask for the rate, and the results give it as
+`missing_rate` and `missingRate`; it is among the six statistics computed
+when none are named. `tests/reference/stats/make_reference.py` keeps
+`many.vmiss`, `many.popA.vmiss` and `many.popB.vmiss` of plink2
+v2.0.0-a.7.7 and checks the table of the spec against them.
+
+Deliverables, run at 78a214f:
+
+- 1: `cargo test -p popnei --lib per_var_missing_rate` gave 6 passed,
+  where there were none.
+- 2: the reference script ran and its check passed; the pytest test
+  against the three files, over all and over popA and popB, passed.
+- 3: the pytest comparison with pyNei leaves the missing rate out and
+  passes; the test of one pass against one pass each covers six.
+- 4: the TypeScript test of the means over all and in popA passed.
+- All the checks: `cargo test --workspace` 1050 passed, 2 ignored, and
+  150; pytest 555 passed, 5 skipped; `npm test` 444 of 445, the old
+  failure; `npm run test:browser` 8 passed; fmt, clippy, both wasm checks
+  and ruff clean.
