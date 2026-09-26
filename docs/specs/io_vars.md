@@ -685,10 +685,12 @@ error of such a batch, as it is when the batch is read. Beyond that the
 footer is trusted for a batch that is skipped: a footer whose regions of a
 batch were changed after the file was written, so that they no longer hold
 its variants, has the batch skipped although the filter would keep some of
-them, and nothing says so. A batch that is read is checked against its
-entry: a variant of it on a chromosome the entry does not name, or at a
-position outside the smallest and the largest the entry gives for its
-chromosome, is an error of the batch, and so is a region of the footer
+them, and nothing says so. A batch that is read with its chromosomes and
+its positions, which the filter by regions always asks for, is checked
+against its entry: a variant of it on a chromosome the entry does not
+name, or at a position outside the smallest and the largest the entry
+gives for its chromosome, is an error of the batch, a `ValueError` in
+Python that names the file, the batch, the chromosome and the position, and so is a region of the footer
 whose smallest position is above its largest, when the file is opened. The
 owner is asked whether the footer is to be trusted for the batches that
 are skipped. A file with no
