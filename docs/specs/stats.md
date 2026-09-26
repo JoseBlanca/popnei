@@ -1023,9 +1023,9 @@ histogram numpy's with 40 bins from 0 to 1:
 | popA | 20 | 0.0602 | 0: 144, 2: 180, 4: 116, 5: 51, 8: 8, 10: 1 |
 | popB | 30 | 0.0606 | 0: 88, 1: 146, 2: 124, 4: 84, 5: 41, 6: 9, 8: 5, 9: 1, 10: 1, 11: 1 |
 
-The script `make_reference.py` of `tests/reference/stats/` is to run the
-three and keep their `.vmiss` beside it; it makes a `many.vmiss` now, and
-removes it.
+The script `make_reference.py` of `tests/reference/stats/` runs the
+three, keeps their `.vmiss` beside it, `many.vmiss`, `many.popA.vmiss` and
+`many.popB.vmiss`, and checks this table against them.
 The pytest test, made at `calc_per_var_distribs` with `pops` of those two
 populations and with no `pops`, compares the histograms exactly and the
 means within 1e-12 relative, the tolerance of the pass, and asserts the

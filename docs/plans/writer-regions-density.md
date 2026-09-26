@@ -157,7 +157,7 @@ Tasks:
   `docs/specs/stats.md`. Deliverable 1. A variant put in the wrong bin
   gives a wrong count and no error, so this task is a commit of its own,
   and deliverable 1 is what guards it.
-- [ ] 2.2 Both binding crates, the Python and the TypeScript result, the
+- [x] 2.2 Both binding crates, the Python and the TypeScript result, the
   reference files and the tests. Deliverables 2, 3 and 4.
 
 ## 3. The VCF writer
