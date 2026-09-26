@@ -469,6 +469,15 @@ test("a population of 15 individuals has no value at the default threshold", () 
   assert.deepEqual(poly.totNumVariantsWithData, Uint32Array.of(0));
   assert.ok(Number.isNaN(poly.polyRatio[0]));
   assert.ok(Number.isNaN(poly.polyRatioOverVariables[0]));
+  // The missing rate is among the statistics when `stats` is left out, and
+  // it is not held to `minNumIndividuals`: every variant has one, in a bin,
+  // since a rate is from 0 to 1.
+  const missingRate = distribOf(distribs.missingRate, "missing rate");
+  assert.ok(
+    !Number.isNaN(missingRate.mean[0]),
+    "the mean missing rate of a population of 15 is NaN",
+  );
+  assert.equal(variantsInTheHistogram(missingRate.histCounts), PANEL_NUM_VARS);
   variants.free();
 });
 
@@ -780,29 +789,51 @@ function many(): Variants {
   return openVcf(MANY, { onlyPassed: false });
 }
 
-test("the mean missing rate of many.vcf over all and in popA is plink2's", () => {
-  // The means of the table of the spec: 1511 missing genotypes of the 500
-  // variants of 50 individuals and 602 of the 500 of the 20 of `popA`, a
-  // half called genotype among the missing ones. Each is a quotient of
-  // whole counts, so what is left to allow for is the last bits of the sum.
-  // The 51 variants of `popA` in bin 5 of the 40 are 3 missing genotypes of
-  // 20, whose rate is below the edge 6 x 0.025 as float64 numbers are.
-  const overAll = many();
-  const inPopA = many();
-  const popA = Array.from(
-    { length: 20 },
-    (_, individual) => `ind${String(individual).padStart(2, "0")}`,
+/** The individuals `ind00` to `ind49` of `many.vcf` from `first` up to and
+ * without `end`. */
+function individualsOfMany(first: number, end: number): string[] {
+  return Array.from(
+    { length: end - first },
+    (_, offset) => `ind${String(first + offset).padStart(2, "0")}`,
   );
+}
+
+/** A histogram of the 40 default bins, one population, with the counts
+ * `withACount` of the bins it names, as the table of the spec lists them. */
+function fortyBins(withACount: readonly (readonly [number, number])[]): Uint32Array {
+  const counts = new Uint32Array(DEFAULT_NUM_BINS);
+  for (const [bin, count] of withACount) {
+    counts[bin] = count;
+  }
+  return counts;
+}
+
+test("the missing rate of many.vcf over all, popA and popB is plink2's", () => {
+  // The table of the spec, from the `--missing variant-only` reports of
+  // plink2 with a half called genotype read as missing: 1511 missing
+  // genotypes of the 500 variants of 50 individuals, 602 of the 20 of
+  // `popA` and 909 of the 30 of `popB`. Each mean is a quotient of whole
+  // counts, so what is left to allow for is the last bits of the sum. The
+  // 51 variants of `popA` in bin 5 of the 40 are 3 missing genotypes of 20,
+  // whose rate is below the edge 6 x 0.025 as float64 numbers are.
+  //
+  // The two populations are asked for in one call, so a binding that gave
+  // one population the numbers of the other would be seen here.
+  const overAll = many();
+  const inTwo = many();
 
   const ofAll = calcPerVarDistribs(overAll, { stats: ["missing_rate"] });
-  const ofPopA = calcPerVarDistribs(inPopA, {
+  const ofTwo = calcPerVarDistribs(inTwo, {
     stats: ["missing_rate"],
-    pops: { popA },
+    pops: { popA: individualsOfMany(0, 20), popB: individualsOfMany(20, 50) },
   });
 
+  assert.deepEqual(ofTwo.pops, ["popA", "popB"]);
+  assert.equal(ofTwo.obsHet, null);
   for (const [distribs, pop, expected] of [
     [ofAll, "pop", 0.06044],
-    [ofPopA, "popA", 0.0602],
+    [ofTwo, "popA", 0.0602],
+    [ofTwo, "popB", 0.0606],
   ] as const) {
     assertValue(
       meanOf(distribs, distribs.missingRate, "missing rate", pop),
@@ -810,13 +841,26 @@ test("the mean missing rate of many.vcf over all and in popA is plink2's", () =>
       OF_A_QUOTIENT_OF_COUNTS * expected,
       `the mean missing rate of ${pop}`,
     );
-    assert.equal(distribs.obsHet, null);
   }
-  const ofTheBins = distribOf(ofPopA.missingRate, "missing rate").histCounts;
-  assert.equal(variantsInTheHistogram(ofTheBins), MANY_NUM_VARS);
-  assert.equal(ofTheBins[5], 51);
+  assert.deepEqual(
+    distribOf(ofAll.missingRate, "missing rate").histCounts,
+    fortyBins([
+      [0, 101], [1, 114], [2, 102], [3, 88], [4, 77], [5, 10], [6, 6], [7, 1], [8, 1],
+    ]),
+  );
+  const ofTheTwo = distribOf(ofTwo.missingRate, "missing rate").histCounts;
+  assert.deepEqual(
+    ofTheTwo.subarray(0, DEFAULT_NUM_BINS),
+    fortyBins([[0, 144], [2, 180], [4, 116], [5, 51], [8, 8], [10, 1]]),
+  );
+  assert.deepEqual(
+    ofTheTwo.subarray(DEFAULT_NUM_BINS),
+    fortyBins([
+      [0, 88], [1, 146], [2, 124], [4, 84], [5, 41], [6, 9], [8, 5], [9, 1], [10, 1], [11, 1],
+    ]),
+  );
   overAll.free();
-  inPopA.free();
+  inTwo.free();
 });
 
 /** The missing rate and the heterozygosity rate of the individual `name` of
