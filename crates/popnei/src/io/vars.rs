@@ -311,6 +311,9 @@ fn chrom_lengths_of(object: &Map<String, Value>) -> Result<Vec<(String, u64)>> {
         )));
     };
     let mut lengths: Vec<(String, u64)> = Vec::new();
+    // The names already given, beside the list that keeps their order, so
+    // that a genome of a million scaffolds does not look each up in it.
+    let mut named: HashSet<&str> = HashSet::new();
     for (index, pair) in pairs.iter().enumerate() {
         let chrom = pair.get(0).and_then(Value::as_str);
         let length = pair
@@ -323,7 +326,7 @@ fn chrom_lengths_of(object: &Map<String, Value>) -> Result<Vec<(String, u64)>> {
                 "the pair {index}, counted from 0, of `chrom_lengths` of the `{POPNEI_KEY}` key of its schema is {pair}, which is not a chromosome and a length above 0"
             )));
         };
-        if lengths.iter().any(|(named, _)| named == chrom) {
+        if !named.insert(chrom) {
             return Err(not_a_vars_file(format!(
                 "`chrom_lengths` of the `{POPNEI_KEY}` key of its schema gives the chromosome {chrom} twice"
             )));

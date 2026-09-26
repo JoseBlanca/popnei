@@ -25,7 +25,7 @@
 //!
 //! `docs/specs/io_vcf.md` has the rules and where each one comes from.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -767,14 +767,19 @@ impl<R: BufRead + Send> VcfReader<R> {
         Ok(reader)
     }
 
-    /// It skips the `##` lines and takes the individuals from the `#CHROM`
-    /// line, which it leaves consumed, so that the next line read is the
-    /// first data line.
+    /// It keeps the `##` lines and the lengths of the `##contig` lines in
+    /// the header, and takes the individuals from the `#CHROM` line, which
+    /// it leaves consumed, so that the next line read is the first data
+    /// line.
     ///
     /// The line it reads into is its own: the header is read once, when the
     /// reader is built, and the text of the batch is not there yet.
     fn read_header(&mut self) -> Result<()> {
         let mut line = Vec::new();
+        // The length of each chromosome that a `##contig` line gave, beside
+        // the list of the header that keeps their order, so that a genome of
+        // a million scaffolds does not look each name up in that list.
+        let mut lengths_given: HashMap<String, u64> = HashMap::new();
         loop {
             line.clear();
             let number = next_line_number(self.line_number);
@@ -801,7 +806,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             };
             if text.starts_with("##") {
                 if let Some((chrom, length)) = contig_length_of(text, number)? {
-                    self.add_the_contig_length(chrom, length, number)?;
+                    self.add_the_contig_length(&mut lengths_given, chrom, length, number)?;
                 }
                 self.header
                     .vcf_meta_lines
@@ -816,18 +821,28 @@ impl<R: BufRead + Send> VcfReader<R> {
         }
     }
 
-    /// The length of `chrom` that the `##contig` line `number` gives, kept
-    /// in the header. A second line of the same chromosome with the same
-    /// length adds nothing, and one with another length is a wrong header.
-    fn add_the_contig_length(&mut self, chrom: &str, length: u64, number: u64) -> Result<()> {
-        let lengths = &mut self.header.chrom_lengths;
-        match lengths.iter().find(|(named, _)| named == chrom) {
-            None => lengths.push((chrom.to_owned(), length)),
-            Some((_, kept)) if *kept == length => {}
-            Some((_, kept)) => {
+    /// The length of `chrom` that the `##contig` line `line_number` gives,
+    /// kept in the header and in `lengths_given`, which holds the lengths
+    /// the lines before it gave. A second line of the same chromosome with
+    /// the same length adds nothing, and one with another length is a wrong
+    /// header.
+    fn add_the_contig_length(
+        &mut self,
+        lengths_given: &mut HashMap<String, u64>,
+        chrom: &str,
+        length: u64,
+        line_number: u64,
+    ) -> Result<()> {
+        match lengths_given.get(chrom) {
+            None => {
+                lengths_given.insert(chrom.to_owned(), length);
+                self.header.chrom_lengths.push((chrom.to_owned(), length));
+            }
+            Some(kept) if *kept == length => {}
+            Some(kept) => {
                 return Err(Error::VcfHeader {
                     problem: format!(
-                        "its line {number} gives the chromosome {chrom} a length of {length}, and a line before it gave it {kept}"
+                        "its line {line_number} gives the chromosome {chrom} a length of {length}, and a line before it gave it {kept}"
                     ),
                 });
             }
