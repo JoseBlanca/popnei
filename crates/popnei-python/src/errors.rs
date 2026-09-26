@@ -482,6 +482,19 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // a block whose chromosome number the table of its reader has no
         // name for, which the lengths are looked up by.
         | popnei::Error::VarDensityChromNameMissing { .. }
+        // And the two of its lengths that only a reader with a defect gives:
+        // a length of 0 and a chromosome twice among the lengths the header
+        // of the source has, which the VCF reader and the vars file reader
+        // refuse when they read the header. From `chrom_lengths` the same
+        // two are of what a user wrote, a `ValueError` below.
+        | popnei::Error::VarDensityChromLengthZero {
+            from: popnei::stats::LengthsFrom::Source,
+            ..
+        }
+        | popnei::Error::VarDensityChromLengthTwice {
+            from: popnei::stats::LengthsFrom::Source,
+            ..
+        }
         // A member of bgzip that the writer could not put together, which
         // its cutting of the text into members and its stored block of a
         // text deflate does not shrink make impossible.
