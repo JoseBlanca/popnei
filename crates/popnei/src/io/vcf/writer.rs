@@ -166,8 +166,7 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
         true => VcfOut::Bgzip(BgzipOut::new(sink)),
         false => VcfOut::Plain(sink),
     };
-    out.write(&header_of(reader, without_counts))?;
-    out.end_of_a_block()?;
+    out.write_the_text(&[&header_of(reader, without_counts)])?;
     let mut buffers: Vec<Vec<u8>> = Vec::new();
     let mut num_vars: u64 = 0;
     while let Some(block) = reader.next_block()? {
@@ -182,10 +181,8 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
         }
         let how = LinesOf::block(&block, reader.chroms(), without_counts, from)?;
         format_rows(&how, block.num_vars, &mut buffers)?;
-        for buffer in &buffers {
-            out.write(buffer)?;
-        }
-        out.end_of_a_block()?;
+        let text: Vec<&[u8]> = buffers.iter().map(Vec::as_slice).collect();
+        out.write_the_text(&text)?;
         // A variant is a line of the file, so a pass of the
         // 18446744073709551615 variants this count holds is more lines than
         // any file system takes: the sum cannot reach its end. A `usize` is
@@ -203,33 +200,26 @@ enum VcfOut<W: Write> {
 }
 
 impl<W: Write> VcfOut<W> {
-    /// `bytes`, after the ones written before.
+    /// The text of `pieces`, in their order, after the text written
+    /// before: the header, or the buffers the lines of a block were
+    /// formatted into. Plain, it goes to the sink as it is; bgzipped, the
+    /// members it fills are cut out of the pieces, compressed on the
+    /// threads and written, and the text that fills no member waits for
+    /// the next.
     ///
     /// # Errors
     ///
-    /// When the sink refuses them.
-    fn write(&mut self, bytes: &[u8]) -> Result<()> {
+    /// When the sink refuses the text or a member, and when a member could
+    /// not be put together.
+    fn write_the_text(&mut self, pieces: &[&[u8]]) -> Result<()> {
         match self {
-            VcfOut::Plain(sink) => sink.write_all(bytes).map_err(not_written),
-            VcfOut::Bgzip(out) => {
-                out.write(bytes);
+            VcfOut::Plain(sink) => {
+                for piece in pieces {
+                    sink.write_all(piece).map_err(not_written)?;
+                }
                 Ok(())
             }
-        }
-    }
-
-    /// The text of the block that was written, compressed into the members
-    /// it fills, which is where the threads compress the members of a
-    /// bgzipped file; the text that fills no member waits for the next
-    /// block.
-    ///
-    /// # Errors
-    ///
-    /// When the sink refuses a member.
-    fn end_of_a_block(&mut self) -> Result<()> {
-        match self {
-            VcfOut::Plain(_) => Ok(()),
-            VcfOut::Bgzip(out) => out.write_the_full_members(),
+            VcfOut::Bgzip(out) => out.write_the_text(pieces),
         }
     }
 

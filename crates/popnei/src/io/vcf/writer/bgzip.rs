@@ -57,17 +57,22 @@ pub(crate) const COMPRESSION_LEVEL: u32 = 6;
 /// the last block of its stream.
 const THE_LAST_STORED_BLOCK: u8 = 0x01;
 
-/// The text of a bgzipped file on its way to the sink: the text that does
-/// not fill a member yet waits here from one block to the next, and the
-/// members of the rest are compressed and written.
+/// The text of a bgzipped file on its way to the sink: the members are cut
+/// straight out of the text of each block, where the writer formatted it,
+/// and what does not fill a member waits here for the text of the next.
 pub(super) struct BgzipOut<W: Write> {
     sink: W,
-    /// The text that has not been compressed yet.
+    /// The text that did not fill a member, less than 65280 bytes.
     waiting: Vec<u8>,
     /// One buffer for each member compressed at once, kept from one block
     /// to the next.
     members: Vec<Vec<u8>>,
 }
+
+/// The pieces of text one member holds, in their order, 65280 bytes in all
+/// but for the last member of the file: the tail of the text that waited,
+/// and the parts of the buffers of a block that follow it.
+type TextOfAMember<'a> = Vec<&'a [u8]>;
 
 impl<W: Write> BgzipOut<W> {
     pub(super) fn new(sink: W) -> BgzipOut<W> {
@@ -78,36 +83,34 @@ impl<W: Write> BgzipOut<W> {
         }
     }
 
-    /// `bytes` of text after the ones given before. They are compressed at
-    /// the next [`BgzipOut::write_the_full_members`].
-    pub(super) fn write(&mut self, bytes: &[u8]) {
-        self.waiting.extend_from_slice(bytes);
-    }
-
-    /// The members of every 65280 bytes of the text that waits, compressed
-    /// and written, and the rest left waiting.
+    /// The text of `pieces`, in their order, after the text given before:
+    /// every member it fills is compressed and written, and what fills none
+    /// waits.
     ///
     /// # Errors
     ///
     /// When the sink refuses a member, and when a member could not be put
     /// together, which is a defect.
-    pub(super) fn write_the_full_members(&mut self) -> Result<()> {
-        let num_members = self
-            .waiting
-            .len()
-            .checked_div(TEXT_OF_A_MEMBER)
-            .unwrap_or(0);
-        if num_members == 0 {
-            return Ok(());
+    pub(super) fn write_the_text(&mut self, pieces: &[&[u8]]) -> Result<()> {
+        let BgzipOut {
+            sink,
+            waiting,
+            members,
+        } = self;
+        let (full, tail) = members_of(waiting, pieces);
+        if !full.is_empty() {
+            members.resize_with(full.len(), Vec::new);
+            members.truncate(full.len());
+            compress_the_members(&full, members)?;
+            for member in members.iter() {
+                sink.write_all(member).map_err(not_written)?;
+            }
         }
-        let full = num_members.saturating_mul(TEXT_OF_A_MEMBER);
-        let text = self.waiting.get(..full).unwrap_or_default();
-        self.members.resize_with(num_members, Vec::new);
-        compress_the_members(text, &mut self.members)?;
-        for member in &self.members {
-            self.sink.write_all(member).map_err(not_written)?;
+        let mut left: Vec<u8> = Vec::new();
+        for piece in &tail {
+            left.extend_from_slice(piece);
         }
-        self.waiting.drain(..full);
+        *waiting = left;
         Ok(())
     }
 
@@ -118,11 +121,10 @@ impl<W: Write> BgzipOut<W> {
     ///
     /// When the sink refuses them.
     pub(super) fn finish(mut self) -> Result<W> {
-        self.write_the_full_members()?;
         if !self.waiting.is_empty() {
             let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
             let mut member = Vec::new();
-            compress_a_member(&mut compress, &self.waiting, &mut member)?;
+            compress_a_member(&mut compress, &[&self.waiting], &mut member)?;
             self.sink.write_all(&member).map_err(not_written)?;
         }
         self.sink
@@ -133,19 +135,52 @@ impl<W: Write> BgzipOut<W> {
     }
 }
 
-/// The member of each run of 65280 bytes of `text`, into `members`, one for
-/// each run, in their order. Natively the runs are compressed on the
-/// threads of rayon, each thread with a deflate of its own.
+/// The text of `waiting` and then of `pieces`, cut into the members of
+/// 65280 bytes it fills, each the pieces of it that it holds, and the
+/// pieces of what is left, which fill no member. Nothing is copied.
+fn members_of<'a>(
+    waiting: &'a [u8],
+    pieces: &[&'a [u8]],
+) -> (Vec<TextOfAMember<'a>>, TextOfAMember<'a>) {
+    let mut full = Vec::new();
+    let mut current: TextOfAMember<'a> = Vec::new();
+    let mut in_the_current = 0usize;
+    for piece in std::iter::once(waiting).chain(pieces.iter().copied()) {
+        let mut rest = piece;
+        while !rest.is_empty() {
+            let room = TEXT_OF_A_MEMBER.saturating_sub(in_the_current);
+            let (taken, after) = rest.split_at(rest.len().min(room));
+            current.push(taken);
+            in_the_current = in_the_current.saturating_add(taken.len());
+            rest = after;
+            if in_the_current == TEXT_OF_A_MEMBER {
+                full.push(std::mem::take(&mut current));
+                in_the_current = 0;
+            }
+        }
+    }
+    (full, current)
+}
+
+/// The member of each of `texts` into `members`, one for each, in their
+/// order. Natively they are compressed on the threads of rayon, with one
+/// deflate for each job rayon splits them into, which on 18 threads is
+/// about one for each member: its memory is a few hundred KB, which is
+/// small beside the text of a member, and a deflate for each thread has
+/// not been timed against it.
 ///
 /// # Errors
 ///
 /// What [`compress_a_member`] refuses.
 #[cfg(not(target_family = "wasm"))]
-fn compress_the_members(text: &[u8], members: &mut [Vec<u8>]) -> Result<()> {
-    use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
-    use rayon::slice::ParallelSlice;
+fn compress_the_members(texts: &[TextOfAMember<'_>], members: &mut [Vec<u8>]) -> Result<()> {
+    use rayon::iter::{
+        IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
+        ParallelIterator,
+    };
 
-    text.par_chunks(TEXT_OF_A_MEMBER)
+    texts
+        .par_iter()
         .zip(members.par_iter_mut())
         .try_for_each_init(
             || Compress::new(Compression::new(COMPRESSION_LEVEL), false),
@@ -160,17 +195,17 @@ fn compress_the_members(text: &[u8], members: &mut [Vec<u8>]) -> Result<()> {
 ///
 /// What [`compress_a_member`] refuses.
 #[cfg(target_family = "wasm")]
-fn compress_the_members(text: &[u8], members: &mut [Vec<u8>]) -> Result<()> {
+fn compress_the_members(texts: &[TextOfAMember<'_>], members: &mut [Vec<u8>]) -> Result<()> {
     let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
-    for (text, member) in text.chunks(TEXT_OF_A_MEMBER).zip(members.iter_mut()) {
+    for (text, member) in texts.iter().zip(members.iter_mut()) {
         compress_a_member(&mut compress, text, member)?;
     }
     Ok(())
 }
 
-/// The member of `text`, 65280 bytes at most, into `member`, over what it
-/// held: the header with the size of the member, the text deflated, and
-/// its CRC32 and length.
+/// The member of the text of `pieces`, 65280 bytes at most, into `member`,
+/// over what it held: the header with the size of the member, the text
+/// deflated, and its CRC32 and length.
 ///
 /// A deflate whose data do not fit the member, or whose stream did not end,
 /// gives a member in which the writer stores the text as it is, one stored
@@ -184,28 +219,64 @@ fn compress_the_members(text: &[u8], members: &mut [Vec<u8>]) -> Result<()> {
 ///
 /// When the text is longer than a member holds, which is a defect of the
 /// caller.
-fn compress_a_member(compress: &mut Compress, text: &[u8], member: &mut Vec<u8>) -> Result<()> {
-    let too_long = || Error::VcfWriterMemberNotBuilt {
-        what: "text",
-        found: text.len(),
-        most: TEXT_OF_A_MEMBER,
-    };
-    let length = u16::try_from(text.len())
+fn compress_a_member(
+    compress: &mut Compress,
+    pieces: &[&[u8]],
+    member: &mut Vec<u8>,
+) -> Result<()> {
+    let num_bytes = pieces
+        .iter()
+        .fold(0usize, |bytes, piece| bytes.saturating_add(piece.len()));
+    let length = u16::try_from(num_bytes)
         .ok()
-        .filter(|_| text.len() <= TEXT_OF_A_MEMBER)
-        .ok_or_else(too_long)?;
+        .filter(|_| num_bytes <= TEXT_OF_A_MEMBER)
+        .ok_or(Error::VcfWriterMemberNotBuilt {
+            what: "text",
+            found: num_bytes,
+            most: TEXT_OF_A_MEMBER,
+        })?;
     member.clear();
     member.reserve(MOST_BYTES_OF_A_MEMBER);
     member.extend_from_slice(&HEADER_BEFORE_THE_SIZE);
     member.extend_from_slice(&[0, 0]);
     compress.reset();
-    let deflated = compress.compress_vec(text, member, FlushCompress::Finish);
+    let deflated = deflate_the_pieces(compress, pieces, member);
     let data = member.len().saturating_sub(BYTES_OF_THE_HEADER);
     if !the_deflate_fits(&deflated, data) {
         member.truncate(BYTES_OF_THE_HEADER);
-        store(text, length, member);
+        store(pieces, length, member);
     }
-    end_the_member(text, length, member)
+    end_the_member(pieces, length, member)
+}
+
+/// The pieces deflated into `member` as one stream, which ends with the last
+/// of them, and the status the deflate gave at the end. A piece that the
+/// deflate did not take whole, which is what it does when the room of the
+/// member runs out, gives the status `BufError`, and the writer stores the
+/// text then.
+fn deflate_the_pieces(
+    compress: &mut Compress,
+    pieces: &[&[u8]],
+    member: &mut Vec<u8>,
+) -> std::result::Result<Status, CompressError> {
+    let last = pieces.len().saturating_sub(1);
+    let mut status = Ok(Status::Ok);
+    for (index, piece) in pieces.iter().enumerate() {
+        let flush = match index == last {
+            true => FlushCompress::Finish,
+            false => FlushCompress::None,
+        };
+        let before = compress.total_in();
+        status = compress.compress_vec(piece, member, flush);
+        let taken = compress.total_in().saturating_sub(before);
+        if status.is_err() || u64::try_from(piece.len()).ok() != Some(taken) {
+            return status.and(Ok(Status::BufError));
+        }
+    }
+    if pieces.is_empty() {
+        status = compress.compress_vec(&[], member, FlushCompress::Finish);
+    }
+    status
 }
 
 /// Whether a deflate that gave `deflated` and `data` bytes goes into the
@@ -216,25 +287,30 @@ fn the_deflate_fits(deflated: &std::result::Result<Status, CompressError>, data:
     matches!(deflated, Ok(Status::StreamEnd)) && data <= MOST_DATA_OF_A_MEMBER
 }
 
-/// The data of a member that stores `text`, of `length` bytes, as it is: one
-/// deflate block of no compression, after the header in `member`.
-fn store(text: &[u8], length: u16, member: &mut Vec<u8>) {
+/// The data of a member that stores the text of `pieces`, of `length` bytes,
+/// as it is: one deflate block of no compression, after the header in
+/// `member`.
+fn store(pieces: &[&[u8]], length: u16, member: &mut Vec<u8>) {
     member.push(THE_LAST_STORED_BLOCK);
     member.extend_from_slice(&length.to_le_bytes());
     member.extend_from_slice(&(!length).to_le_bytes());
-    member.extend_from_slice(text);
+    for piece in pieces {
+        member.extend_from_slice(piece);
+    }
 }
 
-/// The CRC32 and the length of `text` after the data in `member`, and the
-/// size of the member in its header.
+/// The CRC32 and the length of the text of `pieces` after the data in
+/// `member`, and the size of the member in its header.
 ///
 /// # Errors
 ///
 /// When the member is more bytes than its size states in two bytes, which
 /// the callers make impossible.
-fn end_the_member(text: &[u8], length: u16, member: &mut Vec<u8>) -> Result<()> {
+fn end_the_member(pieces: &[&[u8]], length: u16, member: &mut Vec<u8>) -> Result<()> {
     let mut crc = Crc::new();
-    crc.update(text);
+    for piece in pieces {
+        crc.update(piece);
+    }
     member.extend_from_slice(&crc.sum().to_le_bytes());
     member.extend_from_slice(&u32::from(length).to_le_bytes());
     // The stored member is 65280 bytes of text and 31 of the rest at most,
@@ -273,14 +349,14 @@ mod tests {
 
     use super::{
         BYTES_OF_THE_HEADER, COMPRESSION_LEVEL, HEADER_BEFORE_THE_SIZE, MOST_BYTES_OF_A_MEMBER,
-        TEXT_OF_A_MEMBER, compress_a_member, end_the_member, store, the_deflate_fits,
+        TEXT_OF_A_MEMBER, compress_a_member, end_the_member, members_of, store, the_deflate_fits,
     };
 
     /// The member of `text`, and the text it decompresses to.
     fn member_and_text(text: &[u8]) -> (Vec<u8>, Vec<u8>) {
         let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
         let mut member = Vec::new();
-        compress_a_member(&mut compress, text, &mut member).expect("the member");
+        compress_a_member(&mut compress, &[text], &mut member).expect("the member");
         let mut back = Vec::new();
         MultiGzDecoder::new(&member[..])
             .read_to_end(&mut back)
@@ -318,8 +394,8 @@ mod tests {
         let mut member = HEADER_BEFORE_THE_SIZE.to_vec();
         member.extend_from_slice(&[0, 0]);
         let length = u16::try_from(text.len()).expect("a length");
-        store(&text, length, &mut member);
-        end_the_member(&text, length, &mut member).expect("the member");
+        store(&[&text], length, &mut member);
+        end_the_member(&[&text], length, &mut member).expect("the member");
         // 18 bytes of header, the 5 of a stored block, the text and 8.
         assert_eq!(member.len(), BYTES_OF_THE_HEADER + 5 + TEXT_OF_A_MEMBER + 8);
         assert_eq!(member[BYTES_OF_THE_HEADER], 0x01);
@@ -353,11 +429,43 @@ mod tests {
         let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
         let mut member = Vec::new();
         let text = vec![b'a'; TEXT_OF_A_MEMBER + 1];
-        match compress_a_member(&mut compress, &text, &mut member) {
+        match compress_a_member(&mut compress, &[&text], &mut member) {
             Err(Error::VcfWriterMemberNotBuilt { what, found, most }) => {
                 assert_eq!((what, found, most), ("text", 65281, 65280));
             }
             other => panic!("not the error of a member not built: {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_members_are_cut_across_the_pieces_of_the_text_and_the_tail_waits() {
+        let waiting = vec![b'w'; 100];
+        let first = vec![b'a'; 65200];
+        let second = vec![b'b'; 70000];
+        let third = vec![b'c'; 10];
+        let (full, tail) = members_of(&waiting, &[&first, &second, &third]);
+        let lengths: Vec<Vec<usize>> = full
+            .iter()
+            .map(|member| member.iter().map(|piece| piece.len()).collect())
+            .collect();
+        // 100 + 65200 + 70000 + 10 = 135310: two members of 65280 and a
+        // tail of 4750.
+        assert_eq!(lengths, [vec![100, 65180], vec![20, 65260]]);
+        let tail_lengths: Vec<usize> = tail.iter().map(|piece| piece.len()).collect();
+        assert_eq!(tail_lengths, [4740, 10]);
+        assert_eq!(full[1][0], &first[65180..]);
+    }
+
+    #[test]
+    fn a_member_of_several_pieces_decompresses_to_their_text_in_order() {
+        let pieces: [&[u8]; 3] = [b"chr1\t100\t", b"", b"rs1\tA\tT\n"];
+        let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
+        let mut member = Vec::new();
+        compress_a_member(&mut compress, &pieces, &mut member).expect("the member");
+        let mut back = Vec::new();
+        MultiGzDecoder::new(&member[..])
+            .read_to_end(&mut back)
+            .expect("the member decompresses");
+        assert_eq!(back, b"chr1\t100\trs1\tA\tT\n");
     }
 }
