@@ -1814,13 +1814,36 @@ individual statistics; popnei on 18 cores against pyNei on 6, 1.9, 3.9 and
 number to reach is set with the first measurement, as
 `docs/specs/dists.md` set its.
 
-The missing rate and the density have not been measured. The missing rate
-is one division and one bin for each variant and population, from counts
-the pass takes already, and the numbers to reach above hold for the six
-statistics as they did for the five; a measurement of the pass with the
-six says whether they still are reached. The density reads positions
-alone, and the measurement comes first, on `big.vcf` and `big.vars`, with
-no number to reach until then.
+The missing rate has not been measured. It is one division and one bin
+for each variant and population, from counts the pass takes already, and
+the numbers to reach above hold for the six statistics as they did for
+the five; a measurement of the pass with the six says whether they still
+are reached.
+
+The density was first measured on 27 September 2026, with
+`calc_var_density(variants, 100000)` called from Python by
+`crates/popnei/benches/time_stats.py density`, over `big.vars` and over
+`big.vcf` of `docs/specs/io_vcf.md`, a build of `maturin develop
+--release` at 22803af of the branch `plan/writer-regions-density`, on the
+same machine, the files in the page cache, at a load average of the
+minute before each set of 3.5. Each set is one run that is not timed and
+five that are, and each run opens the file again. Beside it, the read of
+the same file with `iter_blocks` and the genotypes alone, `time_stats.py
+read`, in the same session:
+
+| | the density, five runs | the read with the genotypes, the median |
+|---|---|---|
+| `big.vars`, 1 thread | 0.005 s in each | 0.103 s |
+| `big.vars`, 18 threads | 0.005 s in each | 0.026 s |
+| `big.vcf`, 1 thread | 0.040, 0.040, 0.041, 0.041, 0.042 s | 0.575 s |
+| `big.vcf`, 18 threads | 0.039 s in each | 0.083 s |
+
+The density asks the source for the chromosome and the position alone, so
+the vars file reader reads two columns of each batch and the VCF reader
+parses no genotype, and the threads change nothing: on the VCF what is left
+is its serial pass over the lines. Both files give 1000 windows, 500 on each
+of the two chromosomes, of 100 variants each. There is no number to reach
+yet; these are the first numbers the owner can set one against.
 
 ## Open points
 
