@@ -32,7 +32,7 @@ await init();
 /**
  * The tolerance of "How it is verified" of `docs/specs/pca.md`: the
  * reference files write 15 significant digits of R, and the core crate finds
- * popnei within 1e-15 of them on these distances.
+ * popnei within 3e-14 of them on these distances.
  */
 const TOLERANCE = 1e-9;
 
@@ -298,7 +298,7 @@ test("the individuals a page holds the principal coordinates of are 8695", () =>
 });
 
 test("a Distances too large for a page is refused by both functions", () => {
-  // The 37805660 distances of 8696 individuals are 302 MB, which node holds.
+  // The 37805860 distances of 8696 individuals are 302 MB, which node holds.
   // The package asks the page before it copies them into the memory of wasm
   // and the binding crate asks again, so what this says is that neither
   // function reaches the analysis; which of the two refused it is not seen

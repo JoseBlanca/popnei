@@ -1395,6 +1395,31 @@ mod tests {
         }
     }
 
+    /// A pair with no distance comes before a negative distance that comes
+    /// before it along the vector: the pairs with no distance are looked
+    /// for over the whole vector first, so a NaN at the position 0 and -1
+    /// at the position 1 is the error of the pairs with no distance, which
+    /// a check of each distance in turn would have made the other one.
+    #[test]
+    fn a_pair_with_no_distance_is_refused_before_a_negative_distance() {
+        let mut dist_vector = SMALL.to_vec();
+        dist_vector[0] = f64::NAN;
+        dist_vector[1] = -1.0;
+        for refused in [
+            pcoa(dist_vector.clone(), 5).map(|_| ()),
+            correct_dists_by_lingoes(dist_vector, 5).map(|_| ()),
+        ] {
+            match refused {
+                Err(Error::PcoaPairsWithNoDistance {
+                    first_of_the_first: 0,
+                    second_of_the_first: 1,
+                    ..
+                }) => {}
+                other => panic!("the pair with no distance was not refused first: {other:?}"),
+            }
+        }
+    }
+
     /// The percentage of a message has three significant digits, so a
     /// small one is not written as 0.
     #[test]

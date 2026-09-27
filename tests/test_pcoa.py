@@ -337,3 +337,16 @@ def test_what_a_distance_has_to_be_is_the_cores():
     what_it_has_to_be = of_the_core.value.args[-1]
     assert what_it_has_to_be.startswith("a principal coordinate analysis needs")
     assert refusal_of(ten_dists(at_4=-1.0)).endswith(", and " + what_it_has_to_be)
+
+
+def test_the_corrected_distances_have_no_standard_errors():
+    # The standard errors of the distances given are of those distances, and
+    # the correction changes every one of them, so the corrected distances
+    # carry none.
+    dists = Distances(
+        numpy.array(TEN_DISTS),
+        names=FIVE_NAMES,
+        standard_errors=numpy.full(10, 0.01),
+    )
+    corrected = correct_dists_by_lingoes(dists).dists
+    assert corrected.standard_errors is None

@@ -120,9 +120,9 @@ export interface LingoesCorrection {
  *
  * A page holds 4 GB at a time, and the matrix of the individuals, its
  * eigenvectors, the workspace of the eigendecomposition and the projections
- * are about 56.8 bytes per pair of individuals, so distances of more than
- * 8695 individuals are an `Error` here and are analysed by a program outside
- * the browser, popnei in Python among them.
+ * are about 56.8 bytes per cell of the individuals x individuals matrix, so
+ * distances of more than 8695 individuals are an `Error` here and are
+ * analysed by a program outside the browser, popnei in Python among them.
  *
  * @throws {Error} When `distances` is not a `Distances`; when it is of more
  * than 8695 individuals; when it is of fewer than 2; when a pair has no
