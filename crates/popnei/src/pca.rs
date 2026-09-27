@@ -1045,10 +1045,24 @@ pub(crate) fn the_percentages_of(values: &[f64], num_comps: usize) -> Vec<f64> {
 /// each, and their eigenvalues from the largest.
 pub(crate) fn the_projections_of(eigen: &Eigen, num_rows: usize, num_comps: usize) -> Vec<f64> {
     let mut projections = vec![0.0; num_values_of(num_rows, num_comps)];
+    write_the_projections(eigen, num_rows, num_comps, &mut projections);
+    projections
+}
+
+/// Writes into `projections`, `num_rows` x `num_comps` row after row, what
+/// [`the_projections_of`] gives, for a caller that asked for the memory of
+/// the projections itself: the principal coordinates, which ask for it with
+/// `try_reserve_exact`.
+pub(crate) fn write_the_projections(
+    eigen: &Eigen,
+    num_rows: usize,
+    num_comps: usize,
+    projections: &mut [f64],
+) {
     // A matrix of no component has no value to write, and this keeps
     // `step_by` below off a step of 0, which panics.
     if num_comps == 0 {
-        return projections;
+        return;
     }
     for (component, (vector, value)) in eigen
         .vectors
@@ -1067,7 +1081,6 @@ pub(crate) fn the_projections_of(eigen: &Eigen, num_rows: usize, num_comps: usiz
             *projection = coordinate * size;
         }
     }
-    projections
 }
 
 /// Refuses the first value of the table that is an infinity or a NaN, with

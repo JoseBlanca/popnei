@@ -31,7 +31,7 @@ use std::fmt;
 use popnei_linalg::{Eigen, eigh_lower};
 
 use crate::error::{Error, Result};
-use crate::pca::{fix_the_sign_of, the_percentages_of, the_projections_of};
+use crate::pca::{fix_the_sign_of, the_percentages_of, write_the_projections};
 use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
 
 /// What a principal coordinate analysis gives.
@@ -95,7 +95,7 @@ pub enum PcoaInput {
 /// [`Error::PcoaLinalg`] when the eigendecomposition could not be done.
 pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa> {
     let largest = the_largest_distance(&dist_vector, num_individuals, PcoaInput::Distances)?;
-    let centered = the_centered_matrix(&dist_vector, num_individuals, largest);
+    let centered = the_centered_matrix(&dist_vector, num_individuals, largest)?;
     drop(dist_vector);
     let decomposed = the_decomposition_of(centered, num_individuals)?;
     if decomposed.num_negative > 0 {
@@ -106,7 +106,7 @@ pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa> {
             from: PcoaInput::Distances,
         });
     }
-    Ok(the_components_of(&decomposed, num_individuals, largest))
+    the_components_of(&decomposed, num_individuals, largest)
 }
 
 /// Lingoes' correction of a distance vector: the corrected vector, in the
@@ -152,7 +152,7 @@ pub fn correct_dists_by_lingoes(
     num_individuals: usize,
 ) -> Result<LingoesCorrection> {
     let largest = the_largest_distance(&dist_vector, num_individuals, PcoaInput::Distances)?;
-    let centered = the_centered_matrix(&dist_vector, num_individuals, largest);
+    let centered = the_centered_matrix(&dist_vector, num_individuals, largest)?;
     let decomposed = the_decomposition_of(centered, num_individuals)?;
     if decomposed.num_negative == 0 {
         return Ok(LingoesCorrection {
@@ -269,7 +269,16 @@ pub(crate) fn the_threshold_of_the_eigenvalues(values: &[f64], num_individuals: 
 /// The components of the positive eigenvalues of a decomposition of B,
 /// whose distances were divided by `largest`: the projections are
 /// multiplied back by it, and the percentages are the same for both.
-fn the_components_of(decomposed: &Decomposed, num_individuals: usize, largest: f64) -> Pcoa {
+///
+/// # Errors
+///
+/// [`Error::PcoaNoMemory`] when the machine does not give the memory of the
+/// projections.
+fn the_components_of(
+    decomposed: &Decomposed,
+    num_individuals: usize,
+    largest: f64,
+) -> Result<Pcoa> {
     // A matrix with no negative eigenvalue has a sum of their sizes of at
     // most the individuals times the largest, so the threshold is at most
     // 46340 squared times 2.2e-16 of the largest, 0.48 of it, and the
@@ -277,21 +286,55 @@ fn the_components_of(decomposed: &Decomposed, num_individuals: usize, largest: f
     // eigenvalue is too.
     let eigen = &decomposed.eigen;
     let num_comps = decomposed.num_positive;
-    let mut projections = the_projections_of(eigen, num_individuals, num_comps);
+    let num_projections = num_individuals
+        .checked_mul(num_comps)
+        .ok_or(Error::PcoaNoMemory {
+            num_individuals,
+            what: "projections",
+        })?;
+    let mut projections = zeros_or_no_memory(num_projections, num_individuals, "projections")?;
+    write_the_projections(eigen, num_individuals, num_comps, &mut projections);
     for projection in &mut projections {
         *projection *= largest;
     }
     for component in 0..num_comps {
         fix_the_sign_of(&mut projections, component, num_comps);
     }
-    Pcoa {
+    Ok(Pcoa {
         num_individuals,
         num_comps,
         projections,
         explained_variance_percent: the_percentages_of(&eigen.values, num_comps),
         lingoes_constant: 0.0,
         negative_eigenvalues_percent: 0.0,
-    }
+    })
+}
+
+/// `num_values` zeros, the matrix B or the projections of `num_individuals`
+/// individuals, or the error of a machine that does not give their memory.
+///
+/// The memory is asked for with `try_reserve_exact`, which gives it back as
+/// an error where `vec![0.0; n]` would end the process: B of 46340
+/// individuals is 17 GB, and a Python session that asks for it on a
+/// machine that has less would be ended with no message.
+///
+/// # Errors
+///
+/// [`Error::PcoaNoMemory`] with the individuals and `what`.
+fn zeros_or_no_memory(
+    num_values: usize,
+    num_individuals: usize,
+    what: &'static str,
+) -> Result<Vec<f64>> {
+    let mut values: Vec<f64> = Vec::new();
+    values
+        .try_reserve_exact(num_values)
+        .map_err(|_| Error::PcoaNoMemory {
+            num_individuals,
+            what,
+        })?;
+    values.resize(num_values, 0.0);
+    Ok(values)
 }
 
 /// The largest distance of the vector, once the vector and its
@@ -429,13 +472,21 @@ fn the_pairs(num_individuals: usize) -> impl Iterator<Item = (usize, usize)> {
 /// The eigenvalues of B are then those of the distances as given over the
 /// square of the largest, the percentages are the same, and the
 /// projections are the largest times those of B.
+///
+/// # Errors
+///
+/// [`Error::PcoaNoMemory`] when the machine does not give the memory of B.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "the individuals are at most MAX_INDIVIDUALS_OF_THE_VARIANTS, 46340, checked before, so n x n is at most 2147395600, which a usize of 32 bits holds, and first + 1 and (first + 1) x n + first are below it"
 )]
-fn the_centered_matrix(dist_vector: &[f64], num_individuals: usize, largest: f64) -> Vec<f64> {
+fn the_centered_matrix(
+    dist_vector: &[f64],
+    num_individuals: usize,
+    largest: f64,
+) -> Result<Vec<f64>> {
     let side = num_individuals;
-    let mut matrix = vec![0.0; side * side];
+    let mut matrix = zeros_or_no_memory(side * side, num_individuals, "matrix")?;
     // The sum of the values of A of each row, in two parts: those at the
     // pairs where the individual is the first, which are the distances of
     // its segment of the vector, and those where it is the second.
@@ -476,7 +527,7 @@ fn the_centered_matrix(dist_vector: &[f64], num_individuals: usize, largest: f64
     // eigenvalue 0 of the centering would otherwise carry.
     let row_sums = the_row_sums_of_the_lower_half(&matrix, side);
     center_the_lower_half(&mut matrix, side, &row_sums);
-    matrix
+    Ok(matrix)
 }
 
 /// Takes from each cell of the lower half of the symmetric `matrix`, `side`
@@ -1309,6 +1360,28 @@ mod tests {
             message.starts_with("the largest distance is 9e-161,"),
             "{message}"
         );
+    }
+
+    /// Memory that the machine does not give is an error with the
+    /// individuals and what it was for, and not the end of the process that
+    /// `vec![0.0; n]` would be: more values than an allocation can hold,
+    /// which no machine gives, stand for a machine with too little.
+    #[test]
+    fn memory_the_machine_does_not_give_is_an_error() {
+        match super::zeros_or_no_memory(usize::MAX / 4, 46340, "matrix") {
+            Err(
+                error @ Error::PcoaNoMemory {
+                    num_individuals: 46340,
+                    what: "matrix",
+                },
+            ) => assert!(
+                error
+                    .to_string()
+                    .contains("calculate over fewer individuals"),
+                "{error}"
+            ),
+            other => panic!("the memory was given: {other:?}"),
+        }
     }
 
     /// The percentage of a message has three significant digits, so a

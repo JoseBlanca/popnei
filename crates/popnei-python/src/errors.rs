@@ -952,16 +952,17 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasIndividualTestedTwice { .. }
         | popnei::Error::GwasIndividualsOutOfOrder { .. }
         | popnei::Error::GwasVariantsTooLarge
-        // The five of the principal coordinate analysis and of Lingoes'
+        // The six of the principal coordinate analysis and of Lingoes'
         // correction that are of the distances a user gave, which
         // "Errors and the cases pyNei asserts" of `docs/specs/pca.md` lists:
         // fewer than 2 individuals, more than the linear algebra decomposes
-        // the matrix of, distances that are all 0, distances that are not Euclidean, which the message
+        // the matrix of or than this machine gives the memory of, distances that are all 0, distances that are not Euclidean, which the message
         // tells the user to correct, and a constant of the correction beyond
         // an f64, which the message tells the user to scale the distances
         // for.
         | popnei::Error::PcoaTooFewIndividuals { .. }
         | popnei::Error::PcoaTooManyIndividuals { .. }
+        | popnei::Error::PcoaNoMemory { .. }
         | popnei::Error::PcoaAllDistancesZero
         | popnei::Error::PcoaNotEuclidean { .. }
         | popnei::Error::PcoaLingoesConstantOutOfRange { .. } => {

@@ -3161,6 +3161,23 @@ pub enum Error {
         largest: f64,
     },
 
+    /// The machine did not give the memory of the individuals x individuals
+    /// matrix that a principal coordinate analysis, or Lingoes' correction,
+    /// decomposes, or of the projections of the analysis: 8 bytes a cell,
+    /// 17 GB at 46340 individuals. The memory is asked for so that a machine
+    /// that has too little gives this error instead of ending the process.
+    /// In Python it is a `ValueError`: the individuals are too many for this
+    /// machine.
+    #[error(
+        "the {what} of the principal coordinates of {num_individuals} individuals, 8 bytes for each individual x individual, is more memory than this machine gave; calculate over fewer individuals"
+    )]
+    PcoaNoMemory {
+        /// How many individuals the distances are of.
+        num_individuals: usize,
+        /// What the memory was for: the matrix, or the projections.
+        what: &'static str,
+    },
+
     /// An operation of the crate `popnei-linalg` that a principal
     /// coordinate analysis asked for did not run. The dimensions and the
     /// values that crate refuses are checked before it is called, so what
@@ -3591,6 +3608,7 @@ impl Error {
             // operation of the linear algebra that did not run.
             | Self::PcoaTooFewIndividuals { .. }
             | Self::PcoaTooManyIndividuals { .. }
+            | Self::PcoaNoMemory { .. }
             | Self::PcoaAllDistancesZero
             | Self::PcoaPairsWithNoDistance {
                 from: crate::pca::pcoa::PcoaInput::Variants,
