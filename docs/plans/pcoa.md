@@ -1,6 +1,8 @@
 # Plan: the principal coordinates of distances and Lingoes' correction
 
-27 September 2026. Draft, for the owner's approval. It builds from one
+27 September 2026. Approved by the owner in chat on 27 September 2026,
+when they answered the last question of the spec and said to go ahead
+with the plan; under way. It builds from one
 spec, the item "The principal coordinates of distances" of
 `docs/specs/pca.md`, with its part of "The Rust interface", as it stands
 on the branch `spec/pcoa` at the commit that adds this plan. It is carried
