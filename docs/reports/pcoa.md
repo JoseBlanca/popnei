@@ -146,3 +146,47 @@ After the fixes, at 1405217: fmt, clippy, both wasm checks and ruff clean;
 1373 cargo tests and 1223 without the default features, 38 of the PCoA;
 669 pytest; `npm test` `tests 496`, `fail 1`, the test of `main`;
 `npm run test:browser` 8 passed.
+
+## Work package 3: the limit of the browser, measured
+
+Task 3.1, at c6d3dd2, kept the script `js/popnei/bench/memory_of_pcoa.mjs`
+and ran it on 27 September 2026 under node 26.8.2 on the owner's Apple M5
+Pro, each n in a fresh node process, one at a time: `node
+bench/memory_of_pcoa.mjs <n>` from `js/popnei` after `npm run build`, on a
+VCF written in memory of n diploid individuals, 300 variants of two
+alleles and 2 in 100 genotypes missing, opened from its bytes and analysed
+with `correctByLingoes`. The limit of the binding was lifted for the runs by
+setting its constant to 0 in a build that was not committed. The memory of
+wasm was 1310720 bytes before the VCF was opened.
+
+| n | outcome | memory after the open | memory after the analysis | bytes a cell |
+|---|---|---|---|---|
+| 3000 | ran | 5242880 | 415563776 | 45.59 |
+| 8695 | ran | 12713984 | 3370909696 | 44.42 |
+| 9097 | ran | 13172736 | 3688824832 | 44.42 |
+| 9298 | ran | 13434880 | 3852009472 | 44.40 |
+| 9399 | ran | 13631488 | 3933995008 | 44.38 |
+| 9413 | ran | 13565952 | 3946250240 | 44.38 |
+| 9414 | trapped | 13565952 | 1799094272 | |
+| 9500 | trapped | 13762560 | 1831927808 | |
+
+The bytes a cell are the growth after the open over n². A trap ended the
+module after 1.4 to 1.8 s with about 20 bytes a cell taken, one allocation
+that did not fit, so the memory after a trap is not a peak. Only 3000 was
+measured below 8695.
+
+Task 3.2 changed the spec first, at eeb00a1, and then the constant, at
+523183e: the three functions refuse more than 9381 individuals, the PCA's
+limit, 33 below 9414. The boundary test at 9381 and 9382 failed before the
+constant changed.
+
+The review sent `spec` and `tests`. Neither found a wrong limit; the tests
+reviewer ran the measurement again at 3000, 9413 and 9414 and got the same
+rows, and ran `doPcoa` of 9381 individuals, which copies its vector into
+wasm besides, and it fit at 44.25 bytes a cell. What it found, fixed: the
+spec gave the PCA's margin as 29 below its smallest trap where it is 34, a
+slip copied from the PCA's own doc comment, which is fixed too; two doc
+comments of TypeScript derived 9381 from 44 bytes a cell, which gives about
+9835; and no test checked that `doPcoa` and `correctDistsByLingoes` refuse
+before they copy the vector into wasm, which removing the check showed by
+a growth of 352 MB and no failing test.
