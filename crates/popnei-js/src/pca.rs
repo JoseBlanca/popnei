@@ -321,22 +321,24 @@ const TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS: u64 = 61;
 
 /// How much memory a principal coordinate analysis holds at its peak, in
 /// tenths of the individuals x individuals matrix it decomposes, 8 bytes per
-/// cell: 71 is 56.8 bytes per cell, which takes 8695 individuals at most.
+/// cell: 61, the PCA's count, which takes 9381 individuals at most.
 ///
-/// It is the count of "How it runs" of "The principal coordinates of
-/// distances" of `docs/specs/pca.md`, an upper bound and not a measurement.
-/// The eigendecomposition of B, its eigenvectors and the workspace of faer
-/// are the 6.1 times the matrix that the PCA measured, 48.8 bytes per cell,
-/// and while the eigenvectors are there the projections are written, up to
-/// one component fewer than the individuals, 8 bytes more per cell. The
-/// distances, 4 bytes per cell, are dropped before the eigendecomposition.
-/// Whether the projections are written while the workspace of faer is still
-/// held is not known, and if not the peak is the PCA's and the limit its
-/// 9381; the plan of the principal coordinates measures it under node and
-/// the spec then takes the measured number. Lingoes' correction writes no
-/// projections and holds its vector instead, 4 bytes per cell, so it holds
-/// less and takes the same limit.
-const TENTHS_OF_THE_MATRIX_THE_PRINCIPAL_COORDINATES_HOLD: u64 = 71;
+/// It is measured apart from the PCA's, since the analysis holds more than
+/// the eigendecomposition: the distances before it and the projections
+/// after it. Measured under node 26.8.2 on an Apple M5 Pro on 27 September
+/// 2026 by `js/popnei/bench/memory_of_pcoa.mjs`, which opens a VCF of n
+/// diploid individuals and 300 variants, 2 in 100 genotypes missing, and
+/// runs `doPcoaFromVariants` with `correctByLingoes`: after the VCF was
+/// opened the memory of wasm grew by 45.6 bytes per cell at 3000
+/// individuals and by 44.4 at 8695 to 9413, 5.5 times the matrix, because
+/// the projections are written once faer has given its workspace back.
+/// 9413 individuals ran, 9414 ended the module with `RuntimeError:
+/// unreachable` after 1.4 s, on one allocation that did not fit, and 9414
+/// individuals have a matrix of 708987168 bytes, of which 4 GiB is 6.06.
+/// That is where the PCA's edge is, so popnei counts the PCA's 6.1, which
+/// is 33 below the smallest number that trapped. Lingoes' correction writes
+/// no projections, so it holds less and takes the same limit.
+const TENTHS_OF_THE_MATRIX_THE_PRINCIPAL_COORDINATES_HOLD: u64 = 61;
 
 /// Which of the two analyses over a square matrix is asked about, which
 /// decides how many times that matrix it holds and what the message calls
@@ -506,7 +508,7 @@ pub fn room_for_the_analysis_of_a_table(
 /// # Errors
 ///
 /// When the analysis of that many individuals does not fit in the memory of
-/// a page, which is above 8695 of them.
+/// a page, which is above 9381 of them.
 #[wasm_bindgen]
 pub fn room_for_the_principal_coordinates_of(num_individuals: usize) -> Result<(), JsPopneiError> {
     room_for_the_square_of(

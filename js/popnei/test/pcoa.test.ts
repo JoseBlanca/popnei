@@ -305,30 +305,30 @@ test("something that is not a Distances is refused and named", () => {
   );
 });
 
-test("the individuals a page holds the principal coordinates of are 8695", () => {
-  // 56.8 bytes for each cell of the individuals x individuals matrix, which
-  // "How it runs" of the spec counts, fit 8695 individuals in the 4 GiB of a
-  // page and not 8696. Neither is run here: the one that works takes minutes,
-  // since the time of the eigendecomposition goes with the cube of the
-  // individuals.
-  roomForThePrincipalCoordinates(8695);
+test("the individuals a page holds the principal coordinates of are 9381", () => {
+  // Under node the principal coordinates of 9413 individuals ran and 9414
+  // ended the module, which is where the PCA's edge is, and "How it runs" of
+  // the spec takes the PCA's limit, 9381 individuals and not 9382. Neither is
+  // run here: the one that works takes minutes, since the time of the
+  // eigendecomposition goes with the cube of the individuals.
+  roomForThePrincipalCoordinates(9381);
   assert.throws(
-    () => roomForThePrincipalCoordinates(8696),
-    /the principal coordinates of 8696 individuals hold about 5 GB, the individuals x individuals matrix of the analysis/,
+    () => roomForThePrincipalCoordinates(9382),
+    /the principal coordinates of 9382 individuals hold about 5 GB, the individuals x individuals matrix of the analysis/,
   );
   roomForThePrincipalCoordinates(5);
   roomForThePrincipalCoordinates(0);
 });
 
 test("a Distances too large for a page is refused by both functions", () => {
-  // The 37805860 distances of 8696 individuals are 302 MB, which node holds.
+  // The 44006271 distances of 9382 individuals are 352 MB, which node holds.
   // The package asks the page before it copies them into the memory of wasm
   // and the binding crate asks again, so what this says is that neither
   // function reaches the analysis; which of the two refused it is not seen
   // from here, since both give the same message.
-  const names = Array.from({ length: 8696 }, (_, position) => `s${position}`);
+  const names = Array.from({ length: 9382 }, (_, position) => `s${position}`);
   const distances = new Distances(
-    new Float64Array((8696 * 8695) / 2),
+    new Float64Array((9382 * 9381) / 2),
     names,
     PASS_STATS,
   );
@@ -338,7 +338,7 @@ test("a Distances too large for a page is refused by both functions", () => {
   ]) {
     assert.throws(
       call,
-      /the principal coordinates of 8696 individuals hold about 5 GB/,
+      /the principal coordinates of 9382 individuals hold about 5 GB/,
     );
   }
 });
@@ -604,7 +604,7 @@ function vcfOfManyIndividuals(numIndividuals: number): Uint8Array {
 }
 
 test("variants of more individuals than a page holds are refused before the source is read", () => {
-  const variants = openVcf(vcfOfManyIndividuals(8696));
+  const variants = openVcf(vcfOfManyIndividuals(9382));
   const calls: Progress[] = [];
   variants.onProgress((progress) => {
     calls.push(progress);
@@ -612,7 +612,7 @@ test("variants of more individuals than a page holds are refused before the sour
   try {
     assert.throws(
       () => doPcoaFromVariants(variants, { correctByLingoes: true }),
-      /the principal coordinates of 8696 individuals hold about 5 GB/,
+      /the principal coordinates of 9382 individuals hold about 5 GB/,
     );
     // No pass started: its first read would have told the page.
     assert.deepEqual(calls, []);

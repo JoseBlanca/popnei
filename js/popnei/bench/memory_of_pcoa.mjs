@@ -3,12 +3,12 @@
  * the memory of wasm under node, and whether they run or end the module.
  *
  * It is what task 3.1 of docs/plans/pcoa.md measured the limit of the
- * browser with: "How it runs" of "The principal coordinates of distances"
- * of docs/specs/pca.md counts at most 56.8 bytes for each cell of the
- * individuals x individuals matrix, 8695 individuals in the 4 GiB of a
- * page, and says the number is to be measured through
- * `doPcoaFromVariants` with `correctByLingoes`, as the PCA's was. The
- * numbers, with the command, are in docs/reports/pcoa.md.
+ * browser with, through `doPcoaFromVariants` with `correctByLingoes`, as
+ * the PCA's was: on 27 September 2026 9413 individuals ran and 9414 ended
+ * the module, and "How it runs" of "The principal coordinates of
+ * distances" of docs/specs/pca.md takes from it the limit of 9381
+ * individuals. The numbers, with the command, are in work package 3 of
+ * docs/reports/pcoa.md.
  *
  *     node bench/memory_of_pcoa.mjs <num individuals> [--num-vars n]
  *

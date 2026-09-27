@@ -154,7 +154,7 @@ pub fn default_correct_by_lingoes() -> bool {
 /// # Errors
 ///
 /// When the analysis of that many individuals does not fit in the memory of
-/// a page, which is above 8695 of them; when there are fewer than 2
+/// a page, which is above 9381 of them; when there are fewer than 2
 /// individuals; when a pair has no distance, whose message names the
 /// individuals; when a distance is negative or infinite, whose message names
 /// the two individuals; when every distance
@@ -270,7 +270,7 @@ impl PcoaOfVariants {
 /// # Errors
 ///
 /// When the analysis of the individuals of the pass does not fit in the
-/// memory of a page, which is above 8695 of them; when there are fewer than
+/// memory of a page, which is above 9381 of them; when there are fewer than
 /// 2, or more than the linear algebra decomposes the matrix of; the errors
 /// of the pass of the Kosman distances, a pass that gave no variant, sums of
 /// a pair beyond a `u32` and a source that cannot be read; when a pair has

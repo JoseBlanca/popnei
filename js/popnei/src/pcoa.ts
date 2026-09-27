@@ -132,12 +132,13 @@ export interface LingoesCorrection {
  *
  * A page holds 4 GB at a time, and the matrix of the individuals, its
  * eigenvectors, the workspace of the eigendecomposition and the projections
- * are about 56.8 bytes per cell of the individuals x individuals matrix, so
- * distances of more than 8695 individuals are an `Error` here and are
+ * are about 44 bytes per cell of the individuals x individuals matrix,
+ * measured under node, where the analysis of 9414 individuals did not fit.
+ * So distances of more than 9381 individuals are an `Error` here and are
  * analysed by a program outside the browser, popnei in Python among them.
  *
  * @throws {Error} When `distances` is not a `Distances`; when it is of more
- * than 8695 individuals; when it is of fewer than 2; when a pair has no
+ * than 9381 individuals; when it is of fewer than 2; when a pair has no
  * distance, whose message says how many do not, names the first of them and
  * the individual that is in the most of them, and says to give each of those
  * pairs a distance or take one of its two individuals out; when a distance
@@ -192,10 +193,10 @@ export function doPcoa(distances: Distances): PcoaResult {
  * application's to decide.
  *
  * It holds less of the memory of a page than `doPcoa`, since it writes no
- * projections, and takes the same limit of 8695 individuals.
+ * projections, and takes the same limit of 9381 individuals.
  *
  * @throws {Error} When `distances` is not a `Distances`; when it is of more
- * than 8695 individuals; when it is of fewer than 2; when a pair has no
+ * than 9381 individuals; when it is of fewer than 2; when a pair has no
  * distance, whose message says how many do not, names the first of them and
  * the individual that is in the most of them, and says to give each of those
  * pairs a distance or take one of its two individuals out; when a distance
@@ -321,10 +322,11 @@ export interface DoPcoaFromVariantsOptions {
  * It is pyNei's `do_pcoa_from_variants`, which has no correction and gives a
  * component for every eigenvalue, the negative ones included.
  *
- * A page holds 4 GB at a time, and the analysis holds about 56.8 bytes per
- * cell of the individuals x individuals matrix, so a pass of more than 8695
- * individuals is an `Error` here, before the source is read, and is
- * analysed by a program outside the browser, popnei in Python among them.
+ * A page holds 4 GB at a time, and the analysis holds about 44 bytes per
+ * cell of the individuals x individuals matrix, measured under node, where
+ * 9414 individuals did not fit, so a pass of more than 9381 individuals is
+ * an `Error` here, before the source is read, and is analysed by a program
+ * outside the browser, popnei in Python among them.
  * The individuals counted are those the pass gives, so a `filterIndividuals`
  * that keeps fewer is analysed.
  *
@@ -332,7 +334,7 @@ export interface DoPcoaFromVariantsOptions {
  * options are not an object or hold a key that is neither `minNumSnps` nor
  * `correctByLingoes`; when `minNumSnps` is not a whole number from 0 to
  * 4294967295; when `correctByLingoes` is not a boolean; when the pass gives
- * more than 8695 individuals; when it gives fewer than 2; when the pass
+ * more than 9381 individuals; when it gives fewer than 2; when the pass
  * gives no variant, whose message says whether the source held none or the
  * steps kept none and how many variants each filter was given and kept;
  * when the source cannot be read, a wrong line of a VCF among the causes;
