@@ -528,6 +528,22 @@ pub(crate) fn the_remedy_of_the_pairs_with_no_distance(from: PcoaInput) -> &'sta
     }
 }
 
+/// "there is 1 individual" or "there are 0 individuals", for the message
+/// of [`Error::PcoaTooFewIndividuals`].
+pub(crate) fn the_individuals_there_are(num_individuals: usize) -> String {
+    if num_individuals == 1 {
+        "there is 1 individual".to_owned()
+    } else {
+        format!("there are {num_individuals} individuals")
+    }
+}
+
+/// The verb of a count of pairs: "1 of the 10 pairs has", "2 of the 10
+/// pairs have".
+pub fn have_or_has(count: usize) -> &'static str {
+    if count == 1 { "has" } else { "have" }
+}
+
 /// The correction the message of [`Error::PcoaNotEuclidean`] names, which
 /// depends on where the distances came from.
 pub(crate) fn the_correction_of(from: PcoaInput) -> &'static str {
@@ -1246,6 +1262,53 @@ mod tests {
                 Err(error) => panic!("seed {seed}: {error}"),
             }
         }
+    }
+
+    /// The messages are written for the count they carry: one individual
+    /// is "there is 1 individual", no individual "there are 0
+    /// individuals", and one pair with no distance "has" none.
+    #[test]
+    fn a_message_of_one_is_written_in_the_singular() {
+        let message = |error: Error| error.to_string();
+        assert!(
+            message(Error::PcoaTooFewIndividuals { num_individuals: 1 })
+                .starts_with("there is 1 individual, and"),
+            "{}",
+            message(Error::PcoaTooFewIndividuals { num_individuals: 1 })
+        );
+        assert!(
+            message(Error::PcoaTooFewIndividuals { num_individuals: 0 })
+                .starts_with("there are 0 individuals, and")
+        );
+        let mut dist_vector = SMALL.to_vec();
+        dist_vector[4] = f64::NAN;
+        match pcoa(dist_vector, 5) {
+            Err(error @ Error::PcoaPairsWithNoDistance { .. }) => {
+                let text = error.to_string();
+                assert!(
+                    text.starts_with("1 of the 10 pairs of individuals has no distance"),
+                    "{text}"
+                );
+                assert!(text.contains("is in 1 of them"), "{text}");
+            }
+            other => panic!("the pair with no distance was not refused: {other:?}"),
+        }
+    }
+
+    /// The largest distance of a constant that is refused is written with
+    /// an exponent, and not with the 200 digits of 9e199 in full.
+    #[test]
+    fn the_largest_distance_of_a_refused_constant_is_written_with_an_exponent() {
+        let message = Error::PcoaLingoesConstantOutOfRange { largest: 9e199 }.to_string();
+        assert!(
+            message.starts_with("the largest distance is 9e199,"),
+            "{message}"
+        );
+        let message = Error::PcoaLingoesConstantOutOfRange { largest: 9e-161 }.to_string();
+        assert!(
+            message.starts_with("the largest distance is 9e-161,"),
+            "{message}"
+        );
     }
 
     /// The percentage of a message has three significant digits, so a

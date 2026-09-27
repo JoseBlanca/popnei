@@ -3026,7 +3026,8 @@ pub enum Error {
     /// than 2 individuals: with one there is no distance to place it by.
     /// pyNei gives a percentage of NaN. In Python it is a `ValueError`.
     #[error(
-        "there are {num_individuals} individuals, and a principal coordinate analysis places 2 at least by the distance of each pair"
+        "{there_are}, and a principal coordinate analysis places 2 at least by the distance of each pair",
+        there_are = crate::pca::pcoa::the_individuals_there_are(*num_individuals)
     )]
     PcoaTooFewIndividuals {
         /// How many individuals the distances are of.
@@ -3053,7 +3054,8 @@ pub enum Error {
     /// binding crate puts their names in the message. In Python it is a
     /// `ValueError`.
     #[error(
-        "{num_pairs_with_no_distance} of the {num_pairs} pairs of individuals have no distance, the first of them the individuals at the positions {first_of_the_first} and {second_of_the_first}, and the individual at the position {most_often} is in {most_often_count} of them, counting from 0; {remedy}",
+        "{num_pairs_with_no_distance} of the {num_pairs} pairs of individuals {have} no distance, the first of them the individuals at the positions {first_of_the_first} and {second_of_the_first}, and the individual at the position {most_often} is in {most_often_count} of them, counting from 0; {remedy}",
+        have = crate::pca::pcoa::have_or_has(*num_pairs_with_no_distance),
         remedy = crate::pca::pcoa::the_remedy_of_the_pairs_with_no_distance(*from)
     )]
     PcoaPairsWithNoDistance {
@@ -3152,7 +3154,7 @@ pub enum Error {
     /// significant digits, or is 0 and would say that nothing was corrected.
     /// In Python it is a `ValueError`.
     #[error(
-        "the largest distance is {largest}, and the constant of Lingoes' correction, which is added to the squared distances, is beyond the range of a 64 bit float at that size, where it would be an infinity or keep only a few of its digits; divide the distances by a number near the largest before correcting them"
+        "the largest distance is {largest:e}, and the constant of Lingoes' correction, which is added to the squared distances, is beyond the range of a 64 bit float at that size, where it would be an infinity or keep only a few of its digits; divide the distances by a number near the largest before correcting them"
     )]
     PcoaLingoesConstantOutOfRange {
         /// The largest distance given.

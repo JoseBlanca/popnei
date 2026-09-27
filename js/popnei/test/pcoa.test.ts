@@ -222,9 +222,15 @@ test("a negative or an infinite distance is refused with the names of its pair",
   const withAnInfinity = Float64Array.from(TEN_DISTANCES);
   withAnInfinity[8] = Number.POSITIVE_INFINITY;
   const infinite = new Distances(withAnInfinity, NAMES, PASS_STATS);
+  // A distance below 1e-6 is written as JavaScript writes it, with an
+  // exponent, and not as the 300 zeros of the number in full.
+  const withATinyNegative = Float64Array.from(TEN_DISTANCES);
+  withATinyNegative[1] = -1e-300;
+  const tinyNegative = new Distances(withATinyNegative, NAMES, PASS_STATS);
   for (const [distances, pair, value] of [
     [negative, "`i1` and `i3`", "-0.3"],
     [infinite, "`i3` and `i5`", "Infinity"],
+    [tinyNegative, "`i1` and `i3`", "-1e-300"],
   ] as const) {
     for (const call of [
       () => doPcoa(distances),
@@ -259,7 +265,7 @@ test("distances that are all 0, and fewer than two individuals, are refused", ()
   for (const call of [() => doPcoa(alone), () => correctDistsByLingoes(alone)]) {
     assert.throws(
       call,
-      /there are 1 individuals, and a principal coordinate analysis places 2 at least/,
+      /there is 1 individual, and a principal coordinate analysis places 2 at least/,
     );
   }
 });

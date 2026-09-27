@@ -231,10 +231,11 @@ impl From<JsPopneiError> for JsValue {
                 most_often_count,
                 from,
             } => format!(
-                "{num_pairs_with_no_distance} of the {num_pairs} pairs of individuals have \
+                "{num_pairs_with_no_distance} of the {num_pairs} pairs of individuals {have} \
                  no distance, the first of them `{first_of_the_first}` and \
                  `{second_of_the_first}`, and `{most_often}` is in {most_often_count} of \
                  them; {remedy}",
+                have = popnei::pca::pcoa::have_or_has(num_pairs_with_no_distance),
                 remedy = the_remedy_of_the_pairs_with_no_distance(from)
             ),
             // A distance that is negative or infinite, under the names of
@@ -434,21 +435,33 @@ fn the_remedy_of_the_pairs_with_no_distance(from: popnei::pca::PcoaInput) -> &'s
 }
 
 /// `number` written as JavaScript writes it, which is how a user wrote it:
-/// `95` and not the `95.0` of Rust, `Infinity` and not its `inf`.
+/// `95` and not the `95.0` of Rust, `Infinity` and not its `inf`, `1e-300`
+/// and not its 300 digits.
 ///
 /// Rust and JavaScript both write a float64 as the shortest text that reads
 /// back as the same number, so the digits are the same, and they differ in
 /// the two infinities and in where they turn to an exponent: JavaScript
-/// writes 1e21 and larger, and anything below 1e-6, with one, and Rust
-/// writes every number in full. No threshold of a filter is in either range,
-/// and a number that is refused for being out of 0 to 1 can be: `1e30` is
-/// written here as its 31 digits.
+/// writes a number of 1e21 and larger, and one above 0 and below 1e-6, with
+/// one, `1e+21` and `1.5e-7`, and Rust writes every number in full. So a
+/// number in those two ranges is written here with the exponent of Rust,
+/// which has the digits of JavaScript and no `+` before an exponent above
+/// 0, and the `+` is put in.
 fn as_javascript_writes_it(number: f64) -> String {
     if number.is_infinite() {
         return if number.is_sign_negative() {
             "-Infinity".to_owned()
         } else {
             "Infinity".to_owned()
+        };
+    }
+    let size = number.abs();
+    if size >= 1e21 || (size > 0.0 && size < 1e-6) {
+        let written = format!("{number:e}");
+        return match written.split_once('e') {
+            Some((digits, exponent)) if !exponent.starts_with('-') => {
+                format!("{digits}e+{exponent}")
+            }
+            _ => written,
         };
     }
     number.to_string()

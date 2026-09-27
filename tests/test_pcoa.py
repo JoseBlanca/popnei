@@ -233,6 +233,15 @@ def test_the_pairs_with_no_distance_are_refused_by_their_names(function):
     assert "position" not in said
 
 
+def test_one_pair_with_no_distance_has_none():
+    # The pair (i2, i3), at 4, alone.
+    said = refusal_of(ten_dists(at_4=numpy.nan))
+    assert said.startswith(
+        "1 of the 10 pairs of individuals has no distance, the first of them "
+        "'i2' and 'i3', and 'i2' is in 1 of them;"
+    ), said
+
+
 def test_the_individual_named_is_the_first_of_two_in_as_many_pairs():
     # (i2, i4), at 5, and (i4, i5), at 9: i4 is in both, the others in one.
     # (i1, i2), at 0, and (i3, i5), at 8: every individual of the four is
@@ -255,7 +264,7 @@ def refusal_of(dists: Distances) -> str:
 def test_a_pair_with_no_distance_is_refused_before_the_matrix_is_decomposed():
     # The ten are not Euclidean, and the pair with no distance is what the
     # user hears of.
-    assert "have no distance" in refusal_of(ten_dists(at_2=numpy.nan))
+    assert "has no distance" in refusal_of(ten_dists(at_2=numpy.nan))
 
 
 @pytest.mark.parametrize("value", [-0.1, numpy.inf])
@@ -280,7 +289,7 @@ def test_distances_that_are_all_zero_are_refused(function):
 
 @pytest.mark.parametrize("function", [do_pcoa, correct_dists_by_lingoes])
 def test_one_individual_is_refused(function):
-    with pytest.raises(ValueError, match="there are 1 individuals"):
+    with pytest.raises(ValueError, match="there is 1 individual, and"):
         function(Distances(numpy.zeros(0), names=("i1",)))
 
 

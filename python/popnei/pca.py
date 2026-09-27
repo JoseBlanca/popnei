@@ -482,7 +482,7 @@ def _the_pairs_with_no_distance(of_the_core: BaseException, names: tuple) -> str
     ) = of_the_core.args
     return (
         f"{num_pairs_with_no_distance} of the {num_pairs} pairs of individuals "
-        f"have no distance, the first of them {names[first]!r} and "
+        f"{'has' if num_pairs_with_no_distance == 1 else 'have'} no distance, the first of them {names[first]!r} and "
         f"{names[second]!r}, and {names[most_often]!r} is in {most_often_count} "
         f"of them; a principal coordinate analysis places every individual by "
         f"its distance to every other, so each of those pairs has to be given a "
