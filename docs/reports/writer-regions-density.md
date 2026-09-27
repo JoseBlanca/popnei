@@ -1,12 +1,72 @@
 # Report: the VCF writer, the filter by regions, the missing rate and the density of the variants
 
-26 September 2026. It records how `docs/plans/writer-regions-density.md`
-was carried out, on the branch `plan/writer-regions-density` in the
-worktree `.claude/worktrees/plan-writer-regions-density`, which branches
-from `spec/writer-regions-density` at 838459f and not from `main`, because
+26 September 2026, finished on 27 September 2026. It records how
+`docs/plans/writer-regions-density.md` was carried out, on the branch
+`plan/writer-regions-density` in the worktree
+`.claude/worktrees/plan-writer-regions-density`, which branches from
+`spec/writer-regions-density` at 838459f and not from `main`, because
 neither the specs nor the plan are on `main` yet.
 
-The plan is under way.
+**The plan is done but for one choice that is the owner's: the deflate
+of the bgzipped VCF.** Every task is ticked and every deliverable was
+checked. One target is missed: the bgzipped write of `big.vcf` on one
+thread takes 10.65 to 10.96 s, where the plan allows 9.79 s, bcftools'
+8.9 s and a tenth. The options and their times are under "Waiting for
+the owner" in work package 3, and the first of the questions at the end.
+Nothing was merged into `main` and nothing pushed; the last commit of the
+work is 116671d.
+
+**What exists now that did not.** Through the core, both binding crates,
+the Python package and the TypeScript package:
+
+- `write_vcf(variants, "kept.vcf.gz")` and `writeVcf(variants)` write the
+  variants of a pass as a VCF, bgzipped or plain. Each line is as the
+  source VCF had it, with AC and AN taken out when the pass has fewer
+  individuals than its source; from a vars file, each line is what the
+  file holds. On the cases of the spec the output is byte for byte that
+  of bcftools 1.24, and `bgzip -t` and `tabix -p vcf` accept it.
+- `variants.filter_by_regions("genes.bed")`, and `exclude=True` for the
+  other side, keep the variants inside or outside the regions of a BED
+  file, as bcftools `view -T` and plink2 `--extract bed0` keep them. When
+  it is the first filter of variants, the VCF reader does not parse the
+  lines outside the regions and the vars file reader does not read the
+  batches outside them: 1000 of the 100000 variants of `big.vcf` come in
+  0.039 s from the plain file on one thread, where reading all of it
+  takes 0.54 s.
+- The missing rate of each variant, a sixth statistic of
+  `calc_per_var_distribs`, checked against plink2.
+- `calc_var_density(variants, 100000)`, the number of variants in each
+  window along each chromosome, checked against tabix.
+- What they rest on: every reader gives the header of its source (its
+  individuals, the length of each chromosome and, for a VCF, the lines of
+  its header), and a vars file keeps the lengths, at version 1.1 of its
+  format.
+
+The suites went from 1022 cargo tests, 551 pytest and 443 of 444 node to
+1185, 612 and 473 of 474; the one node test that fails is the same one,
+in `test/gwas.test.ts`, which fails on `main` and is not of this plan.
+
+**What the reviews found.** Each of the six work packages was reviewed in
+four to seven categories. In five of the six a review found at least one
+defect that gave a wrong result with no error, ten in all, each fixed
+with a test that fails without the fix; the missing rate had none: `##contig` lengths read wrong or dropped, an empty INFO
+column written, the regions of a chromosome named `tracks1` dropped as a
+header, a misspelt option of TypeScript that flipped the side of the
+regions kept, a cut VCF read as whole when the cut fell outside the
+regions. The owner should know of three changes that reach beyond this
+plan: every options object of the TypeScript package now refuses a key it
+does not know; `write_vars` in Python, like `write_vcf`, now takes away
+its file after a panic; and a VCF with 200000 `##contig` lines opens in
+0.030 s where it took 13.37 s.
+
+**What is asked of the owner.** The choice of the deflate, five smaller
+choices, and the merge. They are under "Questions for the owner" at the
+end, each with the options and a recommendation.
+
+This page was written while the work went, one work package at a time.
+Its last section, "How the work went", is for whoever next revises a
+skill or writes an implementation plan, and not for the owner; it says so
+in its first line.
 
 ## Before the first task
 
@@ -281,6 +341,8 @@ timed. libdeflate, `libdeflater` 1.26.1, is C: it failed to build for
 `wasm32-unknown-emscripten` without `emcc` and for
 `wasm32-unknown-unknown` without C headers.
 
+### Task 3.4, the review and the fixes
+
 Task 3.4, commits fe5c9cb and b72ce55. `write_vcf(variants, path)` in
 Python writes the file bgzipped when the path ends in `.gz`, and
 `writeVcf(variants, {bgzip})` in TypeScript gives the bytes, bgzipped
@@ -364,6 +426,20 @@ and a POS of `nine` are each refused. After the undo, on one thread, the
 plain write takes 0.98 to 1.00 s and the bgzipped one 10.8 to 11.0 s. The
 owner may still prefer the faster write; it is among the questions at the
 end.
+
+The measurement of task 3.5, commit f4e0635, is in "### The writer" of
+"Speed" of `docs/specs/io_vcf.md`, taken on 27 September 2026 at load
+averages of 3.5 to 4.0, three runs each, in seconds:
+
+| write of big.vcf | bcftools, same session | target | from big.vcf | from big.vars |
+|---|---|---|---|---|
+| plain, 1 thread | 1.78, 1.69, 1.70 | 1.65 | 1.001, 0.954, 0.954 | 1.499, 1.485, 1.496 |
+| bgzipped, 1 thread | 8.84, 8.90, 9.22 | 8.9 | 10.649, 10.664, 10.961 | 10.859, 10.800, 10.842 |
+| bgzipped, 18 threads | 1.59, 1.66, 1.62 | 1.63 | 0.897, 0.890, 0.894 | 0.859, 0.854, 0.863 |
+
+Two of the three targets are met; the bgzipped write on one thread is
+not, and waits for the owner's choice of the deflate. The bgzipped file
+is 38437792 bytes, 2 in 100 more than bcftools' 37695742.
 
 ## 4. The filter by regions
 
@@ -506,6 +582,19 @@ skip: 0.572 to 0.600 s on one thread against the target of 0.594 s, the
 same as before the change under the same load of 3 to 6, and 0.088 to
 0.089 s on 18 threads against 0.108 s.
 
+The measurement of task 5.2, commit 3f9e185, is in "### The filter by
+regions" of "Speed" of `docs/specs/filters.md`, taken on 27 September 2026
+at load averages of 3.2 to 3.5, with a BED of `chr1 0 1000000` that keeps
+1000 of the 100000 variants, five runs each; every target is met:
+
+| case | median of five runs | target |
+|---|---|---|
+| plain `big.vcf` read with the regions, 1 thread | 0.039 s | 0.15 s |
+| bgzipped `big.vcf` read with the regions, 1 thread | 0.312 s | 0.45 s |
+| `big.vars` through the filter, 1 thread | 0.005 s | 0.02 s |
+| all of plain `big.vcf`, no regions, 1 thread | 0.542 s | 0.594 s |
+| the same, 18 threads | 0.082 s | 0.108 s |
+
 ## 6. The density of the variants
 
 Task 6.1, commits 317ec23 and f7f7a44. `calc_var_density` counts the
@@ -553,3 +642,121 @@ agree with tabix. What they found:
   POS whatever the length of its REF, where tabix counts a deletion in
   every window it overlaps; the two agree on `many.vcf` only because all
   its variants are one base long.
+
+The fixes are the commits from 66f2637 to 22803af. A `Map`, or any object
+that is not a plain one, given as `chromLengths` is refused, naming it;
+the TSDoc and the spec say that JavaScript lists the names that are whole
+numbers first, and a test holds it. A bad length in Python names its
+chromosome. The two errors only a reader with a defect can give are a
+`RuntimeError`. The spec says a variant is counted in the window of its
+POS, and that tabix counts a record in every window its REF overlaps.
+Each layer has a test with the lengths out of the order of their names.
+
+The first measurement of the density, commit d9a058c, is in "Speed" of
+`docs/specs/stats.md`, taken on 27 September 2026 at a load average of
+3.5: windows of 100000 over `big.vars` take 0.005 s on one thread and on
+18, and over `big.vcf` 0.040 to 0.042 s on one thread and 0.039 s on 18,
+since the density asks the reader for the positions alone. Both give 1000
+windows that add up to 100000 variants. The spec sets no target yet.
+The measurer saw the read of `big.vars` on 18 threads take 0.026 s, where
+`docs/specs/stats.md` says 0.102 s on both thread counts; nobody has
+looked into why.
+
+## Questions for the owner
+
+1. **The deflate of the bgzipped VCF.** With flate2 over miniz_oxide at
+   level 6, the deflate the core has, the bgzipped write of `big.vcf` on
+   one thread takes 10.65 to 10.96 s, above the 9.79 s the plan allows.
+   The options, measured in one session on 26 September 2026 (the table
+   under "Waiting for the owner" in work package 3):
+   - flate2 over zlib-rs at level 6: 5.55 s and 37.4 MB, smaller than
+     bcftools' 37.7 MB. It builds for both wasm targets, is pure Rust,
+     and adds `zlib-rs` 0.6.8 behind a feature of flate2; flate2 then
+     inflates with it too, so the readers of bgzipped files change their
+     inflate, which was not timed.
+   - miniz_oxide at level 5: 5.0 s and 41.6 MB, 10 in 100 larger than
+     today's file. No dependency changes.
+   - Keep level 6 of miniz_oxide and change the bound.
+
+   Recommended: zlib-rs at level 6. It is the only option that is both
+   faster than bcftools and as small as bgzip. If you agree, a task
+   switches the feature, times the readers of bgzipped files before and
+   after, and measures the writer again.
+2. **The VCF writer parses every line.** It asks the reader for every
+   column of a VCF, so a line with a genotype or a POS that does not parse
+   is refused, as your rule that a corrupt input is reported asks. Reading
+   only the text of the lines would take the plain write from 0.98 s to
+   0.52 s on one thread, and would copy such a line into the output
+   without an error. Recommended: keep the full parse.
+3. **Position 0 in the density.** `calc_var_density` refuses a variant at
+   position 0; tabix 1.24 counts it in the first window, with a warning.
+   The VCF format allows position 0 for a telomere. Recommended: count it
+   in the first window, as tabix does, and say so in the spec.
+4. **The order of `chromLengths` in TypeScript.** JavaScript lists the
+   keys of an object that are whole numbers first, in ascending order, so
+   chromosomes named "1" to "22" come out in that order whatever order the
+   user wrote, where Python keeps it. A `Map` or a list of pairs would keep
+   it; today a `Map` is refused. Recommended: take a `Map` as well.
+5. **The footer of a vars file is trusted for the batches the regions
+   skip.** Every batch that is read is checked against its footer, and a
+   skipped batch has its count of rows checked. A footer that lies about
+   the positions of a batch the regions skip cannot be caught without
+   reading that batch, and would change the variants kept. Recommended:
+   accept it, since popnei writes the footer from the rows it writes; the
+   spec says so now.
+6. **Smaller.** The error of a second filter by regions names neither
+   BED file, as the spec chose; naming the one already set would help the
+   user find it. Recommended: name it.
+
+Three things were seen outside this plan and not fixed; each can become a
+GitHub issue if you want one. The Python binding turns any error of the
+core it does not name into a `ValueError`, through a last arm that
+catches the rest, so a new defect of popnei would read as a wrong input.
+In TypeScript, `stats: [5]` is refused with a message that says an
+`Array` was given. And the plain write of a VCF of 5000 individuals with
+GT, AD, DP, GQ and PL peaks at 314 MB, which nobody has looked into.
+
+And the merge of `plan/writer-regions-density` into `main`, when you
+decide it. The branch also carries the specs of
+`spec/writer-regions-density`, which are not on `main` either. The
+branch `exp/writer-deflate`, in `.claude/worktrees/exp-writer-deflate`,
+holds the timing of the three deflates; it is for the first question and
+is not to be merged.
+
+## How the work went
+
+This section is for whoever next revises a skill or writes an
+implementation plan, not for the owner, who can stop here.
+
+- **The reviews found what the tasks missed, in every work package.**
+  Five of the six had at least one finding that gave a wrong result with
+  no error, ten in all, and in every one a reviewer's mutation showed a
+  test the writer had meant to guard a case that could not fail. The review cost as much as the
+  writing: the subagents that wrote a work package ended with 350000 to
+  630000 tokens of context each, across their tasks and their fixes, and
+  its reviewers used 60000 to 130000 tokens each, four to seven of them,
+  that is 330000 to 750000 a work package.
+- **Where the spec is silent, a subagent decides, and twice it decided
+  against the owner's rule on errors.** One made a `##contig` line
+  without an ID give no length and no error; another made the writer read
+  only the text of a VCF for speed, which let a corrupt line through. Both
+  were caught by the orchestrator and not by the subagent. The prompt of a
+  task should carry the rule in a sentence: a case the spec leaves open is
+  decided toward an error, and a check of the input is not traded for
+  speed without the owner.
+- **The plan's counts were wrong twice in the small.** It counted 21
+  implementations of the trait where there are 24, and it said no test of
+  before would change but for the version of the vars file, where a
+  longer key changes every test that holds the key or a file's size.
+  Counting with `grep` when the plan is written would have caught both.
+- **One tree, one writer at a time, held.** Tasks that the plan let run
+  side by side were run one after another in the tree, or beside reviewers
+  that only read; a writer never compiled against another's half-made
+  edit. The reviewers that read the shared tree saw the uncommitted files
+  of the task running beside them, and said so, which cost a line in each
+  prompt and nothing else.
+- **Two hand-backs of reviewers had to be asked for again**: one handed
+  back "No findings yet." before it had checked anything, and the report
+  of the same reviewer did not arrive after its second run. A usage limit
+  stopped the measuring subagent for about four hours; it went on from
+  its context when resumed.
