@@ -1154,8 +1154,14 @@ ran at 9413 individuals and ended the module at 9414, 1.4 s in, with one
 allocation that did not fit and not with the memory full, which is where
 the PCA's edge is too, 9410 ran and 9415 did not. So the three functions
 take the PCA's limit, 9381 individuals, 33 below the smallest number that
-trapped, where the PCA's is 29 below its own. `correctDistsByLingoes` holds
-less, since it writes no projections, and takes the same limit.
+trapped, where the PCA's is 34 below its own. `doPcoa`, which copies the
+vector of distances into wasm besides, was run at 9381 individuals by the
+review of this work, the same day and on the same machine, and fit: 44.25
+bytes a cell, and 9414 trapped. `correctDistsByLingoes` holds less, since it
+writes no projections, and takes the same limit. The limit counts 48.8
+bytes a cell, the PCA's 6.1 times the matrix, above the 44.4 measured,
+because the edge is set by one allocation that does not fit and not by
+the memory the analysis holds.
 
 ### How it is verified
 
