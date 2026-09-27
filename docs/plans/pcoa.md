@@ -186,7 +186,7 @@ of the binding crates, on `main`.
 
 Tasks:
 
-- [ ] 2.1 In the core: `VariantPcoaOptions`, `PcoaOfVariants` and
+- [x] 2.1 In the core: `VariantPcoaOptions`, `PcoaOfVariants` and
       `pcoa_of_variants` without the correction, as "How it runs" says, B
       built from the sums of the pass and the sums dropped before the
       eigendecomposition, the pairs with no distance checked on the sums,
@@ -194,7 +194,7 @@ Tasks:
       `correct_by_lingoes` true it returns an error that the correction is
       not built yet, which task 2.2 replaces. The tests of deliverable 1
       that need no correction. Serves deliverables 1 and 4.
-- [ ] 2.2 The correction inside the analysis, as the paragraph of "How it
+- [x] 2.2 The correction inside the analysis, as the paragraph of "How it
       runs" that begins "In `do_pcoa_from_variants` with
       `correct_by_lingoes`" says: the eigenvalues shifted by c, and the
       eigenvectors of the eigenvalue 0 projected orthogonal to the vector
