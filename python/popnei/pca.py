@@ -468,8 +468,10 @@ def _the_pairs_with_no_distance(of_the_core: BaseException, names: tuple) -> str
     """What a user is told of the pairs of a ``Distances`` with no distance.
 
     The core names the individuals by their position in the order of the
-    distances, which is where the names of the ``Distances`` are read, and
-    says the counts.
+    distances, which is where the names of the ``Distances`` are read, says
+    the counts, and writes what the user is to do, which depends on whether
+    the distances were given or came from the variants: that text is taken
+    as the core wrote it.
     """
     (
         _,
@@ -479,14 +481,14 @@ def _the_pairs_with_no_distance(of_the_core: BaseException, names: tuple) -> str
         second,
         most_often,
         most_often_count,
+        remedy,
     ) = of_the_core.args
+    have = "has" if num_pairs_with_no_distance == 1 else "have"
     return (
         f"{num_pairs_with_no_distance} of the {num_pairs} pairs of individuals "
-        f"{'has' if num_pairs_with_no_distance == 1 else 'have'} no distance, the first of them {names[first]!r} and "
+        f"{have} no distance, the first of them {names[first]!r} and "
         f"{names[second]!r}, and {names[most_often]!r} is in {most_often_count} "
-        f"of them; a principal coordinate analysis places every individual by "
-        f"its distance to every other, so each of those pairs has to be given a "
-        f"distance or one of its two individuals taken out of the distances"
+        f"of them; {remedy}"
     )
 
 
@@ -496,14 +498,13 @@ def _the_distance_out_of_range(of_the_core: BaseException, names: tuple) -> str:
 
     The core names the two individuals of the pair by their position in the
     order of the distances, which is where the names of the ``Distances``
-    are read, and gives the distance.
+    are read, gives the distance, and writes what a distance has to be,
+    which is taken as the core wrote it.
     """
-    _, first, second, value = of_the_core.args
+    _, first, second, value, what_it_has_to_be = of_the_core.args
     return (
         f"the distance of {names[first]!r} and {names[second]!r} is {value}, and "
-        f"a principal coordinate analysis needs every distance finite and 0 or "
-        f"above; a negative F_ST or f_2 is of two populations the dataset cannot "
-        f"tell apart"
+        f"{what_it_has_to_be}"
     )
 
 

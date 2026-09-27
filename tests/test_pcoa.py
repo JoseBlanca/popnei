@@ -313,3 +313,27 @@ def test_a_vector_of_another_length_is_a_defect_of_popnei(function):
     # a vector whose length is the pairs of no number of individuals.
     with pytest.raises(RuntimeError, match="holds 10 distances"):
         function(numpy.array(TEN_DISTS), 6)
+
+
+def test_what_a_user_is_told_to_do_of_a_pair_with_no_distance_is_the_cores():
+    # The core writes what to do, which depends on whether the distances were
+    # given or came from the variants, and the package puts in the names
+    # alone: the exception of the core carries that text as its last
+    # argument, and the message a user reads ends with it.
+    vector = numpy.array(TEN_DISTS)
+    vector[4] = numpy.nan
+    with pytest.raises(_core.PcoaPairsWithNoDistance) as of_the_core:
+        _core.pcoa(vector, 5)
+    remedy = of_the_core.value.args[-1]
+    assert remedy.startswith("a principal coordinate analysis places every")
+    assert refusal_of(ten_dists(at_4=numpy.nan)).endswith("; " + remedy)
+
+
+def test_what_a_distance_has_to_be_is_the_cores():
+    vector = numpy.array(TEN_DISTS)
+    vector[4] = -1.0
+    with pytest.raises(_core.PcoaDistanceOutOfRange) as of_the_core:
+        _core.pcoa(vector, 5)
+    what_it_has_to_be = of_the_core.value.args[-1]
+    assert what_it_has_to_be.startswith("a principal coordinate analysis needs")
+    assert refusal_of(ten_dists(at_4=-1.0)).endswith(", and " + what_it_has_to_be)

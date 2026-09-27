@@ -245,10 +245,9 @@ impl From<JsPopneiError> for JsValue {
                 second,
                 value,
             } => format!(
-                "the distance of `{first}` and `{second}` is {value}, and a principal \
-                 coordinate analysis needs every distance finite and 0 or above; a \
-                 negative F_ST or f_2 is of two populations the dataset cannot tell apart",
-                value = as_javascript_writes_it(value)
+                "the distance of `{first}` and `{second}` is {value}, and {what_it_has_to_be}",
+                value = as_javascript_writes_it(value),
+                what_it_has_to_be = popnei::pca::pcoa::WHAT_A_DISTANCE_HAS_TO_BE
             ),
             JsPopneiError::NotInJavaScript(message)
             | JsPopneiError::Refused(message)
@@ -356,9 +355,7 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
     // writes; what the message tells a user of the variants to do names an
     // option and a function.
     if matches!(error, popnei::Error::PcoaPairsWithNoDistance { .. }) {
-        return message
-            .replace("min_num_snps", "minNumSnps")
-            .replace("filter_individuals", "filterIndividuals");
+        return with_the_names_of_the_pairs_in_camel_case(&message);
     }
     if matches!(error, popnei::Error::VarDensityWindowSizeZero) {
         return message.replace("window_size", "windowSize");
@@ -415,23 +412,20 @@ fn a_pair_with_no_variant_called(
 }
 
 /// What the message of the pairs with no distance tells a TypeScript user to
-/// do, which is the core's with the names of TypeScript: a `Distances` may be
-/// of populations, so its pairs are given a distance or one of the two is
-/// taken out, and the pairs of a pass over the variants were called together
-/// at too few variants, which three calls of TypeScript change.
-fn the_remedy_of_the_pairs_with_no_distance(from: popnei::pca::PcoaInput) -> &'static str {
-    match from {
-        popnei::pca::PcoaInput::Distances => {
-            "a principal coordinate analysis places every individual by its distance to \
-             every other, so each of those pairs has to be given a distance or one of its \
-             two individuals taken out of the distances"
-        }
-        popnei::pca::PcoaInput::Variants => {
-            "those pairs were called together at fewer variants than `minNumSnps`, or at \
-             none; take that individual out with `filterIndividuals`, lower `minNumSnps`, \
-             or run the PCA of the variants, which gives every individual a projection"
-        }
-    }
+/// do: the core's text, which depends on whether the distances were given or
+/// came from the variants, with the names of the option and the function of
+/// TypeScript that it names in the place of those of Python.
+fn the_remedy_of_the_pairs_with_no_distance(from: popnei::pca::PcoaInput) -> String {
+    with_the_names_of_the_pairs_in_camel_case(
+        popnei::pca::pcoa::the_remedy_of_the_pairs_with_no_distance(from),
+    )
+}
+
+/// `text` with the option and the function that the message of the pairs
+/// with no distance of the variants names written as TypeScript names them.
+fn with_the_names_of_the_pairs_in_camel_case(text: &str) -> String {
+    text.replace("min_num_snps", "minNumSnps")
+        .replace("filter_individuals", "filterIndividuals")
 }
 
 /// `number` written as JavaScript writes it, which is how a user wrote it:

@@ -3086,7 +3086,8 @@ pub enum Error {
     /// two populations that the dataset cannot tell apart are. In Python
     /// it is a `ValueError`.
     #[error(
-        "the distance of the individuals at the positions {first} and {second}, counting from 0, is {value}, and a principal coordinate analysis needs every distance finite and 0 or above; a negative F_ST or f_2 is of two populations the dataset cannot tell apart"
+        "the distance of the individuals at the positions {first} and {second}, counting from 0, is {value}, and {what_it_has_to_be}",
+        what_it_has_to_be = crate::pca::pcoa::WHAT_A_DISTANCE_HAS_TO_BE
     )]
     PcoaDistanceOutOfRange {
         /// The position of the first individual of the pair.

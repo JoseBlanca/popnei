@@ -75,7 +75,8 @@ create_exception!(
      individuals of the first such pair in the order of the distances, from \
      0; and `args[5]` is the position of the individual in the most of those \
      pairs, the first of them when two are in as many, and `args[6]` how \
-     many it is in.\n\n\
+     many it is in; `args[7]` is what the core tells the user to do, which \
+     depends on whether the distances were given or came from the variants.\n\n\
      `popnei.do_pcoa` and `popnei.correct_dists_by_lingoes` catch it and \
      raise the `ValueError` their user reads, whose message names the \
      individuals as the `Distances` names them, as it is for the traits and \
@@ -91,7 +92,8 @@ create_exception!(
      correction that is negative or infinite. `args[0]` is what the core \
      says, which names the two individuals of the pair by their position; \
      `args[1]` and `args[2]` are those positions in the order of the \
-     distances, from 0; and `args[3]` is the distance.\n\n\
+     distances, from 0; `args[3]` is the distance; and `args[4]` is what the \
+     core says a distance has to be.\n\n\
      `popnei.do_pcoa` and `popnei.correct_dists_by_lingoes` catch it and \
      raise the `ValueError` their user reads, whose message names the two \
      as the `Distances` names them, as it is for the pairs with no distance \
@@ -692,7 +694,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             second_of_the_first,
             most_often,
             most_often_count,
-            ..
+            from,
         } => PcoaPairsWithNoDistance::new_err((
             what_a_user_reads(&error, message, path),
             num_pairs_with_no_distance,
@@ -701,6 +703,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             second_of_the_first,
             most_often,
             most_often_count,
+            popnei::pca::pcoa::the_remedy_of_the_pairs_with_no_distance(from),
         )),
         // A distance of a principal coordinate analysis that is negative or
         // infinite, whose pair the layer holding the names of the
@@ -714,6 +717,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             first,
             second,
             value,
+            popnei::pca::pcoa::WHAT_A_DISTANCE_HAS_TO_BE,
         )),
         // The wrong inputs of a function, which are a `ValueError`. Which
         // of them carries the file it happened in before its message is

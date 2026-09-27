@@ -566,9 +566,20 @@ fn the_row_sums_of_the_lower_half(matrix: &[f64], side: usize) -> Vec<f64> {
     row_sums
 }
 
+/// What a distance given to a principal coordinate analysis has to be, which
+/// the message of [`Error::PcoaDistanceOutOfRange`] ends with. It is `pub`
+/// so that each binding crate, which writes that message with the names of
+/// the two individuals in the place of their positions, takes it from here
+/// and does not keep a copy of its own.
+pub const WHAT_A_DISTANCE_HAS_TO_BE: &str = "a principal coordinate analysis needs every distance finite and 0 or above; a negative F_ST or f_2 is of two populations the dataset cannot tell apart";
+
 /// What the message of [`Error::PcoaPairsWithNoDistance`] tells the user
-/// to do, which depends on where the distances came from.
-pub(crate) fn the_remedy_of_the_pairs_with_no_distance(from: PcoaInput) -> &'static str {
+/// to do, which depends on where the distances came from, with the names
+/// of Python. It is `pub` so that each binding crate, which writes that
+/// message with the names of the individuals in the place of their
+/// positions, takes it from here, the TypeScript one rewriting the names
+/// of the arguments in camelCase, and does not keep a copy of its own.
+pub fn the_remedy_of_the_pairs_with_no_distance(from: PcoaInput) -> &'static str {
     match from {
         PcoaInput::Distances => {
             "a principal coordinate analysis places every individual by its distance to every other, so each of those pairs has to be given a distance or one of its two individuals taken out of the distances"
