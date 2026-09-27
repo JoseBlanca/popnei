@@ -3,7 +3,51 @@
 27 September 2026. The work report of `docs/plans/pcoa.md`, carried out on
 the branch `plan/pcoa` in `.claude/worktrees/pcoa`, from the branch
 `spec/pcoa` at aa78e7e, where the spec item "The principal coordinates of
-distances" of `docs/specs/pca.md` and the plan were written. Under way.
+distances" of `docs/specs/pca.md` and the plan were written. Done.
+
+## For the owner
+
+The plan is done on the branch `plan/pcoa`, which holds the spec
+branch's commits too, and it asks you for the merge into `main`.
+
+What exists now, natively, under pyodide and in TypeScript:
+
+- `do_pcoa(dists)`, `doPcoa(distances)`: the principal coordinates of a
+  `Distances`, refusing a matrix that is not Euclidean with a message that
+  names `correct_dists_by_lingoes`.
+- `correct_dists_by_lingoes(dists)`, `correctDistsByLingoes(distances)`:
+  Lingoes' correction, which gives the corrected distances, the constant
+  and the share of the negative eigenvalues it took away.
+- `do_pcoa_from_variants(variants, min_num_snps, correct_by_lingoes)`,
+  `doPcoaFromVariants(variants, {minNumSnps, correctByLingoes})`: the
+  Kosman distances and their principal coordinates in one pass, refusing a
+  matrix that is not Euclidean unless the correction is asked for.
+  `numPassesOf("doPcoaFromVariants")` is 1. Its result has the fields of
+  the PCA's that popnei_web draws, with the same names and shapes, and a
+  check at compile time keeps them so.
+
+Every number is R's `ape::pcoa` to 1e-9 on the literals of the spec, and
+pyNei's to 3e-14 on the panel. In a page the three functions refuse more
+than 9381 individuals, the PCA's limit, measured.
+
+The spec changed four times from what the code and the reviews found,
+each change committed before its code: B is scaled by the largest
+distance and centered twice; the PCoA has a threshold of its own for an
+eigenvalue of 0, n x 2.2e-16 x the sum of |λ|, since the PCA's refused
+Euclidean matrices and the output of the correction; a constant of the
+correction that is not a normal `f64` is refused; and a component along the
+vector of ones is refused as a defect of popnei, which has never been seen.
+None of them moved a literal. The limit of the browser went from the 8695
+worked out to the measured 9381.
+
+Left open: the PCA allocates its matrix with `vec!`, which ends the Python
+process when a machine does not give the memory, where the PCoA now
+refuses with a message; whether that becomes an issue is yours to say. The
+smoke test of the wheel for pyodide passes, and it does not call the new
+functions.
+
+After the merge the owner is asked for the release of the TypeScript
+package, the tag after `js-v0.1.0-dev.2`.
 
 ## Before the first task
 
@@ -190,3 +234,29 @@ comments of TypeScript derived 9381 from 44 bytes a cell, which gives about
 9835; and no test checked that `doPcoa` and `correctDistsByLingoes` refuse
 before they copy the vector into wasm, which removing the check showed by
 a growth of 352 MB and no failing test.
+
+## How the work went, for whoever next revises a skill or writes a plan
+
+The owner can stop here.
+
+- The review of work package 1 was launched through the Workflow tool,
+  which the owner had not asked for and which the `code-review` skill does
+  not name; the later reviews went as separate subagents. The skill could
+  say in a line that its reviewers are sent with the Agent tool.
+- Two findings that mattered were each found by two reviewers from two
+  sides: the threshold, by `numbers` and `errors`, and the subnormal
+  constant, by `spec`, `tests` and `api`. The seven categories cost 601068
+  tokens of subagents on work package 1 against 202214 for the two tasks
+  of its core, which is what a review of a numerical core costs.
+- The spec changes that the code found were committed after the code in
+  work package 1 and before it afterwards; the orchestrator did not stop
+  the subagent to change the order, which the `following-plans` skill asks
+  for. A prompt that says "a sentence of the spec that proves wrong is
+  reported, not changed" and an orchestrator that edits the spec as soon as
+  the report comes is what worked.
+- Tests written after their code passed on the first run twice, tasks 2.1
+  and 8 of the fixes of work package 2; the band of three clones that the
+  tests reviewer then found untested is the case such tests miss.
+- The worktree of the plan had no `node_modules` for the smoke test of
+  pyodide, and it failed with a missing package until `npm ci` was run in
+  `tests/pyodide`; the plan's final check could say so.

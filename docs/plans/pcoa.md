@@ -2,7 +2,8 @@
 
 27 September 2026. Approved by the owner in chat on 27 September 2026,
 when they answered the last question of the spec and said to go ahead
-with the plan; under way. It builds from one
+with the plan; done on 27 September 2026, with its report in
+`docs/reports/pcoa.md`. It builds from one
 spec, the item "The principal coordinates of distances" of
 `docs/specs/pca.md`, with its part of "The Rust interface", as it stands
 on the branch `spec/pcoa` at the commit that adds this plan. It is carried
@@ -249,9 +250,9 @@ Stands on: work package 2.
 
 Tasks:
 
-- [ ] 3.1 The script and the measurement, one at a time on a machine with
+- [x] 3.1 The script and the measurement, one at a time on a machine with
       nothing else building. Serves deliverable 1.
-- [ ] 3.2 The spec, then the constant. Needs 3.1. Serves deliverables 2
+- [x] 3.2 The spec, then the constant. Needs 3.1. Serves deliverables 2
       and 3.
 
 What could go wrong: the sums of the pass given back before the
