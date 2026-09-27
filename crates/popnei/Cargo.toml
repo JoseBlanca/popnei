@@ -200,3 +200,13 @@ harness = false
 [[bench]]
 name = "gwas"
 harness = false
+
+# How long the VCF writer takes to write a VCF or a vars file as a VCF,
+# plain or bgzipped, of task 3.5 of docs/plans/writer-regions-density.md,
+# against the three numbers of bcftools of "Speed" of docs/specs/io_vcf.md.
+# It takes the path of the source and of the output, the threads and the
+# runs on its command line and prints one wall time per run, so it runs
+# without a harness, as the twelve above do.
+[[bench]]
+name = "write_vcf"
+harness = false

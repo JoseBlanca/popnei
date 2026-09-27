@@ -1328,7 +1328,7 @@ each with its measurement in its doc comment in
 
 ### The writer
 
-There is no number for popnei yet, and the measurement comes first, on
+The numbers to reach were set before popnei's writer was timed, on
 `big.vcf` read with the text of its lines and on the vars file written
 from it, `big.vars` of `docs/specs/stats.md`. The program to compare with
 is bcftools 1.24, which reads a VCF and writes it again with `bcftools
@@ -1350,6 +1350,50 @@ thread and on 18 threads, with `write_vcf` from `big.vcf` read with its
 text and from `big.vars`. The reader alone takes 0.563 s of the plain
 read on one thread and 0.093 s on 18, by the table of the reader above,
 so what the writer adds is what the measurement has to find.
+
+The writer was measured on 27 September 2026, on the same machine, with
+`crates/popnei/benches/write_vcf.rs`, which makes the pass that
+`write_vcf` of the Python package makes with no steps: the source opened
+with the size of blocks the writer asks for, every variant read with the
+text of its line, the lines written through a `BufWriter` into a file of
+the scratch directory, and the file synced to the disc at the end. Both
+sources were in the page cache. The load average of the minute before each
+set of three runs was 3.5 to 4.0, and bcftools was run again in the same
+session, with the commands of the table above. The target is met when the
+median of the three runs is at most the number of bcftools.
+
+| | bcftools, 27 September | the target | from `big.vcf` | from `big.vars` | met |
+|---|---|---|---|---|---|
+| plain, 1 thread | 1.78, 1.69, 1.70 s | 1.65 s | 1.001, 0.954, 0.954 s | 1.499, 1.485, 1.496 s | yes |
+| bgzipped, 1 thread | 8.84, 8.90, 9.22 s | 8.9 s | 10.649, 10.664, 10.961 s | 10.859, 10.800, 10.842 s | no |
+| bgzipped, 18 threads | 1.59, 1.66, 1.62 s | 1.63 s | 0.897, 0.890, 0.894 s | 0.859, 0.854, 0.863 s | yes |
+| plain, 18 threads | | | 0.216, 0.207, 0.212 s | 0.274, 0.273, 0.261 s | |
+
+The plain write from `big.vcf` was run a second time five hours later,
+0.946, 0.924 and 0.925 s, beside bcftools again, 1.75, 1.66 and 1.74 s.
+The row of `big.vars` plain on one thread is of that later set: the first
+set, 1.701, 1.878 and 1.848 s, was taken when the load of the five
+minutes before was 11.2, from other programs of the machine. The sync of
+the file, which the Python package does and bcftools does not, did not
+show: without it the plain write from `big.vcf` took 0.969, 0.962 and
+0.964 s, and from `big.vars` 1.513, 1.517 and 1.486 s.
+
+**The bgzipped write on one thread misses its number**: 10.66 s from
+`big.vcf` and 10.84 s from `big.vars`, against the 8.9 s of bcftools, and
+above 9.79 s, the tenth over it that the plan allowed. The time is the
+deflate of flate2 over `miniz_oxide` at level 6, the one popnei has: the
+plain write on one thread takes 0.95 s of it, so the compression takes
+about 9.7 s. Which deflate the writer uses, other levels of
+`miniz_oxide` or another crate that builds for both wasm targets, is the
+owner's to choose and has not been chosen; the writer was measured as it
+is. On 18 threads the compression is spread over the members and the
+bgzipped write takes 0.89 s, under the 1.63 s of bcftools.
+
+The plain file written from `big.vcf` is 403572954 bytes, the size of
+the source, and from `big.vars` 403572916, since its header is built
+from the columns. The bgzipped one is 38437792 bytes from `big.vcf`,
+against 37695742 from bcftools, 2 in 100 larger, and `bgzip -t` accepts
+both of popnei's.
 
 ## Open points
 
