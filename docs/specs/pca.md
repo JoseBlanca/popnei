@@ -892,7 +892,10 @@ row; `explainedVariancePercent`, a `Float64Array` of `numComps`; and
 no `numPrinComps`, `princomps` or `usedVars`, since a PCoA has no weights
 of variants. The result of `doPcoa` is the same with `names`, those of
 the `Distances`, where the other has `individuals`, and the `passStats`
-of the `Distances`. `numPassesOf("doPcoaFromVariants")` is 1.
+of the `Distances`. `numPassesOf("doPcoaFromVariants")` is 1, so the
+function is a variant of `Consumer` of `crates/popnei-js/src/source.rs`
+and a name of `ConsumerName` of `js/popnei/src/passes.ts`, with the tests
+that hold the two lists together.
 
 ### Errors and the cases pyNei asserts
 
@@ -904,9 +907,13 @@ TypeScript, where each is in the `@throws` of the function.
   variants than `min_num_snps`, or at none. The message says how many of
   the pairs have no distance, names the first of them in the order of the
   distance vector, and names the individual that is in the most of them
-  with how many, so that the user can take that individual out with
-  `filter_individuals`, lower `min_num_snps`, or run the PCA of the
-  variants, which gives every individual a projection. On the panel with
+  with how many, the first of them in the order of the individuals when
+  two are in as many. From `do_pcoa_from_variants` it says the user can
+  take that individual out with `filter_individuals`, lower
+  `min_num_snps`, or run the PCA of the variants, which gives every
+  individual a projection; from `do_pcoa`, whose `Distances` may be of
+  populations, it says that the pair has to be given a distance or one of
+  the two taken out of the `Distances`. On the panel with
   `min_num_snps` 1105 it is 35 of the 19900 pairs, the first being
   `s001` and `s082`, and `s082` is in 17 of them. The core gives the
   counts and the positions, and each binding puts the names.
@@ -914,6 +921,7 @@ TypeScript, where each is in the `@throws` of the function.
   the value, and that a negative F_ST or f_2 is of two populations the
   dataset cannot tell apart.
 - Fewer than two individuals: with one there is no distance to place.
+  `do_pcoa_from_variants` refuses it before the pass.
 - No positive eigenvalue, which is every distance 0: "every distance is
   0, so the individuals are all at one point and there is nothing to do a
   PCoA with".
@@ -924,12 +932,16 @@ TypeScript, where each is in the `@throws` of the function.
   page does not hold, and data this large is analysed by a program
   outside the browser, popnei in Python among them. More than 46340
   individuals everywhere, which is the PCA's limit for the linear algebra.
-- The errors of the Kosman pass, given on as `calc_pairwise_kosman_dists`
-  gives them: a pass that gave no variant, sums of a pair beyond a `u32`,
-  a source that could not be read, a `min_num_snps` that is not a whole
-  number of 0 or more.
+- The errors of the Kosman pass, of the class and with the message
+  `calc_pairwise_kosman_dists` gives them: a pass that gave no variant,
+  sums of a pair beyond a `u32`, a source that could not be read, and a
+  `min_num_snps` that is not a whole number from 0 to 4294967295, which is
+  a `TypeError` in Python when it is not an integer at all.
 
-An error of the `linalg` crate is a `RuntimeError`, as in the PCA.
+An error of the `linalg` crate is a `RuntimeError`, as in the PCA, and so
+is a vector given to `pcoa` of the core whose length is not n(n - 1)/2,
+which only a caller of the Rust function reaches, since a `Distances` of
+Python or of TypeScript refuses such a vector when it is built.
 
 `test/test_pca.py` of pyNei asserts, of `do_pcoa`, that on the ten
 distances of `test_pcoa` the individual `i1` is nearer `i2` than `i4`
@@ -943,10 +955,13 @@ more than the order of three projections.
 pyNei gives all n components. Those of the negative eigenvalues have
 projections u_j times the square root of |λ_j| and a negative percentage,
 and the one of the eigenvalue 0 has projections of about 5e-9, the square
-root of an eigenvalue of 1e-17 that is rounding. On the panel it gives 200
-components, 44 of them with a negative percentage, and a user who plots
-one of those draws a direction that no space has. Its percentages of the
-positive components are those of R to 1.1e-14, and popnei keeps them.
+root of an eigenvalue that is rounding: 4.7e-9 on the ten distances of
+the worked example, whose eigenvalue 0 comes out at 1.1e-16. On the panel
+it gives 200 components, 44 of them with a negative percentage when it
+starts from the variants and 45 when it starts from the distances of R,
+where the eigenvalue 0 rounds below 0, and a user who plots one of those
+draws a direction that no space has. Its percentages of the positive
+components are those of R to 1.8e-14, and popnei keeps them.
 
 ### How it runs
 
@@ -967,14 +982,19 @@ per cell; and while the eigenvectors are there the projections are
 written, up to n - 1 components of 8 bytes for each individual, 8 per cell
 when every eigenvalue but the one of the centering is positive. The sums
 are dropped before B is decomposed, so the peak is the second of the two
-steps, 56.8 bytes per cell,
+steps, at most 56.8 bytes per cell,
 5.7 GB at 10000 individuals natively, where LAPACK's workspace is smaller
-than faer's and the number is an upper bound. In wasm, whose page holds
-4 GiB, 4294967296 bytes, that is 8695 individuals at most, 686 below the
-9381 of the PCA, which has fewer components to write. This number is
-worked out and not measured: the plan measures it under node as the PCA's
-was, on a dataset whose B has nearly every eigenvalue positive, and the
-spec takes the measured one if it differs.
+than faer's. In wasm, whose page holds 4 GiB, 4294967296 bytes, that is
+8695 individuals. It is an upper bound and not a measurement: the PCA's
+6.1 was measured with one component written, so it does not say whether
+the projections are written while faer's workspace is still held or after
+it is given back, and if after, the peak is the PCA's 48.8 per cell and
+the limit its 9381. The sums given back can also leave a hole in the
+memory of wasm that later allocations do not reuse, which would raise the
+peak. The limit is 8695 until the plan measures the peak under node, as
+the PCA's was, through `doPcoaFromVariants` itself, where the sums exist,
+on a dataset whose B has nearly every eigenvalue positive; the spec then
+takes the measured number.
 
 ### How it is verified
 
@@ -987,7 +1007,12 @@ its header says, writes the projections with the sign rule, the
 percentages and `negative_eigenvalues_percent` of three matrices into
 `*.pcoa.r.*.tsv` beside it, with 15 significant digits. The literals are
 compared within 1e-9, as in the PCA; on the panel pyNei and R differ by
-1.1e-14 at most over the 155 components.
+1.1e-14 at most in the projections of the 155 components and 1.8e-14 in
+their percentages. ape counts an eigenvalue as positive above 1.5e-8,
+the square root of the machine epsilon, and popnei above λ_1 x n x
+2.2e-16, so the two give the same components on these three matrices,
+whose smallest positive eigenvalue is 8.2e-5 on the panel, and could
+differ on distances of a much smaller size.
 
 The worked example is the ten distances of pyNei's `test_pcoa`, of five
 individuals `i1` to `i5`, in the order of the distance vector: 0.2, 0.3,
@@ -1372,7 +1397,7 @@ panel of Kosman distances. The options:
   the components of the positive eigenvalues, the percentages over the
   sum of every eigenvalue, which is pyNei's and ape's denominator, and
   `negative_eigenvalues_percent` beside them. It is what `ape::pcoa`
-  gives with no correction, so R checks every number. The percentages of
+  gives with no correction, so R checks every number of these data. The percentages of
   a non Euclidean matrix add up to more than 100, 102.98 on the panel,
   which a user who reads them as the PCA's may not expect.
 - Give them as pyNei does, with projections of the square root of |λ|
