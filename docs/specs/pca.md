@@ -820,14 +820,17 @@ is odd"; and the correction of Cailliez (1983), below.
 **Lingoes' correction.** Lingoes (1971) makes a matrix Euclidean by adding
 one constant to every squared distance of two different individuals:
 
-    c = |λ_min|, the most negative eigenvalue of B, and 0 when none is negative
+    c = |λ_min|, the most negative eigenvalue of B, and 0 when none is
+        below minus the threshold above
     d'_ij = sqrt(d_ij² + 2c)   for i ≠ j
 
 It is ape's `pcoa(d, correction = "lingoes")`. The B of the corrected
-distances is B + c times the centering matrix, so it has the eigenvectors
-of B, and every eigenvalue but the 0 of the centering is c larger: the
-most negative becomes 0 and the others are above it. A PCoA of the
-corrected distances has up to n - 2 components, and its percentages add
+distances is B + cJ, where J is the centering matrix, the identity less
+1/n in every cell, which takes the mean out of a vector. So it has the
+eigenvectors of B, and every eigenvalue but the 0 of the centering is c
+larger: the most negative becomes 0 and the others are above it. A PCoA
+of the corrected distances has up to n - 2 components, since two
+eigenvalues are 0, that of the centering and the most negative one, and its percentages add
 up to 100 over the variance of the corrected distances. Cailliez's
 correction, which adds a constant to every distance and not to its square,
 is ape's other one; its constant is the largest eigenvalue of a matrix of
@@ -864,7 +867,8 @@ do_pcoa_from_variants(
 frozen dataclass, has `dists`, a `Distances` of the corrected distances
 with the `names` and the `pass_stats` of the one given; `constant`, c;
 and `negative_eigenvalues_percent`, of the distances given. A Euclidean
-matrix gives a constant of 0 and the same distances. It is what the error
+matrix gives a constant of 0, a `negative_eigenvalues_percent` of 0 and
+the same distances. It is what the error
 of a PCoA of a matrix that is not Euclidean points to, and it serves a
 user who wants the corrected distances for something else, a tree among
 them. Its PCoA is the PCoA of the same distances with
@@ -879,7 +883,7 @@ function, and that popnei_web turns it on by default and warns its users;
 that the correction is an argument of the two PCoAs as well as a function
 of its own is this spec's reading of that decision, so that the function
 the application calls makes one pass and the vector of distances never
-crosses to JavaScript.
+crosses to JavaScript (**Open 7**, below).
 
 `do_pcoa_from_variants` is the Kosman distances of
 `calc_pairwise_kosman_dists` followed by `do_pcoa`, in one pass over the
@@ -957,7 +961,8 @@ in its messages, and the TypeScript binding rewrites them in camelCase, as
 it does for `transform_to_biallelic`.
 
 - A matrix that is not Euclidean, from `do_pcoa` or
-  `do_pcoa_from_variants` without `correct_by_lingoes`. The message says
+  `do_pcoa_from_variants` without `correct_by_lingoes`, checked after the
+  pairs with no distance. The message says
   how many of the n eigenvalues are negative and their
   `negative_eigenvalues_percent`, that a PCoA of such distances would
   draw directions that no space has, and that `correct_by_lingoes`, or
@@ -985,11 +990,13 @@ it does for `transform_to_biallelic`.
   `correct_dists_by_lingoes`, with the pair, the value, and that a
   negative F_ST or f_2 is of two populations the dataset cannot tell
   apart.
-- Fewer than two individuals: with one there is no distance to place.
-  `do_pcoa_from_variants` refuses it before the pass.
-- No positive eigenvalue, which is every distance 0: "every distance is
-  0, so the individuals are all at one point and there is nothing to do a
-  PCoA with".
+- Fewer than two individuals, from the three functions: with one there
+  is no distance to place. `do_pcoa_from_variants` refuses it before the
+  pass, after the two limits below.
+- Every distance 0, from the three functions: "every distance is 0, so the
+  individuals are all at one point and there is nothing to do a PCoA
+  with". It is checked on the distances, before the eigendecomposition,
+  where B would be 0 and the threshold 0.
 - More individuals than a page holds the analysis of, in TypeScript
   alone, which "How it runs" gives: more than 8695, for the three
   functions. It is checked before the pass, with a message of the form of
@@ -1023,7 +1030,8 @@ pyNei gives all n components. Those of the negative eigenvalues have
 projections u_j times the square root of |λ_j| and a negative percentage,
 and the one of the eigenvalue 0 has projections that are the square root
 of an eigenvalue that is rounding: 4.7e-9 on the ten distances of the
-worked example, whose eigenvalue 0 comes out at 1.1e-16. On the panel it
+worked example, whose eigenvalue 0 comes out at -1.1e-16, which gives a second negative
+percentage there. On the panel it
 gives 200 components, 44 of them with a negative percentage when it
 starts from the variants and 45 when it starts from the distances of R,
 where the eigenvalue 0 rounds below 0, and a user who plots one of those
@@ -1054,8 +1062,9 @@ individual, two clones, give a second eigenvector of 0, and the
 decomposition may give any two directions of the plane of the two. So the
 eigenvectors whose eigenvalues are 0 within the threshold are projected
 orthogonal to the vector of ones and made orthonormal again, which leaves
-one fewer, and those take the eigenvalue c. The correction sets the two
-clones apart by sqrt(2c), along a component of their own.
+one fewer, and those take the eigenvalue c. The correction puts the two
+clones at a distance of sqrt(2c) from each other, along a component of
+their own on which they are at sqrt(2c)/2 either side of 0.
 
 `correct_dists_by_lingoes` needs c alone, the most negative eigenvalue,
 and gives the vector sqrt(d² + 2c), pair by pair.
@@ -1170,10 +1179,12 @@ within 1e-12, the first of them 4.33989428824864, and a
 Against pyNei, in pytest, which has no correction and gives its numbers
 for any matrix: `do_pcoa` of both libraries on the Kosman distances of
 `four_alleles.vcf.gz`, the 39 components of popnei against the first 39 of
-pyNei after the test gives pyNei's the sign of the rule, and the
-percentages, within 1e-9; and `do_pcoa_from_variants` of popnei on the
-panel with `correct_by_lingoes` against pyNei's `do_pcoa` of popnei's
+pyNei; and `do_pcoa_from_variants` of popnei on the panel with
+`correct_by_lingoes` against pyNei's `do_pcoa` of popnei's
 `correct_dists_by_lingoes` of the panel's distances, the 198 components.
+Both compare the projections and the percentages within 1e-9, after the
+test gives pyNei's components the sign of the rule; the review of this
+spec found them 2e-14 apart on the first and 4.6e-14 on the second.
 pyNei's components past those, of the eigenvalues 0, are not compared.
 
 ## The Rust interface
@@ -1463,8 +1474,8 @@ is the PCA's: 0.024 s natively at 1000 individuals, above.
 
 ## Open points
 
-The owner decides the first five here, and the sixth in the `linalg`
-spec. Until then the implementer follows the
+The owner decides the first five here and the seventh, and the sixth in
+the `linalg` spec. Until then the implementer follows the
 "meanwhile" of each.
 
 **Open 1: whether `num_prin_comps` also cuts the projections.** The owner
@@ -1530,6 +1541,20 @@ which is from the release notes of the browsers. The decision is asked,
 with the options and the recommendation, as Open 1 of
 `docs/specs/linalg.md`; it is here for its numbers. Meanwhile nothing in
 this module depends on it.
+
+**Open 7: the correction as an argument of the PCoAs as well as a
+function.** The owner decided that a PCoA refuses a matrix that is not
+Euclidean and points to a function that corrects it. The spec gives that
+function, `correct_dists_by_lingoes`, and also the argument
+`correct_by_lingoes` of `do_pcoa` and `do_pcoa_from_variants`. The options:
+the function and the argument, which lets popnei_web correct in the one
+pass of `doPcoaFromVariants` and costs a second way to do one thing; or the
+function alone, with which the application calls
+`calcPairwiseKosmanDists`, `correctDistsByLingoes` and `doPcoa`: the
+distances cross from wasm to JavaScript and back twice, 4 bytes a cell each
+time, 300 MB at 8695 individuals, and the matrix is decomposed twice.
+Recommendation: both. Meanwhile the implementer builds both, and dropping
+the argument later is a deletion.
 
 ## Not in this spec
 
