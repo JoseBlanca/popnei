@@ -122,6 +122,8 @@ pub(crate) enum Consumer {
         /// the `numPrinComps` of the call, where 0 asks for no weight.
         num_prin_comps: usize,
     },
+    /// `doPcoaFromVariants`.
+    PcoaOfVariants,
     /// `calcGwas`, which reads the source twice when it is asked for the
     /// GRAMMAR-Gamma approximation.
     Gwas {
@@ -181,6 +183,7 @@ impl Consumer {
             | Consumer::R2Matrix
             | Consumer::LdAndDist
             | Consumer::Kinship
+            | Consumer::PcoaOfVariants
             | Consumer::WriteVars
             | Consumer::WriteVcf
             | Consumer::IterBlocks => 1,
@@ -211,6 +214,7 @@ impl Consumer {
             "calcLdAndDistPerPop" => Ok(Consumer::LdAndDist),
             "calcKinship" => Ok(Consumer::Kinship),
             "doPcaFromVariants" => Ok(Consumer::PcaOfVariants { num_prin_comps }),
+            "doPcoaFromVariants" => Ok(Consumer::PcoaOfVariants),
             "calcGwas" => Ok(Consumer::Gwas {
                 use_grammar_gamma_approx,
             }),
@@ -228,7 +232,7 @@ impl Consumer {
 
 /// The name of each consumer as a user of the package writes it, for the
 /// message of a name that is of none of them.
-const THE_CONSUMERS: [&str; 14] = [
+const THE_CONSUMERS: [&str; 15] = [
     "calcPerVarDistribs",
     "calcPerIndividualStats",
     "calcVarDensity",
@@ -239,6 +243,7 @@ const THE_CONSUMERS: [&str; 14] = [
     "calcLdAndDistPerPop",
     "calcKinship",
     "doPcaFromVariants",
+    "doPcoaFromVariants",
     "calcGwas",
     "writeVars",
     "writeVcf",

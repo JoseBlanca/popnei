@@ -1,31 +1,48 @@
 /**
- * The principal coordinates of a `Distances`, at `doPcoa`, and Lingoes'
- * correction of one, at `correctDistsByLingoes`.
+ * The principal coordinates of a `Distances`, at `doPcoa`, Lingoes'
+ * correction of one, at `correctDistsByLingoes`, and the principal
+ * coordinates of the Kosman distances of a `Variants`, at
+ * `doPcoaFromVariants`.
  *
  * The distances are the worked example of "How it is verified" of "The
  * principal coordinates of distances" of `docs/specs/pca.md`: the ten
  * distances of pyNei's `test_pcoa`, of five individuals `i1` to `i5`, which
  * are not Euclidean. The numbers asserted are the literals of that part,
  * which R's `ape::pcoa` with `correction = "lingoes"` gave, and which
- * `tests/reference/pca/small.lingoes.r.*.tsv` hold.
+ * `tests/reference/pca/small.lingoes.r.*.tsv` hold. The variants are the
+ * panel of that part, `tests/reference/dists/panel.vcf.gz`, 200 individuals
+ * and 1200 variants, whose corrected principal coordinates R gave in
+ * `tests/reference/pca/panel.lingoes.r.*.tsv`.
  *
  * The analysis and the correction are tested in the core crate, the twin and
  * the Kosman distances of `four_alleles.vcf.gz` among them. What these tests
  * say is that the vector reaches the core in its order, that the arrays come
  * back with the shape of the result and the names and the counts of the
- * `Distances`, that the corrected distances are a `Distances` of the same
- * individuals, that an error of the core is thrown with the names a
- * TypeScript user writes, and that a page refuses distances of more
- * individuals than it holds the analysis of.
+ * `Distances` or of the pass, that the corrected distances are a
+ * `Distances` of the same individuals, that an error of the core is thrown
+ * with the names a TypeScript user writes, and that a page refuses
+ * distances, or variants, of more individuals than it holds the analysis
+ * of.
  */
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
-import type { PassStats } from "popnei";
-import { correctDistsByLingoes, Distances, doPcoa, init } from "popnei";
+import type { PassStats, Progress, Variants } from "popnei";
+import {
+  calcPairwiseKosmanDists,
+  correctDistsByLingoes,
+  Distances,
+  doPcoa,
+  doPcoaFromVariants,
+  init,
+  openVcf,
+} from "popnei";
 
 import { room_for_the_principal_coordinates_of as roomForThePrincipalCoordinates } from "../wasm/popnei.js";
+
+import { referenceDists } from "./reference.ts";
 
 await init();
 
@@ -317,5 +334,323 @@ test("a Distances too large for a page is refused by both functions", () => {
       call,
       /the principal coordinates of 8696 individuals hold about 5 GB/,
     );
+  }
+});
+
+/** The panel of "How it is verified", 200 individuals and 1200 variants. */
+const PANEL_VCF = await referenceDists("panel.vcf.gz");
+
+/** How many variants the panel holds, every one of which a pass gives. */
+const PANEL_NUM_VARS = 1200;
+
+/**
+ * A table of R's for the panel corrected by Lingoes, one of
+ * `tests/reference/pca/panel.lingoes.r.*.tsv`: the names of its rows, when
+ * its first line names the columns and the first field of every other line
+ * names the row, and its values row after row.
+ *
+ * @throws {Error} When a value is not a finite number: a table read wrong
+ * would be the check of something else.
+ */
+async function rsTableOfThePanel(
+  name: string,
+  withNames: boolean,
+): Promise<{ rows: string[]; values: number[] }> {
+  const text = await readFile(
+    new URL(`../../../tests/reference/pca/${name}`, import.meta.url),
+    "utf8",
+  );
+  const lines = text.split("\n").filter((line) => line.trim() !== "");
+  const body = withNames ? lines.slice(1) : lines;
+  const rows: string[] = [];
+  const values: number[] = [];
+  for (const line of body) {
+    const fields = line.split("\t");
+    if (withNames) {
+      rows.push(fields.shift() as string);
+    }
+    for (const field of fields) {
+      const value = Number(field.trim());
+      if (!Number.isFinite(value)) {
+        throw new Error(`${name}: the field \`${field}\` is not a number`);
+      }
+      values.push(value);
+    }
+  }
+  return { rows, values };
+}
+
+/** R's projections of the panel corrected, 200 individuals x 198 components. */
+const PANEL_PROJECTIONS = await rsTableOfThePanel(
+  "panel.lingoes.r.projections.tsv",
+  true,
+);
+
+/** R's share of the variance of each of the 198 components. */
+const PANEL_PERCENT = (
+  await rsTableOfThePanel("panel.lingoes.r.percent.tsv", false)
+).values;
+
+/** R's constant of Lingoes' correction of the panel, and its percent. */
+const [PANEL_CONSTANT, PANEL_NEGATIVE_PERCENT] = (
+  await rsTableOfThePanel("panel.lingoes.r.constant.tsv", false)
+).values as [number, number];
+
+/**
+ * The principal coordinates of the panel, with the steps `withSteps` puts
+ * on its `Variants` before the call.
+ */
+function pcoaOfThePanel(
+  options: Parameters<typeof doPcoaFromVariants>[1],
+  withSteps?: (variants: Variants) => void,
+): ReturnType<typeof doPcoaFromVariants> {
+  const variants = openVcf(PANEL_VCF, { onlyPassed: false });
+  try {
+    withSteps?.(variants);
+    return doPcoaFromVariants(variants, options);
+  } finally {
+    variants.free();
+  }
+}
+
+test("the panel is refused without correctByLingoes, with its 44 of 200 and its percent", () => {
+  for (const options of [{}, { correctByLingoes: false }]) {
+    assert.throws(
+      () => pcoaOfThePanel(options),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(
+          error.message,
+          /^44 of the 200 eigenvalues of the matrix of the squared distances are negative, 2\.98 percent of the sum of all of them/,
+        );
+        assert.match(
+          error.message,
+          /; `correctByLingoes` makes them Euclidean by adding the same amount to every squared distance$/,
+        );
+        assert.doesNotMatch(error.message, /correct_by_lingoes|correctDistsByLingoes/);
+        return true;
+      },
+    );
+  }
+});
+
+test("the principal coordinates of the panel with correctByLingoes are R's", () => {
+  const result = pcoaOfThePanel({ correctByLingoes: true });
+  assert.equal(result.numComps, 198);
+  assert.ok(result.projections instanceof Float64Array);
+  assert.ok(result.explainedVariancePercent instanceof Float64Array);
+  assert.ok(Math.abs(result.lingoesConstant - 0.014182298472042) <= TOLERANCE);
+  assert.ok(
+    Math.abs(result.negativeEigenvaluesPercent - 2.98343616373556) <= TOLERANCE,
+  );
+  // The literals of the spec, which the files of R hold as well.
+  assert.ok(Math.abs(result.lingoesConstant - PANEL_CONSTANT) <= TOLERANCE);
+  assert.ok(
+    Math.abs(result.negativeEigenvaluesPercent - PANEL_NEGATIVE_PERCENT) <=
+      TOLERANCE,
+  );
+  const row = (individual: number) =>
+    [...result.projections.subarray(individual * 198, individual * 198 + 3)];
+  assertClose(
+    row(0),
+    [0.0131009923566961, 0.103593034190948, -0.0461610570616341],
+    "the first three projections of s000",
+  );
+  assertClose(
+    row(1),
+    [0.0188069490905941, 0.102449570787996, -0.0506243303501242],
+    "the first three projections of s001",
+  );
+  assertClose(
+    row(199),
+    [-0.0728375733863349, -0.0163081366424616, 0.0108102147666687],
+    "the first three projections of s199",
+  );
+  assertClose(
+    result.explainedVariancePercent.subarray(0, 3),
+    [9.62407114041929, 6.65101405201371, 1.73580899943624],
+    "the first three percentages",
+  );
+  // And every number of R: the rows of its file are the individuals in the
+  // order of the VCF, which is the order of `individuals`.
+  assert.deepEqual(result.individuals, PANEL_PROJECTIONS.rows);
+  assertClose(result.projections, PANEL_PROJECTIONS.values, "the projections");
+  assertClose(result.explainedVariancePercent, PANEL_PERCENT, "the percentages");
+  const expected: PassStats = { numVars: PANEL_NUM_VARS, filtering: {} };
+  assert.deepEqual(result.passStats, expected);
+  // What a user of the result of the PCA reads has the same names here, and
+  // what a PCoA has not is not here.
+  assert.ok(!("numPrinComps" in result));
+  assert.ok(!("princomps" in result));
+  assert.ok(!("usedVars" in result));
+});
+
+test("minNumSnps 1105 leaves 35 pairs of the panel with no distance, named in TypeScript", () => {
+  // The pairs are looked at before the eigenvalues, so the message is the
+  // same whether or not the correction was asked for.
+  for (const correctByLingoes of [true, false]) {
+    assert.throws(
+      () => pcoaOfThePanel({ minNumSnps: 1105, correctByLingoes }),
+      {
+        name: "Error",
+        message:
+          "35 of the 19900 pairs of individuals have no distance, the first " +
+          "of them `s001` and `s082`, and `s082` is in 17 of them; those " +
+          "pairs were called together at fewer variants than `minNumSnps`, " +
+          "or at none; take that individual out with `filterIndividuals`, " +
+          "lower `minNumSnps`, or run the PCA of the variants, which gives " +
+          "every individual a projection",
+      },
+    );
+  }
+});
+
+test("the counts of a filter of the panel are those the Kosman distances give over it", () => {
+  const withTheFilter = (variants: Variants) => {
+    variants.filterByMaf(0.9);
+  };
+  const result = pcoaOfThePanel({ correctByLingoes: true }, withTheFilter);
+  const variants = openVcf(PANEL_VCF, { onlyPassed: false });
+  let distances: Distances;
+  try {
+    withTheFilter(variants);
+    distances = calcPairwiseKosmanDists(variants);
+  } finally {
+    variants.free();
+  }
+  assert.deepEqual(result.passStats, distances.passStats);
+  const maf = result.passStats.filtering.maf;
+  assert.ok(maf !== undefined, "the counts of the filter are there");
+  assert.equal(maf.varsProcessed, PANEL_NUM_VARS);
+  // The filter took some variants out, or the counts would say nothing a
+  // pass without it does not.
+  assert.ok(maf.varsKept < PANEL_NUM_VARS, `it kept ${maf.varsKept}`);
+  assert.equal(result.passStats.numVars, maf.varsKept);
+});
+
+test("filterIndividuals gives the kept individuals, in their order, at the numbers of the corrected distances", () => {
+  // The analysis of the variants with the correction is `doPcoa` of the
+  // corrected Kosman distances, within the rounding of the square roots, as
+  // the spec says: the two routes put each individual on its own row only
+  // if the names and the rows are in the same order.
+  const kept = ["s150", "s003", "s042", "s199", "s000", "s077", "s121", "s010"];
+  const keep = (variants: Variants) => {
+    variants.filterIndividuals(kept);
+  };
+  const result = pcoaOfThePanel({ correctByLingoes: true }, keep);
+  assert.deepEqual(result.individuals, kept);
+  const variants = openVcf(PANEL_VCF, { onlyPassed: false });
+  let distances: Distances;
+  try {
+    keep(variants);
+    distances = calcPairwiseKosmanDists(variants);
+  } finally {
+    variants.free();
+  }
+  const correction = correctDistsByLingoes(distances);
+  const fromTheDistances = doPcoa(correction.distances);
+  assert.deepEqual(fromTheDistances.names, kept);
+  assert.equal(result.numComps, fromTheDistances.numComps);
+  assertClose(
+    result.projections,
+    [...fromTheDistances.projections],
+    "the projections",
+  );
+  assertClose(
+    result.explainedVariancePercent,
+    [...fromTheDistances.explainedVariancePercent],
+    "the percentages",
+  );
+  assert.ok(
+    Math.abs(result.lingoesConstant - correction.constant) <= TOLERANCE,
+  );
+  assert.ok(
+    Math.abs(
+      result.negativeEigenvaluesPercent - correction.negativeEigenvaluesPercent,
+    ) <= TOLERANCE,
+  );
+});
+
+/**
+ * A VCF of `numIndividuals` diploid individuals and two variants, whose
+ * genotypes cycle through the three of one alternative allele.
+ */
+function vcfOfManyIndividuals(numIndividuals: number): Uint8Array {
+  const names = Array.from(
+    { length: numIndividuals },
+    (_unused, individual) => `i${individual}`,
+  );
+  const genotypes = (variant: number) =>
+    Array.from(
+      { length: numIndividuals },
+      (_unused, individual) =>
+        ["0/0", "0/1", "1/1"][(individual + variant) % 3],
+    ).join("\t");
+  return new TextEncoder().encode(
+    [
+      "##fileformat=VCFv4.2",
+      `#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t${names.join("\t")}`,
+      `1\t1\tv0\tA\tC\t.\t.\t.\tGT\t${genotypes(0)}`,
+      `1\t2\tv1\tA\tC\t.\t.\t.\tGT\t${genotypes(1)}`,
+      "",
+    ].join("\n"),
+  );
+}
+
+test("variants of more individuals than a page holds are refused before the source is read", () => {
+  const variants = openVcf(vcfOfManyIndividuals(8696));
+  const calls: Progress[] = [];
+  variants.onProgress((progress) => {
+    calls.push(progress);
+  });
+  try {
+    assert.throws(
+      () => doPcoaFromVariants(variants, { correctByLingoes: true }),
+      /the principal coordinates of 8696 individuals hold about 5 GB/,
+    );
+    // No pass started: its first read would have told the page.
+    assert.deepEqual(calls, []);
+    // The matrix is of the individuals the pass gives, so the same file
+    // with three of them kept is analysed.
+    variants.filterIndividuals(["i0", "i1", "i2"]);
+    const result = doPcoaFromVariants(variants, { correctByLingoes: true });
+    assert.deepEqual(result.individuals, ["i0", "i1", "i2"]);
+    assert.ok(calls.length > 0);
+  } finally {
+    variants.free();
+  }
+});
+
+test("the options of doPcoaFromVariants are checked before the source is read", () => {
+  const variants = openVcf(PANEL_VCF, { onlyPassed: false });
+  try {
+    assert.throws(
+      () =>
+        doPcoaFromVariants(variants, {
+          correctByLingoe: true,
+        } as unknown as Parameters<typeof doPcoaFromVariants>[1]),
+      /`correctByLingoe`/,
+    );
+    assert.throws(
+      () => doPcoaFromVariants(variants, { minNumSnps: -1 }),
+      /`minNumSnps` is a whole number of 0 or more and at most 4294967295/,
+    );
+    assert.throws(
+      () => doPcoaFromVariants(variants, { minNumSnps: 4294967296 }),
+      /`minNumSnps` is a whole number of 0 or more and at most 4294967295/,
+    );
+    assert.throws(
+      () =>
+        doPcoaFromVariants(variants, {
+          correctByLingoes: "yes",
+        } as unknown as Parameters<typeof doPcoaFromVariants>[1]),
+      /`correctByLingoes` is true or false/,
+    );
+    assert.throws(
+      () => doPcoaFromVariants({} as unknown as Variants),
+      /`variants`/,
+    );
+  } finally {
+    variants.free();
   }
 });

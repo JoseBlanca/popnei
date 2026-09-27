@@ -68,8 +68,13 @@ export type {
   PcaResult,
   VariantsPcaResult,
 } from "./pca.js";
-export { correctDistsByLingoes, doPcoa } from "./pcoa.js";
-export type { LingoesCorrection, PcoaResult } from "./pcoa.js";
+export { correctDistsByLingoes, doPcoa, doPcoaFromVariants } from "./pcoa.js";
+export type {
+  DoPcoaFromVariantsOptions,
+  LingoesCorrection,
+  PcoaResult,
+  VariantsPcoaResult,
+} from "./pcoa.js";
 export { numPassesOf } from "./passes.js";
 export type { ConsumerName } from "./passes.js";
 export { calcPopDists } from "./pop_dists.js";
