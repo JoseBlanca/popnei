@@ -3234,6 +3234,21 @@ pub enum Error {
         along: f64,
     },
 
+    /// The eigendecomposition of a principal coordinate analysis gave
+    /// eigenvectors that do not hold the individuals times the individuals
+    /// values its eigenvalues ask for. It is a defect of popnei, and in
+    /// Python it is a `RuntimeError`.
+    #[error(
+        "the eigendecomposition of the principal coordinates of {num_individuals} individuals gave eigenvectors of {num_values} values, which are not {num_individuals} x {num_individuals}; popnei has a defect, report it"
+    )]
+    PcoaEigenvectorsOfAnotherSize {
+        /// How many values the eigenvectors hold.
+        num_values: usize,
+        /// How many individuals, which is how many eigenvectors there are
+        /// and how many values each holds.
+        num_individuals: usize,
+    },
+
     /// An operation of the crate `popnei-linalg` that a principal
     /// coordinate analysis asked for did not run. The dimensions and the
     /// values that crate refuses are checked before it is called, so what
@@ -3676,6 +3691,7 @@ impl Error {
             }
             | Self::PcoaDistVectorOfAnotherSize { .. }
             | Self::PcoaNoEigenvalueOfTheCentering { .. }
+            | Self::PcoaEigenvectorsOfAnotherSize { .. }
             | Self::PcoaBandWithoutTheVectorOfOnes { .. }
             | Self::PcoaComponentAlongTheVectorOfOnes { .. }
             | Self::PcoaLinalg { .. } => true,

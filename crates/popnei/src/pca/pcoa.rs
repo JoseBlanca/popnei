@@ -110,9 +110,10 @@ pub enum PcoaInput {
 /// one is 0. [`Error::PcoaNotEuclidean`] when B has a negative eigenvalue.
 /// [`Error::PcoaLinalg`] when the eigendecomposition could not be done,
 /// [`Error::PcoaNoMemory`] when the machine does not give the memory of B
-/// or of the projections, and [`Error::PcoaComponentAlongTheVectorOfOnes`]
-/// when a component is not at a right angle to the vector of ones, which
-/// is a defect of popnei.
+/// or of the projections, and [`Error::PcoaEigenvectorsOfAnotherSize`] and
+/// [`Error::PcoaComponentAlongTheVectorOfOnes`] when the eigenvectors are
+/// not of the individuals or a component is not at a right angle to the
+/// vector of ones, which are defects of popnei.
 pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa> {
     refuse_a_vector_that_cannot_be_analysed(&dist_vector, num_individuals)?;
     let dists = || the_distances_of_the_vector(&dist_vector);
@@ -266,13 +267,21 @@ pub struct PcoaOfVariants {
 /// # Errors
 ///
 /// [`Error::PcoaTooManyIndividuals`] and [`Error::PcoaTooFewIndividuals`],
-/// before the pass, from the individuals the reader says its source has.
-/// The errors of `calc_kosman_sums`: a pass that gave no variant, sums of
-/// a pair beyond a `u32`, memory the machine does not give, and the
-/// reader's own. Then [`Error::PcoaPairsWithNoDistance`] and
-/// [`Error::PcoaAllDistancesZero`], on the sums; [`Error::PcoaNoMemory`] and
-/// [`Error::PcoaLinalg`]; and [`Error::PcoaNotEuclidean`] when B has a
-/// negative eigenvalue and the correction was not asked for.
+/// from the individuals the reader says its source has, and
+/// [`Error::PcoaNoMemory`] when the machine does not give the memory of B,
+/// all before the pass. The errors of `calc_kosman_sums`: a pass that gave
+/// no variant, sums of a pair beyond a `u32`, memory the machine does not
+/// give, and the reader's own. Then, on the sums,
+/// [`Error::PcoaPairsWithNoDistance`] and [`Error::PcoaAllDistancesZero`];
+/// [`Error::PcoaNotEuclidean`] when B has a negative eigenvalue and the
+/// correction was not asked for, and [`Error::PcoaLingoesConstantOutOfRange`]
+/// when it was and c is not a normal `f64`, which Kosman distances, at most
+/// 1, do not reach; and [`Error::PcoaNoMemory`] when the machine does not
+/// give the memory of the projections. The defects of popnei:
+/// [`Error::PcoaLinalg`], [`Error::PcoaEigenvectorsOfAnotherSize`],
+/// [`Error::PcoaNoEigenvalueOfTheCentering`],
+/// [`Error::PcoaBandWithoutTheVectorOfOnes`] and
+/// [`Error::PcoaComponentAlongTheVectorOfOnes`].
 pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
     reader: &mut R,
     options: &VariantPcoaOptions,
@@ -379,10 +388,14 @@ fn the_analysis_of(
 ///
 /// # Errors
 ///
+/// [`Error::PcoaEigenvectorsOfAnotherSize`] when `eigen` does not hold
+/// `num_individuals` x `num_individuals` values of eigenvectors.
 /// [`Error::PcoaNoEigenvalueOfTheCentering`] when no eigenvalue of B is 0
-/// within the threshold, which the centering always gives and which is
-/// then a defect of popnei.
+/// within the threshold, which the centering always gives, and the errors
+/// of the eigenvectors of that band, [`Error::PcoaBandWithoutTheVectorOfOnes`]
+/// among them. All are defects of popnei.
 fn corrected_by_lingoes(mut eigen: Eigen, num_individuals: usize) -> Result<(Decomposed, f64)> {
+    refuse_eigenvectors_of_another_size(&eigen, num_individuals)?;
     let side = num_individuals;
     let threshold = the_threshold_of_the_eigenvalues(&eigen.values, side);
     let constant = eigen
@@ -413,9 +426,9 @@ fn corrected_by_lingoes(mut eigen: Eigen, num_individuals: usize) -> Result<(Dec
         .checked_mul(side)
         .zip(band_end.checked_mul(side))
         .and_then(|(from, to)| eigen.vectors.get_mut(from..to))
-        .ok_or(Error::PcoaNoEigenvalueOfTheCentering {
+        .ok_or(Error::PcoaEigenvectorsOfAnotherSize {
+            num_values: num_individuals,
             num_individuals,
-            threshold,
         })?;
     orthogonal_to_the_vector_of_ones(band_values, side, num_individuals)?;
     for (at, value) in eigen.values.iter_mut().enumerate() {
@@ -660,9 +673,11 @@ pub(crate) fn the_threshold_of_the_eigenvalues(values: &[f64], num_individuals: 
 ///
 /// # Errors
 ///
-/// [`Error::PcoaComponentAlongTheVectorOfOnes`] when a component is not at
-/// a right angle to the vector of ones, and [`Error::PcoaNoMemory`] when
-/// the machine does not give the memory of the projections.
+/// [`Error::PcoaEigenvectorsOfAnotherSize`] when the eigenvectors are not
+/// of the individuals, [`Error::PcoaComponentAlongTheVectorOfOnes`] when a
+/// component is not at a right angle to the vector of ones, and
+/// [`Error::PcoaNoMemory`] when the machine does not give the memory of the
+/// projections.
 fn the_components_of(
     decomposed: &Decomposed,
     num_individuals: usize,
@@ -675,6 +690,7 @@ fn the_components_of(
     // eigenvalue is too.
     let eigen = &decomposed.eigen;
     let num_comps = decomposed.num_positive;
+    refuse_eigenvectors_of_another_size(eigen, num_individuals)?;
     refuse_a_component_along_the_vector_of_ones(eigen, num_individuals, num_comps)?;
     let num_projections = num_individuals
         .checked_mul(num_comps)
@@ -698,6 +714,25 @@ fn the_components_of(
         lingoes_constant: 0.0,
         negative_eigenvalues_percent: 0.0,
     })
+}
+
+/// Refuses eigenvectors that do not hold `num_individuals` times
+/// `num_individuals` values, which the rows of the projections and of the
+/// band of the eigenvalue 0 are read from: fewer would leave projections
+/// at 0 with no error.
+///
+/// # Errors
+///
+/// [`Error::PcoaEigenvectorsOfAnotherSize`], a defect of popnei.
+fn refuse_eigenvectors_of_another_size(eigen: &Eigen, num_individuals: usize) -> Result<()> {
+    let num_values = eigen.vectors.len();
+    if num_individuals.checked_mul(num_individuals) != Some(num_values) {
+        return Err(Error::PcoaEigenvectorsOfAnotherSize {
+            num_values,
+            num_individuals,
+        });
+    }
+    Ok(())
 }
 
 /// Refuses a component, of the first `num_comps` eigenvectors of `eigen`,
@@ -2480,6 +2515,29 @@ mod tests {
                     panic!("{min_num_vars}: the pair with no distance was not refused: {other:?}")
                 }
             }
+        }
+    }
+
+    /// A decomposition whose eigenvectors hold fewer values than its
+    /// eigenvalues ask for is a defect of its own, and not a band with no
+    /// eigenvalue 0: the band is there, and its rows are not.
+    #[test]
+    fn eigenvectors_of_another_size_are_their_own_defect() {
+        let eigen = Eigen {
+            values: vec![1.0, 0.0, -0.5],
+            vectors: vec![1.0, 0.0, 0.0],
+        };
+        match super::corrected_by_lingoes(eigen, 3) {
+            Err(
+                error @ Error::PcoaEigenvectorsOfAnotherSize {
+                    num_values: 3,
+                    num_individuals: 3,
+                },
+            ) => {
+                assert!(error.to_string().contains("popnei has a defect"), "{error}");
+                assert!(error.names_the_file(), "{error}");
+            }
+            other => panic!("the eigenvectors of another size were taken: {other:?}"),
         }
     }
 
