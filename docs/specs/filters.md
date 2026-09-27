@@ -1775,9 +1775,8 @@ That trade is the owner's and is in the report.
 
 ### The filter by regions
 
-Nothing has been measured, and the measurement comes first. The numbers
-to reach are worked out from the profile of the VCF reader and have not
-been measured with a skip: on `big.vcf` of `docs/specs/io_vcf.md`, on one
+The numbers to reach were worked out from the profile of the VCF reader
+before the skip was built: on `big.vcf` of `docs/specs/io_vcf.md`, on one
 thread, with a BED that keeps 1000 of its 100000 variants in one run of
 the chromosome, handed to the source, the pass takes no more than 0.15 s
 plain, against the 0.563 s of reading the whole file, and no more than
@@ -1788,6 +1787,51 @@ decompression, 0.33 s by the difference of the two reads, is kept too. On
 `big.vars`, whose batches are of 5000 variants, the same BED keeps the
 variants of one batch, and the pass takes no more than 0.02 s, against the
 0.102 s of the whole pass of `docs/specs/stats.md`.
+
+The skip was measured on 27 September 2026, on the owner's Apple M5 Pro,
+18 cores, release builds, the files in the page cache, at a load average
+of the minute before each set of 3.2 to 3.5. The BED is the one line
+`chr1 0 1000000`, which keeps the variants at positions 1000 to 1000000 of
+`chr1`, 1000 of the 100000, all in the first batch of `big.vars`; the
+bgzipped file is `big.vcf` bgzipped by bgzip, 38 MB. The reads of the VCF
+are `crates/popnei/benches/read_vcf.rs --bed`, which hands the regions to
+the reader and asks for the genotypes, five runs each; the passes through
+the filter are `crates/popnei/benches/filter_vars.rs --bed`, which puts
+the filter by regions on the pass with `chain_of`, as `filter_by_regions`
+does, one pass not timed and five timed. Every pass gave 1000 variants,
+and the filter was given the 100000 and kept those 1000.
+
+| | the runs | the median | the target | met |
+|---|---|---|---|---|
+| `big.vcf` plain, the read with the regions, 1 thread | 0.042, 0.039, 0.039, 0.039, 0.038 s | 0.039 s | 0.15 s | yes |
+| the same, the pass through the filter | 0.040, 0.038, 0.038, 0.038, 0.039 s | 0.038 s | 0.15 s | yes |
+| `big.vcf` bgzipped, the read with the regions, 1 thread | 0.314, 0.312, 0.312, 0.312, 0.312 s | 0.312 s | 0.45 s | yes |
+| the same, the pass through the filter | 0.312, 0.311, 0.312, 0.312, 0.312 s | 0.312 s | 0.45 s | yes |
+| `big.vars`, the pass through the filter, 1 thread | 0.005 s in each of the five | 0.005 s | 0.02 s | yes |
+
+On 18 threads the read with the regions takes 0.035, 0.035, 0.034, 0.034
+and 0.034 s plain and 0.310, 0.310, 0.309, 0.308 and 0.307 s bgzipped,
+and the pass over `big.vars` 0.005 to 0.006 s: what is left is the serial
+pass over the lines, which reads their POS, and the decompression, and
+neither runs on the pool. The whole of the bgzipped file is still
+decompressed, which is why it takes eight times the plain one.
+
+The skip adds the reading of POS to the serial pass of the reader, so the
+read of the whole plain file with no regions was measured in the same
+session against the targets of "Speed" of `docs/specs/io_vcf.md`: 0.583,
+0.545, 0.542, 0.540 and 0.541 s on one thread, a median of 0.542 s against
+0.594 s, and 0.082, 0.081, 0.082, 0.081 and 0.083 s on 18, a median of
+0.082 s against 0.108 s. Both are met, and both are under the 0.563 and
+0.093 s of the reader of 21 September. The whole bgzipped file took a
+median of 0.849 s on one thread and 0.364 s on 18, against 0.924 and 0.44
+s.
+
+For comparison, in the same session, `bcftools view -H -T` with the same
+BED, which reads the whole file and writes the 1000 lines to
+`/dev/null`, took 0.78, 0.74 and 0.77 s plain and 0.84, 0.84 and 0.82 s
+bgzipped, on one thread; `tabix` with the region `chr1:1-1000000` over the
+index of the bgzipped file, which seeks to the region and reads none of
+the rest, took 0.01 s or less in each of three runs.
 
 ## Open points
 
