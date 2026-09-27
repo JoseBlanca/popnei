@@ -109,13 +109,13 @@ Stands on: the `linalg` crate, the PCA's sign rule and threshold, and the
 
 Tasks:
 
-- [ ] 1.1 In the core, `Pcoa` and `pcoa` of "The Rust interface", from
+- [x] 1.1 In the core, `Pcoa` and `pcoa` of "The Rust interface", from
       "What it gives" and "How it runs" of the spec's item; B from the
       vector, which is dropped before the eigendecomposition; the refusals
       of a vector; the error cases with what "The Rust interface" says
       they carry. The tests of deliverable 1 that need no correction
       first. Serves deliverables 1 and 4.
-- [ ] 1.2 `LingoesCorrection` and `correct_dists_by_lingoes`, as "Lingoes'
+- [x] 1.2 `LingoesCorrection` and `correct_dists_by_lingoes`, as "Lingoes'
       correction" and "How it runs" say, and the tests of deliverable 1
       that correct. Needs 1.1. Serves deliverables 1 and 4.
 - [ ] 1.3 The Python functions: the bindings of `pcoa` and
