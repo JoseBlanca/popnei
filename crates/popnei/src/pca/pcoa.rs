@@ -685,7 +685,7 @@ fn the_components_of(
 ) -> Result<Pcoa> {
     // A matrix with no negative eigenvalue has a sum of their sizes of at
     // most the individuals times the largest, so the threshold is at most
-    // 46340 squared times 2.2e-16 of the largest, 0.48 of it, and the
+    // 46340 squared times 2.2e-16 of the largest, 4.8e-7 of it, and the
     // largest is above it: the largest distance is above 0, so the largest
     // eigenvalue is too.
     let eigen = &decomposed.eigen;

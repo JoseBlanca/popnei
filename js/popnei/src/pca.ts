@@ -183,8 +183,9 @@ export function doPca(
  */
 export interface VariantsPcaResult extends PcaResult {
   /**
-   * The names of the individuals, in the order the source has them, which
-   * is the order of the rows of `projections`. They are the names of the
+   * The names of the individuals, in the order the source has them, or in
+   * the order `filterIndividuals` named them when the variants have that
+   * step, which is the order of the rows of `projections`. They are the names of the
    * rows of the table that a user of `doPca` keeps for themselves: here the
    * source carries them.
    */

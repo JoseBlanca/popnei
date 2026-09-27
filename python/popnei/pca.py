@@ -301,26 +301,38 @@ class PCoAResult:
 
     projections: pandas.DataFrame
     """Where each individual falls along each component, one row per
-    individual, indexed by the names of the ``Distances``, and one column per
-    component."""
+    individual and one column per component. The index is the names of the
+    ``Distances`` given to :func:`do_pcoa`, or the individuals of the
+    ``Variants`` given to :func:`do_pcoa_from_variants`, in the order its
+    steps leave them, that of :meth:`Variants.filter_individuals` among
+    them."""
 
     explained_variance_percent: pandas.Series
     """How much of the variance each component holds, as a percentage of the
     variance of the individuals placed at their distances, which is the sum
-    of the squared distances over the pairs divided by the individuals. The
-    percentages add up to 100."""
+    of the squared distances over the pairs divided by the individuals: of
+    the corrected distances when :func:`do_pcoa_from_variants` corrected
+    them. The percentages add up to 100."""
 
     lingoes_constant: float
-    """The constant of Lingoes' correction, which :func:`do_pcoa` never
-    makes, so it is 0 there."""
+    """c of Lingoes' correction, the constant whose double was added to
+    every squared distance: 0 when the correction was not asked for or the
+    distances were Euclidean, and always from :func:`do_pcoa`, which
+    corrects nothing."""
 
     negative_eigenvalues_percent: float
-    """The share of the negative eigenvalues of the distances before a
-    correction, which :func:`do_pcoa` refuses, so it is 0 there."""
+    """100 times the sum of the absolute values of the negative eigenvalues
+    of the distances before the correction over the sum of every eigenvalue:
+    how much of them no space holds, which is what a warning to a user is
+    made from. 0 when the correction was not asked for, since distances with
+    a negative eigenvalue are then refused, and always from
+    :func:`do_pcoa`."""
 
     pass_stats: PassStats | None
-    """The counts of the pass that gave the distances, those of the
-    ``Distances`` given, and ``None`` for a ``Distances`` the user built."""
+    """The counts of the pass over the variants of
+    :func:`do_pcoa_from_variants`, or those of the ``Distances`` given to
+    :func:`do_pcoa`, which are ``None`` for a ``Distances`` the user
+    built."""
 
 
 @dataclass(frozen=True)

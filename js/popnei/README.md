@@ -45,7 +45,7 @@ them that the components have: Kosman distances with missing genotypes are
 often not Euclidean, no space holds such distances, and they are refused
 unless `correctByLingoes` asks for Lingoes' correction, which adds one
 constant to every squared distance and is given in the result with the
-share of the variance it took out. `calcVarDensity` gives how many
+share of the negative eigenvalues of the distances before the correction. `calcVarDensity` gives how many
 variants fall in each window of a width the user gives along each
 chromosome, which shows where the variants are crowded and where there are
 none. `calcPerVarDistribs` gives, for each
