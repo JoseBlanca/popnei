@@ -214,7 +214,7 @@ Tasks:
   `vcf_text_num_vars_per_block`. Deliverable 3, bgzipped.
 - [x] 3.4 `write_vcf` and `writeVcf` in both binding crates and both
   packages, with the handling of the path of `write_vars`. Deliverable 4.
-- [ ] 3.5 The measurement. Deliverable 5.
+- [x] 3.5 The measurement. Deliverable 5.
 
 What could go wrong: the compression. bcftools bgzips `big.vcf` in 8.9 s
 on one thread, and flate2 over miniz_oxide, the deflate the core has, has
@@ -294,7 +294,7 @@ Tasks:
   `docs/specs/io_vars.md` that begins "The reader answers". Deliverables 1
   and 2. A count off by the skipped variants is silent: guarded by
   deliverables 1 and 2.
-- [ ] 5.2 The measurement. Deliverable 3.
+- [x] 5.2 The measurement. Deliverable 3.
 
 What could go wrong: the serial pass of the VCF reader is what bounds it
 on 18 threads, by "Speed" of `docs/specs/io_vcf.md`, and reading POS there
@@ -332,7 +332,7 @@ Tasks:
 
 - [x] 6.1 `calc_var_density` in `crates/popnei/src/stats.rs`, from its
   item and its part of "The Rust interface". Deliverable 1.
-- [ ] 6.2 Both binding crates, both packages, the reference counts, the
+- [x] 6.2 Both binding crates, both packages, the reference counts, the
   tests and the measurement. Deliverables 2, 3 and 4.
 
 ## The whole plan
