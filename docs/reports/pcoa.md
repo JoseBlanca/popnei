@@ -17,7 +17,8 @@ What exists now, natively, under pyodide and in TypeScript:
   names `correct_dists_by_lingoes`.
 - `correct_dists_by_lingoes(dists)`, `correctDistsByLingoes(distances)`:
   Lingoes' correction, which gives the corrected distances, the constant
-  and the share of the negative eigenvalues it took away.
+  it added to every squared distance, and the share of the negative
+  eigenvalues of the distances before it.
 - `do_pcoa_from_variants(variants, min_num_snps, correct_by_lingoes)`,
   `doPcoaFromVariants(variants, {minNumSnps, correctByLingoes})`: the
   Kosman distances and their principal coordinates in one pass, refusing a
