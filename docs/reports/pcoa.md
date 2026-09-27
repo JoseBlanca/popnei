@@ -28,12 +28,14 @@ What exists now, natively, under pyodide and in TypeScript:
   check at compile time keeps them so.
 
 Every number is R's `ape::pcoa` to 1e-9 on the literals of the spec, and
-pyNei's to 3e-14 on the panel. In a page the three functions refuse more
+pyNei's to 3e-14 on the panel of the Kosman distances, 200 individuals and
+1200 variants of `tests/reference/dists/panel.vcf.gz`. In a page the three functions refuse more
 than 9381 individuals, the PCA's limit, measured.
 
 The spec changed four times from what the code and the reviews found,
-each change committed before its code: B is scaled by the largest
-distance and centered twice; the PCoA has a threshold of its own for an
+each change committed before its code: B, the matrix of the distances
+centered by rows and columns whose eigenvectors are the components, is
+scaled by the largest distance and centered twice; the PCoA has a threshold of its own for an
 eigenvalue of 0, n x 2.2e-16 x the sum of |λ|, since the PCA's refused
 Euclidean matrices and the output of the correction; a constant of the
 correction that is not a normal `f64` is refused; and a component along the
@@ -144,8 +146,10 @@ in the projections of the panel's 198 components and 9.8e-15 in the
 percentages; `node --test` of the PCoA, the passes and the progress, 57
 tests, `fail 0`; `npm test` `tests 494`, `fail 1`, the test of `main`.
 Two choices of the writers, kept: the page limit is counted on the
-individuals left after the steps, which are those of the matrix; and
-`docs/specs/js_sources.md` counts fifteen consumers.
+individuals left after the filters of the `Variants`, `filter_individuals`
+among them, since those are the individuals of the matrix; and
+`docs/specs/js_sources.md`, which lists the functions that read a
+`Variants`, counts fifteen of them now.
 
 The review sent seven reviewers as the skill asks. None found a wrong
 result on real data; the numbers reviewer compared the correction inside
@@ -166,8 +170,10 @@ spec changed first at 45d0fd0:
   now a defect of popnei, checked. It has not been seen: that eigenvalue
   came out at 0.20 of the threshold at most. The tolerance of the check,
   1e-6, is a reviewer's proposal and not a measurement.
-- B is asked of the machine before the pass, so that the room of the sums
-  is free at the top of the memory of wasm when they are given back; this
+- B is asked of the machine before the pass over the variants, and the
+  sums of the pairs after it, so that when the sums are given back their
+  room is at the top of the memory of wasm and can be used again, and not
+  a hole below B that the eigendecomposition cannot use; this
   has no test, since which buffer comes first cannot be seen from outside,
   and work package 3 measures it.
 - The default of `correct_by_lingoes` is a constant of the core; Python
