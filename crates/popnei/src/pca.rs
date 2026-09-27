@@ -1272,20 +1272,11 @@ pub(crate) fn the_components_with_variance(
     let Some(largest) = values.first() else {
         return 0;
     };
-    let threshold = the_threshold_of_variance(*largest, num_rows, num_cols);
+    let threshold = largest * (num_rows.max(num_cols) as f64 * f64::EPSILON);
     values
         .iter()
         .take_while(|value| **value > threshold)
         .count()
-}
-
-/// The threshold of [`the_components_with_variance`], from the largest
-/// eigenvalue and the two sides of the table: an eigenvalue above it
-/// belongs to a component with variance. The principal coordinates take
-/// the same one with both sides the individuals, and count an eigenvalue
-/// below minus it as negative.
-pub(crate) fn the_threshold_of_variance(largest: f64, num_rows: usize, num_cols: usize) -> f64 {
-    largest * (num_rows.max(num_cols) as f64 * f64::EPSILON)
 }
 
 /// The projections and the weights when the matrix that was decomposed is

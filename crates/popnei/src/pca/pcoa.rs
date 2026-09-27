@@ -31,19 +31,15 @@ use std::fmt;
 use popnei_linalg::{Eigen, eigh_lower};
 
 use crate::error::{Error, Result};
-use crate::pca::{
-    fix_the_sign_of, the_components_with_variance, the_percentages_of, the_projections_of,
-    the_threshold_of_variance,
-};
+use crate::pca::{fix_the_sign_of, the_percentages_of, the_projections_of};
 use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
 
 /// What a principal coordinate analysis gives.
 ///
 /// Only the components of the positive eigenvalues of B are here, and
 /// `num_comps` is how many there are: an eigenvalue is positive when it is
-/// above the largest times the individuals times 2.2e-16, the threshold of
-/// the principal components, so the 0 that the centering of B always has
-/// gives no component. In each component the projection of the largest
+/// above [`the_threshold_of_the_eigenvalues`], so the 0 that the centering
+/// of B always has gives no component. In each component the projection of the largest
 /// absolute value is positive, as in the principal components.
 #[derive(Debug, Clone)]
 pub struct Pcoa {
@@ -110,11 +106,7 @@ pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa> {
             from: PcoaInput::Distances,
         });
     }
-    Ok(the_components_of(
-        &decomposed.eigen,
-        num_individuals,
-        largest,
-    ))
+    Ok(the_components_of(&decomposed, num_individuals, largest))
 }
 
 /// Lingoes' correction of a distance vector: the corrected vector, in the
@@ -203,9 +195,10 @@ struct Decomposed {
     /// The eigenvalues of B from the largest and its eigenvectors, of the
     /// distances divided by the largest of them.
     eigen: Eigen,
-    /// How many eigenvalues are below minus the threshold of the
-    /// components, which is the largest times the individuals times the
-    /// epsilon of an `f64`.
+    /// How many eigenvalues are above [`the_threshold_of_the_eigenvalues`],
+    /// which are the components.
+    num_positive: usize,
+    /// How many eigenvalues are below minus that threshold.
     num_negative: usize,
     /// 100 times the sum of the absolute values of those eigenvalues over
     /// the sum of every eigenvalue, and 0 when there are none.
@@ -223,8 +216,12 @@ fn the_decomposition_of(centered: Vec<f64>, num_individuals: usize) -> Result<De
         operation: "eigendecomposition",
         source,
     })?;
-    let largest = eigen.values.first().copied().unwrap_or(0.0);
-    let threshold = the_threshold_of_variance(largest, num_individuals, num_individuals);
+    let threshold = the_threshold_of_the_eigenvalues(&eigen.values, num_individuals);
+    let num_positive = eigen
+        .values
+        .iter()
+        .take_while(|value| **value > threshold)
+        .count();
     let (num_negative, sum_of_the_negative) = eigen
         .values
         .iter()
@@ -240,21 +237,43 @@ fn the_decomposition_of(centered: Vec<f64>, num_individuals: usize) -> Result<De
     };
     Ok(Decomposed {
         eigen,
+        num_positive,
         num_negative,
         negative_eigenvalues_percent,
     })
 }
 
+/// The threshold of the eigenvalues of B: one is positive above it,
+/// negative below minus it, and 0 in between. It is the individuals times
+/// 2.2e-16, the difference between 1 and the next number an `f64` holds,
+/// times the sum of the absolute values of every eigenvalue.
+///
+/// It is not the threshold of the principal components, the largest
+/// eigenvalue times the individuals times 2.2e-16, which is narrower than
+/// the rounding of B: each cell of B carries the rounding of its centering,
+/// and with that threshold Euclidean matrices of random points were refused
+/// or given a component of rounding, and distances corrected by
+/// [`correct_dists_by_lingoes`] were refused, as "What it gives" of the
+/// principal coordinates in `docs/specs/pca.md` says. The sum of the
+/// absolute values is the largest at least and the individuals times it at
+/// most, so a component below the individuals squared times 2.2e-16 of the
+/// largest, 2.2e-8 of it at 10000 individuals, is not given.
+pub(crate) fn the_threshold_of_the_eigenvalues(values: &[f64], num_individuals: usize) -> f64 {
+    let sum_of_their_sizes: f64 = values.iter().map(|value| value.abs()).sum();
+    num_individuals as f64 * f64::EPSILON * sum_of_their_sizes
+}
+
 /// The components of the positive eigenvalues of a decomposition of B,
 /// whose distances were divided by `largest`: the projections are
 /// multiplied back by it, and the percentages are the same for both.
-fn the_components_of(eigen: &Eigen, num_individuals: usize, largest: f64) -> Pcoa {
-    // The largest distance is above 0, so once the distances are divided by
-    // it the sum of the diagonal of B, the sum of the squared distances over
-    // the individuals, is at least 1 over the individuals, and the largest
-    // eigenvalue at least that over the individuals again: the threshold, a
-    // part of it of 1e-11 at most, leaves one component at least.
-    let num_comps = the_components_with_variance(&eigen.values, num_individuals, num_individuals);
+fn the_components_of(decomposed: &Decomposed, num_individuals: usize, largest: f64) -> Pcoa {
+    // A matrix with no negative eigenvalue has a sum of their sizes of at
+    // most the individuals times the largest, so the threshold is at most
+    // 46340 squared times 2.2e-16 of the largest, 0.48 of it, and the
+    // largest is above it: the largest distance is above 0, so the largest
+    // eigenvalue is too.
+    let eigen = &decomposed.eigen;
+    let num_comps = decomposed.num_positive;
     let mut projections = the_projections_of(eigen, num_individuals, num_comps);
     for projection in &mut projections {
         *projection *= largest;
@@ -396,8 +415,8 @@ fn the_pairs(num_individuals: usize) -> impl Iterator<Item = (usize, usize)> {
     })
 }
 
-/// B of the distances divided by `largest`, the largest of them, as its
-/// lower half: `num_individuals` x `num_individuals`, row after row, of
+/// B of the distances divided by `largest`, the largest of them, centered
+/// twice, as its lower half: `num_individuals` x `num_individuals`, row after row, of
 /// which the entries of column j at most i of row i are written and the
 /// others are 0.
 ///
@@ -443,11 +462,25 @@ fn the_centered_matrix(dist_vector: &[f64], num_individuals: usize, largest: f64
             sum
         })
         .collect();
-    let row_means: Vec<f64> = as_the_first
+    let row_sums: Vec<f64> = as_the_first
         .iter()
         .zip(&as_the_second)
-        .map(|(first, second)| (first + second) / side as f64)
+        .map(|(first, second)| first + second)
         .collect();
+    center_the_lower_half(&mut matrix, side, &row_sums);
+    // The second centering takes out of the means of the rows and of the
+    // columns what the rounding of the first left in them, which the
+    // eigenvalue 0 of the centering would otherwise carry.
+    let row_sums = the_row_sums_of_the_lower_half(&matrix, side);
+    center_the_lower_half(&mut matrix, side, &row_sums);
+    matrix
+}
+
+/// Takes from each cell of the lower half of the symmetric `matrix`, `side`
+/// x `side`, the mean of its row and that of its column, and adds the mean
+/// of the matrix, from `row_sums`, the sum of each row of the whole matrix.
+fn center_the_lower_half(matrix: &mut [f64], side: usize, row_sums: &[f64]) {
+    let row_means: Vec<f64> = row_sums.iter().map(|sum| sum / side as f64).collect();
     let mean: f64 = row_means.iter().sum::<f64>() / side as f64;
     for (row, (row_mean, num_in_the_half)) in
         matrix.chunks_exact_mut(side).zip(row_means.iter().zip(1..))
@@ -456,7 +489,27 @@ fn the_centered_matrix(dist_vector: &[f64], num_individuals: usize, largest: f64
             *cell = *cell - row_mean - column_mean + mean;
         }
     }
-    matrix
+}
+
+/// The sum of each row of the symmetric `matrix`, `side` x `side`, of which
+/// the lower half is read: a cell below the diagonal is of its row and, by
+/// the symmetry, of the row of its column.
+fn the_row_sums_of_the_lower_half(matrix: &[f64], side: usize) -> Vec<f64> {
+    let mut row_sums = vec![0.0; side];
+    for (row, index) in matrix.chunks_exact(side).zip(0..) {
+        let (of_the_columns, of_this_row_on) = row_sums.split_at_mut(index);
+        let mut of_this_row = 0.0;
+        for (cell, of_the_column) in row.iter().zip(of_the_columns.iter_mut()) {
+            of_this_row += cell;
+            *of_the_column += cell;
+        }
+        // The index is below the side, so the row has its diagonal and the
+        // sums have this row.
+        if let (Some(diagonal), Some(sum)) = (row.get(index), of_this_row_on.first_mut()) {
+            *sum += of_this_row + diagonal;
+        }
+    }
+    row_sums
 }
 
 /// What the message of [`Error::PcoaPairsWithNoDistance`] tells the user
@@ -1098,6 +1151,87 @@ mod tests {
                     assert!(!error.names_the_file(), "{error}");
                 }
                 other => panic!("the constant at {factor} was given: {other:?}"),
+            }
+        }
+    }
+
+    /// A generator of numbers uniform in [0, 1), splitmix64, so that the
+    /// random matrices of the tests are the same on every machine.
+    struct Uniform(u64);
+
+    impl Uniform {
+        fn next(&mut self) -> f64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut bits = self.0;
+            bits = (bits ^ (bits >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            bits = (bits ^ (bits >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            bits ^= bits >> 31;
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "53 bits, which an f64 holds exactly"
+            )]
+            let value = (bits >> 11) as f64 / (1_u64 << 53) as f64;
+            value
+        }
+    }
+
+    /// The straight line distances of `num_individuals` points of
+    /// `num_dims` coordinates uniform in [0, 1), which are Euclidean.
+    fn the_distances_of_random_points(
+        seed: u64,
+        num_individuals: usize,
+        num_dims: usize,
+    ) -> Vec<f64> {
+        let mut uniform = Uniform(seed);
+        let points: Vec<Vec<f64>> = (0..num_individuals)
+            .map(|_| (0..num_dims).map(|_| uniform.next()).collect())
+            .collect();
+        let mut dist_vector = Vec::new();
+        for (first, of_the_first) in points.iter().enumerate() {
+            for of_the_second in points.iter().skip(first).skip(1) {
+                let square: f64 = of_the_first
+                    .iter()
+                    .zip(of_the_second)
+                    .map(|(one, other)| (one - other) * (one - other))
+                    .sum();
+                dist_vector.push(square.sqrt());
+            }
+        }
+        dist_vector
+    }
+
+    /// Euclidean matrices of 100 random points in 3000 dimensions have
+    /// 99 components, the 0 of the centering being the one left out. With
+    /// the threshold of the principal components, the largest eigenvalue
+    /// times the individuals times 2.2e-16, the rounding of B took seeds 1
+    /// and 5 for not Euclidean and gave seeds 0, 2, 4 and 6 a 100th
+    /// component, on LAPACK and on faer.
+    #[test]
+    fn euclidean_matrices_of_random_points_are_taken_with_one_component_fewer_than_the_points() {
+        for seed in 0..8 {
+            match pcoa(the_distances_of_random_points(seed, 100, 3000), 100) {
+                Ok(result) => assert_eq!(result.num_comps, 99, "seed {seed}"),
+                Err(error) => panic!("seed {seed}: {error}"),
+            }
+        }
+    }
+
+    /// Distances corrected by Lingoes are taken by `pcoa`, with n - 2
+    /// components: the 0 of the centering and the most negative eigenvalue,
+    /// which the correction brings to 0, give none. 40 matrices of 100
+    /// individuals at distances uniform from 0.5 to 1; with the threshold of
+    /// the principal components seeds 13, 18 and 25 were refused on LAPACK
+    /// and 13 on faer, with a message that named the correction.
+    #[test]
+    fn distances_corrected_by_lingoes_are_taken_by_the_analysis() {
+        for seed in 0..40 {
+            let mut uniform = Uniform(seed);
+            let dist_vector: Vec<f64> = (0..4950).map(|_| 0.5 + 0.5 * uniform.next()).collect();
+            let correction = the_correction_of(dist_vector, 100);
+            assert!(correction.constant > 0.0, "seed {seed}");
+            match pcoa(correction.dist_vector, 100) {
+                Ok(result) => assert_eq!(result.num_comps, 98, "seed {seed}"),
+                Err(error) => panic!("seed {seed}: {error}"),
             }
         }
     }
