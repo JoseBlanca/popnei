@@ -36,6 +36,15 @@ use crate::error::{Error, Result};
 use crate::pca::{fix_the_sign_of, the_percentages_of, write_the_projections};
 use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
 
+/// How far along the vector of ones, of length 1, a vector of length 1 may
+/// be and still be taken for one at a right angle to it: 1e-6, the
+/// tolerance the review of the correction proposed on 27 September 2026.
+/// An eigenvector that is at a right angle to it in exact arithmetic comes
+/// out along it by a rounding of about the individuals times 2.2e-16, 1e-11
+/// at 46340 of them, and one along it by 1, so the two are five orders of
+/// magnitude from it on either side. Nothing measured has come near it.
+const ALONG_THE_VECTOR_OF_ONES: f64 = 1e-6;
+
 /// What a principal coordinate analysis gives.
 ///
 /// Only the components of the positive eigenvalues of B are here, and
@@ -94,7 +103,11 @@ pub enum PcoaInput {
 /// distance is a NaN, [`Error::PcoaDistanceOutOfRange`] when one is
 /// negative or infinite, and [`Error::PcoaAllDistancesZero`] when every
 /// one is 0. [`Error::PcoaNotEuclidean`] when B has a negative eigenvalue.
-/// [`Error::PcoaLinalg`] when the eigendecomposition could not be done.
+/// [`Error::PcoaLinalg`] when the eigendecomposition could not be done,
+/// [`Error::PcoaNoMemory`] when the machine does not give the memory of B
+/// or of the projections, and [`Error::PcoaComponentAlongTheVectorOfOnes`]
+/// when a component is not at a right angle to the vector of ones, which
+/// is a defect of popnei.
 pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa> {
     refuse_a_vector_that_cannot_be_analysed(&dist_vector, num_individuals)?;
     let dists = || the_distances_of_the_vector(&dist_vector);
@@ -439,6 +452,9 @@ fn corrected_by_lingoes(mut eigen: Eigen, num_individuals: usize) -> Result<(Dec
 ///
 /// # Errors
 ///
+/// [`Error::PcoaBandWithoutTheVectorOfOnes`] when the rows do not hold the
+/// vector of ones: the direction the means took the most from is longer
+/// than [`ALONG_THE_VECTOR_OF_ONES`] once they are out.
 /// [`Error::PcoaLinalg`] when the product or the decomposition could not
 /// be done, and [`Error::PcoaNoMemory`] when the machine does not give the
 /// memory of the new rows.
@@ -480,6 +496,23 @@ fn orthogonal_to_the_vector_of_ones(
         operation: "eigendecomposition of the products of the eigenvectors of the eigenvalue 0",
         source,
     })?;
+    // The direction of the band the means took the most from has the
+    // smallest eigenvalue, the square of its length once they are out: 0
+    // when the band held the vector of ones, and 1 when it did not, which
+    // rounding that lifted the eigenvalue of the vector of ones out of the
+    // band gives, and where the vector of ones would be written over a real
+    // eigenvector.
+    let length = directions
+        .values
+        .last()
+        .map_or(f64::INFINITY, |smallest| smallest.max(0.0).sqrt());
+    if length > ALONG_THE_VECTOR_OF_ONES {
+        return Err(Error::PcoaBandWithoutTheVectorOfOnes {
+            num_individuals,
+            band_size: num_rows,
+            length,
+        });
+    }
     let mut rows = zeros_or_no_memory(
         num_kept.saturating_mul(side),
         num_individuals,
@@ -524,6 +557,7 @@ fn orthogonal_to_the_vector_of_ones(
 
 /// The eigendecomposition of B, with how many of its eigenvalues are
 /// negative and the part of the sum of all of them that those are.
+#[derive(Debug)]
 struct Decomposed {
     /// The eigenvalues of B from the largest and its eigenvectors, of the
     /// distances divided by the largest of them.
@@ -602,8 +636,9 @@ pub(crate) fn the_threshold_of_the_eigenvalues(values: &[f64], num_individuals: 
 ///
 /// # Errors
 ///
-/// [`Error::PcoaNoMemory`] when the machine does not give the memory of the
-/// projections.
+/// [`Error::PcoaComponentAlongTheVectorOfOnes`] when a component is not at
+/// a right angle to the vector of ones, and [`Error::PcoaNoMemory`] when
+/// the machine does not give the memory of the projections.
 fn the_components_of(
     decomposed: &Decomposed,
     num_individuals: usize,
@@ -616,6 +651,7 @@ fn the_components_of(
     // eigenvalue is too.
     let eigen = &decomposed.eigen;
     let num_comps = decomposed.num_positive;
+    refuse_a_component_along_the_vector_of_ones(eigen, num_individuals, num_comps)?;
     let num_projections = num_individuals
         .checked_mul(num_comps)
         .ok_or(Error::PcoaNoMemory {
@@ -638,6 +674,36 @@ fn the_components_of(
         lingoes_constant: 0.0,
         negative_eigenvalues_percent: 0.0,
     })
+}
+
+/// Refuses a component, of the first `num_comps` eigenvectors of `eigen`,
+/// that is not at a right angle to the vector of ones: the centering of B
+/// takes that vector out of every component, and one along it would put
+/// every individual near one projection.
+///
+/// # Errors
+///
+/// [`Error::PcoaComponentAlongTheVectorOfOnes`] with the first such
+/// component, when its eigenvector is further than
+/// [`ALONG_THE_VECTOR_OF_ONES`] along it.
+fn refuse_a_component_along_the_vector_of_ones(
+    eigen: &Eigen,
+    num_individuals: usize,
+    num_comps: usize,
+) -> Result<()> {
+    let root = (num_individuals as f64).sqrt();
+    for (component, vector) in eigen
+        .vectors
+        .chunks_exact(num_individuals)
+        .take(num_comps)
+        .enumerate()
+    {
+        let along = vector.iter().sum::<f64>() / root;
+        if along.abs() > ALONG_THE_VECTOR_OF_ONES {
+            return Err(Error::PcoaComponentAlongTheVectorOfOnes { component, along });
+        }
+    }
+    Ok(())
 }
 
 /// `num_values` zeros, the matrix B or the projections of `num_individuals`
@@ -1051,6 +1117,8 @@ mod tests {
         LingoesCorrection, Pcoa, PcoaInput, PcoaOfVariants, VariantPcoaOptions,
         correct_dists_by_lingoes, pcoa, pcoa_of_variants,
     };
+    use popnei_linalg::Eigen;
+
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
     use crate::filters::FilteringStats;
@@ -2256,6 +2324,62 @@ mod tests {
                     at += 1;
                 }
             }
+        }
+    }
+
+    /// Four orthonormal vectors of 4 individuals, row after row: the
+    /// vector of ones over 2, the direction that sets the individuals 2 and
+    /// 3 apart, as two clones' is, and two more at right angles to both.
+    fn four_orthonormal_vectors() -> [[f64; 4]; 4] {
+        let half_root = std::f64::consts::FRAC_1_SQRT_2;
+        [
+            [0.5, 0.5, 0.5, 0.5],
+            [0.0, 0.0, half_root, -half_root],
+            [half_root, -half_root, 0.0, 0.0],
+            [0.5, 0.5, -0.5, -0.5],
+        ]
+    }
+
+    /// A decomposition of a B of 4 individuals whose rounding lifted the
+    /// eigenvalue 0 of the vector of ones above the threshold, to 2e-15,
+    /// while that of two clones stays at 0: the band of the eigenvalue 0
+    /// holds the clones alone, and the correction refuses it as a defect
+    /// instead of writing the vector of ones over the clones' eigenvector.
+    #[test]
+    fn a_band_without_the_vector_of_ones_is_a_defect() {
+        let [ones, clones, first, last] = four_orthonormal_vectors();
+        let eigen = Eigen {
+            values: vec![1.0, 2e-15, 0.0, -0.5],
+            vectors: [first, ones, clones, last].concat(),
+        };
+        match super::corrected_by_lingoes(eigen, 4) {
+            Err(error @ Error::PcoaBandWithoutTheVectorOfOnes { .. }) => {
+                assert!(error.to_string().contains("popnei has a defect"), "{error}");
+                assert!(error.names_the_file(), "{error}");
+            }
+            other => panic!("the band without the vector of ones was taken: {other:?}"),
+        }
+    }
+
+    /// A component whose eigenvector is the vector of ones, which would put
+    /// every individual at one projection, is a defect and not a component.
+    #[test]
+    fn a_component_along_the_vector_of_ones_is_a_defect() {
+        let [ones, clones, first, last] = four_orthonormal_vectors();
+        let decomposed = super::Decomposed {
+            eigen: Eigen {
+                values: vec![1.0, 0.5, 0.0, 0.0],
+                vectors: [first, ones, clones, last].concat(),
+            },
+            num_positive: 2,
+            num_negative: 0,
+            negative_eigenvalues_percent: 0.0,
+        };
+        match super::the_components_of(&decomposed, 4, 1.0) {
+            Err(error @ Error::PcoaComponentAlongTheVectorOfOnes { component: 1, .. }) => {
+                assert!(error.to_string().contains("popnei has a defect"), "{error}")
+            }
+            other => panic!("the component along the vector of ones was given: {other:?}"),
         }
     }
 

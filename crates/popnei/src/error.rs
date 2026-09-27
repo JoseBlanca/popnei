@@ -3195,6 +3195,45 @@ pub enum Error {
         threshold: f64,
     },
 
+    /// The band of the eigenvalue 0 that Lingoes' correction inside the
+    /// principal coordinates of the variants works on does not hold the
+    /// vector of ones, the eigenvector of the 0 that the centering of B
+    /// always gives: once the means of its eigenvectors are out they still
+    /// span as many directions as they are. Rounding lifted that 0 out of
+    /// the band, and the correction would put the vector of ones in the
+    /// place of a real eigenvector. It is a defect of popnei, and in Python
+    /// it is a `RuntimeError`.
+    #[error(
+        "the {band_size} eigenvectors of the eigenvalue 0 of the matrix of the squared distances of {num_individuals} individuals do not hold the vector of ones, the one the centering gives, whose length once their means are out is {length:e} where it is 0 when they hold it; popnei has a defect, report it"
+    )]
+    PcoaBandWithoutTheVectorOfOnes {
+        /// How many individuals, which is how many eigenvalues there are.
+        num_individuals: usize,
+        /// How many eigenvalues are 0 within the threshold.
+        band_size: usize,
+        /// The length of the direction of the band that is nearest the
+        /// vector of ones once the means are out, which is about 0 when the
+        /// band holds it.
+        length: f64,
+    },
+
+    /// A component of the principal coordinates whose eigenvector is not at
+    /// a right angle to the vector of ones, which the centering of B takes
+    /// out of every component: it would put every individual near one
+    /// projection. It is a defect of popnei, and in Python it is a
+    /// `RuntimeError`.
+    #[error(
+        "the component {component} of the principal coordinates is {along:e} along the vector of ones, which the centering of the distances takes out of every component; popnei has a defect, report it"
+    )]
+    PcoaComponentAlongTheVectorOfOnes {
+        /// Which component, from 0.
+        component: usize,
+        /// The product of its eigenvector, of length 1, with the vector of
+        /// ones over the square root of the individuals, which is 0 at a
+        /// right angle and 1 along it.
+        along: f64,
+    },
+
     /// An operation of the crate `popnei-linalg` that a principal
     /// coordinate analysis asked for did not run. The dimensions and the
     /// values that crate refuses are checked before it is called, so what
@@ -3637,6 +3676,8 @@ impl Error {
             }
             | Self::PcoaDistVectorOfAnotherSize { .. }
             | Self::PcoaNoEigenvalueOfTheCentering { .. }
+            | Self::PcoaBandWithoutTheVectorOfOnes { .. }
+            | Self::PcoaComponentAlongTheVectorOfOnes { .. }
             | Self::PcoaLinalg { .. } => true,
         }
     }
