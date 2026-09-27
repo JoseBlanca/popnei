@@ -7,16 +7,14 @@
 `spec/writer-regions-density` at 838459f and not from `main`, because
 neither the specs nor the plan are on `main` yet.
 
-**The plan is done but for one choice that is the owner's: the deflate
-of the bgzipped VCF.** Every task of the plan is carried out; what the
-choice would add is one task after it, to switch the deflate and
-measure the writer again. Every task is ticked and every deliverable was
-checked. One target is missed: the bgzipped write of `big.vcf` on one
-thread takes 10.65 to 10.96 s, where the plan allows 9.79 s, bcftools'
-8.9 s and a tenth. The options and their times are under "Waiting for
-the owner" in work package 3, and the first of the questions at the end.
-Nothing was merged into `main` and nothing pushed; the last commit of the
-work is 116671d.
+**The plan is done, and what is asked of the owner is the merge, which
+they ordered on 27 September 2026 together with their choice of the
+deflate.** Every task is ticked and every deliverable was checked. The
+one target the plan missed, the bgzipped write of `big.vcf` on one thread
+within 9.79 s, bcftools' 8.9 s and a tenth, is met since the owner chose
+zlib-rs at level 6: it takes 5.48 s, and the file is 37.37 MB where
+bcftools writes 37.70 MB. Reading a bgzipped VCF got faster with it too,
+from 0.83 s to 0.76 s on one thread and from 0.37 s to 0.29 s on 18.
 
 **What exists now that did not.** Through the core, both binding crates,
 the Python package and the TypeScript package:
@@ -65,9 +63,9 @@ written at version 1.1 of its format, with the chromosome lengths in its
 `popnei` key; and a VCF with 200000 `##contig` lines opens in
 0.030 s where it took 13.37 s.
 
-**What is asked of the owner.** The choice of the deflate, five smaller
-choices, and the merge. They are under "Questions for the owner" at the
-end, each with the options and a recommendation.
+**What is left to the owner.** Five smaller choices, under "Questions
+for the owner" at the end, each with the options and a recommendation;
+none of them blocks the merge.
 
 The sections below go one work package at a time. The last one, "How the
 work went", is for whoever next revises a skill or writes an
@@ -456,7 +454,8 @@ The targets are the times of bcftools that `docs/specs/io_vcf.md`
 recorded when the spec was written, 1.65 s, 8.9 s and 1.63 s; the times
 of bcftools in the second column were taken again in the same session
 as popnei's. Two of the three targets are met; the bgzipped write on one thread is
-not, and waits for the owner's choice of the deflate. The bgzipped file
+not with miniz_oxide; with zlib-rs, which the owner chose afterwards, it
+takes 5.48 s and all three are met. The bgzipped file
 is 38437792 bytes, 2 in 100 more than bcftools' 37695742.
 
 ## 4. The filter by regions
@@ -682,24 +681,14 @@ looked into why.
 
 ## Questions for the owner
 
-1. **The deflate of the bgzipped VCF.** With flate2 over miniz_oxide at
-   level 6, the deflate the core has, the bgzipped write of `big.vcf` on
-   one thread takes 10.65 to 10.96 s, above the 9.79 s the plan allows.
-   The options, measured in one session on 26 September 2026 (the table
-   under "Waiting for the owner" in work package 3):
-   - flate2 over zlib-rs at level 6: 5.55 s and 37.4 MB, smaller than
-     bcftools' 37.7 MB. It builds for both wasm targets, is pure Rust,
-     and adds `zlib-rs` 0.6.8 behind a feature of flate2; flate2 then
-     inflates with it too, so the readers of bgzipped files change their
-     inflate, which was not timed.
-   - miniz_oxide at level 5: 5.0 s and 41.6 MB, 10 in 100 larger than
-     today's file. No dependency changes.
-   - Keep level 6 of miniz_oxide and change the bound.
-
-   Recommended: zlib-rs at level 6. It is the only option that is both
-   faster than bcftools and as small as bgzip. If you agree, a task
-   switches the feature, times the readers of bgzipped files before and
-   after, and measures the writer again.
+1. **The deflate of the bgzipped VCF**, answered on 27 September 2026:
+   zlib-rs at level 6. The switch is commits 56f0238 and ae62f55, and the
+   times are in "Speed" of `docs/specs/io_vcf.md`: the bgzipped write of
+   `big.vcf` takes 5.48 s on one thread and 0.55 s on 18, and miniz_oxide
+   is no longer built. zlib-rs gives other bytes when the text of a member
+   comes in pieces than when it comes whole, which made the bgzipped file
+   depend on the size of the blocks read; the writer now joins the pieces
+   of a member before it compresses them, which cost 0.04 s of the 5.48.
 2. **The VCF writer parses every line.** It asks the reader for every
    column of a VCF, so a line with a genotype or a POS that does not parse
    is refused, as your rule that a corrupt input is reported asks. Reading
@@ -734,12 +723,12 @@ In TypeScript, `stats: [5]` is refused with a message that says an
 `Array` was given. And the plain write of a VCF of 5000 individuals with
 GT, AD, DP, GQ and PL peaks at 314 MB, which nobody has looked into.
 
-And the merge of `plan/writer-regions-density` into `main`, when you
-decide it. The branch also carries the specs of
+The merge of `plan/writer-regions-density` into `main` was ordered on 27
+September 2026. The branch also carries the specs of
 `spec/writer-regions-density`, which are not on `main` either. The
 branch `exp/writer-deflate`, in `.claude/worktrees/exp-writer-deflate`,
-holds the timing of the three deflates; it is for the first question and
-is not to be merged.
+holds the timing of the three deflates that decided the first question,
+and is not merged.
 
 ## How the work went
 

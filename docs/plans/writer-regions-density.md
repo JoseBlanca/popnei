@@ -1,6 +1,6 @@
 # Plan: the VCF writer, the filter by regions, the missing rate and the density of the variants
 
-26 September 2026. State: **done** on 27 September 2026, but for the choice of the deflate of the bgzipped VCF, which is the owner's; approved by the owner on 26 September 2026. It builds
+26 September 2026. State: **done** on 27 September 2026, with the deflate of the bgzipped VCF the owner chose that day, zlib-rs at level 6; approved by the owner on 26 September 2026. It builds
 four items that the specs gained on 26 September 2026, on the branch
 `spec/writer-regions-density`, which is not on `main`:
 
