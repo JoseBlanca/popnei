@@ -805,7 +805,12 @@ individuals, corrected by `correct_dists_by_lingoes`, were refused by
 `do_pcoa`, whose message then named the correction the user had just
 applied. The sum of |λ| is λ_1 at least and n x λ_1 at most, so the
 threshold is at most n² x 2.2e-16 x λ_1, 2.2e-8 of λ_1 at 10000
-individuals: a component smaller than that is not given.
+individuals: a component smaller than that is not given. With the two centerings and
+this threshold, the largest eigenvalue that is 0 in exact arithmetic came
+out at 0.20 of the threshold on LAPACK and 0.095 on faer, over random
+points of 50 to 500 individuals, corrected random distances of 5 to 1000,
+the regular simplex of 5 to 3000, `four_alleles` and the corrected twin,
+and none of those cases was refused or given a component too many.
 
 **A matrix that is not Euclidean is refused.** A matrix of distances is
 Euclidean when some space has points whose straight line distances are

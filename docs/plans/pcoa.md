@@ -118,7 +118,7 @@ Tasks:
 - [x] 1.2 `LingoesCorrection` and `correct_dists_by_lingoes`, as "Lingoes'
       correction" and "How it runs" say, and the tests of deliverable 1
       that correct. Needs 1.1. Serves deliverables 1 and 4.
-- [ ] 1.3 The Python functions: the bindings of `pcoa` and
+- [x] 1.3 The Python functions: the bindings of `pcoa` and
       `correct_dists_by_lingoes` in `crates/popnei-python`, taking the
       vector of a `Distances`; `do_pcoa`, `correct_dists_by_lingoes`,
       `PCoAResult` and `LingoesCorrection` in `python/popnei/pca.py`,
@@ -126,7 +126,7 @@ Tasks:
       messages of the pairs; `tests/test_pcoa.py`. From "What it is in
       Python and in TypeScript" and "Errors and the cases pyNei asserts".
       Needs 1.2. Serves deliverables 2 and 4.
-- [ ] 1.4 The TypeScript functions: the bindings in `crates/popnei-js`,
+- [x] 1.4 The TypeScript functions: the bindings in `crates/popnei-js`,
       the limit of 8695 individuals beside the PCA's in
       `crates/popnei-js/src/pca.rs` with its exported function, the
       Python names of the new messages rewritten in camelCase in
