@@ -28,7 +28,7 @@
 
 use std::fmt;
 
-use popnei_linalg::{Eigen, eigh_lower};
+use popnei_linalg::{Eigen, TheFirstOperand, TheSecondOperand, eigh_lower, product};
 
 use crate::block::BlockReader;
 use crate::dists::calc_kosman_sums;
@@ -101,16 +101,13 @@ pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa> {
     let largest = the_largest_distance(dists, num_individuals, PcoaInput::Distances)?;
     let centered = the_centered_matrix(dists(), num_individuals, largest)?;
     drop(dist_vector);
-    let decomposed = the_decomposition_of(centered, num_individuals)?;
-    if decomposed.num_negative > 0 {
-        return Err(Error::PcoaNotEuclidean {
-            num_negative: decomposed.num_negative,
-            num_individuals,
-            negative_eigenvalues_percent: decomposed.negative_eigenvalues_percent,
-            from: PcoaInput::Distances,
-        });
-    }
-    the_components_of(&decomposed, num_individuals, largest)
+    the_analysis_of(
+        centered,
+        num_individuals,
+        largest,
+        WhenNotEuclidean::Refuse,
+        PcoaInput::Distances,
+    )
 }
 
 /// Lingoes' correction of a distance vector: the corrected vector, in the
@@ -254,19 +251,57 @@ pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
     let largest = the_largest_distance(dists, num_individuals, PcoaInput::Variants)?;
     let centered = the_centered_matrix(dists(), num_individuals, largest)?;
     drop(sums);
+    let when_not_euclidean = if options.correct_by_lingoes {
+        WhenNotEuclidean::Correct
+    } else {
+        WhenNotEuclidean::Refuse
+    };
+    let pcoa = the_analysis_of(
+        centered,
+        num_individuals,
+        largest,
+        when_not_euclidean,
+        PcoaInput::Variants,
+    )?;
+    Ok(PcoaOfVariants { pcoa, num_vars })
+}
+
+/// What the analysis does with distances that are not Euclidean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhenNotEuclidean {
+    /// Refuses them, which [`pcoa`] always does.
+    Refuse,
+    /// Corrects them by Lingoes inside the analysis, from the eigenvalues
+    /// of B.
+    Correct,
+}
+
+/// The principal coordinates of the centered matrix `centered` of the
+/// distances divided by `largest`, which, when the distances are not
+/// Euclidean, are refused or corrected by Lingoes inside the analysis as
+/// `when_not_euclidean` says.
+///
+/// # Errors
+///
+/// [`Error::PcoaLinalg`], [`Error::PcoaNotEuclidean`] with `from`, the
+/// errors of the correction, and [`Error::PcoaNoMemory`].
+fn the_analysis_of(
+    centered: Vec<f64>,
+    num_individuals: usize,
+    largest: f64,
+    when_not_euclidean: WhenNotEuclidean,
+    from: PcoaInput,
+) -> Result<Pcoa> {
     let decomposed = the_decomposition_of(centered, num_individuals)?;
     if decomposed.num_negative == 0 {
-        return Ok(PcoaOfVariants {
-            pcoa: the_components_of(&decomposed, num_individuals, largest)?,
-            num_vars,
-        });
+        return the_components_of(&decomposed, num_individuals, largest);
     }
-    if !options.correct_by_lingoes {
+    if when_not_euclidean == WhenNotEuclidean::Refuse {
         return Err(Error::PcoaNotEuclidean {
             num_negative: decomposed.num_negative,
             num_individuals,
             negative_eigenvalues_percent: decomposed.negative_eigenvalues_percent,
-            from: PcoaInput::Variants,
+            from,
         });
     }
     let negative_eigenvalues_percent = decomposed.negative_eigenvalues_percent;
@@ -283,7 +318,7 @@ pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
     let mut pcoa = the_components_of(&corrected, num_individuals, largest)?;
     pcoa.lingoes_constant = lingoes_constant;
     pcoa.negative_eigenvalues_percent = negative_eigenvalues_percent;
-    Ok(PcoaOfVariants { pcoa, num_vars })
+    Ok(pcoa)
 }
 
 /// The decomposition of the B of the distances corrected by Lingoes, from
@@ -345,7 +380,7 @@ fn corrected_by_lingoes(mut eigen: Eigen, num_individuals: usize) -> Result<(Dec
             num_individuals,
             threshold,
         })?;
-    orthogonal_to_the_vector_of_ones(band_values, side);
+    orthogonal_to_the_vector_of_ones(band_values, side, num_individuals)?;
     for (at, value) in eigen.values.iter_mut().enumerate() {
         *value = if at < band_start || at >= band_end {
             *value + constant
@@ -386,60 +421,105 @@ fn corrected_by_lingoes(mut eigen: Eigen, num_individuals: usize) -> Result<(Dec
 }
 
 /// Makes the rows of `vectors`, each of `side` values, eigenvectors of
-/// the corrected B: each is projected orthogonal to the vector of ones,
-/// the mean of its values taken from it, and they are made orthonormal
-/// again, which leaves one fewer. The first rows are the orthonormal ones
-/// and the last is the vector of ones over the square root of `side`, of
-/// length 1.
+/// the corrected B: each is projected orthogonal to the vector of ones, the
+/// mean of its values taken from it, and they are made orthonormal again,
+/// which leaves one fewer. The first rows are the orthonormal ones and the
+/// last is the vector of ones over the square root of `side`, of length 1.
 ///
-/// They are made orthonormal by Gram-Schmidt with the longest of the rows
-/// left taken first, each twice, which keeps them at right angles to the
-/// rounding: the row left over is the one of length about 0, whatever row
-/// the decomposition put the vector of ones in.
-fn orthogonal_to_the_vector_of_ones(vectors: &mut [f64], side: usize) {
-    let mut rows: Vec<Vec<f64>> = vectors.chunks_exact(side).map(<[f64]>::to_vec).collect();
-    for row in &mut rows {
+/// The k rows V, once their means are out, span a space of k - 1
+/// dimensions when the vector of ones was among the directions they
+/// spanned. The eigendecomposition of the k x k matrix V V', whose entries
+/// are the products of each two rows, gives it: its eigenvalues are about 1
+/// for those k - 1 directions and about 0 for the one the vector of ones
+/// took out, and the eigenvector w of each of the k - 1 gives the row w' V
+/// over the square root of its eigenvalue, of length 1 and at a right
+/// angle to the others. Both the product and the decomposition are those
+/// of the crate `popnei-linalg`, which the core leaves its linear algebra
+/// to.
+///
+/// # Errors
+///
+/// [`Error::PcoaLinalg`] when the product or the decomposition could not
+/// be done, and [`Error::PcoaNoMemory`] when the machine does not give the
+/// memory of the new rows.
+fn orthogonal_to_the_vector_of_ones(
+    vectors: &mut [f64],
+    side: usize,
+    num_individuals: usize,
+) -> Result<()> {
+    let num_rows = vectors.len().checked_div(side).unwrap_or(0);
+    for row in vectors.chunks_exact_mut(side) {
         let mean = row.iter().sum::<f64>() / side as f64;
         for value in row.iter_mut() {
             *value -= mean;
         }
     }
-    let num_orthonormal = rows.len().saturating_sub(1);
-    for done in 0..num_orthonormal {
-        let longest = rows
-            .iter()
-            .enumerate()
-            .skip(done)
-            .max_by(|(_, one), (_, other)| length_of(one).total_cmp(&length_of(other)))
-            .map_or(done, |(at, _)| at);
-        rows.swap(done, longest);
-        let (made, left) = rows.split_at_mut(done.saturating_add(1));
-        let Some(row) = made.last_mut() else { continue };
-        let length = length_of(row);
-        for value in row.iter_mut() {
-            *value /= length;
-        }
-        for _ in 0..2 {
-            for other in left.iter_mut() {
-                let along: f64 = other.iter().zip(row.iter()).map(|(a, b)| a * b).sum();
-                for (value, of_the_row) in other.iter_mut().zip(row.iter()) {
-                    *value -= along * of_the_row;
-                }
-            }
+    let num_kept = num_rows.saturating_sub(1);
+    let mut products = zeros_or_no_memory(
+        num_rows.saturating_mul(num_rows),
+        num_individuals,
+        "eigenvectors of the eigenvalue 0",
+    )?;
+    product(
+        TheFirstOperand::ByTheRowsOfTheResult {
+            values: vectors,
+            rows: num_rows,
+        },
+        side,
+        TheSecondOperand::ByTheColumnsOfTheResult {
+            values: vectors,
+            cols: num_rows,
+        },
+        &mut products,
+    )
+    .map_err(|source| Error::PcoaLinalg {
+        operation: "product of the eigenvectors of the eigenvalue 0 with themselves",
+        source,
+    })?;
+    let directions = eigh_lower(products, num_rows).map_err(|source| Error::PcoaLinalg {
+        operation: "eigendecomposition of the products of the eigenvectors of the eigenvalue 0",
+        source,
+    })?;
+    let mut rows = zeros_or_no_memory(
+        num_kept.saturating_mul(side),
+        num_individuals,
+        "eigenvectors of the eigenvalue 0",
+    )?;
+    let kept = directions
+        .vectors
+        .get(..num_kept.saturating_mul(num_rows))
+        .unwrap_or_default();
+    product(
+        TheFirstOperand::ByTheRowsOfTheResult {
+            values: kept,
+            rows: num_kept,
+        },
+        num_rows,
+        TheSecondOperand::ByTheValuesSummedOver {
+            values: vectors,
+            cols: side,
+        },
+        &mut rows,
+    )
+    .map_err(|source| Error::PcoaLinalg {
+        operation: "product that gives the eigenvectors of the constant",
+        source,
+    })?;
+    for (row, value) in rows.chunks_exact_mut(side).zip(&directions.values) {
+        let length = value.sqrt();
+        for entry in row.iter_mut() {
+            *entry /= length;
         }
     }
-    if let Some(last) = rows.last_mut() {
-        let of_the_ones = 1.0 / (side as f64).sqrt();
-        last.fill(of_the_ones);
-    }
-    for (target, row) in vectors.chunks_exact_mut(side).zip(&rows) {
+    let of_the_ones = 1.0 / (side as f64).sqrt();
+    let mut targets = vectors.chunks_exact_mut(side);
+    for (target, row) in targets.by_ref().zip(rows.chunks_exact(side)) {
         target.copy_from_slice(row);
     }
-}
-
-/// The length of a vector, the square root of the sum of its squares.
-fn length_of(vector: &[f64]) -> f64 {
-    vector.iter().map(|value| value * value).sum::<f64>().sqrt()
+    for target in targets {
+        target.fill(of_the_ones);
+    }
+    Ok(())
 }
 
 /// The eigendecomposition of B, with how many of its eigenvalues are
@@ -2057,6 +2137,126 @@ mod tests {
             &the_column_of_r("four_alleles.pcoa.r.percent.tsv"),
             TOLERANCE,
         );
+    }
+
+    /// The distances of individuals that are copies of a few distinct
+    /// ones: `copies[i]` is the distinct individual that the individual i
+    /// is, and the distinct ones are at distances uniform from 0.5 to 1,
+    /// drawn from `seed`. Two copies of one are at
+    /// distance 0 from each other and at its distances from the others.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::needless_range_loop,
+        reason = "the indices of a handful of individuals of a test, which fill a square matrix of their distances"
+    )]
+    fn the_distances_of_copies(seed: u64, copies: &[usize]) -> Vec<f64> {
+        let num_distinct = copies.iter().max().map_or(0, |largest| largest + 1);
+        let mut uniform = Uniform(seed);
+        let mut of_the_distinct = vec![vec![0.0; num_distinct]; num_distinct];
+        for first in 0..num_distinct {
+            for second in first + 1..num_distinct {
+                let dist = 0.5 + 0.5 * uniform.next();
+                of_the_distinct[first][second] = dist;
+                of_the_distinct[second][first] = dist;
+            }
+        }
+        let mut dist_vector = Vec::new();
+        for (first, of_the_first) in copies.iter().enumerate() {
+            for of_the_second in copies.iter().skip(first + 1) {
+                dist_vector.push(of_the_distinct[*of_the_first][*of_the_second]);
+            }
+        }
+        dist_vector
+    }
+
+    /// The principal coordinates of a distance vector corrected by Lingoes
+    /// inside the analysis, the route of the variants with
+    /// `correct_by_lingoes`, from a vector: the band of the eigenvalue 0 is
+    /// the one of the sums of a pass, whatever the distances came from.
+    fn corrected_inside(dist_vector: &[f64], num_individuals: usize) -> Pcoa {
+        let dists = || super::the_distances_of_the_vector(dist_vector);
+        let largest = super::the_largest_distance(dists, num_individuals, PcoaInput::Variants)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let centered = super::the_centered_matrix(dists(), num_individuals, largest)
+            .unwrap_or_else(|error| panic!("{error}"));
+        super::the_analysis_of(
+            centered,
+            num_individuals,
+            largest,
+            super::WhenNotEuclidean::Correct,
+            PcoaInput::Variants,
+        )
+        .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Bands of the eigenvalue 0 of 3 and of 6 eigenvectors: three copies of
+    /// one individual among 7, two pairs of copies among 8, and 4 copies of
+    /// one and 3 of another among 10. The corrected analysis inside gives
+    /// what does not depend on the directions chosen inside the band: the
+    /// squared distance of every pair rebuilt from the projections is d² +
+    /// 2c, and the components, c and the percentages are those of
+    /// `pcoa(correct_dists_by_lingoes(v))`, which decomposes the corrected
+    /// matrix again.
+    #[test]
+    fn a_band_of_several_copies_is_corrected_as_the_corrected_distances_are() {
+        for (what, copies) in [
+            ("three copies of one", vec![0, 0, 0, 1, 2, 3, 4]),
+            ("two pairs of copies", vec![0, 0, 1, 1, 2, 3, 4, 5]),
+            (
+                "4 copies of one and 3 of another",
+                vec![0, 0, 0, 0, 1, 1, 1, 2, 3, 4],
+            ),
+        ] {
+            let num_individuals = copies.len();
+            // The first seed whose distinct individuals are not Euclidean,
+            // which few of them often are.
+            let (dist_vector, correction) = (0..100)
+                .map(|seed| {
+                    let dist_vector = the_distances_of_copies(seed, &copies);
+                    let correction = the_correction_of(dist_vector.clone(), num_individuals);
+                    (dist_vector, correction)
+                })
+                .find(|(_, correction)| correction.constant > 0.0)
+                .unwrap_or_else(|| panic!("{what}: no seed below 100 is not Euclidean"));
+            let inside = corrected_inside(&dist_vector, num_individuals);
+            let of_the_corrected = the_pcoa_of(correction.dist_vector.clone(), num_individuals);
+            assert_eq!(inside.num_comps, of_the_corrected.num_comps, "{what}");
+            assert!(
+                (inside.lingoes_constant - correction.constant).abs() <= TOLERANCE,
+                "{what}: {} against {}",
+                inside.lingoes_constant,
+                correction.constant
+            );
+            for (ours, of_the_route) in inside
+                .explained_variance_percent
+                .iter()
+                .zip(&of_the_corrected.explained_variance_percent)
+            {
+                assert!(
+                    (ours - of_the_route).abs() <= TOLERANCE,
+                    "{what}: {ours} against {of_the_route}"
+                );
+            }
+            let num_comps = inside.num_comps;
+            let rows: Vec<&[f64]> = inside.projections.chunks_exact(num_comps).collect();
+            let mut at = 0;
+            for first in 0..num_individuals {
+                for second in first + 1..num_individuals {
+                    let rebuilt: f64 = rows[first]
+                        .iter()
+                        .zip(rows[second])
+                        .map(|(one, other)| (one - other) * (one - other))
+                        .sum();
+                    let expected =
+                        dist_vector[at] * dist_vector[at] + 2.0 * inside.lingoes_constant;
+                    assert!(
+                        (rebuilt - expected).abs() <= TOLERANCE,
+                        "{what}, the pair ({first}, {second}): {rebuilt} against {expected}"
+                    );
+                    at += 1;
+                }
+            }
+        }
     }
 
     /// The percentage of a message has three significant digits, so a
