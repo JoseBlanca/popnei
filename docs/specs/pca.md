@@ -755,19 +755,19 @@ with one piece of code.
 A principal coordinate analysis, PCoA, places the individuals on
 components as a PCA does, from the distance of every pair of them instead
 of a table of their values. The individuals are put in a space where the
-straight line between each two of them is as long as their distance, as
-nearly as a space can, and the components are the directions of that
-space along which they vary most. popnei gives two: the PCoA of a
-`Distances` that the user brings, and that of the Kosman distances of the
-individuals of a `Variants`, which `docs/specs/dists.md` computes. The
-second counts every allele of a variant as itself and takes any ploidy,
-where the PCA of the variants reduces a genotype to its dosage.
+straight line between each two of them is as long as their distance, and
+the components are the directions of that space along which they vary
+most. popnei gives two: the PCoA of a `Distances` that the user brings,
+and that of the Kosman distances of the individuals of a `Variants`, which
+`docs/specs/dists.md` computes. The second counts every allele of a
+variant as itself and takes any ploidy, where the PCA of the variants
+reduces a genotype to its dosage.
 
 The method is Gower's (1966, Biometrika 53: 325), which pyNei's code
 took from an older Python library, and which two functions of R compute:
 `cmdscale` of base R, and `pcoa` of the package ape, which gives as well
-each eigenvalue as a share of their sum. With d_ij the
-distance of the individuals i and j, and n the individuals:
+each eigenvalue as a share of their sum. With d_ij the distance of the
+individuals i and j, and n the individuals:
 
     A_ij = -d_ij² / 2
     B_ij = A_ij - (mean of row i of A) - (mean of column j of A) + (mean of A)
@@ -779,66 +779,107 @@ eigenvectors of length 1:
     projections of component j        = u_j * sqrt(λ_j)
     explained_variance_percent of j   = 100 * λ_j / sum of every λ of B
 
+The sum of every eigenvalue is the sum of the diagonal of B, which is the
+sum of d² over the pairs divided by n: the total variance of the
+individuals placed at their distances. The percentages add up to 100.
 When the distances are the straight line distances between the rows of a
 centered table, B is that table times its transpose, and the projections
 are those of the PCA of the table not standardized. The sign of "The sign"
 and the threshold of "A component with no variance is not given" hold
-here as they do there, with n the individuals.
+here as they do there, with n the individuals: an eigenvalue is positive
+when it is above λ_1 x n x 2.2e-16, negative when it is below minus that,
+and 0 in between, and the components are those of the positive ones.
 
-**Negative eigenvalues.** A matrix of distances is Euclidean when some
-space has points whose straight line distances are those distances, and
-then every eigenvalue of B is 0 or above. Otherwise some are negative,
-and a negative λ is a direction whose projections would be the square
-root of a negative number, which no space has. The Kosman distance is not
-known to be Euclidean, and the distance of each pair is taken over the
-variants both individuals were called at, which is another set of
-variants for each pair. On the panel of "How it is verified", 200
+**A matrix that is not Euclidean is refused.** A matrix of distances is
+Euclidean when some space has points whose straight line distances are
+those distances, and then every eigenvalue of B is 0 or above. Otherwise
+some are negative, and a negative λ is a direction whose projections would
+be the square root of a negative number, which no space has. The Kosman
+distance is not known to be Euclidean, and the distance of each pair is
+taken over the variants both individuals were called at, which is another
+set of variants for each pair. On the panel of "How it is verified", 200
 individuals and 1200 variants with 3 in 100 genotypes missing, B has 155
 positive eigenvalues, 44 negative ones and one of 0, the one that the
 centering takes out. On three datasets of `docs/specs/dists.md` with 5 in
 100 genotypes missing, of 40 diploid, 12 tetraploid and 12 haploid
 individuals, it has none.
 
-popnei gives the components of the positive eigenvalues and leaves the
-negative ones out (**Open 7**, below). An eigenvalue is positive when it
-is above the threshold of the PCA, λ_1 x n x 2.2e-16, negative when it is
-below minus that, and 0 in between. The result says how large the part
-left out is:
+A PCoA of a matrix with a negative eigenvalue is an error, unless it is
+asked to correct the distances first, and its message names the
+correction. How large the negative part is, is said by
 
     negative_eigenvalues_percent = 100 * (sum of |λ| of the negative ones) / sum of every λ of B
 
-The denominator of both percentages, the sum of every eigenvalue, is the
-sum of the diagonal of B, which is the sum of d² over the pairs divided by
-n. That is the total variance of the individuals placed at their
-distances, and for a Euclidean matrix it is what the percentages of the
-PCA are over. The positive eigenvalues add up to more than it by the sum
-of the negative ones, so the percentages of the components given add up
-to 100 plus `negative_eigenvalues_percent`: 102.98 on the panel. What a
-percentage means is then the variance of the individuals along that
-component as a share of the total variance of the distances, and
-`negative_eigenvalues_percent` is how far all the components together
-overstate that total. The same holds pair by pair. Over all the
-components given, the squared distance between the projections of i and j
-is
+2.98 on the panel. The owner decided this on 27 September 2026. The
+options not taken were to give the components of the positive eigenvalues
+and leave the negative ones out, which is what ape's `pcoa` does with no
+correction, with the percentages adding up to more than 100, 102.98 on the
+panel; to give the negative ones as pyNei does, under "What pyNei does that
+is odd"; and the correction of Cailliez (1983), below.
 
-    d_ij² + sum over the negative λ_k of |λ_k| (u_ki - u_kj)²
+**Lingoes' correction.** Lingoes (1971) makes a matrix Euclidean by adding
+one constant to every squared distance of two different individuals:
 
-so no pair is drawn nearer than its distance, and each is drawn further by
-what the negative eigenvalues hold between its two individuals. With a Euclidean matrix it is 0 and the
-percentages add up to 100, as in the PCA. What value a user should be
-warned at is the application's to decide; the two matrices of the
-literals below give 2.98 and 7.88.
+    c = |λ_min|, the most negative eigenvalue of B, and 0 when none is negative
+    d'_ij = sqrt(d_ij² + 2c)   for i ≠ j
+
+It is ape's `pcoa(d, correction = "lingoes")`. The B of the corrected
+distances is B + c times the centering matrix, so it has the eigenvectors
+of B, and every eigenvalue but the 0 of the centering is c larger: the
+most negative becomes 0 and the others are above it. A PCoA of the
+corrected distances has up to n - 2 components, and its percentages add
+up to 100 over the variance of the corrected distances. Cailliez's
+correction, which adds a constant to every distance and not to its square,
+is ape's other one; its constant is the largest eigenvalue of a matrix of
+2n x 2n that is not symmetric, which the `linalg` crate cannot decompose,
+and the owner chose Lingoes' alone.
+
+What the correction does to the picture is to push every pair apart by
+the same amount of squared distance, which moves the nearest pairs the
+most. On the panel c is 0.0142, so 2c is 0.0284, which is 30 in 100 of the
+mean of d² over the pairs, 0.0947: the nearest pair goes from 0.137 to
+0.217 and the farthest from 0.358 to 0.396. The panel then has 198
+components where it had 155 positive eigenvalues, and its first component
+holds 9.62 percent where it held 12.35 of the uncorrected total. That is
+why the result carries c and the `negative_eigenvalues_percent` of the
+distances before the correction, which is what a warning to the user is
+made from; which values a user should be warned at is the application's
+to decide.
 
 ### What it is in Python and in TypeScript
 
 ```python
-do_pcoa(dists: Distances) -> PCoAResult
+correct_dists_by_lingoes(dists: Distances) -> LingoesCorrection
+
+do_pcoa(dists: Distances, correct_by_lingoes: bool = False) -> PCoAResult
 
 do_pcoa_from_variants(
     variants: Variants,
     min_num_snps: int | None = None,
+    correct_by_lingoes: bool = False,
 ) -> PCoAResult
 ```
+
+`correct_dists_by_lingoes` is the correction on its own. Its result, a
+frozen dataclass, has `dists`, a `Distances` of the corrected distances
+with the `names` and the `pass_stats` of the one given; `constant`, c;
+and `negative_eigenvalues_percent`, of the distances given. A Euclidean
+matrix gives a constant of 0 and the same distances. It is what the error
+of a PCoA of a matrix that is not Euclidean points to, and it serves a
+user who wants the corrected distances for something else, a tree among
+them. Its PCoA is the PCoA of the same distances with
+`correct_by_lingoes`, within the rounding of the square roots.
+
+`correct_by_lingoes` of the two PCoAs applies the correction inside the
+analysis, from the eigenvalues of B, with no second eigendecomposition and
+no corrected vector built. It is false by default, and then a matrix that
+is not Euclidean is refused. The owner decided on 27 September 2026 that
+the user decides whether to correct, in Python by the argument or the
+function, and that popnei_web turns it on by default and warns its users;
+that the correction is an argument of the two PCoAs as well as a function
+of its own is this spec's reading of that decision, so that the function
+the application calls makes one pass and the vector of distances never
+crosses to JavaScript.
 
 `do_pcoa_from_variants` is the Kosman distances of
 `calc_pairwise_kosman_dists` followed by `do_pcoa`, in one pass over the
@@ -846,62 +887,83 @@ variants and with no `Distances` built between the two. `min_num_snps` is
 passed on as that function takes it: a pair needs that many variants
 called in both individuals to get a distance, and `None` or 0 means one.
 
-`PCoAResult` is pyNei's frozen dataclass with two fields more:
+`PCoAResult` is pyNei's frozen dataclass with three fields more:
 
 - `projections`, a frame with the names as index, those of the
   individuals of the `Variants` or the `names` of the `Distances`, and
   the components as columns, named `PC0`, `PC1` with zeros on the left as
   the PCA names them;
 - `explained_variance_percent`, a series over the components;
-- `negative_eigenvalues_percent`, a float, new;
+- `lingoes_constant`, c, new: 0 when the correction was not asked for or
+  the matrix was Euclidean;
+- `negative_eigenvalues_percent`, new, of the distances before the
+  correction: 0 when it was not asked for, since a matrix with a negative
+  eigenvalue is then refused;
 - `pass_stats`, new: the `PassStats` of the pass over the variants, or
   those of the `Distances` given to `do_pcoa`, which are `None` for a
   `Distances` the user built.
 
-It mirrors `do_pcoa` and `do_pcoa_from_variants` of `pynei/pca.py`. The
-differences from pyNei:
+It mirrors `do_pcoa` and `do_pcoa_from_variants` of `pynei/pca.py`;
+pyNei has no correction. The differences from pyNei:
 
-- The negative eigenvalues are left out, and so is the eigenvalue of 0,
-  as the PCA leaves out its components with no variance (**Open 3**,
-  above); pyNei gives n components, under "What pyNei does that is odd".
+- A matrix that is not Euclidean is refused, or corrected when that is
+  asked for; pyNei gives n components, under "What pyNei does that is
+  odd". The eigenvalue 0 of the centering gives no component, as the PCA
+  leaves out its components with no variance (**Open 3**, above).
 - The sign is fixed, as in the PCA.
-- `negative_eigenvalues_percent` and `pass_stats` are new.
+- `correct_by_lingoes`, `lingoes_constant`,
+  `negative_eigenvalues_percent` and `pass_stats` are new.
 - `use_approx_embedding_algorithm` and `num_threads` are not arguments,
   as `docs/specs/dists.md` decided for the Kosman distances.
-- A negative or an infinite distance given to `do_pcoa` is refused. pyNei
-  squares it, which gives a negative distance the place of its absolute
-  value and says nothing. The Kosman distances are never negative. F_ST
-  and f_2 of `calc_pop_dists` are, for two populations that the dataset
-  cannot tell apart, as `docs/specs/dists.md` says, which does not clamp
-  them; what to put in the place of such a value, 0 or another measure,
-  is the user's to choose.
+- A negative or an infinite distance is refused. pyNei squares a negative
+  one, which gives it the place of its absolute value and says nothing.
+  The Kosman distances are never negative. F_ST and f_2 of
+  `calc_pop_dists` are, for two populations that the dataset cannot tell
+  apart, as `docs/specs/dists.md` says, which does not clamp them; what to
+  put in the place of such a value, 0 or another measure, is the user's
+  to choose, and Lingoes' correction is no answer to it, since it squares
+  the value first as pyNei does.
 - Fewer than two individuals, and distances that are all 0, are refused.
   pyNei gives a percentage of NaN for both.
 - The pair with no distance is refused with a message a user can act on,
   below; pyNei's is "dists array has nan values".
 
-In TypeScript they are `doPcoa(distances)` and
-`doPcoaFromVariants(variants, {minNumSnps})`. The result of
-`doPcoaFromVariants` has the fields that the result of
-`doPcaFromVariants` has for drawing the individuals, with the same names
-and shapes: `individuals`, an array of names in the order of the source
-after its steps, `filterIndividuals` among them; `numComps`;
-`projections`, a `Float64Array` of individuals x `numComps`, row after
-row; `explainedVariancePercent`, a `Float64Array` of `numComps`; and
-`passStats`. It adds `negativeEigenvaluesPercent`, a number, and it has
-no `numPrinComps`, `princomps` or `usedVars`, since a PCoA has no weights
-of variants. The result of `doPcoa` is the same with `names`, those of
-the `Distances`, where the other has `individuals`, and the `passStats`
-of the `Distances`. `numPassesOf("doPcoaFromVariants")` is 1, so the
-function is a variant of `Consumer` of `crates/popnei-js/src/source.rs`
-and a name of `ConsumerName` of `js/popnei/src/passes.ts`, with the tests
-that hold the two lists together.
+In TypeScript they are `correctDistsByLingoes(distances)`,
+`doPcoa(distances, {correctByLingoes})` and `doPcoaFromVariants(variants,
+{minNumSnps, correctByLingoes})`. The result of `doPcoaFromVariants` has
+the fields that the result of `doPcaFromVariants` has for drawing the
+individuals, with the same names and shapes: `individuals`, an array of
+names in the order of the source after its steps, `filterIndividuals`
+among them; `numComps`; `projections`, a `Float64Array` of individuals x
+`numComps`, row after row; `explainedVariancePercent`, a `Float64Array` of
+`numComps`; and `passStats`. It adds `lingoesConstant` and
+`negativeEigenvaluesPercent`, two numbers, and it has no `numPrinComps`,
+`princomps` or `usedVars`, since a PCoA has no weights of variants. The
+result of `doPcoa` is the same with `names`, those of the `Distances`,
+where the other has `individuals`, and the `passStats` of the
+`Distances`. `correctDistsByLingoes` gives `{distances, constant,
+negativeEigenvaluesPercent}`, `distances` being a `Distances`.
+`numPassesOf("doPcoaFromVariants")` is 1, so the function is a variant of
+`Consumer` of `crates/popnei-js/src/source.rs` and a name of
+`ConsumerName` of `js/popnei/src/passes.ts`, with the tests that hold the
+two lists together.
 
 ### Errors and the cases pyNei asserts
 
 Each is a `ValueError` in Python and an `Error` with the same message in
-TypeScript, where each is in the `@throws` of the function.
+TypeScript, where each is in the `@throws` of the functions it can come
+from. The core writes the Python names of the functions and the arguments
+in its messages, and the TypeScript binding rewrites them in camelCase, as
+it does for `transform_to_biallelic`.
 
+- A matrix that is not Euclidean, from `do_pcoa` or
+  `do_pcoa_from_variants` without `correct_by_lingoes`. The message says
+  how many of the n eigenvalues are negative and their
+  `negative_eigenvalues_percent`, that a PCoA of such distances would
+  draw directions that no space has, and that `correct_by_lingoes`, or
+  `correct_dists_by_lingoes` for a `Distances`, makes them Euclidean by
+  adding the same amount to every squared distance. On the panel it is 44
+  of the 200 eigenvalues and 2.98 percent.
 - A pair of individuals with no distance, a NaN. `do_pcoa_from_variants`
   gives one to a pair whose two individuals were called together at fewer
   variants than `min_num_snps`, or at none. The message says how many of
@@ -911,27 +973,31 @@ TypeScript, where each is in the `@throws` of the function.
   two are in as many. From `do_pcoa_from_variants` it says the user can
   take that individual out with `filter_individuals`, lower
   `min_num_snps`, or run the PCA of the variants, which gives every
-  individual a projection; from `do_pcoa`, whose `Distances` may be of
-  populations, it says that the pair has to be given a distance or one of
-  the two taken out of the `Distances`. On the panel with
-  `min_num_snps` 1105 it is 35 of the 19900 pairs, the first being
-  `s001` and `s082`, and `s082` is in 17 of them. The core gives the
-  counts and the positions, and each binding puts the names.
-- A negative or an infinite distance given to `do_pcoa`, with the pair,
-  the value, and that a negative F_ST or f_2 is of two populations the
-  dataset cannot tell apart.
+  individual a projection; from `do_pcoa` and `correct_dists_by_lingoes`,
+  whose `Distances` may be of populations, it says that the pair has to be
+  given a distance or one of the two taken out of the `Distances`. On the
+  panel with `min_num_snps` 1105 it is 35 of the 19900 pairs, the first
+  being `s001` and `s082`, and `s082` is in 17 of them. It is checked
+  before the eigendecomposition, so it comes whether or not the matrix is
+  Euclidean. The core gives the counts and the positions, and each binding
+  puts the names.
+- A negative or an infinite distance given to `do_pcoa` or
+  `correct_dists_by_lingoes`, with the pair, the value, and that a
+  negative F_ST or f_2 is of two populations the dataset cannot tell
+  apart.
 - Fewer than two individuals: with one there is no distance to place.
   `do_pcoa_from_variants` refuses it before the pass.
 - No positive eigenvalue, which is every distance 0: "every distance is
   0, so the individuals are all at one point and there is nothing to do a
   PCoA with".
 - More individuals than a page holds the analysis of, in TypeScript
-  alone, which "How it runs" gives: more than 8695. It is checked before
-  the pass, with a message of the form of the PCA's: the principal
-  coordinates of that many individuals hold about that many GB, which a
-  page does not hold, and data this large is analysed by a program
-  outside the browser, popnei in Python among them. More than 46340
-  individuals everywhere, which is the PCA's limit for the linear algebra.
+  alone, which "How it runs" gives: more than 8695, for the three
+  functions. It is checked before the pass, with a message of the form of
+  the PCA's: the principal coordinates of that many individuals hold
+  about that many GB, which a page does not hold, and data this large is
+  analysed by a program outside the browser, popnei in Python among them.
+  More than 46340 individuals everywhere, which is the PCA's limit for the
+  linear algebra.
 - The errors of the Kosman pass, of the class and with the message
   `calc_pairwise_kosman_dists` gives them: a pass that gave no variant,
   sums of a pair beyond a `u32`, a source that could not be read, and a
@@ -939,29 +1005,31 @@ TypeScript, where each is in the `@throws` of the function.
   a `TypeError` in Python when it is not an integer at all.
 
 An error of the `linalg` crate is a `RuntimeError`, as in the PCA, and so
-is a vector given to `pcoa` of the core whose length is not n(n - 1)/2,
-which only a caller of the Rust function reaches, since a `Distances` of
-Python or of TypeScript refuses such a vector when it is built.
+is a vector given to a function of the core whose length is not
+n(n - 1)/2, which only a caller of the Rust functions reaches, since a
+`Distances` of Python or of TypeScript refuses such a vector when it is
+built.
 
 `test/test_pca.py` of pyNei asserts, of `do_pcoa`, that on the ten
 distances of `test_pcoa` the individual `i1` is nearer `i2` than `i4`
 along `PC0`, and runs `do_pcoa_from_variants` once each way of
 `use_approx_embedding_algorithm` and asserts nothing of its numbers.
-popnei checks those ten distances at the numbers of R below, which say
-more than the order of three projections.
+Those ten distances are not Euclidean, so popnei refuses them without the
+correction and checks them with it at the numbers of R below.
 
 ### What pyNei does that is odd
 
 pyNei gives all n components. Those of the negative eigenvalues have
 projections u_j times the square root of |λ_j| and a negative percentage,
-and the one of the eigenvalue 0 has projections of about 5e-9, the square
-root of an eigenvalue that is rounding: 4.7e-9 on the ten distances of
-the worked example, whose eigenvalue 0 comes out at 1.1e-16. On the panel
-it gives 200 components, 44 of them with a negative percentage when it
+and the one of the eigenvalue 0 has projections that are the square root
+of an eigenvalue that is rounding: 4.7e-9 on the ten distances of the
+worked example, whose eigenvalue 0 comes out at 1.1e-16. On the panel it
+gives 200 components, 44 of them with a negative percentage when it
 starts from the variants and 45 when it starts from the distances of R,
 where the eigenvalue 0 rounds below 0, and a user who plots one of those
-draws a direction that no space has. Its percentages of the positive
-components are those of R to 1.8e-14, and popnei keeps them.
+draws a direction that no space has. Its percentages are over the sum of
+every eigenvalue, the negative ones included, as ape's `Relative_eig`, and
+on a Euclidean matrix they are popnei's.
 
 ### How it runs
 
@@ -970,9 +1038,27 @@ components are those of R to 1.8e-14, and popnei keeps them.
 binding crate opens from the source and the steps of the `Variants`. B is
 then built from the sums of each pair and not from a vector of distances,
 which is never made, and the sums are dropped before the eigendecomposition
-of B by `linalg`. `do_pcoa` builds B from the vector it was given, which the
-core takes over and drops before the eigendecomposition in the same way;
-kept to the end, the vector would add 4 bytes a cell to the peak below.
+of B by `linalg`. `do_pcoa` and `correct_dists_by_lingoes` build B from
+the vector they were given, which the core takes over and drops before
+the eigendecomposition in the same way; kept to the end, the vector would
+add 4 bytes a cell to the peak below.
+
+With `correct_by_lingoes`, the eigenvalues and the eigenvectors of the
+corrected B come from those of B, as "Lingoes' correction" says: each
+eigenvector keeps its direction and its eigenvalue grows by c, except the
+vector of ones, the eigenvector of the 0 of the centering, which stays at
+0. A decomposition tells the vector of ones apart from the other
+eigenvectors only when the eigenvalue 0 has no other: two individuals at
+distance 0 from each other and at the same distance from every other
+individual, two clones, give a second eigenvector of 0, and the
+decomposition may give any two directions of the plane of the two. So the
+eigenvectors whose eigenvalues are 0 within the threshold are projected
+orthogonal to the vector of ones and made orthonormal again, which leaves
+one fewer, and those take the eigenvalue c. The correction sets the two
+clones apart by sqrt(2c), along a component of their own.
+
+`correct_dists_by_lingoes` needs c alone, the most negative eigenvalue,
+and gives the vector sqrt(d² + 2c), pair by pair.
 
 The memory, counted in bytes for each of the n² cells of an n x n matrix:
 the sums of the pass, two `u32` for each of the n(n - 1)/2 pairs, 4 per
@@ -980,92 +1066,115 @@ cell; B, 8. Then B is decomposed, with its eigenvectors and the workspace
 of faer, which the PCA measured under node at 6.1 times the matrix, 48.8
 per cell; and while the eigenvectors are there the projections are
 written, up to n - 1 components of 8 bytes for each individual, 8 per cell
-when every eigenvalue but the one of the centering is positive. The sums
-are dropped before B is decomposed, so the peak is the second of the two
-steps, at most 56.8 bytes per cell,
-5.7 GB at 10000 individuals natively, where LAPACK's workspace is smaller
-than faer's. In wasm, whose page holds 4 GiB, 4294967296 bytes, that is
-8695 individuals. It is an upper bound and not a measurement: the PCA's
-6.1 was measured with one component written, so it does not say whether
-the projections are written while faer's workspace is still held or after
-it is given back, and if after, the peak is the PCA's 48.8 per cell and
-the limit its 9381. The sums given back can also leave a hole in the
-memory of wasm that later allocations do not reuse, which would raise the
-peak. The limit is 8695 until the plan measures the peak under node, as
-the PCA's was, through `doPcoaFromVariants` itself, where the sums exist,
-on a dataset whose B has nearly every eigenvalue positive; the spec then
-takes the measured number.
+when every eigenvalue but the one of the centering is positive, which the
+correction makes the common case. The sums are dropped before B is
+decomposed, so the peak is the second of the two steps, at most 56.8
+bytes per cell, 5.7 GB at 10000 individuals natively, where LAPACK's
+workspace is smaller than faer's. In wasm, whose page holds 4 GiB,
+4294967296 bytes, that is 8695 individuals. It is an upper bound and not
+a measurement: the PCA's 6.1 was measured with one component written, so
+it does not say whether the projections are written while faer's
+workspace is still held or after it is given back, and if after, the peak
+is the PCA's 48.8 per cell and the limit its 9381. The sums given back can
+also leave a hole in the memory of wasm that later allocations do not
+reuse, which would raise the peak. The limit is 8695 until the plan
+measures the peak under node, as the PCA's was, through
+`doPcoaFromVariants` itself with `correctByLingoes`, where the sums exist
+and nearly every eigenvalue is positive; the spec then takes the measured
+number. `correctDistsByLingoes` holds less, since it writes no
+projections, and takes the same limit.
 
 ### How it is verified
 
-Against R 4.6.1 with ape 5.8.1, `pcoa(d, correction = "none")`, the
-function of ape with no correction of the distances, which
-gives the components of the positive eigenvalues and, as `Relative_eig`,
-each eigenvalue over the sum of every eigenvalue, the negative ones
-included: the rule above. `tests/reference/pca/pcoa_reference.R`, run as
-its header says, writes the projections with the sign rule, the
-percentages and `negative_eigenvalues_percent` of three matrices into
-`*.pcoa.r.*.tsv` beside it, with 15 significant digits. The literals are
-compared within 1e-9, as in the PCA; on the panel pyNei and R differ by
-1.1e-14 at most in the projections of the 155 components and 1.8e-14 in
-their percentages. ape counts an eigenvalue as positive above 1.5e-8,
-the square root of the machine epsilon, and popnei above λ_1 x n x
-2.2e-16, so the two give the same components on these three matrices,
-whose smallest positive eigenvalue is 8.2e-5 on the panel, and could
-differ on distances of a much smaller size.
+Against R 4.6.1 with ape 5.8.1: `pcoa(d, correction = "none")`, which on
+a Euclidean matrix gives the components of the positive eigenvalues and,
+as `Relative_eig`, each eigenvalue over the sum of all of them; and
+`pcoa(d, correction = "lingoes")`, which gives the constant, the
+components of the corrected matrix as `vectors.cor` and their share as
+`Rel_corr_eig`. `tests/reference/pca/pcoa_reference.R`, run as its header
+says, writes those of four matrices with the sign rule into
+`*.pcoa.r.*.tsv` and `*.lingoes.r.*.tsv` beside it, with 15 significant
+digits. The literals are compared within 1e-9, as in the PCA. ape counts
+an eigenvalue as positive above 1.5e-8, the square root of the machine
+epsilon, and popnei above λ_1 x n x 2.2e-16, so the two give the same
+components on these four matrices, whose smallest positive eigenvalue is
+8.2e-5 on the panel, and could differ on distances of a much smaller
+size.
 
 The worked example is the ten distances of pyNei's `test_pcoa`, of five
 individuals `i1` to `i5`, in the order of the distance vector: 0.2, 0.3,
-0.9, 0.9, 0.1, 0.8, 0.7, 0.7, 0.8, 0.2. They are not Euclidean. The
-eigenvalues of B are 0.759739804991026, 0.0891457990391564,
-0.0271213359309426, 0 and -0.0640069399611263, whose sum is 0.812, the
-sum of the ten squares, 4.06, over 5; they are not in the result and are
-given to check B by hand. The result has 3 components:
+0.9, 0.9, 0.1, 0.8, 0.7, 0.7, 0.8, 0.2. The eigenvalues of B are
+0.759739804991026, 0.0891457990391564, 0.0271213359309426, 0 and
+-0.0640069399611263, whose sum is 0.812, the sum of the ten squares,
+4.06, over 5; they are not in the result and are given to check B by
+hand. They are not Euclidean, so `pcoa` refuses them, with 1 negative
+eigenvalue of 5 and a `negative_eigenvalues_percent` of 7.88262807403034.
+`correct_dists_by_lingoes` gives the constant 0.0640069399611263 and, for
+the first pair, sqrt(0.2² + 2c) = 0.409894962060102. With the correction
+the result has 3 components, the same from `pcoa` with
+`correct_by_lingoes` and from `pcoa` of the corrected vector:
 
 | | PC0 | PC1 | PC2 |
 |---|---|---|---|
-| i1 | -0.414751210682497 | -0.0316684067742437 | 0.122682551619086 |
-| i2 | -0.272242852294027 | -0.121062978361022 | -0.0757219426581520 |
-| i3 | -0.258364812257264 | 0.162099769690125 | -0.0717271140786949 |
-| i4 | 0.473382964043168 | 0.148884111212777 | 0.0334194841286791 |
-| i5 | 0.471975911190619 | -0.158252495767637 | -0.00865297901091859 |
-| explained_variance_percent | 93.5640153929835 | 10.9785466796991 | 3.34006600134761 |
+| i1 | -0.431869046368213 | -0.0415086068851603 | 0.224881556185394 |
+| i2 | -0.283479006142767 | -0.158680403878776 | -0.138801060767122 |
+| i3 | -0.269028184151739 | 0.212468396790800 | -0.131478395434635 |
+| i4 | 0.492920681079785 | 0.195146288470815 | 0.0612591236372794 |
+| i5 | 0.491455555582935 | -0.207425674497679 | -0.0158612236209160 |
+| explained_variance_percent | 77.1278402980914 | 14.3397713765961 | 8.53238832531248 |
 
-and `negative_eigenvalues_percent` 7.88262807403034; the three
-percentages add up to 107.88. The largest projection of `PC1` is that of
-`i3`, so the rule turned that component round from what R gave. These are
-the first cargo tests, at `pcoa` of "The Rust interface", and the test of
-`doPcoa` under node.
+with `lingoes_constant` 0.0640069399611263 and
+`negative_eigenvalues_percent` 7.88262807403034. These are the first
+cargo tests, at `pcoa` and `correct_dists_by_lingoes` of "The Rust
+interface", and the tests of `doPcoa` and `correctDistsByLingoes` under
+node.
+
+The same distances with a sixth individual, `i6`, at distance 0 from `i5`
+and at the distances of `i5` from the others, are the clones of "How it
+runs": their eigenvalue 0 has two eigenvectors. With `correct_by_lingoes`
+they give 4 components, of percentages 74.4550063085174,
+12.9405131851367, 7.29289082221065 and 5.31158968413514, a constant of
+0.072805704185076, and on `PC3` the projections 0.190795314650381 for
+`i5` and -0.190795314650381 for `i6`, which is sqrt(2c)/2 each side and
+the first of the two positive by "The sign"; the rest is in
+`small_twin.lingoes.r.projections.tsv`. Checked at `pcoa`.
 
 The panel is `tests/reference/dists/panel.vcf.gz` of `docs/specs/dists.md`,
 whose Kosman distances the tests of that spec check against R's
-`gd.kosman`, and R gets those distances from `panel.gdkosman.tsv`. It has
-155 components and `negative_eigenvalues_percent` 2.98343616373556:
+`gd.kosman`, and R gets those distances from `panel.gdkosman.tsv`.
+Without the correction it is refused, 44 negative eigenvalues of 200 and
+2.98343616373556 percent. With it, it has 198 components, a
+`lingoes_constant` of 0.014182298472042 and a
+`negative_eigenvalues_percent` of 2.98343616373556:
 
 | | PC0 | PC1 | PC2 |
 |---|---|---|---|
-| projection of `s000` | 0.0130219481920162 | 0.102687390137180 | -0.0445949681950252 |
-| projection of `s001` | 0.0186934783289475 | 0.101553923263818 | -0.0489068176849572 |
-| projection of `s199` | -0.0723981116273414 | -0.0161655655990162 | 0.0104434606654983 |
-| explained_variance_percent | 12.3549551224564 | 8.49180080874304 | 2.10504299110778 |
+| projection of `s000` | 0.0131009923566961 | 0.103593034190948 | -0.0461610570616341 |
+| projection of `s001` | 0.0188069490905941 | 0.102449570787996 | -0.0506243303501242 |
+| projection of `s199` | -0.0728375733863349 | -0.0163081366424616 | 0.0108102147666687 |
+| explained_variance_percent | 9.62407114041929 | 6.65101405201371 | 1.73580899943624 |
 
 They are checked at `pcoa_of_variants` on a reader over the VCF, with the
-whole of `panel.pcoa.r.projections.tsv`, and at `doPcoaFromVariants`
-under node. The refusal of the panel with `min_num_snps` 1105 is checked
-at both, with its counts and its names.
+whole of `panel.lingoes.r.projections.tsv`, and at `doPcoaFromVariants`
+under node, with the refusal without the correction. The refusal of the
+panel with `min_num_snps` 1105 is checked at both, with its counts and its
+names.
 
-A matrix with no negative eigenvalue, the Kosman distances of
-`four_alleles.vcf.gz`, 40 individuals: 39 components, a
-`negative_eigenvalues_percent` of 0, percentages that add up to 100 within
-1e-12, and the first of them 4.33989428824864, checked at
-`pcoa_of_variants`.
+A Euclidean matrix, the Kosman distances of `four_alleles.vcf.gz`, 40
+individuals, is not refused: 39 components, percentages that add up to 100
+within 1e-12, the first of them 4.33989428824864, and a
+`negative_eigenvalues_percent` of 0; with the correction the constant is
+0 and the result the same. Checked at `pcoa_of_variants`, against
+`four_alleles.pcoa.r.*.tsv`.
 
-Against pyNei, in pytest: `do_pcoa_from_variants` of both libraries on
-the panel, the 155 components of popnei against the first 155 of pyNei
-after the test gives pyNei's the sign of the rule, and the percentages,
-within 1e-9; and `do_pcoa` of both on the ten distances, the 3
-components. pyNei's other two components there, of the eigenvalue 0 and
-of the negative one, are not compared.
+Against pyNei, in pytest, which has no correction and gives its numbers
+for any matrix: `do_pcoa` of both libraries on the Kosman distances of
+`four_alleles.vcf.gz`, the 39 components of popnei against the first 39 of
+pyNei after the test gives pyNei's the sign of the rule, and the
+percentages, within 1e-9; and `do_pcoa_from_variants` of popnei on the
+panel with `correct_by_lingoes` against pyNei's `do_pcoa` of popnei's
+`correct_dists_by_lingoes` of the panel's distances, the 198 components.
+pyNei's components past those, of the eigenvalues 0, are not compared.
 
 ## The Rust interface
 
@@ -1124,7 +1233,7 @@ pub fn pca(data: &[f64], num_rows: usize, num_cols: usize, options: &PcaOptions)
 ```
 
 What a principal coordinate analysis gives. `num_comps` is how many
-eigenvalues of B are positive.
+eigenvalues of B, or of the corrected B, are positive.
 
 ```rust
 pub struct Pcoa {
@@ -1132,11 +1241,21 @@ pub struct Pcoa {
     pub num_comps: usize,
     /// num_individuals x num_comps, row after row.
     pub projections: Vec<f64>,
-    /// One per component, over the sum of every eigenvalue of B.
+    /// One per component, over the sum of every eigenvalue of the B
+    /// decomposed, the corrected one when there was a correction.
     pub explained_variance_percent: Vec<f64>,
-    /// 100 times the sum of |λ| of the negative eigenvalues over the sum
-    /// of every eigenvalue of B.
+    /// c of Lingoes' correction, 0 when there was none or the matrix was
+    /// Euclidean.
+    pub lingoes_constant: f64,
+    /// 100 times the sum of |λ| of the negative eigenvalues of B before any
+    /// correction over the sum of every eigenvalue of it.
     pub negative_eigenvalues_percent: f64,
+}
+
+pub struct PcoaOptions {
+    /// Whether a matrix that is not Euclidean is corrected by Lingoes'
+    /// correction, instead of refused.
+    pub correct_by_lingoes: bool,
 }
 ```
 
@@ -1145,7 +1264,21 @@ order of `docs/specs/dists.md`, (0, 1), (0, 2), ..., (1, 2), .... It takes
 the vector by value so that it can drop it before the eigendecomposition.
 
 ```rust
-pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa>;
+pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize, options: &PcoaOptions) -> Result<Pcoa>;
+```
+
+Lingoes' correction of a distance vector on its own: the corrected vector
+in the same order, c, and the `negative_eigenvalues_percent` of the
+vector given.
+
+```rust
+pub struct LingoesCorrection {
+    pub dist_vector: Vec<f64>,
+    pub constant: f64,
+    pub negative_eigenvalues_percent: f64,
+}
+
+pub fn correct_dists_by_lingoes(dist_vector: Vec<f64>, num_individuals: usize) -> Result<LingoesCorrection>;
 ```
 
 The PCoA of the Kosman distances of the variants of `reader`, which it
@@ -1158,6 +1291,11 @@ together at one variant at least; the binding crate turns `None` into 0.
 `num_vars` is how many variants the pass gave, for the pass stats.
 
 ```rust
+pub struct VariantPcoaOptions {
+    pub min_num_vars: u32,
+    pub correct_by_lingoes: bool,
+}
+
 pub struct PcoaOfVariants {
     pub pcoa: Pcoa,
     pub num_vars: u64,
@@ -1165,14 +1303,18 @@ pub struct PcoaOfVariants {
 
 pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
     reader: &mut R,
-    min_num_vars: u32,
+    options: &VariantPcoaOptions,
 ) -> Result<PcoaOfVariants>;
 ```
 
 The error of the pairs with no distance carries how many pairs have none,
 how many pairs there are, the positions of the two individuals of the
 first, and the position of the individual in the most of them with how
-many; each binding crate names them.
+many; each binding crate names them. The error of a matrix that is not
+Euclidean carries how many eigenvalues are negative, n, and the
+`negative_eigenvalues_percent`, and whether it came from the variants, so
+that its message names `correct_by_lingoes` alone or the function as
+well.
 
 What this module calls in `linalg`, whose spec settles the names and the
 types: the product of a matrix of r rows and c columns with itself, added
@@ -1321,8 +1463,8 @@ is the PCA's: 0.024 s natively at 1000 individuals, above.
 
 ## Open points
 
-The owner decides the first five here and the seventh, and the sixth in
-the `linalg` spec. Until then the implementer follows the
+The owner decides the first five here, and the sixth in the `linalg`
+spec. Until then the implementer follows the
 "meanwhile" of each.
 
 **Open 1: whether `num_prin_comps` also cuts the projections.** The owner
@@ -1389,38 +1531,11 @@ with the options and the recommendation, as Open 1 of
 `docs/specs/linalg.md`; it is here for its numbers. Meanwhile nothing in
 this module depends on it.
 
-**Open 7: the negative eigenvalues of a PCoA.** A matrix of distances
-that is not Euclidean gives B negative eigenvalues, 44 of 200 on the
-panel of Kosman distances. The options:
-
-- Leave them out, the rule of "The principal coordinates of distances":
-  the components of the positive eigenvalues, the percentages over the
-  sum of every eigenvalue, which is pyNei's and ape's denominator, and
-  `negative_eigenvalues_percent` beside them. It is what `ape::pcoa`
-  gives with no correction, so R checks every number of these data. The percentages of
-  a non Euclidean matrix add up to more than 100, 102.98 on the panel,
-  which a user who reads them as the PCA's may not expect.
-- Give them as pyNei does, with projections of the square root of |λ|
-  and a negative percentage. It keeps pyNei's shape of n components, and
-  gives a user a direction that no space has to plot.
-- Correct the distances so that none is negative, the correction of
-  Lingoes (1971), which adds one constant to every squared distance, or
-  of Cailliez (1983), which adds one to every distance, the two that
-  `ape::pcoa` offers. Every eigenvalue is then 0 or above and the
-  percentages add up to 100, but the distances drawn are no longer the
-  Kosman distances, the constant is of the size of the largest negative
-  eigenvalue, and the correction gives the data components that the
-  distances did not have; a user who has only the plot cannot tell.
-
-Recommendation: leave them out, since it draws the distances the user
-asked for, is checked number by number against R, and gives the
-application the share it needs for its warning. Meanwhile the
-implementer leaves them out.
-
 ## Not in this spec
 
-- A correction of the negative eigenvalues of a PCoA, Lingoes' or
-  Cailliez's, unless the owner chooses one in Open 7.
+- Cailliez's correction of a matrix of distances that is not Euclidean,
+  which the owner did not choose on 27 September 2026: "Lingoes'
+  correction" of the principal coordinates.
 - The two backends of the products and of the eigendecomposition, how BLAS
   is linked and the threads of the product: the `linalg` spec.
 - The principal components of the kinship, which the GWAS uses as
