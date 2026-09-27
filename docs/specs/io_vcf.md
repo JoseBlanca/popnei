@@ -241,10 +241,13 @@ none of its members.
 A gzip file that bgzip did not
 write, whose first member has no `BC`, is read with a decoder that goes on
 to the next member by itself, flate2's `MultiGzDecoder`. Both ways
-decompress with flate2's default backend, `miniz_oxide`, which is Rust;
-its zlib backends are C and do not build for the wasm package. The reader
-of the members takes flate2's raw deflate and its CRC32, of that same
-backend, so it adds nothing to what popnei depends on.
+decompress with flate2 over its backend `zlib-rs`, a zlib written in Rust
+that builds for the two wasm targets, where flate2's backends that wrap
+the C zlib do not. The reader of the members takes flate2's raw deflate
+and its CRC32, of that same backend, so it adds nothing to what popnei
+depends on. The backend was `miniz_oxide`, flate2's default, until the
+owner chose zlib-rs for the writer on 27 September 2026, and the reads
+got faster with it, by the table of "Speed".
 
 Why the members are cut and checked, and not handed to a decoder that goes
 from one to the next on its own: with such a decoder, `many.vcf.gz` with
@@ -931,19 +934,27 @@ compressed on the same threads and written in order. In wasm both run one
 after the other. Nothing needs a `reblock` before it, and what is kept
 from one block to the next is the text that does not yet fill a member.
 
-Each member is compressed with the deflate the core already has, flate2
-over miniz_oxide, at level 6, the level bgzip 1.24 uses when it is given
-none, which is zlib's default. The compressed bytes are not those of
-bgzip, whose deflate is zlib's, and the text they decompress to is the
-same. A member whose 65280 bytes deflate compresses to more than a member
+Each member is compressed with the deflate the reader has, flate2 over
+zlib-rs, at level 6, the level bgzip 1.24 uses when it is given none,
+which is zlib's default. The owner chose zlib-rs and that level on 27
+September 2026, over miniz_oxide, by the times of "Speed". The compressed
+bytes are not those of bgzip, whose deflate is zlib's, and the text they
+decompress to is the same. A member whose 65280 bytes deflate compresses to more than a member
 holds, 65536 bytes with its header and its end, is written by the writer
 itself as one stored block of deflate, which holds the text as it is and
-always fits, as htslib does with a block that does not shrink. miniz_oxide
-stores a text it cannot shrink on its own, in 65321 bytes for 65280 bytes
+always fits, as htslib does with a block that does not shrink. zlib-rs
+stores a text it cannot shrink on its own, in 65326 bytes for 65280 bytes
 of random text, so the writer's stored block is for a deflate that gave
-more than 65510 bytes of data or did not end its stream. The file ends with the empty member of 28
-bytes that htslib writes, the same bytes. Decided with the code on 26
-September 2026.
+more than 65510 bytes of data or did not end its stream. The text of a
+member that spans two of the buffers the lines were formatted into is
+copied into one before it is deflated: zlib-rs gives other bytes for a
+text fed to it in parts than for the same text whole, so without the copy
+the bytes of the file would depend on the size of the blocks of the
+source. With the copy the bgzipped write of `big.vcf` on one thread
+took 5.48 s, the time of "Speed", and 5.44 s without it in the same
+session. The file ends with the empty member of 28 bytes that htslib
+writes, the same bytes. Decided with the code on 26 September 2026, and
+the deflate and the copy on 27 September 2026.
 
 The size of the blocks of a pass of `write_vcf` over a VCF,
 `vcf_text_num_vars_per_block`, is a fifth of the genotypes of a block of
@@ -1326,6 +1337,37 @@ three changes the read. The constants are 4096 lines, 16 MiB and 256 KiB,
 each with its measurement in its doc comment in
 `crates/popnei/src/io/vcf.rs`.
 
+The inflate of flate2 changed from `miniz_oxide` to `zlib-rs` on 27
+September 2026, with the deflate of the writer, and the reads of
+compressed files were timed before and after on the file of the table,
+with `read_vcf.rs`, three runs of each in one process, the files in the
+page cache, on the same machine. There are four reads: the file bgzipped,
+which the reader reads by its members; the file compressed by `gzip -6`,
+36.7 MB, which is not bgzip's and is read with `MultiGzDecoder`; and the
+plain file with a BED of 2100000 regions handed to the reader, plain,
+46.0 MB, and gzipped, 10.3 MB, whose difference is the inflate of the BED:
+the BED has one region for each of the 100000 variants and 2 million on
+a chromosome the VCF does not have. Each of the two builds was timed
+twice, interleaved, before, after, before, after, at a load average of
+the minute before of 3.1 to 3.8. The table gives the six runs of each:
+
+| | `miniz_oxide`, before | `zlib-rs`, after |
+|---|---|---|
+| bgzipped, 1 thread | 0.853, 0.826, 0.829, 0.836, 0.829, 0.824 s | 0.758, 0.739, 0.735, 0.761, 0.765, 0.757 s |
+| bgzipped, 18 threads | 0.370, 0.369, 0.365, 0.365, 0.364, 0.366 s | 0.290, 0.283, 0.282, 0.287, 0.287, 0.289 s |
+| gzip, 1 thread | 0.832, 0.825, 0.815, 0.850, 0.844, 0.841 s | 0.783, 0.779, 0.779, 0.798, 0.792, 0.789 s |
+| gzip, 18 threads | 0.362, 0.359, 0.359, 0.363, 0.361, 0.361 s | 0.310, 0.310, 0.308, 0.317, 0.315, 0.316 s |
+| plain, plain BED, 1 thread | 0.644, 0.639, 0.637, 0.615, 0.612, 0.610 s | 0.624, 0.619, 0.617, 0.634, 0.619, 0.618 s |
+| plain, gzipped BED, 1 thread | 0.685, 0.682, 0.687, 0.696, 0.680, 0.684 s | 0.665, 0.641, 0.643, 0.665, 0.658, 0.663 s |
+| plain, plain BED, 18 threads | 0.151, 0.147, 0.150, 0.152, 0.149, 0.149 s | 0.149, 0.149, 0.151, 0.153, 0.153, 0.152 s |
+| plain, gzipped BED, 18 threads | 0.195, 0.191, 0.191, 0.190, 0.190, 0.188 s | 0.179, 0.178, 0.178, 0.183, 0.181, 0.181 s |
+
+Every compressed read is faster with zlib-rs: the bgzipped read by 0.07 s
+on one thread and by 0.08 s on 18, a fifth of its time, the gzip read by
+0.05 s on both, and the gzipped BED, whose inflate is serial, added 0.04
+to 0.07 s to the read before and 0.03 to 0.04 s after. The vars file is
+compressed with lz4 and not with deflate, so its reads did not change.
+
 ### The writer
 
 The numbers to reach were set before popnei's writer was timed, on
@@ -1351,7 +1393,8 @@ text and from `big.vars`. The reader alone takes 0.563 s of the plain
 read on one thread and 0.093 s on 18, by the table of the reader above,
 so what the writer adds is what the measurement has to find.
 
-The writer was measured on 27 September 2026, on the same machine, with
+The writer was first measured on 27 September 2026, with flate2 over
+`miniz_oxide`, on the same machine, with
 `crates/popnei/benches/write_vcf.rs`, which makes the pass that
 `write_vcf` of the Python package makes with no steps: the source opened
 with the size of blocks the writer asks for, every variant read with the
@@ -1378,22 +1421,39 @@ the file, which the Python package does and bcftools does not, did not
 show: without it the plain write from `big.vcf` took 0.969, 0.962 and
 0.964 s, and from `big.vars` 1.513, 1.517 and 1.486 s.
 
-**The bgzipped write on one thread misses its number**: 10.66 s from
-`big.vcf` and 10.84 s from `big.vars`, against the 8.9 s of bcftools, and
-above 9.79 s, the tenth over it that the plan allowed. The time is the
-deflate of flate2 over `miniz_oxide` at level 6, the one popnei has: the
-plain write on one thread takes 0.95 s of it, so the compression takes
-about 9.7 s. Which deflate the writer uses, other levels of
-`miniz_oxide` or another crate that builds for both wasm targets, is the
-owner's to choose and has not been chosen; the writer was measured as it
-is. On 18 threads the compression is spread over the members and the
-bgzipped write takes 0.89 s, under the 1.63 s of bcftools.
+With `miniz_oxide` the bgzipped write on one thread missed its number:
+10.66 s from `big.vcf` and 10.84 s from `big.vars`, against the 8.9 s of
+bcftools, and above 9.79 s, the tenth over it that the plan allowed. The
+plain write on one thread takes 0.95 s of it, so the compression took
+about 9.7 s. The owner chose on 27 September 2026 flate2 over `zlib-rs`,
+a zlib written in Rust that builds for the two wasm targets, at level 6,
+the level of bgzip, over `miniz_oxide` at level 5, which took 5.0 s and
+gave a file of 41.6 MB, and over a new bound; the times of the choice are
+in `docs/reports/writer-regions-density.md`.
+
+With zlib-rs the writer was measured again the same day, on the same
+machine, the sources in the page cache, three runs of each in one
+process, with bcftools run again in the same session. The load average
+of the minute before each set of three runs was 3.2 to 3.9, and that of
+the five minutes before 3.6 to 4.9, from other programs of the machine:
+
+| | bcftools | the target | from `big.vcf` | from `big.vars` | met |
+|---|---|---|---|---|---|
+| plain, 1 thread | 1.76, 1.67, 1.68 s | 1.65 s | 0.958, 0.936, 0.939 s | 1.443, 1.416, 1.431 s | yes |
+| bgzipped, 1 thread | 8.84, 8.84, 8.85 s | 8.9 s | 5.478, 5.475, 5.475 s | 5.936, 6.273, 6.037 s | yes |
+| bgzipped, 18 threads | 1.63, 1.63, 1.64 s | 1.63 s | 0.550, 0.548, 0.550 s | 0.559, 0.552, 0.544 s | yes |
+| plain, 18 threads | | | 0.203, 0.209, 0.207 s | 0.259, 0.257, 0.252 s | |
+
+The bgzipped write on one thread is 5.48 s from `big.vcf` and 6.04 s from
+`big.vars`, under the 8.9 s of bcftools, and on 18 threads it went from
+0.89 s to 0.55 s. The plain writes do not deflate and did not change.
 
 The plain file written from `big.vcf` is 403572954 bytes, the size of
 the source, and from `big.vars` 403572916, since its header is built
-from the columns. The bgzipped one is 38437792 bytes from `big.vcf`,
-against 37695742 from bcftools, 2 in 100 larger, and `bgzip -t` accepts
-both of popnei's.
+from the columns. The bgzipped one is 37366336 bytes from `big.vcf`,
+against 37695742 from bcftools, 1 in 100 smaller, and 38437792 with
+miniz_oxide; `bgzip -t` accepts both of popnei's, and the bgzipped file
+decompresses to the bytes of the plain one.
 
 ## Open points
 
