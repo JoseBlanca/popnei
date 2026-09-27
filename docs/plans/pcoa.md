@@ -30,7 +30,9 @@ nothing asks for.
 Open 7 of the spec, whether the correction is also an argument of the two
 PCoAs, is not answered. The tasks follow its "meanwhile" and build both.
 An answer of the function alone takes the argument out of tasks 1.2, 1.3,
-1.4, 2.1, 2.2 and 2.3, and is a new task when it comes after them. Opens
+1.4, 2.1, 2.2 and 2.3: a task not yet started is built without it, and
+taking it out of the tasks already committed is one new task, before the
+next one starts. Opens
 1 to 6 of the spec are of the PCA and change nothing here, except that
 Open 3, the components with no variance, is followed here as there.
 
@@ -78,7 +80,9 @@ Deliverables:
    its counts, and with it the table, the percentages, the constant and
    `negative_eigenvalues_percent`; `correct_dists_by_lingoes` of it, the
    constant and the first corrected distance, and `pcoa` of the corrected
-   vector, the same table within 1e-9; the twin, its 4 components against
+   vector, the same table within 1e-9; the twin, the ten distances with a
+   sixth individual at distance 0 from the fifth, which is how the spec
+   checks two clones, its 4 components against
    the whole of `small_twin.lingoes.r.*.tsv`; the Kosman distances of
    `four_alleles.gdkosman.tsv`, 39 components, with and without the
    correction, against `four_alleles.pcoa.r.*.tsv`; and each error of
@@ -150,7 +154,11 @@ decomposes the corrected matrix again, and the twin is the one case where
 the two routes could differ. The review found them 6e-16 apart with
 numpy's QR. Whether faer and LAPACK give the eigenvalue 0 of the twin
 inside the threshold on both backends is known only when
-`--no-default-features` runs the test.
+`--no-default-features` runs the test. When it fails on one backend
+alone, the threshold is the spec's and is not moved in the code: the
+orchestrator writes into the report the eigenvalues the two backends
+gave against the threshold, and stops for the owner, since the answer
+changes the spec.
 
 ## Work package 2: the PCoA of the variants
 
