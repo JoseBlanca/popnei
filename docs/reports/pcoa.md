@@ -88,3 +88,61 @@ ran the same seven reviewers the skill asks for.
 After the fixes, at ebf6580: fmt, clippy, both wasm checks and ruff clean;
 1361 cargo tests and 1211 without the default features; 647 pytest; `npm
 test` `tests 484`, `fail 1`, the test of `main`.
+
+## Work package 2: the PCoA of the variants
+
+Tasks 2.1 and 2.2 went to the subagent of the core, at 6c75666 and
+baaabea; 2.3 and 2.4 side by side, at 63b248c and 5244a1b. The
+deliverables, run at 5244a1b: 33 core tests on both backends; `uv run
+pytest tests/test_pcoa.py` 40 passed, 658 in all, popnei 3.0e-14 from pyNei
+in the projections of the panel's 198 components and 9.8e-15 in the
+percentages; `node --test` of the PCoA, the passes and the progress, 57
+tests, `fail 0`; `npm test` `tests 494`, `fail 1`, the test of `main`.
+Two choices of the writers, kept: the page limit is counted on the
+individuals left after the steps, which are those of the matrix; and
+`docs/specs/js_sources.md` counts fifteen consumers.
+
+The review sent seven reviewers as the skill asks. None found a wrong
+result on real data; the numbers reviewer compared the correction inside
+the analysis with the correction outside on clones, groups of clones and
+ties, on both backends and against R, and found them within 2.6e-13 in
+the squared distances. What mattered, all fixed at 0d47d82..1405217, the
+spec changed first at 45d0fd0:
+
+- Nothing tested a band of three or more eigenvalues 0, three identical
+  individuals: taking the orthonormalization out left all 33 tests green,
+  and the distances rebuilt from the projections then wrong by up to 0.14.
+  The orthonormalization now goes through the linalg crate, as the coding
+  skill asks, where it had been done in the core at 20 s for a band of 1000
+  over 8000 individuals; tests of bands of 3 and 6 fail without it.
+- If rounding ever lifted the eigenvalue 0 of the centering above the
+  threshold, the vector of ones would have replaced a real eigenvector, or
+  given a component with one projection for everyone, with no error; it is
+  now a defect of popnei, checked. It has not been seen: that eigenvalue
+  came out at 0.20 of the threshold at most. The tolerance of the check,
+  1e-6, is a reviewer's proposal and not a measurement.
+- B is asked of the machine before the pass, so that the room of the sums
+  is free at the top of the memory of wasm when they are given back; this
+  has no test, since which buffer comes first cannot be seen from outside,
+  and work package 3 measures it.
+- The default of `correct_by_lingoes` is a constant of the core; Python
+  names the argument when it is not a bool; the remedy of the pairs with no
+  distance does not tell the user to lower `min_num_snps` when they never
+  set it; the refusals of an empty pass, of distances all 0 and of one
+  individual have tests; the counts of a filter are asserted as literals;
+  the docs of the results; and a check at compile time that the fields
+  popnei_web draws from the PCA and the PCoA keep their names and types.
+
+Not taken: the option of the correction as an enum, since the spec's
+interface has it a bool as the PCA's; dropping the reader before the
+eigendecomposition, since work package 3 measures with a VCF opened in the
+page and its limit then counts the reader's buffers; the bare `TypeError`
+of `transform_to_biallelic` of the PCA, outside this plan. The mapping of
+the three defects to `RuntimeError` in Python has no test: no input
+reaches them, and the binding crate cannot run Rust tests without
+libpython.
+
+After the fixes, at 1405217: fmt, clippy, both wasm checks and ruff clean;
+1373 cargo tests and 1223 without the default features, 38 of the PCoA;
+669 pytest; `npm test` `tests 496`, `fail 1`, the test of `main`;
+`npm run test:browser` 8 passed.
