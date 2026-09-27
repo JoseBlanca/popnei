@@ -993,6 +993,11 @@ it does for `transform_to_biallelic`.
   `correct_dists_by_lingoes`, with the pair, the value, and that a
   negative F_ST or f_2 is of two populations the dataset cannot tell
   apart.
+- A constant of Lingoes' correction beyond an `f64`, from
+  `correct_dists_by_lingoes`: c is of the size of the squared distances,
+  so distances near 1e200 give an infinite c and distances near 1e-200 a c
+  of 0 that would read as no correction. The message gives the largest
+  distance and says to divide the distances by a number near it first.
 - Fewer than two individuals, from the three functions: with one there
   is no distance to place. `do_pcoa_from_variants` refuses it before the
   pass, after the two limits below.
@@ -1049,10 +1054,20 @@ on a Euclidean matrix they are popnei's.
 binding crate opens from the source and the steps of the `Variants`. B is
 then built from the sums of each pair and not from a vector of distances,
 which is never made, and the sums are dropped before the eigendecomposition
-of B by `linalg`. `do_pcoa` and `correct_dists_by_lingoes` build B from
-the vector they were given, which the core takes over and drops before
-the eigendecomposition in the same way; kept to the end, the vector would
-add 4 bytes a cell to the peak below.
+of B by `linalg`. `do_pcoa` builds B from the vector it was given, which the core takes
+over and drops before the eigendecomposition in the same way; kept to the
+end, the vector would add 4 bytes a cell to the peak below.
+`correct_dists_by_lingoes` keeps its vector through the
+eigendecomposition, since the corrected vector is written from it, which
+is 4 bytes a cell where `do_pcoa` writes 8 of projections, so its peak is
+below that of the PCoA.
+
+B is built from the distances divided by the largest of them, and the
+projections are multiplied back by it, so that distances above 1.3e154,
+whose squares are beyond an `f64`, and distances all below 1.5e-162,
+whose B would give no component, are analysed as any other; found and
+tested at 1e200 and 1e-200 when the code was written, on 27 September
+2026.
 
 In `do_pcoa_from_variants` with `correct_by_lingoes`, the eigenvalues
 and the eigenvectors of the corrected B come from those of B, as "Lingoes' correction" says: each
