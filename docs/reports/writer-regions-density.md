@@ -8,7 +8,9 @@
 neither the specs nor the plan are on `main` yet.
 
 **The plan is done but for one choice that is the owner's: the deflate
-of the bgzipped VCF.** Every task is ticked and every deliverable was
+of the bgzipped VCF.** Every task of the plan is carried out; what the
+choice would add is one task after it, to switch the deflate and
+measure the writer again. Every task is ticked and every deliverable was
 checked. One target is missed: the bgzipped write of `big.vcf` on one
 thread takes 10.65 to 10.96 s, where the plan allows 9.79 s, bcftools'
 8.9 s and a tenth. The options and their times are under "Waiting for
@@ -53,20 +55,23 @@ with a test that fails without the fix; the missing rate had none: `##contig` le
 column written, the regions of a chromosome named `tracks1` dropped as a
 header, a misspelt option of TypeScript that flipped the side of the
 regions kept, a cut VCF read as whole when the cut fell outside the
-regions. The owner should know of three changes that reach beyond this
+regions. The owner should know of five changes that reach beyond this
 plan: every options object of the TypeScript package now refuses a key it
 does not know; `write_vars` in Python, like `write_vcf`, now takes away
-its file after a panic; and a VCF with 200000 `##contig` lines opens in
+its file after a panic; `calc_per_var_distribs` computes six statistics
+when none are named, so a time taken of it from now on is not comparable
+with the times of "Speed" of `docs/specs/stats.md`; a vars file is now
+written at version 1.1 of its format, with the chromosome lengths in its
+`popnei` key; and a VCF with 200000 `##contig` lines opens in
 0.030 s where it took 13.37 s.
 
 **What is asked of the owner.** The choice of the deflate, five smaller
 choices, and the merge. They are under "Questions for the owner" at the
 end, each with the options and a recommendation.
 
-This page was written while the work went, one work package at a time.
-Its last section, "How the work went", is for whoever next revises a
-skill or writes an implementation plan, and not for the owner; it says so
-in its first line.
+The sections below go one work package at a time. The last one, "How the
+work went", is for whoever next revises a skill or writes an
+implementation plan, and not for the owner.
 
 ## Before the first task
 
@@ -108,7 +113,8 @@ answer, and gives first a block the thread built before it saw the offer.
 4.1, so that type and an empty `Regions` came forward into
 `crates/popnei/src/filters.rs`, with no constructor outside the tests;
 task 4.1 fills them in. Four tests under `filters::tests::source_header`;
-the subagent broke the code three ways and each broke them.
+the subagent broke the code three ways on purpose, and each of the three
+made those tests fail.
 
 Tasks 1.2 and 1.3, commits f6393b4 and 3ba0021, 2c46528 and 343bc4f, and
 f60c4e3. The VCF reader keeps the lines of its header before `#CHROM` and
@@ -131,10 +137,14 @@ list of names with whole numbers above 0, or that gives one chromosome
 twice, makes the file not a vars file.
 
 Deliverable 1 said that no test of before would change but for the
-version. The longer key made a few more change, none of them an
+version. The `popnei` key, the metadata popnei writes into the schema of
+a vars file, is longer by `chrom_lengths`, and that made a few more
+change, none of them an
 assertion made weaker: the literals that hold the key whole gained
 `"chrom_lengths": []`, and the sizes of the vars files in
-`js/popnei/test/progress.test.ts` grew by 16 and 24 bytes. The plan says
+`js/popnei/test/progress.test.ts`, which hold the exact size of the
+files those tests write and the bytes a pass reads of them, grew by 16
+and 24 bytes. The plan says
 so now.
 
 Deliverables, run at f60c4e3:
@@ -226,7 +236,8 @@ Deliverables, run at 78a214f:
 - 2: the reference script ran and its check passed; the pytest test
   against the three files, over all and over popA and popB, passed.
 - 3: the pytest comparison with pyNei leaves the missing rate out and
-  passes; the test of one pass against one pass each covers six.
+  passes; the test that computing all the statistics in one pass gives
+what computing each in a pass of its own gives now covers the six.
 - 4: the TypeScript test of the means over all and in popA passed.
 - All the checks: `cargo test --workspace` 1050 passed, 2 ignored, and
   150; pytest 555 passed, 5 skipped; `npm test` 444 of 445, the old
@@ -309,8 +320,9 @@ deflate does not fit in 65536 bytes is stored. Every case of the writer is
 also written bgzipped and decompresses to the bytes of the plain case;
 `bgzip -t`, `tabix -p vcf` and the query at chr1:900-1100 pass on each
 file, and a test prints that it was skipped when a program is not in the
-PATH. `vcf_text_num_vars_per_block` is a fifth of the genotypes divided
-by the individuals, from 100 to 10000 variants.
+PATH. The writer reads a VCF in blocks of a fifth of the variants of the
+reader's usual block, from 100 to 10000 variants, so that a block's text
+stays near 20 to 40 MB; `vcf_text_num_vars_per_block` gives that size.
 
 ### Waiting for the owner: the deflate of the bgzip
 
@@ -389,15 +401,18 @@ What they found, and what is being fixed:
 - Smaller: an error named `VarsFileNotWritten` that the VCF writer gives
   too; `.gz` matched only in lower case, so `a.VCF.GZ` was written plain;
   the choice of the writer's block size made in both binding crates
-  rather than in the core; paths that would give an empty text or a
-  default value instead of an error if a check before them moved.
+  rather than in the core; and three places in the code of the writer
+  that would write an empty text or a default value, instead of giving
+  an error, if a check made before them were moved.
 
 The fixes are the 33 commits from 5cd7d40 to 586828e. Each finding that
 changed a behaviour has a test that failed before its fix. Not fixed as
 asked:
 
 - The removal of a partial file after a panic, and the mapping of the
-  writer's two defects to `RuntimeError`, have no automated test: no
+  writer's two defects, a block with neither the text of its lines nor
+  the columns the writer needs and a chromosome number with no name, to
+  `RuntimeError`, have no automated test: no
   input makes the core panic or reach those defects, and a test would
   need an entry point of `_core` for tests only. The first was checked by
   hand with a panic put into the code: two calls in a row each raised a
@@ -437,7 +452,10 @@ averages of 3.5 to 4.0, three runs each, in seconds:
 | bgzipped, 1 thread | 8.84, 8.90, 9.22 | 8.9 | 10.649, 10.664, 10.961 | 10.859, 10.800, 10.842 |
 | bgzipped, 18 threads | 1.59, 1.66, 1.62 | 1.63 | 0.897, 0.890, 0.894 | 0.859, 0.854, 0.863 |
 
-Two of the three targets are met; the bgzipped write on one thread is
+The targets are the times of bcftools that `docs/specs/io_vcf.md`
+recorded when the spec was written, 1.65 s, 8.9 s and 1.63 s; the times
+of bcftools in the second column were taken again in the same session
+as popnei's. Two of the three targets are met; the bgzipped write on one thread is
 not, and waits for the owner's choice of the deflate. The bgzipped file
 is 38437792 bytes, 2 in 100 more than bcftools' 37695742.
 
@@ -731,7 +749,8 @@ implementation plan, not for the owner, who can stop here.
 - **The reviews found what the tasks missed, in every work package.**
   Five of the six had at least one finding that gave a wrong result with
   no error, ten in all, and in every one a reviewer's mutation showed a
-  test the writer had meant to guard a case that could not fail. The review cost as much as the
+  test that could not fail: the writer had meant it to guard a case,
+  and a change of the code that broke that case left it passing. The review cost as much as the
   writing: the subagents that wrote a work package ended with 350000 to
   630000 tokens of context each, across their tasks and their fixes, and
   its reviewers used 60000 to 130000 tokens each, four to seven of them,
