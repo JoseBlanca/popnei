@@ -29,7 +29,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
-import type { PassStats, Progress, Variants } from "popnei";
+import type {
+  PassStats,
+  Progress,
+  Variants,
+  VariantsPcaResult,
+  VariantsPcoaResult,
+} from "popnei";
 import {
   calcPairwiseKosmanDists,
   correctDistsByLingoes,
@@ -704,4 +710,24 @@ test("a pass that gives no variant, distances that are all 0 and one individual 
     () => pcoaOfTheVcf(vcfOf(["i0"], [["0/1"], ["1/1"]])),
     /there is 1 individual, and a principal coordinate analysis places 2 at least/,
   );
+});
+
+/**
+ * The fields popnei_web draws the individuals from, in the results of both
+ * analyses of the variants: one piece of code draws either, so they keep
+ * one name and one type in both. A result of `doPcoaFromVariants` is
+ * assigned to them as the PCA's result has them, which `tsc` refuses when a
+ * name or a type of either result changes, and `npm test` compiles the
+ * tests before it runs them.
+ */
+type WhatIsDrawn = Pick<
+  VariantsPcaResult,
+  "individuals" | "numComps" | "projections" | "explainedVariancePercent" | "passStats"
+>;
+
+test("the results of both analyses of the variants have the fields popnei_web draws, of one type", () => {
+  const result: VariantsPcoaResult = pcoaOfThePanel({ correctByLingoes: true });
+  const drawn: WhatIsDrawn = result;
+  assert.equal(drawn.individuals.length, 200);
+  assert.equal(drawn.projections.length, 200 * drawn.numComps);
 });
