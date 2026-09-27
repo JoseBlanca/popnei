@@ -17,6 +17,7 @@ mod gwas;
 mod kinship;
 mod ld;
 mod pca;
+mod pcoa;
 mod pop_dists;
 mod source;
 mod stats;
@@ -90,6 +91,14 @@ mod _core {
         module.add(
             "KinshipPairWithNoVariantCalled",
             py.get_type::<super::errors::KinshipPairWithNoVariantCalled>(),
+        )?;
+        // The pairs of individuals with no distance of a principal
+        // coordinate analysis, which `popnei.do_pcoa` and
+        // `popnei.correct_dists_by_lingoes` catch to name the individuals as
+        // the `Distances` names them.
+        module.add(
+            "PcoaPairsWithNoDistance",
+            py.get_type::<super::errors::PcoaPairsWithNoDistance>(),
         )
     }
 
@@ -140,6 +149,8 @@ mod _core {
     use super::ld::{calc_ld_and_dist_per_pop, calc_rogers_huff_r2_matrix};
     #[pymodule_export]
     use super::pca::{pca, pca_of_variants};
+    #[pymodule_export]
+    use super::pcoa::{correct_dists_by_lingoes, pcoa};
     #[pymodule_export]
     use super::pop_dists::{calc_pop_dists, pop_dist_measures_that_have_a_value};
     #[pymodule_export]

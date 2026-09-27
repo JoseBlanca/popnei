@@ -15,6 +15,12 @@ then the directions in the space of the traits along which the individuals
 vary most, the first holding the largest variance that any direction has,
 the second the largest among the directions at a right angle to the first,
 and so on.
+
+:func:`do_pcoa` places the individuals of a :class:`popnei.Distances` on
+components in the same way, from the distance of every pair of them instead
+of a table of their values: a principal coordinate analysis, PCoA. It refuses
+distances that are not Euclidean, which no space has points at, and
+:func:`correct_dists_by_lingoes` makes them Euclidean.
 """
 
 from dataclasses import dataclass
@@ -23,6 +29,7 @@ import numpy
 import pandas
 
 from popnei import _core
+from popnei.dists import Distances
 from popnei.variant import PassStats, Variants, _pass_stats_of
 
 # What is wrong with a trait whose mean or whose standard deviation the
@@ -273,6 +280,205 @@ def do_pca_from_variants(
             copy=False,
         ),
         pass_stats=_pass_stats_of(counts),
+    )
+
+
+@dataclass(frozen=True)
+class PCoAResult:
+    """What a principal coordinate analysis gives.
+
+    Only the components of the positive eigenvalues are here: the centering
+    of the matrix the analysis decomposes always has an eigenvalue of 0,
+    which gives no component, so 40 individuals have 39 components at most.
+    They are named ``PC0``, ``PC1`` and so on, with zeros on the left to the
+    width of how many there are, as the components of :class:`PCAResult`
+    are. In each component the projection of the largest absolute value is
+    positive, so the numbers are the same in Python, under pyodide and in
+    TypeScript.
+    """
+
+    projections: pandas.DataFrame
+    """Where each individual falls along each component, one row per
+    individual, indexed by the names of the ``Distances``, and one column per
+    component."""
+
+    explained_variance_percent: pandas.Series
+    """How much of the variance each component holds, as a percentage of the
+    variance of the individuals placed at their distances, which is the sum
+    of the squared distances over the pairs divided by the individuals. The
+    percentages add up to 100."""
+
+    lingoes_constant: float
+    """The constant of Lingoes' correction, which :func:`do_pcoa` never
+    makes, so it is 0 there."""
+
+    negative_eigenvalues_percent: float
+    """The share of the negative eigenvalues of the distances before a
+    correction, which :func:`do_pcoa` refuses, so it is 0 there."""
+
+    pass_stats: PassStats | None
+    """The counts of the pass that gave the distances, those of the
+    ``Distances`` given, and ``None`` for a ``Distances`` the user built."""
+
+
+@dataclass(frozen=True)
+class LingoesCorrection:
+    """Distances made Euclidean by Lingoes' correction, with how much was
+    added and how far they were from Euclidean before."""
+
+    dists: Distances
+    """The corrected distances, sqrt(d² + 2c) for every distance d of the
+    ``Distances`` given, with its names and its ``pass_stats``. They have no
+    standard errors: those of the distances given are not those of the
+    corrected ones."""
+
+    constant: float
+    """c, the absolute value of the most negative eigenvalue of the matrix
+    the analysis decomposes, in the units of a squared distance, and 0 when
+    none is negative."""
+
+    negative_eigenvalues_percent: float
+    """100 times the sum of the absolute values of the negative eigenvalues
+    over the sum of every eigenvalue, of the distances given: how large the
+    part is that no space has, 0 for Euclidean distances."""
+
+
+def do_pcoa(dists: Distances) -> PCoAResult:
+    """The principal coordinates of `dists`, Gower's method.
+
+    The individuals are put in a space where the straight line between each
+    two of them is as long as their distance, and the components are the
+    directions of that space along which they vary most, as those of
+    :func:`do_pca` are for a table. With d the distance of a pair, the
+    matrix decomposed is -d²/2 centered by rows and by columns, and the
+    projections of a component are its eigenvector times the square root of
+    its eigenvalue. It is what R's ``cmdscale`` and ``pcoa`` of the package
+    ape compute, and of distances between the rows of a centered table it
+    gives the projections of :func:`do_pca` of that table not standardized.
+
+    Distances are Euclidean when some space has points at them, and then no
+    eigenvalue is negative. The Kosman distances need not be, and distances
+    that are not are a ``ValueError`` that says how many eigenvalues are
+    negative and what share of the sum of all of them, and that
+    :func:`correct_dists_by_lingoes` makes them Euclidean: ``do_pcoa`` of its
+    ``dists`` is the analysis of the corrected distances.
+
+    A pair with no distance, a NaN, is a ``ValueError`` that says how many
+    there are, names the first and the individual in the most of them, since
+    every individual is placed by its distance to every other. So are a
+    distance that is negative or infinite, fewer than 2 individuals, and
+    distances that are all 0. What is not a ``Distances`` is a
+    ``TypeError``.
+
+    It is pyNei's ``do_pcoa``, which gives all n components: those of the
+    negative eigenvalues with a negative percentage and the one of the
+    eigenvalue 0 of the centering with projections of rounding, a negative
+    distance squared as if it were positive, and the sign of each component
+    as the decomposition left it. Of Euclidean distances pyNei's first n - 1
+    components are these.
+    """
+    _refuse_what_is_not_a_distances(dists, "do_pcoa")
+    try:
+        projections, percent, lingoes_constant, negative_percent = _core.pcoa(
+            dists.dist_vector, len(dists.names)
+        )
+    except _core.PcoaPairsWithNoDistance as error:
+        raise ValueError(_the_pairs_with_no_distance(error, dists.names)) from None
+    names = _component_names(projections.shape[1])
+    # `copy=False` on both, for the reason `do_pca` gives: the arrays come
+    # straight from the core crate and only the frames outlive this call.
+    return PCoAResult(
+        projections=pandas.DataFrame(
+            projections, index=list(dists.names), columns=names, copy=False
+        ),
+        explained_variance_percent=pandas.Series(percent, index=names, copy=False),
+        lingoes_constant=lingoes_constant,
+        negative_eigenvalues_percent=negative_percent,
+        pass_stats=dists.pass_stats,
+    )
+
+
+def correct_dists_by_lingoes(dists: Distances) -> LingoesCorrection:
+    """`dists` made Euclidean by Lingoes' correction.
+
+    It adds 2c to the square of every distance, c being the absolute value of
+    the most negative eigenvalue of the matrix :func:`do_pcoa` decomposes,
+    which is ape's ``pcoa(d, correction = "lingoes")`` of R (Lingoes 1971).
+    The corrected distances have the eigenvectors of the ones given, and
+    every eigenvalue but the 0 of the centering is c larger, so the most
+    negative becomes 0 and none is below it. Distances that are Euclidean
+    already give a constant of 0 and the same distances.
+
+    The correction pushes every pair apart by the same amount of squared
+    distance, which moves the nearest pairs the most, so the result carries
+    c and the share of the negative eigenvalues before it, for a user to
+    judge how much the picture was changed by.
+
+    It refuses what :func:`do_pcoa` refuses but distances that are not
+    Euclidean. Distances of a size near 1e200, or all near 1e-200, give a
+    constant beyond a float64, an infinity or 0, which is a ``ValueError``
+    that says to divide them by a number near the largest first.
+
+    pyNei has no correction.
+    """
+    _refuse_what_is_not_a_distances(dists, "correct_dists_by_lingoes")
+    try:
+        dist_vector, constant, negative_percent = _core.correct_dists_by_lingoes(
+            dists.dist_vector, len(dists.names)
+        )
+    except _core.PcoaPairsWithNoDistance as error:
+        raise ValueError(_the_pairs_with_no_distance(error, dists.names)) from None
+    return LingoesCorrection(
+        dists=Distances(
+            dist_vector=dist_vector, names=dists.names, pass_stats=dists.pass_stats
+        ),
+        constant=constant,
+        negative_eigenvalues_percent=negative_percent,
+    )
+
+
+def _refuse_what_is_not_a_distances(dists: object, function: str) -> None:
+    """A `dists` that is not a :class:`popnei.Distances`, refused.
+
+    # Raises
+
+    ``TypeError`` that names `function` and says how to build a
+    ``Distances`` from the square frame, which is what a user of pyNei's
+    ``square_dists`` has at hand.
+    """
+    if not isinstance(dists, Distances):
+        raise TypeError(
+            f"`dists` is of the type `{type(dists).__name__}`, and `{function}` "
+            f"takes a `Distances`, what `calc_pairwise_kosman_dists` gives: "
+            f"build one from a square frame of distances with "
+            f"`Distances.from_square_dists`, or from the distances of the pairs "
+            f"with `Distances(dist_vector, names=...)`"
+        )
+
+
+def _the_pairs_with_no_distance(of_the_core: BaseException, names: tuple) -> str:
+    """What a user is told of the pairs of a ``Distances`` with no distance.
+
+    The core names the individuals by their position in the order of the
+    distances, which is where the names of the ``Distances`` are read, and
+    says the counts.
+    """
+    (
+        _,
+        num_pairs_with_no_distance,
+        num_pairs,
+        first,
+        second,
+        most_often,
+        most_often_count,
+    ) = of_the_core.args
+    return (
+        f"{num_pairs_with_no_distance} of the {num_pairs} pairs of individuals "
+        f"have no distance, the first of them {names[first]!r} and "
+        f"{names[second]!r}, and {names[most_often]!r} is in {most_often_count} "
+        f"of them; a principal coordinate analysis places every individual by "
+        f"its distance to every other, so each of those pairs has to be given a "
+        f"distance or one of its two individuals taken out of the distances"
     )
 
 
