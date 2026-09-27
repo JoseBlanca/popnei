@@ -126,7 +126,12 @@ impl<W: Write> BgzipOut<W> {
         if !self.waiting.is_empty() {
             let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
             let mut member = Vec::new();
-            compress_a_member(&mut compress, &[&self.waiting], &mut member)?;
+            compress_a_member(
+                &mut compress,
+                &mut Vec::new(),
+                &[&self.waiting],
+                &mut member,
+            )?;
             self.sink.write_all(&member).map_err(not_written)?;
         }
         self.sink
@@ -185,8 +190,11 @@ fn compress_the_members(texts: &[TextOfAMember<'_>], members: &mut [Vec<u8>]) ->
         .par_iter()
         .zip(members.par_iter_mut())
         .try_for_each_init(
-            || Compress::new(Compression::new(COMPRESSION_LEVEL), false),
-            |compress, (text, member)| compress_a_member(compress, text, member),
+            || {
+                let compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
+                (compress, Vec::new())
+            },
+            |(compress, joined), (text, member)| compress_a_member(compress, joined, text, member),
         )
 }
 
@@ -199,8 +207,9 @@ fn compress_the_members(texts: &[TextOfAMember<'_>], members: &mut [Vec<u8>]) ->
 #[cfg(target_family = "wasm")]
 fn compress_the_members(texts: &[TextOfAMember<'_>], members: &mut [Vec<u8>]) -> Result<()> {
     let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
+    let mut joined = Vec::new();
     for (text, member) in texts.iter().zip(members.iter_mut()) {
-        compress_a_member(&mut compress, text, member)?;
+        compress_a_member(&mut compress, &mut joined, text, member)?;
     }
     Ok(())
 }
@@ -214,7 +223,8 @@ fn compress_the_members(texts: &[TextOfAMember<'_>], members: &mut [Vec<u8>]) ->
 /// than for the same text fed whole, and the pieces are where the lines of
 /// a block were formatted, so without the copy the file would depend on the
 /// size of the blocks of its source. The copy is of 65280 bytes at most, of
-/// about one member in four of `big.vcf`.
+/// about one member in four of `big.vcf`, into `joined`, a buffer the
+/// caller keeps from one member to the next.
 ///
 /// A deflate whose data do not fit the member, or whose stream did not end,
 /// gives a member in which the writer stores the text as it is, one stored
@@ -230,6 +240,7 @@ fn compress_the_members(texts: &[TextOfAMember<'_>], members: &mut [Vec<u8>]) ->
 /// caller.
 fn compress_a_member(
     compress: &mut Compress,
+    joined: &mut Vec<u8>,
     pieces: &[&[u8]],
     member: &mut Vec<u8>,
 ) -> Result<()> {
@@ -248,13 +259,15 @@ fn compress_a_member(
     member.reserve(MOST_BYTES_OF_A_MEMBER);
     member.extend_from_slice(&HEADER_BEFORE_THE_SIZE);
     member.extend_from_slice(&[0, 0]);
-    let joined: Vec<u8>;
     let text: &[u8] = match pieces {
         [] => &[],
         [whole] => whole,
         _ => {
-            joined = pieces.concat();
-            &joined
+            joined.clear();
+            for piece in pieces {
+                joined.extend_from_slice(piece);
+            }
+            joined
         }
     };
     compress.reset();
@@ -353,14 +366,16 @@ mod tests {
 
     use super::{
         BYTES_OF_THE_HEADER, COMPRESSION_LEVEL, HEADER_BEFORE_THE_SIZE, MOST_BYTES_OF_A_MEMBER,
-        TEXT_OF_A_MEMBER, compress_a_member, end_the_member, members_of, store, the_deflate_fits,
+        TEXT_OF_A_MEMBER, THE_LAST_STORED_BLOCK, compress_a_member, end_the_member, members_of,
+        store, the_deflate_fits,
     };
 
     /// The member of `text`, and the text it decompresses to.
     fn member_and_text(text: &[u8]) -> (Vec<u8>, Vec<u8>) {
         let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
         let mut member = Vec::new();
-        compress_a_member(&mut compress, &[text], &mut member).expect("the member");
+        compress_a_member(&mut compress, &mut Vec::new(), &[text], &mut member)
+            .expect("the member");
         let mut back = Vec::new();
         MultiGzDecoder::new(&member[..])
             .read_to_end(&mut back)
@@ -387,6 +402,11 @@ mod tests {
         let text = bytes_that_do_not_shrink();
         let (member, back) = member_and_text(&text);
         assert_eq!(back, text);
+        // zlib-rs's own stored blocks, 65326 bytes of member, and not the
+        // writer's one stored block, which is 65311 bytes and starts with
+        // the byte of the last stored block.
+        assert_eq!(member.len(), 65326);
+        assert_ne!(member[BYTES_OF_THE_HEADER], THE_LAST_STORED_BLOCK);
         assert!(member.len() <= MOST_BYTES_OF_A_MEMBER, "{}", member.len());
         let size = usize::from(u16::from_le_bytes([member[16], member[17]])) + 1;
         assert_eq!(size, member.len());
@@ -433,7 +453,7 @@ mod tests {
         let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
         let mut member = Vec::new();
         let text = vec![b'a'; TEXT_OF_A_MEMBER + 1];
-        match compress_a_member(&mut compress, &[&text], &mut member) {
+        match compress_a_member(&mut compress, &mut Vec::new(), &[&text], &mut member) {
             Err(Error::VcfWriterMemberNotBuilt { what, found, most }) => {
                 assert_eq!((what, found, most), ("text", 65281, 65280));
             }
@@ -465,7 +485,8 @@ mod tests {
         let pieces: [&[u8]; 3] = [b"chr1\t100\t", b"", b"rs1\tA\tT\n"];
         let mut compress = Compress::new(Compression::new(COMPRESSION_LEVEL), false);
         let mut member = Vec::new();
-        compress_a_member(&mut compress, &pieces, &mut member).expect("the member");
+        compress_a_member(&mut compress, &mut Vec::new(), &pieces, &mut member)
+            .expect("the member");
         let mut back = Vec::new();
         MultiGzDecoder::new(&member[..])
             .read_to_end(&mut back)

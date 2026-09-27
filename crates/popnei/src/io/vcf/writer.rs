@@ -800,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn write_vcf_of_many_vcf_in_blocks_of_7_and_of_the_default_gives_its_bytes_on_any_threads() {
+    fn write_vcf_of_many_vcf_gives_its_bytes_on_any_threads_and_in_blocks_of_any_size() {
         let many = text_of("many.vcf");
         let mut one_thread_bytes: Option<Vec<u8>> = None;
         for num_vars_per_block in [Some(7), None] {
@@ -823,8 +823,9 @@ mod tests {
                 };
                 assert_eq!(text, many, "blocks of {num_vars_per_block:?}");
                 assert_eq!(num_vars, 500);
-                // The bytes of the members do not depend on the threads
-                // that compressed them.
+                // The bytes of the members depend neither on the threads
+                // that compressed them nor on the size of the blocks, which
+                // cuts the text of a member into other pieces.
                 let first = one_thread_bytes.get_or_insert_with(|| bytes.clone());
                 assert_eq!(*first, bytes);
             }

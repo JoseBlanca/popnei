@@ -137,7 +137,7 @@ libm = "0.2"
 # features being off leaves out of the build. The VCF writer bgzips
 # `big.vcf` at level 6 on one thread in 5.5 s with zlib-rs and took 10.7 s
 # with miniz_oxide, against the 8.8 s of bcftools, and the bgzipped read of
-# that file on one thread takes 0.75 s with zlib-rs and 0.83 s with
+# that file on one thread takes 0.76 s with zlib-rs and 0.83 s with
 # miniz_oxide. The owner chose zlib-rs on 27 September 2026, and the
 # numbers are in "Speed" of docs/specs/io_vcf.md.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
