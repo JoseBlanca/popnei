@@ -649,9 +649,15 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // one of `do_pcoa_from_variants` with `correct_by_lingoes` that no
         // argument gives: no eigenvalue 0 for the centering, which every
         // matrix of the analysis has, found by the correction that keeps it
-        // at 0.
+        // at 0. And the three more that no input has reached, which the core
+        // tests on decompositions built by hand: eigenvectors that are not of
+        // the individuals, a band of the eigenvalue 0 without the vector of
+        // ones, and a component along it.
         | popnei::Error::PcoaDistVectorOfAnotherSize { .. }
         | popnei::Error::PcoaNoEigenvalueOfTheCentering { .. }
+        | popnei::Error::PcoaEigenvectorsOfAnotherSize { .. }
+        | popnei::Error::PcoaBandWithoutTheVectorOfOnes { .. }
+        | popnei::Error::PcoaComponentAlongTheVectorOfOnes { .. }
         | popnei::Error::PcoaLinalg { .. } => {
             PyRuntimeError::new_err(what_a_user_reads(&error, message, path))
         }

@@ -584,3 +584,34 @@ def test_a_pair_called_together_at_no_variant_is_not_sent_to_min_num_snps(
     assert "'i0' and 'i1'" in said, said
     assert "called together at no variant" in said, said
     assert "min_num_snps" not in said, said
+
+
+def write_vcf(path: Path, names: list[str], lines: list[list[str]]) -> Path:
+    """A VCF at `path` of the diploid individuals `names` whose data lines
+    are `lines`, each the genotypes of one variant."""
+    header = [
+        "##fileformat=VCFv4.2",
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(names),
+    ]
+    body = [
+        f"1\t{at + 1}\tv{at}\tA\tC\t.\t.\t.\tGT\t" + "\t".join(genotypes)
+        for at, genotypes in enumerate(lines)
+    ]
+    path.write_text("\n".join(header + body) + "\n")
+    return path
+
+
+def test_a_pass_that_gives_no_variant_is_refused(tmp_path):
+    vcf = write_vcf(tmp_path / "none.vcf", ["i0", "i1", "i2"], [])
+    with pytest.raises(ValueError, match="the pass gave no variant"):
+        do_pcoa_from_variants(open_vcf(vcf))
+
+
+def test_variants_whose_distances_are_all_zero_are_refused(tmp_path):
+    vcf = write_vcf(
+        tmp_path / "one_point.vcf",
+        ["i0", "i1", "i2"],
+        [["0/1", "0/1", "0/1"], ["1/1", "1/1", "1/1"]],
+    )
+    with pytest.raises(ValueError, match="every distance is 0"):
+        do_pcoa_from_variants(open_vcf(vcf))

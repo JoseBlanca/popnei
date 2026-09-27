@@ -522,10 +522,10 @@ test("the counts of a filter of the panel are those the Kosman distances give ov
   const maf = result.passStats.filtering.maf;
   assert.ok(maf !== undefined, "the counts of the filter are there");
   assert.equal(maf.varsProcessed, PANEL_NUM_VARS);
-  // The filter took some variants out, or the counts would say nothing a
-  // pass without it does not.
-  assert.ok(maf.varsKept < PANEL_NUM_VARS, `it kept ${maf.varsKept}`);
-  assert.equal(result.passStats.numVars, maf.varsKept);
+  // pyNei's `filter_by_maf` at 0.9 keeps 1102 of the 1200 variants of the
+  // panel as well.
+  assert.equal(maf.varsKept, 1102);
+  assert.equal(result.passStats.numVars, 1102);
 });
 
 test("filterIndividuals gives the kept individuals, in their order, at the numbers of the corrected distances", () => {
@@ -653,4 +653,55 @@ test("the options of doPcoaFromVariants are checked before the source is read", 
   } finally {
     variants.free();
   }
+});
+
+/**
+ * A VCF of the diploid individuals `names` whose data lines are `lines`,
+ * each the genotypes of one variant.
+ */
+function vcfOf(names: string[], lines: string[][]): Uint8Array {
+  return new TextEncoder().encode(
+    [
+      "##fileformat=VCFv4.2",
+      `#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t${names.join("\t")}`,
+      ...lines.map(
+        (genotypes, at) => `1\t${at + 1}\tv${at}\tA\tC\t.\t.\t.\tGT\t${genotypes.join("\t")}`,
+      ),
+      "",
+    ].join("\n"),
+  );
+}
+
+/** doPcoaFromVariants of the VCF `vcf`, with no steps. */
+function pcoaOfTheVcf(vcf: Uint8Array): ReturnType<typeof doPcoaFromVariants> {
+  const variants = openVcf(vcf);
+  try {
+    return doPcoaFromVariants(variants);
+  } finally {
+    variants.free();
+  }
+}
+
+test("a pass that gives no variant, distances that are all 0 and one individual are refused from the variants", () => {
+  assert.throws(
+    () => pcoaOfTheVcf(vcfOf(["i0", "i1", "i2"], [])),
+    /the pass gave no variant/,
+  );
+  assert.throws(
+    () =>
+      pcoaOfTheVcf(
+        vcfOf(
+          ["i0", "i1", "i2"],
+          [
+            ["0/1", "0/1", "0/1"],
+            ["1/1", "1/1", "1/1"],
+          ],
+        ),
+      ),
+    /every distance is 0, so the individuals are all at one point and there is nothing to do a PCoA with$/,
+  );
+  assert.throws(
+    () => pcoaOfTheVcf(vcfOf(["i0"], [["0/1"], ["1/1"]])),
+    /there is 1 individual, and a principal coordinate analysis places 2 at least/,
+  );
 });
