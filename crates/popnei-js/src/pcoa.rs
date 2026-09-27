@@ -134,6 +134,14 @@ impl From<LingoesCorrection> for LingoesCorrectionOfDistances {
     }
 }
 
+/// Whether `doPcoaFromVariants` corrects distances that are not Euclidean
+/// when the caller says nothing, which is the core's default.
+#[wasm_bindgen]
+#[must_use]
+pub fn default_correct_by_lingoes() -> bool {
+    popnei::pca::DEFAULT_CORRECT_BY_LINGOES
+}
+
 /// The principal coordinates of `dist_vector`, the distance of every pair of
 /// the individuals `names` in the order (0, 1), (0, 2), ..., (1, 2), ...,
 /// with NaN for a pair that has no distance.

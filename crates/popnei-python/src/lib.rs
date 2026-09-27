@@ -133,6 +133,11 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_NUM_PRIN_COMPS: usize = popnei::pca::DEFAULT_NUM_PRIN_COMPS;
 
+    // Whether `do_pcoa_from_variants` corrects distances that are not
+    // Euclidean when the user says nothing, from the core as well.
+    #[pymodule_export]
+    const DEFAULT_CORRECT_BY_LINGOES: bool = popnei::pca::DEFAULT_CORRECT_BY_LINGOES;
+
     // Whether a mixed model of `calc_gwas` stands in for the denominator of
     // its test with the GRAMMAR-Gamma approximation when the user says
     // nothing. It is the exact denominator, since the approximation gives up

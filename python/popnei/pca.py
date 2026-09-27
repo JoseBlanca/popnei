@@ -406,7 +406,7 @@ def do_pcoa(dists: Distances) -> PCoAResult:
 def do_pcoa_from_variants(
     variants: Variants,
     min_num_snps: int | None = None,
-    correct_by_lingoes: bool = False,
+    correct_by_lingoes: bool = _core.DEFAULT_CORRECT_BY_LINGOES,
 ) -> PCoAResult:
     """The principal coordinates of the Kosman distances of the individuals
     of `variants`.

@@ -218,6 +218,13 @@ pub fn correct_dists_by_lingoes(
     })
 }
 
+/// Whether the principal coordinates of the variants correct distances that
+/// are not Euclidean by Lingoes when the caller says nothing: false, so
+/// that such distances are refused with a message that names the
+/// correction and a user decides whether to apply it, which the owner
+/// decided on 27 September 2026.
+pub const DEFAULT_CORRECT_BY_LINGOES: bool = false;
+
 /// What the principal coordinates of the variants are asked for.
 #[derive(Debug, Clone, Copy)]
 pub struct VariantPcoaOptions {

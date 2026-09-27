@@ -528,3 +528,18 @@ def test_one_individual_is_refused_before_the_pass():
     with pytest.raises(ValueError, match="there is 1 individual, and") as refused:
         do_pcoa_from_variants(variants)
     assert str(refused.value).startswith(f"{PANEL_VCF}: ")
+
+
+def test_the_correction_of_the_variants_is_off_by_default_as_the_core_says():
+    # The owner decided on 27 September 2026 that distances that are not
+    # Euclidean are refused unless the user asks for the correction, and the
+    # default is the core's constant.
+    import inspect
+
+    default = (
+        inspect.signature(do_pcoa_from_variants)
+        .parameters["correct_by_lingoes"]
+        .default
+    )
+    assert default is _core.DEFAULT_CORRECT_BY_LINGOES
+    assert _core.DEFAULT_CORRECT_BY_LINGOES is False

@@ -27,6 +27,7 @@
 
 import {
   correct_dists_by_lingoes as correctDistsByLingoesOfTheCore,
+  default_correct_by_lingoes as defaultCorrectByLingoes,
   pcoa as pcoaOfTheCore,
   room_for_the_principal_coordinates_of as roomForThePrincipalCoordinatesOf,
 } from "../wasm/popnei.js";
@@ -367,7 +368,7 @@ export function doPcoaFromVariants(
       : wholeNumberOfZeroOrMore("minNumSnps", options.minNumSnps);
   const correctByLingoes =
     options.correctByLingoes === undefined
-      ? false
+      ? defaultCorrectByLingoes()
       : aBoolean("correctByLingoes", options.correctByLingoes);
   // The names are read before the call: the pass gives the individuals the
   // steps say, and nothing of the run changes them.
