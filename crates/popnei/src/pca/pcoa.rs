@@ -112,7 +112,12 @@ pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa> {
     refuse_a_vector_that_cannot_be_analysed(&dist_vector, num_individuals)?;
     let dists = || the_distances_of_the_vector(&dist_vector);
     let largest = the_largest_distance(dists, num_individuals, PcoaInput::Distances)?;
-    let centered = the_centered_matrix(dists(), num_individuals, largest)?;
+    let centered = the_centered_matrix(
+        the_matrix_of(num_individuals)?,
+        dists(),
+        num_individuals,
+        largest,
+    );
     drop(dist_vector);
     the_analysis_of(
         centered,
@@ -168,7 +173,12 @@ pub fn correct_dists_by_lingoes(
     refuse_a_vector_that_cannot_be_analysed(&dist_vector, num_individuals)?;
     let dists = || the_distances_of_the_vector(&dist_vector);
     let largest = the_largest_distance(dists, num_individuals, PcoaInput::Distances)?;
-    let centered = the_centered_matrix(dists(), num_individuals, largest)?;
+    let centered = the_centered_matrix(
+        the_matrix_of(num_individuals)?,
+        dists(),
+        num_individuals,
+        largest,
+    );
     let decomposed = the_decomposition_of(centered, num_individuals)?;
     if decomposed.num_negative == 0 {
         return Ok(LingoesCorrection {
@@ -258,11 +268,16 @@ pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
     let num_individuals = reader.individuals().len();
     refuse_too_many_individuals(num_individuals)?;
     refuse_too_few_individuals(num_individuals)?;
+    // B is asked of the machine before the pass, so that the sums, asked
+    // for after it, lie above it in the memory of wasm and their room is
+    // free again at the top when they are given back, and so that a B the
+    // machine cannot hold is refused before the variants are read.
+    let matrix = the_matrix_of(num_individuals)?;
     let sums = calc_kosman_sums(reader)?;
     let num_vars = sums.num_vars();
     let dists = || sums.dists(options.min_num_vars);
     let largest = the_largest_distance(dists, num_individuals, PcoaInput::Variants)?;
-    let centered = the_centered_matrix(dists(), num_individuals, largest)?;
+    let centered = the_centered_matrix(matrix, dists(), num_individuals, largest);
     drop(sums);
     let when_not_euclidean = if options.correct_by_lingoes {
         WhenNotEuclidean::Correct
@@ -706,6 +721,21 @@ fn refuse_a_component_along_the_vector_of_ones(
     Ok(())
 }
 
+/// The buffer of B of `num_individuals` individuals, `num_individuals` x
+/// `num_individuals` zeros.
+///
+/// # Errors
+///
+/// [`Error::PcoaNoMemory`] when the machine does not give its memory, 8
+/// bytes a cell.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the individuals are at most MAX_INDIVIDUALS_OF_THE_VARIANTS, 46340, checked before, so n x n is at most 2147395600, which a usize of 32 bits holds"
+)]
+fn the_matrix_of(num_individuals: usize) -> Result<Vec<f64>> {
+    zeros_or_no_memory(num_individuals * num_individuals, num_individuals, "matrix")
+}
+
 /// `num_values` zeros, the matrix B or the projections of `num_individuals`
 /// individuals, or the error of a machine that does not give their memory.
 ///
@@ -926,20 +956,19 @@ fn the_pairs(num_individuals: usize) -> impl Iterator<Item = (usize, usize)> {
 /// square of the largest, the percentages are the same, and the
 /// projections are the largest times those of B.
 ///
-/// # Errors
-///
-/// [`Error::PcoaNoMemory`] when the machine does not give the memory of B.
+/// `matrix` is the buffer B is written into, [`the_matrix_of`] the
+/// individuals, which the caller asks the machine for when it chooses.
 #[expect(
     clippy::arithmetic_side_effects,
-    reason = "the individuals are at most MAX_INDIVIDUALS_OF_THE_VARIANTS, 46340, checked before, so n x n is at most 2147395600, which a usize of 32 bits holds, and first + 1 and (first + 1) x n + first are below it"
+    reason = "the individuals are at most MAX_INDIVIDUALS_OF_THE_VARIANTS, 46340, checked before, so first + 1 and (first + 1) x n + first are below n x n, which a usize of 32 bits holds"
 )]
 fn the_centered_matrix(
+    mut matrix: Vec<f64>,
     dists: impl Iterator<Item = Option<f64>>,
     num_individuals: usize,
     largest: f64,
-) -> Result<Vec<f64>> {
+) -> Vec<f64> {
     let side = num_individuals;
-    let mut matrix = zeros_or_no_memory(side * side, num_individuals, "matrix")?;
     // The sum of the values of A of each row, in two parts: those at the
     // pairs where the individual is the first, which are the distances of
     // its segment of the vector, and those where it is the second.
@@ -982,7 +1011,7 @@ fn the_centered_matrix(
     // eigenvalue 0 of the centering would otherwise carry.
     let row_sums = the_row_sums_of_the_lower_half(&matrix, side);
     center_the_lower_half(&mut matrix, side, &row_sums);
-    Ok(matrix)
+    matrix
 }
 
 /// Takes from each cell of the lower half of the symmetric `matrix`, `side`
@@ -2245,8 +2274,9 @@ mod tests {
         let dists = || super::the_distances_of_the_vector(dist_vector);
         let largest = super::the_largest_distance(dists, num_individuals, PcoaInput::Variants)
             .unwrap_or_else(|error| panic!("{error}"));
-        let centered = super::the_centered_matrix(dists(), num_individuals, largest)
-            .unwrap_or_else(|error| panic!("{error}"));
+        let matrix =
+            super::the_matrix_of(num_individuals).unwrap_or_else(|error| panic!("{error}"));
+        let centered = super::the_centered_matrix(matrix, dists(), num_individuals, largest);
         super::the_analysis_of(
             centered,
             num_individuals,
