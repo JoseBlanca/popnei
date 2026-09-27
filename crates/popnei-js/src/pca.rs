@@ -313,7 +313,7 @@ const MEMORY_OF_A_WASM_MODULE: u64 = 4 * 1024 * 1024 * 1024;
 /// individuals ran, 9415 ended the module with `RuntimeError: unreachable`
 /// after 173 ms, and 9415 individuals have a matrix of 709137800 bytes, of
 /// which 4 GiB is 6.05. So the analysis holds about 6 times its matrix, and
-/// popnei counts 6.1 of them, which takes 9381 of a side at most, 29 below
+/// popnei counts 6.1 of them, which takes 9381 of a side at most, 34 below
 /// the smallest number that trapped. A table is decomposed by the same code
 /// of the same library over the same matrix, so the same count holds for the
 /// smaller of its two sides.
