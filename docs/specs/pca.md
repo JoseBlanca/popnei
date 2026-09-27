@@ -785,10 +785,27 @@ individuals placed at their distances. The percentages add up to 100.
 When the distances are the straight line distances between the rows of a
 centered table, B is that table times its transpose, and the projections
 are those of the PCA of the table not standardized. The sign of "The sign"
-and the threshold of "A component with no variance is not given" hold
-here as they do there, with n the individuals: an eigenvalue is positive
-when it is above λ_1 x n x 2.2e-16, negative when it is below minus that,
-and 0 in between, and the components are those of the positive ones.
+holds here as it does there. An eigenvalue is positive when it is above
+
+    n x 2.2e-16 x (sum of |λ| of B)
+
+negative when it is below minus that, and 0 in between, and the
+components are those of the positive ones. B is centered twice: after the
+first centering its rows and columns are centered again, which takes out
+what the rounding of the first left in their means.
+
+The threshold is not the PCA's, λ_1 x n x 2.2e-16, because the review of
+the code on 27 September 2026 found that one too narrow for B. Each cell
+of B carries the rounding of its centering, and the eigenvalue 0 that the
+centering leaves, and the one that Lingoes' correction brings to 0, came
+out beyond λ_1 x n x 2.2e-16 on either side: of 20 Euclidean matrices of
+500 random points in 3000 dimensions, 4 were refused as not Euclidean and
+7 got a 500th component of rounding, and 7 of 40 random matrices of 100
+individuals, corrected by `correct_dists_by_lingoes`, were refused by
+`do_pcoa`, whose message then named the correction the user had just
+applied. The sum of |λ| is λ_1 at least and n x λ_1 at most, so the
+threshold is at most n² x 2.2e-16 x λ_1, 2.2e-8 of λ_1 at 10000
+individuals: a component smaller than that is not given.
 
 **A matrix that is not Euclidean is refused.** A matrix of distances is
 Euclidean when some space has points whose straight line distances are
@@ -995,9 +1012,12 @@ it does for `transform_to_biallelic`.
   apart.
 - A constant of Lingoes' correction beyond an `f64`, from
   `correct_dists_by_lingoes`: c is of the size of the squared distances,
-  so distances near 1e200 give an infinite c and distances near 1e-200 a c
-  of 0 that would read as no correction. The message gives the largest
-  distance and says to divide the distances by a number near it first.
+  and it is refused when it is above the largest `f64`, 1.8e308, or below
+  the smallest normal one, 2.2e-308, where it would keep only a few
+  significant digits or read as no correction; distances of about 1.3e154
+  and above reach the first, and distances all below about 1e-154 the
+  second. The message gives the largest distance, written with an
+  exponent, and says to divide the distances by a number near it first.
 - Fewer than two individuals, from the three functions: with one there
   is no distance to place. `do_pcoa_from_variants` refuses it before the
   pass, after the two limits below.
@@ -1119,12 +1139,12 @@ as `Relative_eig`, each eigenvalue over the sum of all of them; and
 `pcoa(d, correction = "lingoes")`, which gives the constant, the
 components of the corrected matrix as `vectors.cor` and their share as
 `Rel_corr_eig`. `tests/reference/pca/pcoa_reference.R`, run as its header
-says, writes those of four matrices with the sign rule into
+says, writes those of five matrices with the sign rule into
 `*.pcoa.r.*.tsv` and `*.lingoes.r.*.tsv` beside it, with 15 significant
 digits. The literals are compared within 1e-9, as in the PCA. ape counts
 an eigenvalue as positive above 1.5e-8, the square root of the machine
-epsilon, and popnei above λ_1 x n x 2.2e-16, so the two give the same
-components on these four matrices, whose smallest positive eigenvalue is
+epsilon, and popnei above n x 2.2e-16 x (sum of |λ| of B), so the two
+give the same components on these five matrices, whose smallest positive eigenvalue is
 8.2e-5 on the panel, and could differ on distances of a much smaller
 size.
 

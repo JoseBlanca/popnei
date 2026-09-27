@@ -4,7 +4,7 @@
 #
 #     Rscript tests/reference/pca/pcoa_reference.R tests/reference/pca
 #
-# The four matrices:
+# The five matrices:
 #
 # - small, the ten distances of five individuals of test_pcoa of pyNei's
 #   test/test_pca.py, which are not Euclidean: one eigenvalue is negative.
