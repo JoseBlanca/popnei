@@ -248,9 +248,6 @@ pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
     let num_individuals = reader.individuals().len();
     refuse_too_many_individuals(num_individuals)?;
     refuse_too_few_individuals(num_individuals)?;
-    if options.correct_by_lingoes {
-        return Err(Error::PcoaCorrectionNotBuilt);
-    }
     let sums = calc_kosman_sums(reader)?;
     let num_vars = sums.num_vars();
     let dists = || sums.dists(options.min_num_vars);
@@ -258,7 +255,13 @@ pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
     let centered = the_centered_matrix(dists(), num_individuals, largest)?;
     drop(sums);
     let decomposed = the_decomposition_of(centered, num_individuals)?;
-    if decomposed.num_negative > 0 {
+    if decomposed.num_negative == 0 {
+        return Ok(PcoaOfVariants {
+            pcoa: the_components_of(&decomposed, num_individuals, largest)?,
+            num_vars,
+        });
+    }
+    if !options.correct_by_lingoes {
         return Err(Error::PcoaNotEuclidean {
             num_negative: decomposed.num_negative,
             num_individuals,
@@ -266,10 +269,177 @@ pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
             from: PcoaInput::Variants,
         });
     }
-    Ok(PcoaOfVariants {
-        pcoa: the_components_of(&decomposed, num_individuals, largest)?,
-        num_vars,
-    })
+    let negative_eigenvalues_percent = decomposed.negative_eigenvalues_percent;
+    let (corrected, constant_of_the_scaled) =
+        corrected_by_lingoes(decomposed.eigen, num_individuals)?;
+    // The Kosman distances are at most 1, so c is an f64 whatever the
+    // dataset; it is looked at all the same, as `correct_dists_by_lingoes`
+    // does, since a c that is not a normal f64 would be a number with few
+    // of its digits or one that reads as no correction.
+    let lingoes_constant = constant_of_the_scaled * largest * largest;
+    if !lingoes_constant.is_normal() {
+        return Err(Error::PcoaLingoesConstantOutOfRange { largest });
+    }
+    let mut pcoa = the_components_of(&corrected, num_individuals, largest)?;
+    pcoa.lingoes_constant = lingoes_constant;
+    pcoa.negative_eigenvalues_percent = negative_eigenvalues_percent;
+    Ok(PcoaOfVariants { pcoa, num_vars })
+}
+
+/// The decomposition of the B of the distances corrected by Lingoes, from
+/// the decomposition `eigen` of the B of the distances, and c.
+///
+/// The corrected B is B + cJ, J being the centering matrix, so it has the
+/// eigenvectors of B, and every eigenvalue but the 0 of the centering is c
+/// larger: the most negative becomes 0 and the others are above it. The
+/// eigenvector of the 0 of the centering is the vector of ones, which a
+/// decomposition tells apart from the others only when the eigenvalue 0 has
+/// no other eigenvector: two clones, individuals at distance 0 from each
+/// other and at the same distance from every other individual, give a
+/// second one, and the decomposition may give any two directions of the
+/// plane of the two. So the eigenvectors whose eigenvalues are 0 within
+/// [`the_threshold_of_the_eigenvalues`] are projected orthogonal to the
+/// vector of ones and made orthonormal again, which leaves one fewer, and
+/// those take the eigenvalue c; the vector of ones takes the place of the
+/// one left over, with the eigenvalue 0, at the end.
+///
+/// The eigenvalues come back from the largest, as `eigen` has them.
+///
+/// # Errors
+///
+/// [`Error::PcoaNoEigenvalueOfTheCentering`] when no eigenvalue of B is 0
+/// within the threshold, which the centering always gives and which is
+/// then a defect of popnei.
+fn corrected_by_lingoes(mut eigen: Eigen, num_individuals: usize) -> Result<(Decomposed, f64)> {
+    let side = num_individuals;
+    let threshold = the_threshold_of_the_eigenvalues(&eigen.values, side);
+    let constant = eigen
+        .values
+        .last()
+        .map_or(0.0, |most_negative| most_negative.abs());
+    // The eigenvalues come from the largest, so those that are 0 within
+    // the threshold are one run of them.
+    let band_start = eigen
+        .values
+        .iter()
+        .take_while(|value| **value > threshold)
+        .count();
+    let band_size = eigen
+        .values
+        .iter()
+        .skip(band_start)
+        .take_while(|value| value.abs() <= threshold)
+        .count();
+    if band_size == 0 {
+        return Err(Error::PcoaNoEigenvalueOfTheCentering {
+            num_individuals,
+            threshold,
+        });
+    }
+    let band_end = band_start.saturating_add(band_size);
+    let band_values = band_start
+        .checked_mul(side)
+        .zip(band_end.checked_mul(side))
+        .and_then(|(from, to)| eigen.vectors.get_mut(from..to))
+        .ok_or(Error::PcoaNoEigenvalueOfTheCentering {
+            num_individuals,
+            threshold,
+        })?;
+    orthogonal_to_the_vector_of_ones(band_values, side);
+    for (at, value) in eigen.values.iter_mut().enumerate() {
+        *value = if at < band_start || at >= band_end {
+            *value + constant
+        } else if at.saturating_add(1) < band_end {
+            constant
+        } else {
+            0.0
+        };
+    }
+    // The vector of ones, of the eigenvalue 0, goes after the eigenvalues
+    // of B that were negative and are now c larger, 0 and above: one row
+    // of the vectors and one value from the last of the band to the end.
+    let last_of_the_band = band_end.saturating_sub(1);
+    if let Some(values) = eigen.values.get_mut(last_of_the_band..) {
+        values.rotate_left(1);
+    }
+    if let Some(vectors) = last_of_the_band
+        .checked_mul(side)
+        .and_then(|from| eigen.vectors.get_mut(from..))
+    {
+        vectors.rotate_left(side);
+    }
+    let corrected_threshold = the_threshold_of_the_eigenvalues(&eigen.values, side);
+    let num_positive = eigen
+        .values
+        .iter()
+        .take_while(|value| **value > corrected_threshold)
+        .count();
+    Ok((
+        Decomposed {
+            eigen,
+            num_positive,
+            num_negative: 0,
+            negative_eigenvalues_percent: 0.0,
+        },
+        constant,
+    ))
+}
+
+/// Makes the rows of `vectors`, each of `side` values, eigenvectors of
+/// the corrected B: each is projected orthogonal to the vector of ones,
+/// the mean of its values taken from it, and they are made orthonormal
+/// again, which leaves one fewer. The first rows are the orthonormal ones
+/// and the last is the vector of ones over the square root of `side`, of
+/// length 1.
+///
+/// They are made orthonormal by Gram-Schmidt with the longest of the rows
+/// left taken first, each twice, which keeps them at right angles to the
+/// rounding: the row left over is the one of length about 0, whatever row
+/// the decomposition put the vector of ones in.
+fn orthogonal_to_the_vector_of_ones(vectors: &mut [f64], side: usize) {
+    let mut rows: Vec<Vec<f64>> = vectors.chunks_exact(side).map(<[f64]>::to_vec).collect();
+    for row in &mut rows {
+        let mean = row.iter().sum::<f64>() / side as f64;
+        for value in row.iter_mut() {
+            *value -= mean;
+        }
+    }
+    let num_orthonormal = rows.len().saturating_sub(1);
+    for done in 0..num_orthonormal {
+        let longest = rows
+            .iter()
+            .enumerate()
+            .skip(done)
+            .max_by(|(_, one), (_, other)| length_of(one).total_cmp(&length_of(other)))
+            .map_or(done, |(at, _)| at);
+        rows.swap(done, longest);
+        let (made, left) = rows.split_at_mut(done.saturating_add(1));
+        let Some(row) = made.last_mut() else { continue };
+        let length = length_of(row);
+        for value in row.iter_mut() {
+            *value /= length;
+        }
+        for _ in 0..2 {
+            for other in left.iter_mut() {
+                let along: f64 = other.iter().zip(row.iter()).map(|(a, b)| a * b).sum();
+                for (value, of_the_row) in other.iter_mut().zip(row.iter()) {
+                    *value -= along * of_the_row;
+                }
+            }
+        }
+    }
+    if let Some(last) = rows.last_mut() {
+        let of_the_ones = 1.0 / (side as f64).sqrt();
+        last.fill(of_the_ones);
+    }
+    for (target, row) in vectors.chunks_exact_mut(side).zip(&rows) {
+        target.copy_from_slice(row);
+    }
+}
+
+/// The length of a vector, the square root of the sum of its squares.
+fn length_of(vector: &[f64]) -> f64 {
+    vector.iter().map(|value| value * value).sum::<f64>().sqrt()
 }
 
 /// The eigendecomposition of B, with how many of its eigenvalues are
@@ -1768,18 +1938,125 @@ mod tests {
         }
     }
 
-    /// The correction inside the analysis is not built yet, and asking for
-    /// it is an error before the pass, not a result without it.
+    /// The options of the analysis of the variants with the correction.
+    const CORRECTED: VariantPcoaOptions = VariantPcoaOptions {
+        min_num_vars: 0,
+        correct_by_lingoes: true,
+    };
+
+    /// The panel corrected inside the analysis gives R's 198 components,
+    /// the whole of `panel.lingoes.r.*.tsv`, with the constant and the
+    /// negative part of the spec.
     #[test]
-    fn the_correction_of_the_variants_is_refused_until_it_is_built() {
-        let options = VariantPcoaOptions {
-            min_num_vars: 0,
-            correct_by_lingoes: true,
-        };
-        assert!(matches!(
-            the_pcoa_of_the_variants("dists/panel.vcf.gz", &options),
-            Err(Error::PcoaCorrectionNotBuilt)
-        ));
+    fn the_panel_corrected_gives_the_components_of_r() {
+        let result = the_pcoa_of_the_variants("dists/panel.vcf.gz", &CORRECTED)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let pcoa = &result.pcoa;
+        assert_eq!(result.num_vars, 1200);
+        assert_eq!(pcoa.num_comps, 198);
+        assert!(
+            (pcoa.lingoes_constant - 0.014182298472042).abs() <= TOLERANCE,
+            "{}",
+            pcoa.lingoes_constant
+        );
+        assert!(
+            (pcoa.negative_eigenvalues_percent - 2.98343616373556).abs() <= TOLERANCE,
+            "{}",
+            pcoa.negative_eigenvalues_percent
+        );
+        let of_r = the_column_of_r("panel.lingoes.r.constant.tsv");
+        assert!((pcoa.lingoes_constant - of_r[0]).abs() <= TOLERANCE);
+        assert!((pcoa.negative_eigenvalues_percent - of_r[1]).abs() <= TOLERANCE);
+        for (individual, expected) in [
+            (
+                0,
+                [0.0131009923566961, 0.103593034190948, -0.0461610570616341],
+            ),
+            (
+                1,
+                [0.0188069490905941, 0.102449570787996, -0.0506243303501242],
+            ),
+            (
+                199,
+                [-0.0728375733863349, -0.0163081366424616, 0.0108102147666687],
+            ),
+        ] {
+            for (component, expected) in expected.iter().enumerate() {
+                let ours = pcoa.projections[individual * 198 + component];
+                assert!(
+                    (ours - expected).abs() <= TOLERANCE,
+                    "individual {individual}, component {component}: {ours}"
+                );
+            }
+        }
+        for (ours, expected) in pcoa.explained_variance_percent.iter().zip([
+            9.62407114041929,
+            6.65101405201371,
+            1.73580899943624,
+        ]) {
+            assert!((ours - expected).abs() <= TOLERANCE, "{ours}");
+        }
+        assert_as_r(
+            pcoa,
+            &the_projections_of_r("panel.lingoes.r.projections.tsv"),
+            &the_column_of_r("panel.lingoes.r.percent.tsv"),
+            TOLERANCE,
+        );
+    }
+
+    /// The panel with a clone, `s200`, whose genotypes are those of `s000`:
+    /// its eigenvalue 0 has two eigenvectors, the vector of ones and the
+    /// direction that sets the two clones apart, which the decomposition
+    /// may give mixed. The correction gives the second the constant and
+    /// leaves the first at 0, which is R's decomposition of the corrected
+    /// matrix: 199 components, the whole of `panel_clone.lingoes.r.*.tsv`,
+    /// and on `PC155` the two clones at sqrt(2c)/2 either side of 0.
+    #[test]
+    fn the_panel_with_a_clone_corrected_gives_the_components_of_r() {
+        let result = the_pcoa_of_the_variants("pca/panel_clone.vcf.gz", &CORRECTED)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let pcoa = &result.pcoa;
+        assert_eq!(pcoa.num_comps, 199);
+        assert!(
+            (pcoa.lingoes_constant - 0.0143697121693818).abs() <= TOLERANCE,
+            "{}",
+            pcoa.lingoes_constant
+        );
+        assert!(
+            (pcoa.negative_eigenvalues_percent - 2.97950453177523).abs() <= TOLERANCE,
+            "{}",
+            pcoa.negative_eigenvalues_percent
+        );
+        let first = pcoa.projections[155];
+        let clone = pcoa.projections[200 * 199 + 155];
+        assert!((first - 0.0847635303930356).abs() <= TOLERANCE, "{first}");
+        assert!((clone + 0.0847635303930342).abs() <= TOLERANCE, "{clone}");
+        assert_as_r(
+            pcoa,
+            &the_projections_of_r("panel_clone.lingoes.r.projections.tsv"),
+            &the_column_of_r("panel_clone.lingoes.r.percent.tsv"),
+            TOLERANCE,
+        );
+    }
+
+    /// A Euclidean matrix asked to be corrected is not: the constant is 0,
+    /// and the result is that of the analysis without the correction.
+    #[test]
+    fn the_variants_of_four_alleles_corrected_are_not_changed() {
+        let result = the_pcoa_of_the_variants("dists/four_alleles.vcf.gz", &CORRECTED)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(result.pcoa.num_comps, 39);
+        assert_eq!(result.pcoa.lingoes_constant.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            result.pcoa.negative_eigenvalues_percent.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_as_r(
+            &result.pcoa,
+            &the_projections_of_r("four_alleles.pcoa.r.projections.tsv"),
+            &the_column_of_r("four_alleles.pcoa.r.percent.tsv"),
+            TOLERANCE,
+        );
     }
 
     /// The percentage of a message has three significant digits, so a

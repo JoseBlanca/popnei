@@ -3179,13 +3179,21 @@ pub enum Error {
         what: &'static str,
     },
 
-    /// Lingoes' correction inside the principal coordinates of the variants
-    /// was asked for, and it is not built yet: task 2.2 of the plan of the
-    /// principal coordinates builds it. In Python it is a `ValueError`.
+    /// No eigenvalue of the matrix of the squared distances is 0 within the
+    /// threshold, when Lingoes' correction inside the principal coordinates
+    /// of the variants looks for the one the centering always gives, whose
+    /// eigenvector, the vector of ones, keeps the eigenvalue 0. It is a
+    /// defect of popnei, and in Python it is a `RuntimeError`.
     #[error(
-        "`correct_by_lingoes` of the principal coordinates of the variants is not built yet; correct the distances with `correct_dists_by_lingoes` and analyse them with `do_pcoa`"
+        "the matrix of the squared distances of {num_individuals} individuals has no eigenvalue within {threshold:e} of 0, and its centering gives one always, so popnei has a defect; report it"
     )]
-    PcoaCorrectionNotBuilt,
+    PcoaNoEigenvalueOfTheCentering {
+        /// How many individuals, which is how many eigenvalues there are.
+        num_individuals: usize,
+        /// The threshold of the eigenvalues, of the distances divided by
+        /// the largest of them.
+        threshold: f64,
+    },
 
     /// An operation of the crate `popnei-linalg` that a principal
     /// coordinate analysis asked for did not run. The dimensions and the
@@ -3409,7 +3417,6 @@ impl Error {
             // are of that file, below.
             | Self::PcoaDistanceOutOfRange { .. }
             | Self::PcoaLingoesConstantOutOfRange { .. }
-            | Self::PcoaCorrectionNotBuilt
             | Self::PcoaPairsWithNoDistance {
                 from: crate::pca::pcoa::PcoaInput::Distances,
                 ..
@@ -3629,6 +3636,7 @@ impl Error {
                 ..
             }
             | Self::PcoaDistVectorOfAnotherSize { .. }
+            | Self::PcoaNoEigenvalueOfTheCentering { .. }
             | Self::PcoaLinalg { .. } => true,
         }
     }
