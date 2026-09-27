@@ -1033,7 +1033,7 @@ it does for `transform_to_biallelic`.
   with". It is checked on the distances, before the eigendecomposition,
   where B would be 0 and the threshold 0.
 - More individuals than a page holds the analysis of, in TypeScript
-  alone, which "How it runs" gives: more than 8695, for the three
+  alone, which "How it runs" gives: more than 9381, for the three
   functions, counted on the individuals left after the steps of the
   `Variants`, which are those of the matrix. It is checked before the pass, with a message of the form of
   the PCA's: the principal coordinates of that many individuals hold
@@ -1140,19 +1140,22 @@ when every eigenvalue but the one of the centering is positive, which the
 correction makes the common case. The sums are dropped before B is
 decomposed, so the peak is the second of the two steps, at most 56.8
 bytes per cell, 5.7 GB at 10000 individuals natively, where LAPACK's
-workspace is smaller than faer's. In wasm, whose page holds 4 GiB,
-4294967296 bytes, that is 8695 individuals. It is an upper bound and not
-a measurement: the PCA's 6.1 was measured with one component written, so
-it does not say whether the projections are written while faer's
-workspace is still held or after it is given back, and if after, the peak
-is the PCA's 48.8 per cell and the limit its 9381. The sums given back can
-also leave a hole in the memory of wasm that later allocations do not
-reuse, which would raise the peak. The limit is 8695 until the plan
-measures the peak under node, as the PCA's was, through
-`doPcoaFromVariants` itself with `correctByLingoes`, where the sums exist
-and nearly every eigenvalue is positive; the spec then takes the measured
-number. `correctDistsByLingoes` holds less, since it writes no
-projections, and takes the same limit.
+workspace is smaller than faer's.
+
+In wasm the peak was measured on 27 September 2026, under node 26.8.2 on
+the owner's Apple M5 Pro, by `js/popnei/bench/memory_of_pcoa.mjs`, which
+opens the bytes of a VCF of n diploid individuals and 300 variants with 2
+in 100 genotypes missing and runs `doPcoaFromVariants` with
+`correctByLingoes`, nearly every eigenvalue then positive. The memory of
+wasm grew, after the VCF was opened, by 45.6 bytes a cell at 3000
+individuals and 44.4 at 8695 to 9413, below the 56.8 counted above: the
+projections are written once faer's workspace is given back. The analysis
+ran at 9413 individuals and ended the module at 9414, 1.4 s in, with one
+allocation that did not fit and not with the memory full, which is where
+the PCA's edge is too, 9410 ran and 9415 did not. So the three functions
+take the PCA's limit, 9381 individuals, 33 below the smallest number that
+trapped, where the PCA's is 29 below its own. `correctDistsByLingoes` holds
+less, since it writes no projections, and takes the same limit.
 
 ### How it is verified
 
