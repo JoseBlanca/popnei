@@ -46,7 +46,9 @@ import {
   openVcf,
 } from "popnei";
 
-import { room_for_the_principal_coordinates_of as roomForThePrincipalCoordinates } from "../wasm/popnei.js";
+import loadTheWasm, {
+  room_for_the_principal_coordinates_of as roomForThePrincipalCoordinates,
+} from "../wasm/popnei.js";
 
 import { referenceDists } from "./reference.ts";
 
@@ -320,12 +322,16 @@ test("the individuals a page holds the principal coordinates of are 9381", () =>
   roomForThePrincipalCoordinates(0);
 });
 
-test("a Distances too large for a page is refused by both functions", () => {
-  // The 44006271 distances of 9382 individuals are 352 MB, which node holds.
-  // The package asks the page before it copies them into the memory of wasm
-  // and the binding crate asks again, so what this says is that neither
-  // function reaches the analysis; which of the two refused it is not seen
-  // from here, since both give the same message.
+test("a Distances too large for a page is refused by both functions before it is copied into wasm", async () => {
+  // The 44006271 distances of 9382 individuals are 352050168 bytes, which
+  // node holds. The package asks the page before it copies them into the
+  // memory of wasm, and the binding crate asks again after, with the same
+  // message; what tells the two apart is the memory of wasm, which grows by
+  // at least the vector when it is copied in and never shrinks. With the
+  // memory below 252 MB before a call, a copy of the vector would grow it
+  // by more than 1e8 bytes, and a refusal in TypeScript grows it by nothing.
+  const wasm = await loadTheWasm();
+  const memoryOfWasm = () => wasm.memory.buffer.byteLength;
   const names = Array.from({ length: 9382 }, (_, position) => `s${position}`);
   const distances = new Distances(
     new Float64Array((9382 * 9381) / 2),
@@ -336,9 +342,15 @@ test("a Distances too large for a page is refused by both functions", () => {
     () => doPcoa(distances),
     () => correctDistsByLingoes(distances),
   ]) {
+    const before = memoryOfWasm();
+    assert.ok(before < 352050168 - 1e8, `${before} bytes of wasm before`);
     assert.throws(
       call,
       /the principal coordinates of 9382 individuals hold about 5 GB/,
+    );
+    assert.ok(
+      memoryOfWasm() - before < 1e8,
+      `the memory of wasm grew from ${before} to ${memoryOfWasm()} bytes`,
     );
   }
 });
