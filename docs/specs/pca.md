@@ -1003,7 +1003,9 @@ it does for `transform_to_biallelic`.
   two are in as many. From `do_pcoa_from_variants` it says the user can
   take that individual out with `filter_individuals`, lower
   `min_num_snps`, or run the PCA of the variants, which gives every
-  individual a projection; from `do_pcoa` and `correct_dists_by_lingoes`,
+  individual a projection; when `min_num_snps` is 0 or 1 those pairs were
+  called together at no variant, and the message says so and does not
+  name `min_num_snps`, which lowering could not help; from `do_pcoa` and `correct_dists_by_lingoes`,
   whose `Distances` may be of populations, it says that the pair has to be
   given a distance or one of the two taken out of the `Distances`. On the
   panel with `min_num_snps` 1105 it is 35 of the 19900 pairs, the first
@@ -1032,7 +1034,8 @@ it does for `transform_to_biallelic`.
   where B would be 0 and the threshold 0.
 - More individuals than a page holds the analysis of, in TypeScript
   alone, which "How it runs" gives: more than 8695, for the three
-  functions. It is checked before the pass, with a message of the form of
+  functions, counted on the individuals left after the steps of the
+  `Variants`, which are those of the matrix. It is checked before the pass, with a message of the form of
   the PCA's: the principal coordinates of that many individuals hold
   about that many GB, which a page does not hold, and data this large is
   analysed by a program outside the browser, popnei in Python among them.
@@ -1048,7 +1051,14 @@ An error of the `linalg` crate is a `RuntimeError`, as in the PCA, and so
 is a vector given to a function of the core whose length is not
 n(n - 1)/2, which only a caller of the Rust functions reaches, since a
 `Distances` of Python or of TypeScript refuses such a vector when it is
-built.
+built. So is the vector of ones found where it cannot be: a component
+given whose eigenvector is not at a right angle to it, which would put
+every individual at one projection, and, in the correction inside the
+analysis, a band of eigenvalues 0 that does not hold it, where the
+projection of "How it runs" would put it in the place of a real
+eigenvector. Neither has been seen, since the eigenvalue 0 of the
+centering came out at 0.20 of the threshold at most; they are checked so
+that rounding beyond that would be an error and not a wrong analysis.
 
 `test/test_pca.py` of pyNei asserts, of `do_pcoa`, that on the ten
 distances of `test_pcoa` the individual `i1` is nearer `i2` than `i4`
@@ -1077,9 +1087,17 @@ on a Euclidean matrix they are popnei's.
 `do_pcoa_from_variants` makes the one pass of the Kosman distances,
 `calc_kosman_sums` of `docs/specs/dists.md`, over a reader that the
 binding crate opens from the source and the steps of the `Variants`. B is
-then built from the sums of each pair and not from a vector of distances,
-which is never made, and the sums are dropped before the eigendecomposition
-of B by `linalg`. `do_pcoa` builds B from the vector it was given, which the core takes
+asked of the machine before the pass, so that the sums, asked for after
+it, lie above it in the memory of wasm and their room is free again at the
+top when they are given back, and so that a B the machine cannot hold is
+refused before the variants are read. B is then built from the sums of
+each pair and not from a vector of distances, which is never made, and the
+sums are dropped before the eigendecomposition of B by `linalg`. The
+reader and its chain of filters stay alive until the analysis returns,
+since the binding reads the counts of the filters from them, and a VCF
+reader holds buffers of about 16 MiB after its pass; the measurement of
+work package 3 of `docs/plans/pcoa.md` is of a VCF opened in the page, so
+the limit takes them in. `do_pcoa` builds B from the vector it was given, which the core takes
 over and drops before the eigendecomposition in the same way; kept to the
 end, the vector would add 4 bytes a cell to the peak below.
 `correct_dists_by_lingoes` keeps its vector through the
@@ -1360,7 +1378,13 @@ fewer variants has no distance, and 0 gives one to every pair called
 together at one variant at least; the binding crate turns `None` into 0.
 `num_vars` is how many variants the pass gave, for the pass stats.
 
+`correct_by_lingoes` is false by default, as the owner decided on 27
+September 2026, and the default is a constant of the core that both
+packages read, as the PCA's `DEFAULT_TRANSFORM_TO_BIALLELIC`.
+
 ```rust
+pub const DEFAULT_CORRECT_BY_LINGOES: bool = false;
+
 pub struct VariantPcoaOptions {
     pub min_num_vars: u32,
     pub correct_by_lingoes: bool,
