@@ -3144,6 +3144,19 @@ pub enum Error {
         num_individuals: usize,
     },
 
+    /// The constant of Lingoes' correction of the distances given is beyond
+    /// what an `f64` holds. It is in the units of a squared distance, so
+    /// distances above 1.3e154 give an infinity, and distances that are all
+    /// below 1e-150 give 0, which would say that nothing was corrected. In
+    /// Python it is a `ValueError`.
+    #[error(
+        "the largest distance is {largest}, and the constant of Lingoes' correction, which is added to the squared distances, is beyond what a 64 bit float holds at that size; divide the distances by a number near the largest before correcting them"
+    )]
+    PcoaLingoesConstantOutOfRange {
+        /// The largest distance given.
+        largest: f64,
+    },
+
     /// An operation of the crate `popnei-linalg` that a principal
     /// coordinate analysis asked for did not run. The dimensions and the
     /// values that crate refuses are checked before it is called, so what
@@ -3359,10 +3372,13 @@ impl Error {
             }
             // The distances a user gave to a principal coordinate analysis
             // or to Lingoes' correction, which no file holds: one that is
-            // negative or infinite, pairs that have none, and distances
-            // that are not Euclidean. The same two last of the distances a
-            // pass over the variants worked out are of that file, below.
+            // negative or infinite, pairs that have none, distances that
+            // are not Euclidean, and distances whose constant of the
+            // correction is beyond an f64. Pairs with no distance and
+            // distances that are not Euclidean of a pass over the variants
+            // are of that file, below.
             | Self::PcoaDistanceOutOfRange { .. }
+            | Self::PcoaLingoesConstantOutOfRange { .. }
             | Self::PcoaPairsWithNoDistance {
                 from: crate::pca::pcoa::PcoaInput::Distances,
                 ..

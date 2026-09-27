@@ -41,7 +41,7 @@ use crate::variant::{DosageOptions, DosageScale, Needs, RowPositions};
 
 pub mod pcoa;
 
-pub use pcoa::{Pcoa, PcoaInput, pcoa};
+pub use pcoa::{LingoesCorrection, Pcoa, PcoaInput, correct_dists_by_lingoes, pcoa};
 
 /// Whether the table is centered, which `do_pca` of pyNei does by default
 /// and so does popnei.

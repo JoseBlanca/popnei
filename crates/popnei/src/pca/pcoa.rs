@@ -117,6 +117,86 @@ pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa> {
     ))
 }
 
+/// Lingoes' correction of a distance vector: the corrected vector, in the
+/// order of the one given, the constant c that was added, and the
+/// `negative_eigenvalues_percent` of the vector given.
+#[derive(Debug, Clone)]
+pub struct LingoesCorrection {
+    /// sqrt(d² + 2c) for every distance d of the vector given, or that
+    /// vector itself when c is 0.
+    pub dist_vector: Vec<f64>,
+    /// c, the absolute value of the most negative eigenvalue of B, and 0
+    /// when none is below minus the threshold of the components.
+    pub constant: f64,
+    /// 100 times the sum of |λ| of the negative eigenvalues of B over the
+    /// sum of every eigenvalue of it, of the vector given.
+    pub negative_eigenvalues_percent: f64,
+}
+
+/// Lingoes' correction of the distance vector `dist_vector` of
+/// `num_individuals` individuals, in the order (0, 1), (0, 2), ..., (1,
+/// 2), ... of the distances, which makes a matrix of distances Euclidean.
+///
+/// It adds 2c to the square of every distance, c being the absolute value
+/// of the most negative eigenvalue of B, which is ape's `pcoa(d, correction
+/// = "lingoes")`: the B of the corrected distances has the eigenvectors of
+/// B, and every eigenvalue but the 0 of the centering c larger, so the most
+/// negative becomes 0 and none is below it. A Euclidean matrix gives a
+/// constant of 0 and its own vector back.
+///
+/// The vector is kept through the eigendecomposition, since the corrected
+/// one is written from it. [`pcoa`] drops its vector before and holds the
+/// projections after, which are more than the vector.
+///
+/// # Errors
+///
+/// The errors of [`pcoa`] but [`Error::PcoaNotEuclidean`], which this
+/// corrects, in the same order. [`Error::PcoaLingoesConstantOutOfRange`]
+/// when c, which is in the units of the squared distances, is beyond what
+/// an `f64` holds.
+pub fn correct_dists_by_lingoes(
+    dist_vector: Vec<f64>,
+    num_individuals: usize,
+) -> Result<LingoesCorrection> {
+    let largest = the_largest_distance(&dist_vector, num_individuals, PcoaInput::Distances)?;
+    let centered = the_centered_matrix(&dist_vector, num_individuals, largest);
+    let decomposed = the_decomposition_of(centered, num_individuals)?;
+    if decomposed.num_negative == 0 {
+        return Ok(LingoesCorrection {
+            dist_vector,
+            constant: 0.0,
+            negative_eigenvalues_percent: 0.0,
+        });
+    }
+    // The eigenvalues are of the distances over the largest, so c over its
+    // square: each distance is corrected over the largest as well, and
+    // multiplied back, which keeps the square of a distance above 1.3e154
+    // from being an infinity on the way.
+    let constant_of_the_scaled = decomposed
+        .eigen
+        .values
+        .last()
+        .map_or(0.0, |most_negative| most_negative.abs());
+    // c is in the units of a squared distance, which the corrected
+    // distances are not, so distances above 1.3e154, or all of them below
+    // 1e-150, have a c beyond an f64, an infinity or 0, and a 0 would say
+    // that nothing was corrected.
+    let constant = constant_of_the_scaled * largest * largest;
+    if !(constant.is_finite() && constant > 0.0) {
+        return Err(Error::PcoaLingoesConstantOutOfRange { largest });
+    }
+    let mut corrected = dist_vector;
+    for dist in &mut corrected {
+        let scaled = *dist / largest;
+        *dist = largest * (scaled * scaled + 2.0 * constant_of_the_scaled).sqrt();
+    }
+    Ok(LingoesCorrection {
+        dist_vector: corrected,
+        constant,
+        negative_eigenvalues_percent: decomposed.negative_eigenvalues_percent,
+    })
+}
+
 /// The eigendecomposition of B, with how many of its eigenvalues are
 /// negative and the part of the sum of all of them that those are.
 struct Decomposed {
@@ -444,7 +524,7 @@ impl fmt::Display for PercentShown {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{Pcoa, PcoaInput, pcoa};
+    use super::{LingoesCorrection, Pcoa, PcoaInput, correct_dists_by_lingoes, pcoa};
     use crate::error::Error;
     use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
 
@@ -802,6 +882,222 @@ mod tests {
                     num_individuals,
                 }) => assert_eq!((num_dists, num_individuals), (length, 5)),
                 other => panic!("a vector of {length} was not refused: {other:?}"),
+            }
+        }
+    }
+
+    /// The distances of `small_twin` of the spec: `SMALL` with a sixth
+    /// individual, `i6`, at distance 0 from `i5` and at the distances of
+    /// `i5` from the others, whose pairs come last of each row of the
+    /// vector.
+    const TWIN: [f64; 15] = [
+        0.2, 0.3, 0.9, 0.9, 0.9, //
+        0.1, 0.8, 0.7, 0.7, //
+        0.7, 0.8, 0.8, //
+        0.2, 0.2, //
+        0.0,
+    ];
+
+    /// The correction, or the test fails with the error.
+    fn the_correction_of(dist_vector: Vec<f64>, num_individuals: usize) -> LingoesCorrection {
+        correct_dists_by_lingoes(dist_vector, num_individuals)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// The correction of the worked example has the constant of R, the
+    /// negative part of the distances given and, for the first pair,
+    /// sqrt(0.2² + 2c).
+    #[test]
+    fn the_correction_of_the_worked_example_has_the_constant_of_r() {
+        let correction = the_correction_of(SMALL.to_vec(), 5);
+        assert!(
+            (correction.constant - 0.0640069399611263).abs() <= TOLERANCE,
+            "{}",
+            correction.constant
+        );
+        assert!(
+            (correction.negative_eigenvalues_percent - 7.88262807403034).abs() <= TOLERANCE,
+            "{}",
+            correction.negative_eigenvalues_percent
+        );
+        assert_eq!(correction.dist_vector.len(), 10);
+        assert!(
+            (correction.dist_vector[0] - 0.409894962060102).abs() <= TOLERANCE,
+            "{}",
+            correction.dist_vector[0]
+        );
+        let of_r = the_column_of_r("small.lingoes.r.constant.tsv");
+        assert!((correction.constant - of_r[0]).abs() <= TOLERANCE);
+        assert!((correction.negative_eigenvalues_percent - of_r[1]).abs() <= TOLERANCE);
+    }
+
+    /// The principal coordinates of the corrected worked example are the
+    /// table of the spec, 3 components, with no constant and no negative
+    /// part, since `pcoa` corrected nothing.
+    #[test]
+    fn the_corrected_worked_example_gives_the_table_of_the_spec() {
+        let correction = the_correction_of(SMALL.to_vec(), 5);
+        let result = the_pcoa_of(correction.dist_vector, 5);
+        assert_eq!(result.num_comps, 3);
+        let table = [
+            vec![-0.431869046368213, -0.0415086068851603, 0.224881556185394],
+            vec![-0.283479006142767, -0.158680403878776, -0.138801060767122],
+            vec![-0.269028184151739, 0.212468396790800, -0.131478395434635],
+            vec![0.492920681079785, 0.195146288470815, 0.0612591236372794],
+            vec![0.491455555582935, -0.207425674497679, -0.0158612236209160],
+        ];
+        let percent = [77.1278402980914, 14.3397713765961, 8.53238832531248];
+        assert_as_r(&result, &table, &percent, TOLERANCE);
+        assert_as_r(
+            &result,
+            &the_projections_of_r("small.lingoes.r.projections.tsv"),
+            &the_column_of_r("small.lingoes.r.percent.tsv"),
+            TOLERANCE,
+        );
+        assert_eq!(result.lingoes_constant.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            result.negative_eigenvalues_percent.to_bits(),
+            0.0_f64.to_bits()
+        );
+    }
+
+    /// The twin, whose eigenvalue 0 has two eigenvectors, corrected and
+    /// then analysed: the constant of R, the two twins sqrt(2c) apart, and
+    /// 4 components, the last of which sets the twins at sqrt(2c)/2 either
+    /// side of 0, the first of them positive.
+    #[test]
+    fn the_corrected_twin_gives_the_four_components_of_r() {
+        let correction = the_correction_of(TWIN.to_vec(), 6);
+        assert!(
+            (correction.constant - 0.072805704185076).abs() <= TOLERANCE,
+            "{}",
+            correction.constant
+        );
+        let of_r = the_column_of_r("small_twin.lingoes.r.constant.tsv");
+        assert!((correction.constant - of_r[0]).abs() <= TOLERANCE);
+        assert!(
+            (correction.negative_eigenvalues_percent - of_r[1]).abs() <= TOLERANCE,
+            "{}",
+            correction.negative_eigenvalues_percent
+        );
+        let twins = correction.dist_vector[14];
+        assert!(
+            (twins - 2.0 * 0.190795314650381).abs() <= TOLERANCE,
+            "{twins}"
+        );
+        let result = the_pcoa_of(correction.dist_vector, 6);
+        assert_eq!(result.num_comps, 4);
+        assert_as_r(
+            &result,
+            &the_projections_of_r("small_twin.lingoes.r.projections.tsv"),
+            &[
+                74.4550063085174,
+                12.9405131851367,
+                7.29289082221065,
+                5.31158968413514,
+            ],
+            TOLERANCE,
+        );
+        assert!((result.projections[4 * 4 + 3] - 0.190795314650381).abs() <= TOLERANCE);
+        assert!((result.projections[5 * 4 + 3] + 0.190795314650381).abs() <= TOLERANCE);
+    }
+
+    /// A Euclidean matrix is not corrected: the constant and the negative
+    /// part are 0, and the vector is the one given, bit for bit.
+    #[test]
+    fn a_euclidean_matrix_is_given_back_as_it_was() {
+        let dist_vector = four_alleles_kosman();
+        let correction = the_correction_of(dist_vector.clone(), 40);
+        let of_r = the_column_of_r("four_alleles.lingoes.r.constant.tsv");
+        assert_eq!(correction.constant.to_bits(), of_r[0].to_bits());
+        assert_eq!(
+            correction.negative_eigenvalues_percent.to_bits(),
+            of_r[1].to_bits()
+        );
+        let as_bits = |values: &[f64]| {
+            values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(as_bits(&correction.dist_vector), as_bits(&dist_vector));
+    }
+
+    /// The correction refuses a pair with no distance with the words of a
+    /// `Distances`, which name no `min_num_snps`.
+    #[test]
+    fn the_correction_refuses_a_pair_with_no_distance() {
+        let mut dist_vector = SMALL.to_vec();
+        dist_vector[1] = f64::NAN;
+        match correct_dists_by_lingoes(dist_vector, 5) {
+            Err(
+                error @ Error::PcoaPairsWithNoDistance {
+                    num_pairs_with_no_distance: 1,
+                    first_of_the_first: 0,
+                    second_of_the_first: 2,
+                    from: PcoaInput::Distances,
+                    ..
+                },
+            ) => {
+                let message = error.to_string();
+                assert!(message.contains("given a distance"), "{message}");
+                assert!(!error.names_the_file(), "{message}");
+            }
+            other => panic!("the pair with no distance was not corrected: {other:?}"),
+        }
+    }
+
+    /// The correction refuses what `pcoa` refuses before the
+    /// eigendecomposition: a negative distance, distances that are all 0,
+    /// one individual, more individuals than the linear algebra takes and
+    /// a vector of another length.
+    #[test]
+    fn the_correction_refuses_what_the_analysis_refuses() {
+        let mut negative = SMALL.to_vec();
+        negative[3] = -1.0;
+        assert!(matches!(
+            correct_dists_by_lingoes(negative, 5),
+            Err(Error::PcoaDistanceOutOfRange {
+                first: 0,
+                second: 4,
+                ..
+            })
+        ));
+        assert!(matches!(
+            correct_dists_by_lingoes(vec![0.0; 10], 5),
+            Err(Error::PcoaAllDistancesZero)
+        ));
+        assert!(matches!(
+            correct_dists_by_lingoes(Vec::new(), 1),
+            Err(Error::PcoaTooFewIndividuals { num_individuals: 1 })
+        ));
+        assert!(matches!(
+            correct_dists_by_lingoes(Vec::new(), MAX_INDIVIDUALS_OF_THE_VARIANTS + 1),
+            Err(Error::PcoaTooManyIndividuals { .. })
+        ));
+        assert!(matches!(
+            correct_dists_by_lingoes(SMALL.to_vec(), 6),
+            Err(Error::PcoaDistVectorOfAnotherSize {
+                num_dists: 10,
+                num_individuals: 6,
+            })
+        ));
+    }
+
+    /// Distances whose c an `f64` does not hold, an infinity at 1e200 times
+    /// the worked example and 0 at 1e-200 times it, are refused with the
+    /// largest of them, where a c of 0 would say that nothing was
+    /// corrected.
+    #[test]
+    fn a_constant_beyond_an_f64_is_refused() {
+        for factor in [1e200, 1e-200] {
+            let scaled: Vec<f64> = SMALL.iter().map(|d| d * factor).collect();
+            match correct_dists_by_lingoes(scaled, 5) {
+                Err(error @ Error::PcoaLingoesConstantOutOfRange { largest }) => {
+                    assert_eq!(largest.to_bits(), (0.9 * factor).to_bits());
+                    assert!(!error.names_the_file(), "{error}");
+                }
+                other => panic!("the constant at {factor} was given: {other:?}"),
             }
         }
     }
