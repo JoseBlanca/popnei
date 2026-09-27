@@ -35,7 +35,10 @@ genotypes alone, and the VCF reader then does not parse the other columns
 and the vars file reader does not decompress them. The quality is the QUAL
 column of a VCF, phred scaled: minus ten times the base ten logarithm of
 the probability that there is no variant at that site, so 30 is one in a
-thousand.
+thousand. A sixth flag, `VCF_TEXT`, added on 26 September 2026, asks the
+VCF reader for the text of each line, which only the VCF writer of
+`docs/specs/io_vcf.md` wants; it is not in `ALL`, the five that
+`write_vars` asks for, because the vars file has no place for it.
 
 The chromosome of a variant is a number, an index into the table of
 chromosome names that its reader keeps, the `ChromTable`, so that a block
@@ -342,7 +345,9 @@ impl Needs {
     pub const ID: Needs;
     pub const ALLELES: Needs;
     pub const QUAL: Needs;
-    /// The five above, built from them.
+    /// The text of the lines of a VCF, for its writer. Not in ALL.
+    pub const VCF_TEXT: Needs;
+    /// GTS to QUAL, the five above VCF_TEXT, built from them.
     pub const ALL: Needs;
     pub fn empty() -> Needs;
     pub fn contains(self, fields: Needs) -> bool;

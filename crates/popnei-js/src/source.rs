@@ -101,6 +101,8 @@ pub(crate) enum Consumer {
     PerVarDistribs,
     /// `calcPerIndividualStats`.
     PerIndividualStats,
+    /// `calcVarDensity`.
+    VarDensity,
     /// `calcPairwiseKosmanDists`.
     KosmanDists,
     /// `calcPopDists`.
@@ -130,6 +132,8 @@ pub(crate) enum Consumer {
     },
     /// `writeVars`.
     WriteVars,
+    /// `writeVcf`.
+    WriteVcf,
     /// The iteration of `iterBlocks`.
     IterBlocks,
 }
@@ -170,6 +174,7 @@ impl Consumer {
             }
             Consumer::PerVarDistribs
             | Consumer::PerIndividualStats
+            | Consumer::VarDensity
             | Consumer::KosmanDists
             | Consumer::PopDists
             | Consumer::PopDiversity
@@ -177,6 +182,7 @@ impl Consumer {
             | Consumer::LdAndDist
             | Consumer::Kinship
             | Consumer::WriteVars
+            | Consumer::WriteVcf
             | Consumer::IterBlocks => 1,
         }
     }
@@ -197,6 +203,7 @@ impl Consumer {
         match name {
             "calcPerVarDistribs" => Ok(Consumer::PerVarDistribs),
             "calcPerIndividualStats" => Ok(Consumer::PerIndividualStats),
+            "calcVarDensity" => Ok(Consumer::VarDensity),
             "calcPairwiseKosmanDists" => Ok(Consumer::KosmanDists),
             "calcPopDists" => Ok(Consumer::PopDists),
             "calcPopDiversity" => Ok(Consumer::PopDiversity),
@@ -208,6 +215,7 @@ impl Consumer {
                 use_grammar_gamma_approx,
             }),
             "writeVars" => Ok(Consumer::WriteVars),
+            "writeVcf" => Ok(Consumer::WriteVcf),
             "iterBlocks" => Ok(Consumer::IterBlocks),
             _ => Err(JsPopneiError::Refused(format!(
                 "`{name}` is not a consumer of popnei, which are the functions \
@@ -220,9 +228,10 @@ impl Consumer {
 
 /// The name of each consumer as a user of the package writes it, for the
 /// message of a name that is of none of them.
-const THE_CONSUMERS: [&str; 12] = [
+const THE_CONSUMERS: [&str; 14] = [
     "calcPerVarDistribs",
     "calcPerIndividualStats",
+    "calcVarDensity",
     "calcPairwiseKosmanDists",
     "calcPopDists",
     "calcPopDiversity",
@@ -232,6 +241,7 @@ const THE_CONSUMERS: [&str; 12] = [
     "doPcaFromVariants",
     "calcGwas",
     "writeVars",
+    "writeVcf",
     "iterBlocks",
 ];
 
@@ -293,6 +303,11 @@ pub(crate) trait OpenSource {
         run: &RunOfAConsumer,
         num_vars_per_block: Option<usize>,
     ) -> Result<Box<dyn BlockReader>, popnei::Error>;
+
+    /// The size of the blocks that a pass of the VCF writer opens the
+    /// source with, which `num_vars_per_block_of_write_vcf` of the core
+    /// chooses for the kind of source this is.
+    fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize>;
 }
 
 /// The bytes of a file, which every pass over it shares.
@@ -1548,7 +1563,8 @@ pub(crate) fn blocks_of(
 /// batch is written.
 const BYTES_PER_PIECE: usize = 1024 * 1024;
 
-/// A vars file that was written, held in pieces of [`BYTES_PER_PIECE`].
+/// A vars file or a VCF that was written, held in pieces of
+/// [`BYTES_PER_PIECE`].
 ///
 /// The whole file is in the memory of wasm when the write is over, and that
 /// memory never shrinks, so what a `Vec` that grew by doubling cost a tab
@@ -1561,7 +1577,7 @@ const BYTES_PER_PIECE: usize = 1024 * 1024;
 /// copy that crosses is made, and the package puts them together into the
 /// `Uint8Array` the user gets, in the heap of JavaScript.
 #[wasm_bindgen]
-pub struct VarsFile {
+pub struct WrittenFile {
     /// The pieces in the order they were written, each of them empty once
     /// it has been given to JavaScript.
     pieces: Vec<Vec<u8>>,
@@ -1574,7 +1590,7 @@ pub struct VarsFile {
 }
 
 #[wasm_bindgen]
-impl VarsFile {
+impl WrittenFile {
     /// How many bytes the whole file holds.
     #[must_use]
     pub fn num_bytes(&self) -> usize {
@@ -1597,7 +1613,7 @@ impl VarsFile {
     }
 }
 
-/// The sink the core writes a vars file into: it takes the bytes in pieces
+/// The sink the core writes a vars file or a VCF into: it takes the bytes in pieces
 /// of [`BYTES_PER_PIECE`] and never copies what it has into a larger buffer.
 struct PiecesOfTheFile {
     pieces: Vec<Vec<u8>>,
@@ -1688,7 +1704,7 @@ pub(crate) fn bytes_of_a_vars_file(
     source: &dyn OpenSource,
     num_vars_per_block: Option<usize>,
     steps: Steps,
-) -> Result<VarsFile, JsPopneiError> {
+) -> Result<WrittenFile, JsPopneiError> {
     // The source is asked for the size the batches will have, as a pass is,
     // so that the `reblock` the core puts over it has nothing to cut or to
     // join. What that saves is the memory of a block: a VCF read with the
@@ -1705,7 +1721,41 @@ pub(crate) fn bytes_of_a_vars_file(
         let mut chain = chain_of(reader, steps.steps())?;
         let (written, num_vars) =
             popnei::io::vars::write_vars(&mut chain, PiecesOfTheFile::new(), num_vars_per_block)?;
-        Ok(VarsFile {
+        Ok(WrittenFile {
+            pieces: written.pieces,
+            num_bytes: written.num_bytes,
+            next: 0,
+            counts: PassCounts::of(num_vars, &chain.filtering_stats()),
+        })
+    })
+}
+
+/// Every variant of `source`, through the steps of `steps`, as a VCF,
+/// bgzipped when `bgzip` is true and plain text otherwise, built in the
+/// memory of wasm in pieces that cross one by one, as the bytes of a vars
+/// file are.
+///
+/// # Errors
+///
+/// When the source cannot be read, when a block of it is not one the
+/// writer can write, which is a defect of a reader, and when the memory of
+/// the tab does not take the file.
+pub(crate) fn bytes_of_a_vcf(
+    source: &dyn OpenSource,
+    bgzip: bool,
+    steps: Steps,
+) -> Result<WrittenFile, JsPopneiError> {
+    the_run_of(source, &Consumer::WriteVcf, |run| {
+        let reader = source.reader(run, source.num_vars_per_block_of_the_vcf_writer())?;
+        // The chain stays here, lent to the core, so that the counts of its
+        // filters are read when the call is over.
+        let mut chain = chain_of(reader, steps.steps())?;
+        let (written, num_vars) = popnei::io::vcf::write_vcf(
+            &mut chain,
+            PiecesOfTheFile::new(),
+            popnei::io::vcf::VcfWriteOptions { bgzip },
+        )?;
+        Ok(WrittenFile {
             pieces: written.pieces,
             num_bytes: written.num_bytes,
             next: 0,
@@ -1886,6 +1936,9 @@ impl Blocks {
             id,
             alleles,
             qual,
+            // The text of the lines of a VCF is for its writer, and not a
+            // field that `iterBlocks` gives.
+            vcf_text: _,
         } = block;
         let alleles = alleles.map(|column| alleles_of(&column)).transpose()?;
         let (alleles, num_alleles_per_var) = match alleles {

@@ -40,7 +40,7 @@
 //! ```
 //!
 //! `--vars` is 5000, `--individuals` 1000, `--blocks` 20, `--runs` 5,
-//! `--threads` 1, `--stats` all five and `--pops` 0 when they are not
+//! `--threads` 1, `--stats` all six and `--pops` 0 when they are not
 //! given, which is 100000 variants of 1000 diploid individuals, the dataset
 //! of `docs/reports/stats-measurement.md`. `--pops 0` is the one population
 //! of every individual of the reader, which the pass reads as a row as it
@@ -78,8 +78,8 @@ use std::hint::black_box;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use popnei::block::{Block, BlockReader};
-use popnei::filters::FilteringStats;
+use popnei::block::{Block, BlockReader, SourceHeader};
+use popnei::filters::{FilteringStats, RegionSelection};
 use popnei::stats::{
     DEFAULT_HIST_RANGE, DEFAULT_MIN_NUM_INDIVIDUALS, DEFAULT_NUM_BINS, DEFAULT_POLY_THRESHOLD,
     ExpHet, HistBins, Maf, ObsHet, PerVarDistribs, PerVarDistribsConfig, PerVarStat, Pops,
@@ -129,7 +129,7 @@ const HIGHEST_FREQUENCY: f64 = 0.9;
 /// reads every row and calculates nothing.
 const NO_STAT: &str = "none";
 
-/// What `--stats` is given to ask for the five statistics, which is what it
+/// What `--stats` is given to ask for the six statistics, which is what it
 /// is when the command line does not name it.
 const ALL_STATS: &str = "all";
 
@@ -165,8 +165,8 @@ is the loop over the rows.
   --threads n       how many threads the pool it runs in has, 1 by default
   --stats names     the statistics, by the names a user writes, separated
                     by commas: obs_het, maf, exp_het, unbiased_exp_het,
-                    poly_vars_ratio; `all` for the five, which is the
-                    default, and `none` for the pass that calculates
+                    poly_vars_ratio, missing_rate; `all` for the six,
+                    which is the default, and `none` for the pass that calculates
                     nothing
   --pops n          how many populations the individuals are split into,
                     each getting the same number of them; 0, the default,
@@ -192,7 +192,7 @@ fn number_after(name: &str, args: &mut impl Iterator<Item = String>) -> Result<u
         .map_err(|_| format!("{name} takes a number"))
 }
 
-/// The statistics `--stats` named: the five for `all`, none for `none`, and
+/// The statistics `--stats` named: the six for `all`, none for `none`, and
 /// otherwise the ones whose names are in the list, separated by commas.
 fn stats_of(named: &str) -> Result<Vec<PerVarStat>, String> {
     if named == NO_STAT {
@@ -366,6 +366,13 @@ struct TheSameBlockAgain<'a> {
     blocks_left: usize,
 }
 
+/// The header of a source in memory, which says nothing of itself.
+static NO_HEADER: SourceHeader = SourceHeader {
+    individuals: Vec::new(),
+    chrom_lengths: Vec::new(),
+    vcf_meta_lines: None,
+};
+
 impl BlockReader for TheSameBlockAgain<'_> {
     fn next_block(&mut self) -> popnei::Result<Option<Block>> {
         let Some(left) = self.blocks_left.checked_sub(1) else {
@@ -382,6 +389,7 @@ impl BlockReader for TheSameBlockAgain<'_> {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         }))
     }
 
@@ -403,6 +411,19 @@ impl BlockReader for TheSameBlockAgain<'_> {
 
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         Vec::new()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        &NO_HEADER
+    }
+
+    /// False: the blocks are in memory and every one is given.
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    fn num_skipped(&self) -> u64 {
+        0
     }
 }
 

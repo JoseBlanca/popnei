@@ -31,6 +31,7 @@ import {
 } from "../wasm/popnei.js";
 
 import {
+  anObjectOfOptions,
   aNumber,
   distanceInBasePairs,
   popsOfTheObject,
@@ -154,6 +155,7 @@ export function calcRogersHuffR2Matrix(
   options: CalcRogersHuffR2MatrixOptions = {},
 ): R2Matrix {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("calcRogersHuffR2Matrix", options, ["maxNumVars"]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,
@@ -494,6 +496,7 @@ export function calcLdAndDistPerPop(
   options: CalcLdAndDistPerPopOptions = {},
 ): LdAndDistPerPop {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("calcLdAndDistPerPop", options, ["pops", "minDist", "maxDist", "numBins", "maxAllowedMaf"]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,

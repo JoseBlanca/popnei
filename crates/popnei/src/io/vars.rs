@@ -43,9 +43,11 @@ use arrow_ipc::{
 use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef};
 use serde_json::{Map, Value};
 
-use crate::block::{AllelesColumn, Block, BlockReader, BlockSize, Reblock, size_of_the_blocks};
+use crate::block::{
+    AllelesColumn, Block, BlockReader, BlockSize, Reblock, SourceHeader, size_of_the_blocks,
+};
 use crate::error::{Error, Result};
-use crate::filters::FilteringStats;
+use crate::filters::{FilteringStats, RegionSelection};
 use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
 /// The key of the schema of a vars file whose value says what is known
@@ -65,7 +67,7 @@ const POPNEI_BATCHES_KEY: &str = "popnei_batches";
 /// later one than its own too, ignoring the keys and the columns it does
 /// not know: that is what lets a later version of the format add a column
 /// without making the files or the readers that are there useless.
-pub const FORMAT_VERSION: &str = "1.0";
+pub const FORMAT_VERSION: &str = "1.1";
 
 /// The major version of the format that popnei reads, the part of
 /// [`FORMAT_VERSION`] before the dot.
@@ -75,7 +77,7 @@ pub(crate) const FORMAT_VERSION_READ: &str = "1";
 /// of the `popnei` key of its schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarsMetadata {
-    /// The whole string, "1.0". Only the part before the dot is checked.
+    /// The whole string, "1.1". Only the part before the dot is checked.
     pub format_version: String,
     /// The names of the individuals, in the order of their genotypes in
     /// every row of `gts`.
@@ -84,6 +86,9 @@ pub struct VarsMetadata {
     pub ploidy: usize,
     /// How many variants a batch of the file holds, the last one aside.
     pub num_vars_per_block: usize,
+    /// The length of each chromosome the source of the file gave one for,
+    /// in its order. Empty in a file of 1.0, which has no such key.
+    pub chrom_lengths: Vec<(String, u64)>,
 }
 
 /// What the footer of a vars file says of one of its batches, one entry of
@@ -131,6 +136,11 @@ pub(crate) fn metadata_as_json(metadata: &VarsMetadata) -> String {
         .iter()
         .map(|name| json_text(name))
         .collect();
+    let chrom_lengths: Vec<String> = metadata
+        .chrom_lengths
+        .iter()
+        .map(|(chrom, length)| json_array(&[json_text(chrom), length.to_string()]))
+        .collect();
     json_object(&[
         ("format_version", json_text(&metadata.format_version)),
         ("individuals", json_array(&individuals)),
@@ -139,6 +149,7 @@ pub(crate) fn metadata_as_json(metadata: &VarsMetadata) -> String {
             "num_vars_per_block",
             metadata.num_vars_per_block.to_string(),
         ),
+        ("chrom_lengths", json_array(&chrom_lengths)),
     ])
 }
 
@@ -153,9 +164,11 @@ pub(crate) fn batches_as_json(batches: &[BatchInfo]) -> String {
 ///
 /// # Errors
 ///
-/// The source is not a vars file when that value is not a json object or
+/// The source is not a vars file when that value is not a json object,
 /// when one of its four keys is missing or does not hold what that key
-/// holds.
+/// holds, and when `chrom_lengths`, which a file of 1.0 does not have, is
+/// there and is not a list of pairs of a name and a length above 0, one
+/// for each chromosome.
 pub(crate) fn metadata_from_json(text: &str) -> Result<VarsMetadata> {
     let value = json_of_the_popnei_key(text)?;
     let Some(object) = value.as_object() else {
@@ -168,6 +181,7 @@ pub(crate) fn metadata_from_json(text: &str) -> Result<VarsMetadata> {
         individuals: individuals_of(object)?,
         ploidy: count_of(object, "ploidy")?,
         num_vars_per_block: count_of(object, "num_vars_per_block")?,
+        chrom_lengths: chrom_lengths_of(object)?,
     })
 }
 
@@ -285,6 +299,43 @@ fn individuals_of(object: &Map<String, Value>) -> Result<Vec<String>> {
         .collect()
 }
 
+/// The lengths of the chromosomes, in the order the file gives them, and
+/// none in a file of 1.0, which has no such key.
+fn chrom_lengths_of(object: &Map<String, Value>) -> Result<Vec<(String, u64)>> {
+    let Some(value) = object.get("chrom_lengths") else {
+        return Ok(Vec::new());
+    };
+    let Some(pairs) = value.as_array() else {
+        return Err(not_a_vars_file(format!(
+            "`chrom_lengths` of the `{POPNEI_KEY}` key of its schema is not a json array of pairs of a chromosome and a length above 0"
+        )));
+    };
+    let mut lengths: Vec<(String, u64)> = Vec::new();
+    // The names already given, beside the list that keeps their order, so
+    // that a genome of a million scaffolds does not look each up in it.
+    let mut named: HashSet<&str> = HashSet::new();
+    for (index, pair) in pairs.iter().enumerate() {
+        let chrom = pair.get(0).and_then(Value::as_str);
+        let length = pair
+            .get(1)
+            .and_then(Value::as_u64)
+            .filter(|length| *length > 0);
+        let (Some(chrom), Some(length), Some(2)) = (chrom, length, pair.as_array().map(Vec::len))
+        else {
+            return Err(not_a_vars_file(format!(
+                "the pair {index}, counted from 0, of `chrom_lengths` of the `{POPNEI_KEY}` key of its schema is {pair}, which is not a chromosome and a length above 0"
+            )));
+        };
+        if !named.insert(chrom) {
+            return Err(not_a_vars_file(format!(
+                "`chrom_lengths` of the `{POPNEI_KEY}` key of its schema gives the chromosome {chrom} twice"
+            )));
+        }
+        lengths.push((chrom.to_owned(), length));
+    }
+    Ok(lengths)
+}
+
 /// A value of the `popnei` key that says how many of something there are,
 /// the ploidy or the variants of a batch: a whole number of 1 or more that
 /// this machine can count.
@@ -366,10 +417,19 @@ fn region_from_json(value: &Value) -> Result<Region> {
             "the `chrom` of a region of an entry of the `{POPNEI_BATCHES_KEY}` key of its footer is {chrom}, which is not the name of a chromosome"
         )));
     };
+    let min_pos = position_of_a_region(object, "min_pos")?;
+    let max_pos = position_of_a_region(object, "max_pos")?;
+    // A region that goes down holds no position, and the filter by regions
+    // would pass its batch over whatever the batch holds.
+    if min_pos > max_pos {
+        return Err(not_a_vars_file(format!(
+            "a region of `{chrom}` of an entry of the `{POPNEI_BATCHES_KEY}` key of its footer has the `min_pos` {min_pos}, above its `max_pos` {max_pos}"
+        )));
+    }
     Ok(Region {
         chrom: chrom.to_owned(),
-        min_pos: position_of_a_region(object, "min_pos")?,
-        max_pos: position_of_a_region(object, "max_pos")?,
+        min_pos,
+        max_pos,
     })
 }
 
@@ -541,12 +601,21 @@ impl<W: Write> VarsWriter<W> {
                 individuals: individuals.to_vec(),
                 ploidy,
                 num_vars_per_block,
+                chrom_lengths: Vec::new(),
             },
             alleles_per_var,
             options,
             columns: None,
             batches: Vec::new(),
         })
+    }
+
+    /// The lengths of the chromosomes that the `popnei` key will say, which
+    /// [`write_vars`] takes from the header of its source. None until this
+    /// is called. It holds when it is called before the first block, which
+    /// writes the key with the schema.
+    pub(crate) fn set_chrom_lengths(&mut self, chrom_lengths: Vec<(String, u64)>) {
+        self.metadata.chrom_lengths = chrom_lengths;
     }
 
     /// It writes `block` as one batch, of whatever size the block has.
@@ -656,6 +725,9 @@ impl<W: Write> VarsWriter<W> {
             id,
             alleles,
             qual,
+            // The vars file has no place for the text of the lines of a
+            // VCF, which the writer of a vars file does not ask for.
+            vcf_text: _,
         } = block;
         let mut arrays: Vec<ArrayRef> = Vec::new();
         let mut regions = Vec::new();
@@ -755,6 +827,7 @@ pub fn write_vars<R: BlockReader, W: Write>(
     let (num_vars_per_block, _) =
         size_of_the_blocks(num_vars_per_block, individuals.len(), ploidy)?;
     let mut writer = VarsWriter::new(sink, &individuals, ploidy, num_vars_per_block)?;
+    writer.set_chrom_lengths(reader.header().chrom_lengths.clone());
     let mut blocks = Reblock::new(reader, Some(num_vars_per_block))?;
     let mut num_vars: u64 = 0;
     while let Some(block) = blocks.next_block()? {
@@ -1019,11 +1092,11 @@ fn gts_column(gts: Vec<i8>, alleles_per_var: i32) -> Result<ArrayRef> {
 )]
 fn not_written(problem: ArrowError) -> Error {
     match problem {
-        ArrowError::IoError(_, failure) => Error::VarsFileNotWritten {
+        ArrowError::IoError(_, failure) => Error::FileNotWritten {
             problem: failure.to_string(),
             source: Some(failure),
         },
-        other => Error::VarsFileNotWritten {
+        other => Error::FileNotWritten {
             problem: other.to_string(),
             source: None,
         },
@@ -1033,7 +1106,7 @@ fn not_written(problem: ArrowError) -> Error {
 /// The error of a writer whose sink is gone, which is what is left after
 /// the header of the file could not be written.
 fn the_sink_is_gone() -> Error {
-    Error::VarsFileNotWritten {
+    Error::FileNotWritten {
         problem: "the header of the file could not be written, and the writer has nothing left \
                   to write on"
             .to_owned(),
@@ -1352,6 +1425,9 @@ pub struct VarsReader<R: Read + Seek> {
     columns: VarsColumns,
     /// What the `popnei` key of the schema says.
     metadata: VarsMetadata,
+    /// What the file said of itself: the individuals and the lengths of the
+    /// chromosomes of `metadata`.
+    header: SourceHeader,
     /// What the `popnei_batches` key of the footer says of each batch.
     batches: Vec<BatchInfo>,
     /// The variants of the whole file, the sum of those of its batches.
@@ -1389,6 +1465,21 @@ pub struct VarsReader<R: Read + Seek> {
     /// Whether the reader gave its last block or an error. After either,
     /// every call gives no block.
     finished: bool,
+    /// The regions of the filter by regions over this reader, once it took
+    /// them with [`BlockReader::skip_outside`]: a batch whose regions in the
+    /// footer they keep none of is not read.
+    skip_outside: Option<RegionSelection>,
+    /// How many variants the batches that were passed over hold.
+    num_skipped: u64,
+    /// Whether each batch of the file was counted in `num_skipped`, so that
+    /// a batch walked past a second time, after the queue of decoded
+    /// batches was thrown away, is counted once.
+    counted_as_skipped: Vec<bool>,
+    /// The place of each batch whose bytes were read, in the order they
+    /// were read, which is how the tests see which batches the skip passed
+    /// over.
+    #[cfg(test)]
+    batches_read: Vec<usize>,
 }
 
 impl<R: Read + Seek> VarsReader<R> {
@@ -1437,6 +1528,11 @@ impl<R: Read + Seek> VarsReader<R> {
         let batches = batch_info_of_the_footer(&footer, blocks.len())?;
         let num_vars = num_vars_of_the_file(&batches, &metadata)?;
         let vars_before = vars_before_each_batch(&batches);
+        let header = SourceHeader {
+            individuals: metadata.individuals.clone(),
+            chrom_lengths: metadata.chrom_lengths.clone(),
+            vcf_meta_lines: None,
+        };
         Ok(VarsReader {
             source,
             schema,
@@ -1444,6 +1540,7 @@ impl<R: Read + Seek> VarsReader<R> {
             blocks,
             columns,
             metadata,
+            header,
             batches,
             num_vars,
             needs: Needs::ALL,
@@ -1453,6 +1550,11 @@ impl<R: Read + Seek> VarsReader<R> {
             chroms: ChromTable::new(),
             vars_before,
             finished: false,
+            skip_outside: None,
+            num_skipped: 0,
+            counted_as_skipped: Vec::new(),
+            #[cfg(test)]
+            batches_read: Vec::new(),
         })
     }
 
@@ -1477,6 +1579,67 @@ impl<R: Read + Seek> VarsReader<R> {
     #[must_use]
     pub fn num_vars(&self) -> usize {
         self.num_vars
+    }
+
+    /// The place of each batch whose bytes were read, in the order they
+    /// were read.
+    #[cfg(test)]
+    pub(crate) fn batches_read(&self) -> &[usize] {
+        &self.batches_read
+    }
+
+    /// Whether the batch at `index` is one the regions the reader was
+    /// handed keep no variant of, which is then not read: for each
+    /// chromosome of its entry in the footer, from its smallest to its
+    /// largest position, the selection keeps none. Its variants go into
+    /// `num_skipped` the first time it is passed over.
+    ///
+    /// A batch with no regions in the footer, of a file with no `chrom` and
+    /// `pos` columns or of no variant, is read: nothing says it can be
+    /// passed over, and the filter refuses the first of them for the field
+    /// it depends on.
+    ///
+    /// The message of a batch that is passed over is read, the few bytes
+    /// before its buffers, and not its buffers.
+    ///
+    /// # Errors
+    ///
+    /// When the message of a batch that is passed over cannot be read, is
+    /// not one of a batch, or holds another number of rows than its entry
+    /// of the footer.
+    fn passes_over(&mut self, index: usize) -> Result<bool> {
+        let (Some(selection), Some(batch)) = (self.skip_outside.as_ref(), self.batches.get(index))
+        else {
+            return Ok(false);
+        };
+        if batch.regions.is_empty()
+            || !batch.regions.iter().all(|region| {
+                selection.keeps_none_of(&region.chrom, region.min_pos, region.max_pos)
+            })
+        {
+            return Ok(false);
+        }
+        let num_vars = u64::try_from(batch.num_vars).unwrap_or(u64::MAX);
+        if let Some(at) = self.blocks.get(index).copied() {
+            let place = self.place_of(index)?;
+            let Ok(len) = usize::try_from(at.metadata_len) else {
+                return Err(block_too_large(place.num_vars, &self.metadata));
+            };
+            let message = bytes_at(&mut self.source, at.offset, len)?;
+            message_of_a_batch(&message, place)?;
+        }
+        if self.counted_as_skipped.len() < self.batches.len() {
+            self.counted_as_skipped.resize(self.batches.len(), false);
+        }
+        if let Some(counted) = self.counted_as_skipped.get_mut(index)
+            && !*counted
+        {
+            *counted = true;
+            // The variants of a file are as many as a `usize` counts, which
+            // a `u64` holds, so this does not saturate.
+            self.num_skipped = self.num_skipped.saturating_add(num_vars);
+        }
+        Ok(true)
     }
 }
 
@@ -1677,13 +1840,11 @@ impl<R: Read + Seek> VarsReader<R> {
         if num_vars == 0 {
             return Ok(None);
         }
-        Ok(Some(block_of_the_batch(
-            batch,
-            wanted,
-            &self.metadata,
-            &mut self.chroms,
-            place,
-        )?))
+        let block = block_of_the_batch(batch, wanted, &self.metadata, &mut self.chroms, place)?;
+        if let Some(entry) = self.batches.get(index) {
+            variants_in_their_entry(&block, &self.chroms, entry, place.batch)?;
+        }
+        Ok(Some(block))
     }
 }
 
@@ -1760,6 +1921,21 @@ impl<R: Read + Seek> VarsReader<R> {
                 break;
             };
             let index = self.next;
+            match self.passes_over(index) {
+                Ok(true) => {
+                    // The batches of a file are as many as the machine
+                    // counts, so this never saturates.
+                    self.next = self.next.saturating_add(1);
+                    continue;
+                }
+                Ok(false) => {}
+                Err(problem) => {
+                    failed = Some((index, problem));
+                    break;
+                }
+            }
+            #[cfg(test)]
+            self.batches_read.push(index);
             let fetch = self
                 .place_of(index)
                 .and_then(|place| Ok((place, self.bytes_of_the_batch(at, place)?)));
@@ -1835,6 +2011,14 @@ impl<R: Read + Seek> VarsReader<R> {
                 return Ok(None);
             };
             let index = self.next;
+            if self.passes_over(index)? {
+                // The batches of a file are as many as the machine counts,
+                // so this never saturates.
+                self.next = self.next.saturating_add(1);
+                continue;
+            }
+            #[cfg(test)]
+            self.batches_read.push(index);
             let place = self.place_of(index)?;
             let bytes = self.bytes_of_the_batch(at, place)?;
             // The batches of a file are as many as the machine counts, so
@@ -1987,6 +2171,25 @@ impl<R: Read + Seek + Send> BlockReader for VarsReader<R> {
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         Vec::new()
     }
+
+    fn header(&self) -> &SourceHeader {
+        &self.header
+    }
+
+    /// True: from the next batch it reads, a batch whose regions in the
+    /// footer the selection keeps none of is not read, sought to or
+    /// decompressed. In the other batches every variant is given, and the
+    /// filter takes out the ones it does not keep.
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool {
+        self.skip_outside = Some(selection);
+        true
+    }
+
+    /// The variants of the batches passed over for the regions since the
+    /// reader was built.
+    fn num_skipped(&self) -> u64 {
+        self.num_skipped
+    }
 }
 
 impl VarsReader<BufReader<File>> {
@@ -2040,7 +2243,19 @@ impl VarsReader<BufReader<File>> {
 /// The batch could not be read, with the batch and what does not fit, and
 /// the batch holds another number of variants than its entry of the footer
 /// when its message says so.
-fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPlace) -> Result<()> {
+/// The message of a batch, the flatbuffer at the start of its bytes that
+/// says how many rows the batch holds and where its buffers are, checked to
+/// be one of a batch and to hold the rows its entry of the footer says.
+///
+/// `bytes` are those of the message and may go on into the buffers, which
+/// are not read: a batch the filter by regions passes over has its message
+/// read alone.
+///
+/// # Errors
+///
+/// When the bytes are not the message of a batch of arrow, and when it
+/// holds another number of rows than the entry of the footer.
+fn message_of_a_batch(bytes: &[u8], place: BatchPlace) -> Result<BatchMessage<'_>> {
     let damaged = |problem: String| batch_of_other_bytes(place.batch, problem);
     // A message that starts with the mark of a continuation has its length
     // after it, and one that has not starts with that length.
@@ -2076,6 +2291,13 @@ fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPl
             expected: place.num_vars,
         });
     }
+    Ok(batch)
+}
+
+fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPlace) -> Result<()> {
+    let damaged = |problem: String| batch_of_other_bytes(place.batch, problem);
+    let batch = message_of_a_batch(bytes, place)?;
+    let found = place.num_vars;
     let body = u64::try_from(metadata_len)
         .ok()
         .and_then(|message_len| {
@@ -2498,6 +2720,7 @@ fn block_of_the_batch(
         id: None,
         alleles: None,
         qual: None,
+        vcf_text: None,
     };
     // The texts of the alleles of one variant, written over for the next
     // one: nothing is allocated for each variant of the block.
@@ -2526,6 +2749,53 @@ fn block_of_the_batch(
         }
     }
     Ok(block)
+}
+
+/// That every variant of the block of a batch is in its entry of the
+/// `popnei_batches` key of the footer: on a chromosome the entry names and
+/// between the smallest and the largest position it gives for it, which is
+/// what the filter by regions skips a batch by. A block read without the
+/// chromosome and the position, and a batch whose entry has no regions, of
+/// a file with no `chrom` and `pos` columns, have nothing to check.
+///
+/// # Errors
+///
+/// The first variant that is not, with its chromosome and its position.
+fn variants_in_their_entry(
+    block: &Block,
+    chroms: &ChromTable,
+    entry: &BatchInfo,
+    batch: u64,
+) -> Result<()> {
+    let (Some(chrom), Some(pos)) = (block.chrom.as_deref(), block.pos.as_deref()) else {
+        return Ok(());
+    };
+    if entry.regions.is_empty() {
+        return Ok(());
+    }
+    // The region of the chromosome of the variant before, so that a run of
+    // variants of one chromosome finds its region once.
+    let mut of_the_chrom: Option<(u32, Option<&Region>)> = None;
+    for (number, pos) in chrom.iter().zip(pos) {
+        let region = match of_the_chrom {
+            Some((before, region)) if before == *number => region,
+            Some(_) | None => {
+                let region = chroms
+                    .name(*number)
+                    .and_then(|name| entry.regions.iter().find(|region| region.chrom == name));
+                of_the_chrom = Some((*number, region));
+                region
+            }
+        };
+        if !region.is_some_and(|region| region.min_pos <= *pos && *pos <= region.max_pos) {
+            return Err(Error::VarsBatchOutsideItsRegions {
+                batch,
+                chrom: chroms.name(*number).unwrap_or_default().to_owned(),
+                pos: *pos,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The number of the chromosome of each variant of the batch, in `chroms`.
@@ -3422,6 +3692,7 @@ mod tests {
             id: Some(id),
             alleles: Some(alleles),
             qual: Some(qual),
+            vcf_text: None,
         }
     }
 
@@ -3501,6 +3772,18 @@ mod tests {
 
         fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
             Vec::new()
+        }
+
+        fn header(&self) -> &crate::block::SourceHeader {
+            &crate::block::AN_EMPTY_HEADER
+        }
+
+        fn skip_outside(&mut self, _selection: crate::filters::RegionSelection) -> bool {
+            false
+        }
+
+        fn num_skipped(&self) -> u64 {
+            0
         }
     }
 
@@ -3809,6 +4092,7 @@ mod tests {
                 individuals: cases_individuals(),
                 ploidy: 2,
                 num_vars_per_block: 3,
+                chrom_lengths: Vec::new(),
             }
         );
         assert_eq!(
@@ -3947,6 +4231,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
         let reader = GivenBlocks {
             ploidy: 4,
@@ -4268,7 +4553,7 @@ mod tests {
             Err(error) => error,
         };
 
-        let Error::VarsFileNotWritten { problem, source } = &error else {
+        let Error::FileNotWritten { problem, source } = &error else {
             panic!("the error is {error}");
         };
         assert_eq!(
@@ -4440,6 +4725,7 @@ mod tests {
             individuals: vec!["ind1".to_owned(), "ind2".to_owned(), "ind3".to_owned()],
             ploidy: 2,
             num_vars_per_block: 3,
+            chrom_lengths: Vec::new(),
         }
     }
 
@@ -4449,7 +4735,7 @@ mod tests {
     #[test]
     fn the_version_that_is_written_starts_with_the_part_that_is_read() {
         assert_eq!(FORMAT_VERSION.split('.').next(), Some(FORMAT_VERSION_READ));
-        assert_eq!(FORMAT_VERSION, "1.0");
+        assert_eq!(FORMAT_VERSION, "1.1");
     }
 
     /// The text of the key is what another program that opens the file
@@ -4461,7 +4747,7 @@ mod tests {
         let written = metadata_as_json(&metadata);
         assert_eq!(
             written,
-            r#"{"format_version":"1.0","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3}"#
+            r#"{"format_version":"1.1","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[]}"#
         );
         let parsed = metadata_from_json(&written).expect("the key written is parsed back");
         assert_eq!(parsed, metadata);
@@ -4478,11 +4764,12 @@ mod tests {
             individuals: vec![r#"the "first" one"#.to_owned(), "ind\\2".to_owned()],
             ploidy: 4,
             num_vars_per_block: 100,
+            chrom_lengths: Vec::new(),
         };
         let written = metadata_as_json(&metadata);
         assert_eq!(
             written,
-            r#"{"format_version":"1.7","individuals":["the \"first\" one","ind\\2"],"ploidy":4,"num_vars_per_block":100}"#
+            r#"{"format_version":"1.7","individuals":["the \"first\" one","ind\\2"],"ploidy":4,"num_vars_per_block":100,"chrom_lengths":[]}"#
         );
         let parsed = metadata_from_json(&written).expect("the key written is parsed back");
         assert_eq!(parsed, metadata);
@@ -4926,6 +5213,149 @@ mod tests {
         }
     }
 
+    /// The text of the `popnei` key of the schema of the vars file of
+    /// `bytes`, as another program that opens the file reads it.
+    fn the_popnei_key_of(bytes: Vec<u8>) -> String {
+        let read =
+            FileReader::try_new(Cursor::new(bytes), None).expect("the bytes are an arrow file");
+        read.schema()
+            .metadata()
+            .get(POPNEI_KEY)
+            .expect("the file has the `popnei` key")
+            .clone()
+    }
+
+    /// The vars file written from `write.vcf` of "How it is verified" of the
+    /// VCF writer of `docs/specs/io_vcf.md` keeps the lengths of its two
+    /// `##contig` lines, in the text of the key, in its metadata and in the
+    /// header of its reader, which has no meta lines of a VCF.
+    #[test]
+    fn source_header_of_write_vcf_goes_into_the_popnei_key_of_its_vars_file() {
+        let path = reference("vcf", "write.vcf");
+        let vcf = VcfReader::from_path(&path, VcfOptions::default()).expect("write.vcf");
+        let (bytes, num_vars) = write_vars(vcf, Vec::new(), None).expect("the file");
+        assert_eq!(num_vars, 5);
+
+        let key = the_popnei_key_of(bytes.clone());
+        assert!(key.contains(r#""format_version":"1.1""#), "{key}");
+        assert!(
+            key.contains(r#""chrom_lengths":[["chr1",2000],["chr2",1500]]"#),
+            "{key}"
+        );
+        let expected = vec![("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)];
+        let reader = opened(bytes).expect("the file is a vars file");
+        assert_eq!(reader.metadata().format_version, "1.1");
+        assert_eq!(reader.metadata().chrom_lengths, expected);
+        assert_eq!(reader.header().chrom_lengths, expected);
+        assert_eq!(reader.header().individuals, ["a", "b", "c"]);
+        assert_eq!(reader.header().vcf_meta_lines, None);
+    }
+
+    /// The vars file of a VCF whose `##contig` lines have no length says
+    /// `chrom_lengths` `[]`.
+    #[test]
+    fn source_header_of_many_vcf_gives_its_vars_file_no_chrom_lengths() {
+        let key = the_popnei_key_of(many_vcf_written(Some(100)));
+        assert!(key.contains(r#""chrom_lengths":[]"#), "{key}");
+    }
+
+    /// A file of 1.0, whose `popnei` key has no `chrom_lengths`, is read
+    /// with no lengths.
+    #[test]
+    fn source_header_of_a_file_of_1_0_has_no_chrom_lengths() {
+        let mut parts = FileParts::of_cases();
+        parts.popnei = Some(
+            r#"{"format_version":"1.0","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3}"#
+                .to_owned(),
+        );
+        let reader = opened(parts.written()).expect("a file of 1.0 is a vars file");
+        assert_eq!(reader.metadata().format_version, "1.0");
+        assert!(reader.metadata().chrom_lengths.is_empty());
+        assert!(reader.header().chrom_lengths.is_empty());
+        assert_eq!(reader.header().individuals, cases_individuals());
+    }
+
+    /// The lengths are written as pairs of a name and a number, with the
+    /// escapes a name can need, and parsed back in their order.
+    #[test]
+    fn source_header_chrom_lengths_are_written_in_the_popnei_key_and_parsed_back() {
+        let metadata = VarsMetadata {
+            chrom_lengths: vec![("chr\"2".to_owned(), 1500), ("chr1".to_owned(), 2000)],
+            ..metadata_of_cases()
+        };
+        let written = metadata_as_json(&metadata);
+        assert_eq!(
+            written,
+            r#"{"format_version":"1.1","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[["chr\"2",1500],["chr1",2000]]}"#
+        );
+        assert_eq!(metadata_from_json(&written).expect("parsed back"), metadata);
+    }
+
+    /// A `chrom_lengths` that is not a list of pairs of a name and a length
+    /// above 0, or that gives one chromosome twice, is not a vars file.
+    #[test]
+    fn source_header_chrom_lengths_that_are_not_pairs_of_a_name_and_a_length_are_refused() {
+        let key_with = |lengths: &str| {
+            format!(
+                r#"{{"format_version":"1.1","individuals":["ind1"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":{lengths}}}"#
+            )
+        };
+        for lengths in [
+            r#""chr1""#,
+            r#"[["chr1",0]]"#,
+            r#"[["chr1",-5]]"#,
+            r#"[["chr1","2000"]]"#,
+            r#"[[1,2000]]"#,
+            r#"[["chr1"]]"#,
+            r#"[["chr1",2000,7]]"#,
+        ] {
+            let error = metadata_from_json(&key_with(lengths)).unwrap_err();
+            let Error::NotAVarsFile { problem } = &error else {
+                panic!("{lengths} gave {error}");
+            };
+            assert!(problem.contains("chrom_lengths"), "{problem}");
+        }
+        let error = metadata_from_json(&key_with(r#"[["chr1",5],["chr1",6]]"#)).unwrap_err();
+        let Error::NotAVarsFile { problem } = &error else {
+            panic!("{error}");
+        };
+        assert!(
+            problem.contains("gives the chromosome chr1 twice"),
+            "{problem}"
+        );
+    }
+
+    /// A length past the largest a `u64` holds and a length written as a
+    /// float, which serde_json reads as floats, are refused.
+    #[test]
+    fn source_header_chrom_lengths_past_a_u64_or_written_as_floats_are_refused() {
+        for length in ["18446744073709551616", "2000.0", "2e3"] {
+            let key = format!(
+                r#"{{"format_version":"1.1","individuals":["ind1"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[["chr1",{length}]]}}"#
+            );
+            let error = metadata_from_json(&key).unwrap_err();
+            assert!(
+                matches!(error, Error::NotAVarsFile { .. }),
+                "{length}: {error}"
+            );
+        }
+    }
+
+    /// The error of a wrong pair names it and where it is, and not the
+    /// whole list, which on a real genome holds thousands of pairs.
+    #[test]
+    fn source_header_chrom_lengths_refused_name_the_pair_and_not_the_list() {
+        let key = r#"{"format_version":"1.1","individuals":["ind1"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[["chrA",2000],["chrB",0],["chrC",7]]}"#;
+        let error = metadata_from_json(key).unwrap_err();
+        let Error::NotAVarsFile { problem } = &error else {
+            panic!("{error}");
+        };
+        assert_eq!(
+            problem,
+            r#"the pair 1, counted from 0, of `chrom_lengths` of the `popnei` key of its schema is ["chrB",0], which is not a chromosome and a length above 0"#
+        );
+    }
+
     /// The bytes of the vars file of `many.vcf`, written from the VCF
     /// reader with batches of that many variants.
     fn many_vcf_written(num_vars_per_block: Option<usize>) -> Vec<u8> {
@@ -5111,6 +5541,7 @@ mod tests {
                 individuals: cases_individuals(),
                 ploidy: 2,
                 num_vars_per_block: 3,
+                chrom_lengths: Vec::new(),
             }
         );
         assert_eq!(
@@ -5936,6 +6367,7 @@ mod tests {
             id: Some(vec![String::new(); NUM_VARS]),
             alleles: Some(alleles),
             qual: Some(vec![30.0; NUM_VARS]),
+            vcf_text: None,
         };
         let expected = block.gts.clone();
         let reader = GivenBlocks {
@@ -6442,6 +6874,129 @@ mod tests {
             panic!("the batch of four variants whose entry says three gave {error}");
         };
         assert_eq!((batch, found, expected), (1, 4, 3));
+    }
+
+    /// The four variants of `cases.vcf` in one batch, chr1 100 to 400,
+    /// with the footer saying `num_vars` and `regions` of it.
+    fn cases_with_the_footer(num_vars: usize, regions: Vec<Region>) -> Vec<u8> {
+        let mut parts = FileParts::of_cases();
+        parts.popnei_batches = Some(batches_as_json(&[BatchInfo { num_vars, regions }]));
+        parts.written()
+    }
+
+    fn region(chrom: &str, min_pos: u64, max_pos: u64) -> Region {
+        Region {
+            chrom: chrom.to_owned(),
+            min_pos,
+            max_pos,
+        }
+    }
+
+    /// The regions of a BED, handed to a reader as the filter by regions
+    /// hands them.
+    fn keeping(bed: &[u8]) -> crate::filters::RegionSelection {
+        crate::filters::RegionSelection {
+            regions: Arc::new(crate::filters::Regions::from_bed(bed).expect("the BED")),
+            exclude: false,
+        }
+    }
+
+    /// A file with no `chrom` and `pos` columns has no regions in its
+    /// footer, so the reader skips nothing under the regions and gives its
+    /// batch, which the filter refuses for the field it depends on: had the
+    /// reader skipped a batch of no regions, the pass would give no variant
+    /// and no error.
+    #[test]
+    fn skip_outside_a_file_with_no_chrom_and_pos_columns_skips_nothing() {
+        let mut parts = FileParts::of_cases();
+        parts
+            .columns
+            .retain(|(field, _)| field.name() != "chrom" && field.name() != "pos");
+        parts.popnei_batches = Some(batches_as_json(&[BatchInfo {
+            num_vars: 4,
+            regions: Vec::new(),
+        }]));
+        let mut reader = opened(parts.written()).expect("a vars file");
+        assert!(reader.skip_outside(keeping(b"chr2\t0\t10\n")));
+        let blocks = blocks_of(&mut reader).expect("the blocks");
+        assert_eq!(blocks.iter().map(|block| block.num_vars).sum::<usize>(), 4);
+        assert_eq!(reader.num_skipped(), 0);
+        assert_eq!(reader.batches_read(), [0].as_slice());
+    }
+
+    /// A region of the footer whose smallest position is above its largest
+    /// holds no position, and the skip would pass its batch over: it is
+    /// refused when the file is opened.
+    #[test]
+    fn skip_outside_a_region_of_the_footer_that_goes_down_is_not_a_vars_file() {
+        let problem = problem_of(
+            opened(cases_with_the_footer(4, vec![region("chr1", 400, 100)])).map(|_| ()),
+        );
+        assert!(problem.contains("`min_pos`"), "{problem}");
+        assert!(problem.contains("400"), "{problem}");
+    }
+
+    /// A batch the regions keep none of is passed over, and its message is
+    /// read first: one whose rows are not the variants of its entry of the
+    /// footer is refused as it is when the batch is read.
+    #[test]
+    fn skip_outside_a_skipped_batch_of_another_number_of_variants_is_refused() {
+        let mut reader = opened(cases_with_the_footer(3, vec![region("chr1", 100, 400)]))
+            .expect("the bytes are a vars file");
+        assert!(reader.skip_outside(keeping(b"chr2\t0\t10\n")));
+        let error = match reader.next_block() {
+            Ok(block) => panic!("the batch of four whose entry says three gave {block:?}"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                Error::VarsBatchNumVars {
+                    batch: 1,
+                    found: 4,
+                    expected: 3
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(reader.batches_read().is_empty());
+        // Of the right number the batch is passed over and nothing is read.
+        let mut reader = opened(cases_with_the_footer(4, vec![region("chr1", 100, 400)]))
+            .expect("the bytes are a vars file");
+        assert!(reader.skip_outside(keeping(b"chr2\t0\t10\n")));
+        assert!(reader.next_block().expect("no error").is_none());
+        assert_eq!(reader.num_skipped(), 4);
+    }
+
+    /// A batch that is read is checked against its entry of the footer: a
+    /// variant at a position the entry of its chromosome does not reach, or
+    /// on a chromosome the entry does not name, is an error of the batch,
+    /// with and without the regions of the filter.
+    #[test]
+    fn skip_outside_a_variant_outside_its_entry_of_the_footer_is_refused() {
+        for (regions, chrom, pos) in [
+            (vec![region("chr1", 150, 400)], "chr1", 100),
+            (vec![region("chr1", 100, 300)], "chr1", 400),
+            (vec![region("chr2", 100, 400)], "chr1", 100),
+        ] {
+            for with_the_regions in [false, true] {
+                let mut reader =
+                    opened(cases_with_the_footer(4, regions.clone())).expect("a vars file");
+                if with_the_regions {
+                    assert!(reader.skip_outside(keeping(b"chr1\t0\t1000\nchr2\t0\t1000\n")));
+                }
+                let error = match blocks_of(&mut reader) {
+                    Ok(blocks) => panic!("{regions:?} gave {} blocks", blocks.len()),
+                    Err(error) => error,
+                };
+                assert!(
+                    matches!(&error, Error::VarsBatchOutsideItsRegions { batch: 1, chrom: of, pos: at }
+                        if of == chrom && *at == pos),
+                    "{regions:?}: {error:?}"
+                );
+                assert!(error.names_the_file());
+            }
+        }
     }
 
     /// No build of popnei carries the zstd crate, so a file whose buffers
@@ -7461,6 +8016,7 @@ mod tests {
             // The second variant has no quality, which is a NaN in the block
             // and a null in the file.
             qual: Some(vec![quality, f32::NAN]),
+            vcf_text: None,
         }
     }
 

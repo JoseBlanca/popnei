@@ -18,8 +18,11 @@ use std::collections::TryReserveError;
 use std::fmt;
 
 use crate::error::{Error, Result};
-use crate::filters::FilteringStats;
+use crate::filters::{FilteringStats, RegionSelection};
 use crate::variant::{ChromTable, Needs, VariantRef};
+
+mod vcf_text;
+pub use vcf_text::VcfText;
 
 /// How many genotypes a block holds when the caller asks for no number of
 /// variants, 5 million, which is `DEF_NUM_GTS_PER_CHUNK` of pyNei's
@@ -601,6 +604,10 @@ pub struct Block {
     /// The quality of each variant, phred scaled as the QUAL of a VCF, and
     /// NaN for a variant that has none.
     pub qual: Option<Vec<f32>>,
+    /// The text of the line of each variant, when
+    /// [`Needs::VCF_TEXT`] was asked for and the source is a VCF, which the
+    /// VCF writer writes the lines from.
+    pub vcf_text: Option<VcfText>,
 }
 
 impl Block {
@@ -625,6 +632,7 @@ impl Block {
             id,
             alleles,
             qual,
+            vcf_text,
         } = self;
         let mut fields = Needs::empty();
         if !gts.is_empty() || *num_vars == 0 {
@@ -645,16 +653,19 @@ impl Block {
         if qual.is_some() {
             fields |= Needs::QUAL;
         }
+        if vcf_text.is_some() {
+            fields |= Needs::VCF_TEXT;
+        }
         fields
     }
 
     /// Which columns the block has, one flag for the genotypes and one for
-    /// each of the five, so that two blocks are joined only when every
+    /// each of the six others, so that two blocks are joined only when every
     /// column of the one is a column of the other.
     ///
     /// It is not [`Block::fields`]: that one answers what a consumer can
     /// read, and puts the chromosome and the position together.
-    fn columns(&self) -> [bool; 6] {
+    fn columns(&self) -> [bool; 7] {
         let Block {
             num_vars: _,
             num_individuals: _,
@@ -665,6 +676,7 @@ impl Block {
             id,
             alleles,
             qual,
+            vcf_text,
         } = self;
         [
             !gts.is_empty(),
@@ -673,6 +685,7 @@ impl Block {
             id.is_some(),
             alleles.is_some(),
             qual.is_some(),
+            vcf_text.is_some(),
         ]
     }
 
@@ -730,6 +743,7 @@ impl Block {
             id,
             alleles,
             qual,
+            vcf_text: _,
         } = self;
         if var >= *num_vars {
             return None;
@@ -790,6 +804,7 @@ impl Block {
             id,
             alleles,
             qual,
+            vcf_text,
         } = self;
         if !gts.is_empty() {
             let mut write = 0usize;
@@ -815,6 +830,9 @@ impl Block {
         if let Some(alleles) = alleles.as_mut() {
             alleles.retain_vars(keep);
         }
+        if let Some(vcf_text) = vcf_text.as_mut() {
+            vcf_text.retain_vars(keep)?;
+        }
         *num_vars = keep.iter().filter(|keep_it| **keep_it).count();
         Ok(())
     }
@@ -825,7 +843,9 @@ impl Block {
     /// individuals of `docs/specs/filters.md` compacts every block it takes
     /// with.
     ///
-    /// Every variant stays, and so does every column of the block. The kept
+    /// Every variant stays, and so does every column of the block; the text
+    /// of the lines of a VCF, when the block has it, keeps the columns of
+    /// the kept individuals in the order of `keep`. The kept
     /// individuals come in the order of `keep`, which is the order the user
     /// named them in, so the genotypes are gathered in two passes over the
     /// array: first the kept genotypes of each row are gathered to the front
@@ -847,7 +867,8 @@ impl Block {
     /// And when the arrays of the block are not of its size, which
     /// [`Block::check`] finds, since the rows are cut out of the genotypes
     /// by the sizes the block states. After any of them the block is as it
-    /// was.
+    /// was. And when the text of the lines is not of its lines, a defect
+    /// of popnei that no call reaches, after which the block is lost.
     pub fn retain_individuals(&mut self, keep: &[usize]) -> Result<()> {
         if keep.is_empty() {
             return Err(Error::NoIndividualToKeep);
@@ -876,6 +897,9 @@ impl Block {
         self.check()?;
         if self.gts.is_empty() && self.num_vars > 0 {
             return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
+        }
+        if let Some(vcf_text) = self.vcf_text.as_mut() {
+            vcf_text.retain_individuals(keep, self.ploidy)?;
         }
         if !self.gts.is_empty() {
             // `check` passed and the genotypes are not empty, so they are
@@ -922,6 +946,7 @@ impl Block {
             id,
             alleles,
             qual,
+            vcf_text,
         } = self;
         let alleles_of_the_block =
             num_vars
@@ -945,6 +970,7 @@ impl Block {
             ("id", id.as_ref().map(Vec::len)),
             ("qual", qual.as_ref().map(Vec::len)),
             ("alleles", alleles.as_ref().map(AllelesColumn::num_vars)),
+            ("vcf_text", vcf_text.as_ref().map(VcfText::num_vars)),
         ];
         for (array, length) in lengths {
             if let Some(length) = length
@@ -956,6 +982,9 @@ impl Block {
                     expected: *num_vars,
                 });
             }
+        }
+        if let Some(vcf_text) = vcf_text {
+            vcf_text.check(*num_vars, *num_individuals)?;
         }
         Ok(())
     }
@@ -1153,6 +1182,35 @@ fn retain_in_column<T>(column: Option<&mut Vec<T>>, keep: &[bool]) {
     column.retain(|_| keep.next().copied().unwrap_or(false));
 }
 
+/// What a source said of itself before its first variant.
+///
+/// A reader over another reader gives its source's, so a consumer at the
+/// end of a chain reads what the file said whatever filters stand between:
+/// the VCF writer of `docs/specs/io_vcf.md` writes its header from it, and
+/// the density of the variants of `docs/specs/stats.md` takes the lengths
+/// of the chromosomes from it. A source that says nothing of itself gives
+/// its individuals and nothing else.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SourceHeader {
+    /// The individuals of the source, before any filter of individuals.
+    pub individuals: Vec<String>,
+    /// The chromosomes the source gives a length for, in the order it
+    /// gives them: the `##contig` lines of a VCF with a `length`, and what
+    /// a vars file keeps of them.
+    pub chrom_lengths: Vec<(String, u64)>,
+    /// The lines of the header of a VCF before `#CHROM`, as the file has
+    /// them. `None` for any other source.
+    pub vcf_meta_lines: Option<Vec<String>>,
+}
+
+/// The header of a source of the tests that says nothing of itself.
+#[cfg(test)]
+pub(crate) static AN_EMPTY_HEADER: SourceHeader = SourceHeader {
+    individuals: Vec::new(),
+    chrom_lengths: Vec::new(),
+    vcf_meta_lines: None,
+};
+
 /// Anything that gives blocks: the VCF reader, the vars file reader, a
 /// filter over another reader, [`Reblock`].
 ///
@@ -1231,6 +1289,34 @@ pub trait BlockReader: Send {
     /// The method has no default, so that a reader over another reader that
     /// forgets to pass on the counts of its source does not compile.
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
+
+    /// What the source said of itself before its first variant. A reader
+    /// over another reader gives its source's, and the method has no
+    /// default so that one that forgets to does not compile.
+    fn header(&self) -> &SourceHeader;
+
+    /// It offers the reader the regions of the filter by regions, and says
+    /// whether it will pass over, from the next block it builds, the
+    /// variants the selection does not keep: those outside the regions, or
+    /// with `exclude` those inside them.
+    ///
+    /// An offer a source took holds for as long as that source lives, so
+    /// the reader that offers owns its source: a source lent as `&mut` and
+    /// read again after that reader was dropped would still pass over those
+    /// variants. A source that can pass over them says true. A reader over another
+    /// reader that changes no variant, the filter of individuals,
+    /// [`Reblock`] and the reader one block ahead, hands the offer to its
+    /// source and says what it answers. A filter of variants says false and
+    /// does not hand it on, since the variants its source passed over would
+    /// not reach its counts. `docs/specs/filters.md` has what the filter
+    /// by regions does with the answer.
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool;
+
+    /// How many variants the source passed over for the regions it was
+    /// handed, since the pass started, which the filter by regions adds to
+    /// the variants it was given. 0 for a reader that passes over nothing,
+    /// and for a filter of variants, which hands no regions to its source.
+    fn num_skipped(&self) -> u64;
 }
 
 impl<R: BlockReader + ?Sized> BlockReader for Box<R> {
@@ -1256,6 +1342,18 @@ impl<R: BlockReader + ?Sized> BlockReader for Box<R> {
 
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         (**self).filtering_stats()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        (**self).header()
+    }
+
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool {
+        (**self).skip_outside(selection)
+    }
+
+    fn num_skipped(&self) -> u64 {
+        (**self).num_skipped()
     }
 }
 
@@ -1289,6 +1387,18 @@ impl<R: BlockReader + ?Sized> BlockReader for &mut R {
 
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         (**self).filtering_stats()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        (**self).header()
+    }
+
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool {
+        (**self).skip_outside(selection)
+    }
+
+    fn num_skipped(&self) -> u64 {
+        (**self).num_skipped()
     }
 }
 
@@ -1407,6 +1517,7 @@ impl<R: BlockReader> Reblock<R> {
             id,
             alleles,
             qual,
+            vcf_text,
         } = block;
         let num_vars = waiting
             .num_vars
@@ -1418,6 +1529,9 @@ impl<R: BlockReader> Reblock<R> {
         try_extend_column(waiting.id.as_mut(), id).map_err(|_| self.too_large())?;
         try_extend_column(waiting.qual.as_mut(), qual).map_err(|_| self.too_large())?;
         if let (Some(waiting), Some(arrived)) = (waiting.alleles.as_mut(), alleles.as_ref()) {
+            waiting.try_append(arrived).map_err(|_| self.too_large())?;
+        }
+        if let (Some(waiting), Some(arrived)) = (waiting.vcf_text.as_mut(), vcf_text.as_ref()) {
             waiting.try_append(arrived).map_err(|_| self.too_large())?;
         }
         waiting.num_vars = num_vars;
@@ -1595,6 +1709,22 @@ impl<R: BlockReader> BlockReader for Reblock<R> {
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         self.reader.filtering_stats()
     }
+
+    fn header(&self) -> &SourceHeader {
+        self.reader.header()
+    }
+
+    /// The answer of the source: `reblock` changes no variant, so the
+    /// variants the source passes over are the ones the filter by regions
+    /// over this reader would take out. A block that waits was built before
+    /// the offer and is given as it is.
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool {
+        self.reader.skip_outside(selection)
+    }
+
+    fn num_skipped(&self) -> u64 {
+        self.reader.num_skipped()
+    }
 }
 
 impl<R: BlockReader> fmt::Debug for Reblock<R> {
@@ -1679,21 +1809,25 @@ pub fn with_one_block_ahead<R: BlockReader, T>(
     {
         let individuals = reader.individuals().to_vec();
         let ploidy = reader.ploidy();
+        let header = reader.header().clone();
         // A rendezvous and not a queue: the reading thread builds one block
         // while the body works on the one it holds, and waits with it until
         // the body asks. That is "one block ahead", and a queue of two
         // would hold a second block for no more overlap.
         let (built, blocks) = std::sync::mpsc::sync_channel::<ABlockRead>(0);
-        let (asked, needs) = std::sync::mpsc::channel::<Needs>();
+        let (asked, asks) = std::sync::mpsc::channel::<AskOfTheChain>();
         std::thread::scope(|threads| {
-            threads.spawn(move || read_one_block_ahead(reader, built, needs));
+            threads.spawn(move || read_one_block_ahead(reader, built, asks));
             let mut ahead = OneBlockAhead {
                 blocks,
                 asked,
+                read_before_the_answer: std::collections::VecDeque::new(),
                 individuals,
                 ploidy,
+                header,
                 chroms: ChromTable::new(),
                 filtering_stats: Vec::new(),
+                num_skipped: 0,
                 finished: false,
             };
             let given = body(&mut ahead);
@@ -1714,6 +1848,13 @@ pub fn with_one_block_ahead<R: BlockReader, T>(
 /// What the reading thread of [`with_one_block_ahead`] sends for each call
 /// it makes on the chain of readers.
 #[cfg(not(target_family = "wasm"))]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one of these crosses the channel for each block of the pass, so the bytes of a \
+              block moved beside the few of the other variants are paid once per block, \
+              where a box would add an allocation per block for nothing; the lint fired on \
+              26 September 2026 when the block gained its text of the lines of a VCF"
+)]
 enum ABlockRead {
     /// A block, and what the chain had to say when it gave it.
     Block(Block, TheChainNow),
@@ -1721,6 +1862,19 @@ enum ABlockRead {
     NoMore(TheChainNow),
     /// The chain failed. Nothing comes after this one.
     Failed(Error),
+    /// What the chain answered to [`BlockReader::skip_outside`].
+    Answered(bool),
+}
+
+/// What the handle of [`with_one_block_ahead`] asks of the chain of
+/// readers, which the reading thread does before it builds its next block,
+/// in the order the handle asked.
+#[cfg(not(target_family = "wasm"))]
+enum AskOfTheChain {
+    /// A [`BlockReader::set_needs`].
+    Needs(Needs),
+    /// A [`BlockReader::skip_outside`], whose answer the handle waits for.
+    SkipOutside(RegionSelection),
 }
 
 /// What the chain of readers says of itself beside a block, which the
@@ -1738,6 +1892,8 @@ struct TheChainNow {
     /// The counts of the filters of the chain as they stand, which are a
     /// few numbers per filter and are sent whole.
     filtering_stats: Vec<(&'static str, FilteringStats)>,
+    /// The variants the source of the chain has passed over so far.
+    num_skipped: u64,
 }
 
 /// What the chain says of itself now, with the names it has already sent
@@ -1757,33 +1913,40 @@ fn the_chain_now<R: BlockReader>(reader: &R, sent: &mut usize) -> TheChainNow {
     TheChainNow {
         new_chroms,
         filtering_stats: reader.filtering_stats(),
+        num_skipped: reader.num_skipped(),
     }
 }
 
 /// The reading thread of [`with_one_block_ahead`]: every block of `reader`
 /// sent to the handle, then either the word that there are no more or the
-/// error the chain failed with.
+/// error the chain failed with, and after that word what the handle asks
+/// of the chain, until the handle is dropped.
 ///
-/// It ends when the chain is over, when the chain fails, and when the
-/// handle is dropped, which is what a pass that returns early does: the
-/// send fails then, and the block that was built is dropped with the
-/// thread. The chain is left where it stopped and is not read again, which
-/// is what the caller of [`with_one_block_ahead`] then asks for its
-/// counts.
+/// It ends when the handle is dropped, which is what a pass does when it
+/// returns, early or at the end: a send or a wait on the asks fails then,
+/// and a block that was built is dropped with the thread. It serves the
+/// asks after the last word so that an offer of regions made at the end of
+/// the chain gets the chain's answer, and not one that depends on whether
+/// the thread had ended. The chain is left where it stopped and is not read
+/// again, which is what the caller of [`with_one_block_ahead`] then asks
+/// for its counts.
 #[cfg(not(target_family = "wasm"))]
 fn read_one_block_ahead<R: BlockReader>(
     reader: &mut R,
     built: std::sync::mpsc::SyncSender<ABlockRead>,
-    needs: std::sync::mpsc::Receiver<Needs>,
+    asks: std::sync::mpsc::Receiver<AskOfTheChain>,
 ) {
     let mut chroms_sent = 0_usize;
     loop {
-        // Every `set_needs` the handle was given since the last block was
-        // built, in the order it was given them. A block that is already
-        // built keeps the columns it was built with, which is what the
-        // trait says of a change of `Needs` in the middle of a pass.
-        while let Ok(fields) = needs.try_recv() {
-            reader.set_needs(fields);
+        // Every `set_needs` and `skip_outside` the handle was given since
+        // the last block was built, in the order it was given them. A block
+        // that is already built keeps the columns it was built with, which
+        // is what the trait says of a change of `Needs` in the middle of a
+        // pass, and holds the variants it was built with.
+        while let Ok(ask) = asks.try_recv() {
+            if !asked_of_the_chain(reader, ask, &built) {
+                return;
+            }
         }
         let read = match reader.next_block() {
             Ok(Some(block)) => ABlockRead::Block(block, the_chain_now(reader, &mut chroms_sent)),
@@ -1798,7 +1961,34 @@ fn read_one_block_ahead<R: BlockReader>(
             return;
         }
         if !more_may_follow {
+            break;
+        }
+    }
+    // The chain has said its last word, and the handle can still ask it
+    // for fields or offer it regions until it is dropped.
+    while let Ok(ask) = asks.recv() {
+        if !asked_of_the_chain(reader, ask, &built) {
             return;
+        }
+    }
+}
+
+/// What the handle asked, done on the chain, with the answer to an offer
+/// sent back; false when the handle was dropped and nobody hears it.
+#[cfg(not(target_family = "wasm"))]
+fn asked_of_the_chain<R: BlockReader>(
+    reader: &mut R,
+    ask: AskOfTheChain,
+    built: &std::sync::mpsc::SyncSender<ABlockRead>,
+) -> bool {
+    match ask {
+        AskOfTheChain::Needs(fields) => {
+            reader.set_needs(fields);
+            true
+        }
+        AskOfTheChain::SkipOutside(selection) => {
+            let answer = reader.skip_outside(selection);
+            built.send(ABlockRead::Answered(answer)).is_ok()
         }
     }
 }
@@ -1810,23 +2000,34 @@ fn read_one_block_ahead<R: BlockReader>(
 /// It is a [`BlockReader`] and gives what the chain gives: the same blocks
 /// in the same order, the error of the chain after the blocks that came
 /// before it, and nothing after that error. What it answers of the chain
-/// itself, the names of the chromosomes and the counts of the filters, is
-/// what the chain had to say when it gave the last block, and after the
-/// last block it is the chain's last word. Whoever built the chain reads
-/// the same two from the chain itself when [`with_one_block_ahead`]
-/// returns.
+/// itself, the names of the chromosomes, the counts of the filters and the
+/// variants the source passed over, is what the chain had to say when it
+/// gave the last block, and after the last block it is the chain's last
+/// word. Whoever built the chain reads the same from the chain itself when
+/// [`with_one_block_ahead`] returns. The header of the chain does not
+/// change and is copied when the thread starts, and an offer of regions
+/// goes to the chain on its thread, whose answer this waits for.
 #[cfg(not(target_family = "wasm"))]
 pub struct OneBlockAhead {
     /// Where the reading thread sends what it read.
     blocks: std::sync::mpsc::Receiver<ABlockRead>,
-    /// Where a [`BlockReader::set_needs`] goes, which the reading thread
-    /// gives the chain before it builds its next block.
-    asked: std::sync::mpsc::Sender<Needs>,
+    /// Where a [`BlockReader::set_needs`] and a
+    /// [`BlockReader::skip_outside`] go, which the reading thread gives the
+    /// chain before it builds its next block.
+    asked: std::sync::mpsc::Sender<AskOfTheChain>,
+    /// What the reading thread sent while the handle waited for the answer
+    /// to a [`BlockReader::skip_outside`], which is given before anything
+    /// the thread sends after it: the block it had built before it saw the
+    /// offer, or the word that the chain is over.
+    read_before_the_answer: std::collections::VecDeque<ABlockRead>,
     /// The individuals of the chain, copied once when the thread was
     /// started: they do not change while a source is read.
     individuals: Vec<String>,
     /// The ploidy of the chain, which does not change either.
     ploidy: usize,
+    /// The header of the chain, copied once when the thread was started:
+    /// it is what the source said before its first variant.
+    header: SourceHeader,
     /// The names of the chromosomes, as they were when the last block was
     /// given. The numbers are the chain's own, because the names are
     /// interned here in the order the chain interned them.
@@ -1834,6 +2035,9 @@ pub struct OneBlockAhead {
     /// The counts of the filters of the chain, as they were when the last
     /// block was given.
     filtering_stats: Vec<(&'static str, FilteringStats)>,
+    /// The variants the source of the chain had passed over when the last
+    /// block was given.
+    num_skipped: u64,
     /// Whether the chain is over or failed. After either there is no
     /// block, and the reading thread has ended.
     finished: bool,
@@ -1848,6 +2052,7 @@ impl OneBlockAhead {
             self.chroms.intern(name);
         }
         self.filtering_stats = now.filtering_stats;
+        self.num_skipped = now.num_skipped;
     }
 }
 
@@ -1858,13 +2063,18 @@ impl BlockReader for OneBlockAhead {
     ///
     /// # Errors
     ///
-    /// What the chain failed with, after the blocks it gave before it.
-    /// After it there is no block.
+    /// What the chain failed with, after the blocks it gave before it, and
+    /// the defect of an answer to an offer of regions sent in place of a
+    /// block. After either there is no block.
     fn next_block(&mut self) -> Result<Option<Block>> {
         if self.finished {
             return Ok(None);
         }
-        match self.blocks.recv() {
+        let read = match self.read_before_the_answer.pop_front() {
+            Some(read) => Ok(read),
+            None => self.blocks.recv(),
+        };
+        match read {
             Ok(ABlockRead::Block(block, now)) => {
                 self.took(now);
                 Ok(Some(block))
@@ -1878,11 +2088,18 @@ impl BlockReader for OneBlockAhead {
                 self.finished = true;
                 Err(error)
             }
+            // An answer is only sent to a `skip_outside`, which waits
+            // for it and takes it, so one that reaches here is a defect
+            // of popnei, and the reads after it are not to be trusted.
+            Ok(ABlockRead::Answered(_)) => {
+                self.finished = true;
+                Err(Error::ReadAheadAnswerInPlaceOfABlock)
+            }
             // The thread ended without saying why, which nothing but a
-            // panic in the chain of readers does, and a panic of a thread
-            // of the scope is raised again where `with_one_block_ahead`
-            // was called, so what this returns is thrown away there. There
-            // is no block either way.
+            // panic in the chain of readers does, and a panic of a
+            // thread of the scope is raised again where
+            // `with_one_block_ahead` was called, so what this returns is
+            // thrown away there. There is no block either way.
             Err(_) => {
                 self.finished = true;
                 Ok(None)
@@ -1912,7 +2129,7 @@ impl BlockReader for OneBlockAhead {
     fn set_needs(&mut self, needs: Needs) {
         // A send that fails is a reading thread that has ended, and then
         // there is no next block for the fields to be filled in.
-        let _ = self.asked.send(needs);
+        let _ = self.asked.send(AskOfTheChain::Needs(needs));
     }
 
     /// The counts of the filters of the chain as they were when it gave the
@@ -1921,6 +2138,46 @@ impl BlockReader for OneBlockAhead {
     /// [`with_one_block_ahead`] returns.
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         self.filtering_stats.clone()
+    }
+
+    /// The header of the chain, which the source gave before its first
+    /// variant and which does not change while it is read.
+    fn header(&self) -> &SourceHeader {
+        &self.header
+    }
+
+    /// The answer of the chain, which the reading thread asks before it
+    /// builds its next block: this reader changes no variant, so the offer
+    /// goes on. The block the thread had built before it saw the offer
+    /// holds the variants it was built with and is given first. The thread
+    /// serves the offer after the chain's last word too, so the answer is
+    /// the chain's wherever in the pass it is made. False only when the
+    /// reading thread ended without a word, which a panic of the chain
+    /// does.
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool {
+        if self
+            .asked
+            .send(AskOfTheChain::SkipOutside(selection))
+            .is_err()
+        {
+            return false;
+        }
+        // The thread sends at most one read before it sees the offer, the
+        // block it had built or its last word, and then the answer, which
+        // it sends after its last word as well.
+        loop {
+            match self.blocks.recv() {
+                Ok(ABlockRead::Answered(answer)) => return answer,
+                Ok(read) => self.read_before_the_answer.push_back(read),
+                Err(_) => return false,
+            }
+        }
+    }
+
+    /// The variants the source of the chain had passed over when it gave
+    /// the last block, and all of them once it has no more blocks.
+    fn num_skipped(&self) -> u64 {
+        self.num_skipped
     }
 }
 
@@ -1981,6 +2238,10 @@ fn take_rows(
         Some(column) => Some(column.try_rows(from, count)?),
         None => None,
     };
+    let vcf_text = match block.vcf_text.as_ref() {
+        Some(text) => Some(text.try_rows(from, count)?),
+        None => None,
+    };
     let id = taken_rows(block.id.as_mut(), from, count)?;
     Ok(Block {
         num_vars: count,
@@ -1992,6 +2253,7 @@ fn take_rows(
         id,
         alleles,
         qual,
+        vcf_text,
     })
 }
 
@@ -2749,6 +3011,7 @@ mod tests {
             id: Some(id),
             alleles: Some(alleles),
             qual: Some(qual),
+            vcf_text: None,
         }
     }
 
@@ -2931,6 +3194,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
 
         // The individuals times the ploidy, the alleles of one variant.
@@ -3107,6 +3371,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         }
     }
 
@@ -3186,6 +3451,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
 
         block
@@ -3384,6 +3650,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
         let kept = |threads| {
             let pool = rayon::ThreadPoolBuilder::new()
@@ -3529,6 +3796,18 @@ mod tests {
 
         fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
             self.filtering_stats.clone()
+        }
+
+        fn header(&self) -> &crate::block::SourceHeader {
+            &crate::block::AN_EMPTY_HEADER
+        }
+
+        fn skip_outside(&mut self, _selection: crate::filters::RegionSelection) -> bool {
+            false
+        }
+
+        fn num_skipped(&self) -> u64 {
+            0
         }
     }
 
@@ -4238,6 +4517,36 @@ mod tests {
         assert_eq!(reader.needs, Needs::GTS);
         assert_eq!(reader.filtering_stats(), two_counts());
         assert!(reader.left.is_empty());
+    }
+
+    /// An answer to an offer of regions that arrives where the handle asked
+    /// for a block is the error of a defect of popnei, and nothing comes
+    /// after it, not a read that is passed over in silence.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn an_answer_in_place_of_a_block_is_a_defect_of_popnei() {
+        let (built, blocks) = std::sync::mpsc::sync_channel(1);
+        let (asked, _asks) = std::sync::mpsc::channel();
+        built.send(super::ABlockRead::Answered(true)).unwrap();
+        drop(built);
+        let mut ahead = super::OneBlockAhead {
+            blocks,
+            asked,
+            read_before_the_answer: std::collections::VecDeque::new(),
+            individuals: Vec::new(),
+            ploidy: 2,
+            header: super::SourceHeader::default(),
+            chroms: ChromTable::new(),
+            filtering_stats: Vec::new(),
+            num_skipped: 0,
+            finished: false,
+        };
+        let error = ahead.next_block().unwrap_err();
+        assert!(
+            matches!(error, Error::ReadAheadAnswerInPlaceOfABlock),
+            "{error}"
+        );
+        assert!(ahead.next_block().unwrap().is_none());
     }
 
     /// A pass that stops in the middle, which is what a study whose test of

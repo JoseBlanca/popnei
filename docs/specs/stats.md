@@ -4,9 +4,10 @@ September 2026. The `stats` module tells a user of popnei how their
 variants and their individuals look before any distance or association is
 calculated: for each population, how heterozygous the variants are, how
 frequent their commonest allele is, how much diversity each population
-holds and how many variants vary at all, each as a mean and a histogram
-over the variants; and for each individual, how much of its data is
-missing and how heterozygous it is. It is also where a population, a
+holds, how many variants vary at all and how much of each variant is
+missing, each as a mean and a histogram over the variants; for each
+individual, how much of its data is missing and how heterozygous it is;
+and how many variants fall in each window along each chromosome. It is also where a population, a
 named set of individuals, is turned into what the core works on, which
 Jost's D, the linkage disequilibrium per population and the kinship will
 take from here. There is no code. This spec develops the row `stats` of
@@ -26,6 +27,13 @@ takes individuals out of it. Two specs it points to are not on `main`
 yet: `docs/specs/dists.md`, the distances, on the branch
 `plan/dists-kosman`, and `docs/specs/pca.md`, the principal components,
 on `plan/pca`.
+
+The missing rate and the density of the variants were added on 26
+September 2026. The missing rate has code since that day, on
+`plan/writer-regions-density`; the density has none yet; the rest of the
+module has. The density
+depends on the length of each chromosome that a source keeps, which
+`docs/specs/io_vcf.md` and `docs/specs/io_vars.md` have.
 
 The expected heterozygosity was written first, in September 2026, as the
 example the owner chose of how a spec is written, read by the first
@@ -105,7 +113,7 @@ two populations is taken. The pytest tests are those of `test_pops.py` of
 pyNei, `test_every_stat_takes_the_same_pops` among them, which asserts
 that each of its four statistics keys its result by the two population
 names and refuses an unknown individual, which popnei asserts for its
-five, and one test that the refusal of
+six, and one test that the refusal of
 a duplicated name is a `ValueError`.
 
 ## The counts of one variant over a population
@@ -144,19 +152,21 @@ of the row is an error.
 
 ### What they give
 
-One pass over the variants that calculates up to five statistics for
+One pass over the variants that calculates up to six statistics for
 every variant and every population, and gives back, for each statistic
 and population, the mean over the variants that have a value and a
 histogram of them. The per variant values are not kept, because a million
 of them for each population do not fit a browser tab, and a user who
-wants them takes the genotypes with `iter_blocks`. The five statistics
+wants them takes the genotypes with `iter_blocks`. The six statistics
 are the observed heterozygosity, the major allele frequency, the expected
-heterozygosity, plain and unbiased, and the polymorphism ratio, each its
-own item below; the last is a count and not a distribution.
+heterozygosity, plain and unbiased, the polymorphism ratio and the missing
+rate, each its own item below; the polymorphism ratio is a count and not a
+distribution.
 
 A variant has no value of a statistic in a population when the population
 has too little data at it: none at all, or, for all but the observed
-heterozygosity, fewer called genotypes than `min_num_individuals`. A
+heterozygosity, fewer called genotypes than `min_num_individuals`; the
+missing rate has a value at every variant, under its item. A
 variant with no value is out of
 the mean and in no bin of the histogram, so the mean of a population is
 over the variants that had enough data, and the histograms of two
@@ -180,10 +190,10 @@ It is a consumer of the `Variants`, as `docs/specs/variant.md` has them:
 it makes one pass over the source through the steps the `Variants` has
 when it is called, and the `Variants` is as it was afterwards.
 
-`stats` says which of the five to calculate: members of the `StrEnum`
-`PerVarStat`, `OBS_HET`, `MAF`, `EXP_HET`, `UNBIASED_EXP_HET` and
-`POLY_VARS_RATIO`, whose values are the names of the fields of the
-result. All five by default. Anything that is not a member, a string
+`stats` says which of the six to calculate: members of the `StrEnum`
+`PerVarStat`, `OBS_HET`, `MAF`, `EXP_HET`, `UNBIASED_EXP_HET`,
+`POLY_VARS_RATIO` and `MISSING_RATE`, whose values are the names of the
+fields of the result. All six by default. Anything that is not a member, a string
 among them, is a `TypeError` that says so, and no statistic at all is a
 `ValueError`. Asking for fewer is a saving of work and changes no value.
 The owner decided both on 22 September 2026: the unbiased expected
@@ -230,9 +240,9 @@ spells `standardize_data` where pyNei has `standarize_data`.
 `ploidy` is the two expected heterozygosities' alone, and
 `poly_threshold` the polymorphism ratio's; their items say what they do.
 
-`PerVarDistribs` is pyNei's frozen dataclass with two fields more:
-`obs_het`, `maf`, `exp_het` and `unbiased_exp_het`, each a `StatsDistrib`
-or `None` when it was not asked for; `poly_vars_ratio`, a `PolyVarsStats`
+`PerVarDistribs` is pyNei's frozen dataclass with three fields more:
+`obs_het`, `maf`, `exp_het`, `unbiased_exp_het` and `missing_rate`, each
+a `StatsDistrib` or `None` when it was not asked for; `poly_vars_ratio`, a `PolyVarsStats`
 or `None`; and `pass_stats`, the
 `PassStats` of `docs/specs/variant.md` that every result of a consumer
 has, with how many variants the pass gave, after the steps, and how many
@@ -276,11 +286,12 @@ differences:
 
 In TypeScript it is `calcPerVarDistribs(variants, {stats, pops,
 minNumIndividuals, histKwargs, ploidy, polyThreshold})`, with `stats` an
-array of the five names as a union type of string literals,
+array of the six names as a union type of string literals,
 `"obs_het" | "maf" | ...`, which is what an enum is in TypeScript,
 `histKwargs` an object with `range`, `numBins` and `binType`, and the
 same defaults. The result has `pops`, the population names in their
-order; `obsHet`, `maf`, `expHet` and `unbiasedExpHet`, each `null` or a
+order; `obsHet`, `maf`, `expHet`, `unbiasedExpHet` and `missingRate`,
+each `null` or a
 `StatsDistrib` with `mean`, a `Float64Array`
 with one value per population and NaN for none, `histBinEdges`, a
 `Float64Array`, and `histCounts`, a `Uint32Array` of populations x bins,
@@ -296,7 +307,7 @@ otherwise; that `stats` takes members, names and one name, where popnei's
 test asserts that a name is a `TypeError`; that an unknown name and no
 name are a `ValueError`; that the means and the histogram counts of one
 pass over the four are those of four passes of one each, which popnei
-asserts over its five; that the arguments of one statistic change no
+asserts over its six; that the arguments of one statistic change no
 other; and that a `Variants` whose filter kept no variant is an error.
 `test_hist.py`
 asserts that `hist_kwargs` is not changed, that `range` and `num_bins`
@@ -321,8 +332,8 @@ blocks of its source back to one size. For each row and each population
 the counts of "The
 counts of one variant over a population" are taken once, and the
 statistics that were asked for follow from those counts: the observed
-heterozygosity from the genotype counts, the other three from the allele
-counts. Each thread adds what it finds into accumulators of its own, and
+heterozygosity and the missing rate from the genotype counts, the other
+three from the allele counts. Each thread adds what it finds into accumulators of its own, and
 the accumulators of the threads are added when the block is done: per
 statistic and population a sum of the values as `f64`, a count of the
 variants that had a value, and the counts of the bins; for the
@@ -350,7 +361,8 @@ The calculation asks its reader for the genotypes alone.
 
 ### How it is verified
 
-What is common to the five: against pyNei, and a worked example. Each
+What is common to the six: against pyNei, for the five pyNei has, and a
+worked example. Each
 statistic has, under its item, the reference program that checks its
 values and the literals of the first cargo tests.
 
@@ -943,6 +955,96 @@ the ratios are 0.25 in both populations over the variants with data and
 0.333333 and 0.5 over the variable ones. With `min_num_individuals` 20
 every count is 0 and both ratios NaN.
 
+## The missing rate
+
+### What it gives
+
+For each variant and each population, the share of the individuals of the
+population whose genotype is missing at that variant:
+
+    missing rate = missing genotypes of the population / individuals of the population
+
+A genotype is missing when one of its alleles was not called, so a half
+called genotype, `0/.`, is missing, and the denominator is every
+individual of the population, called or not. With every individual in one
+population it is the number that the missing data filter of
+`docs/specs/filters.md` compares with its threshold. Its histogram shows a
+user where to put that threshold: how many variants they keep at 0.05 and
+how many more at 0.1.
+
+A population has one individual at least, so every variant has a missing
+rate in every population, and the missing rate is not held to `min_num_individuals`, which
+is decided here: the variants with the fewest called genotypes are the
+ones this histogram is looked at for, and a threshold on the called
+genotypes would take out exactly those. A variant with nothing called has
+a missing rate of 1, in the last bin.
+
+### In Python and in TypeScript
+
+Asked for as `stats=(PerVarStat.MISSING_RATE,)`, the member
+`MISSING_RATE` of `PerVarStat`, and given back as the field `missing_rate` of the result, a
+`StatsDistrib` like the others; in TypeScript `"missing_rate"` and
+`missingRate`. pyNei's `calc_per_var_distribs` has no missing rate, so
+nothing is mirrored, and the pytest test that compares the pass with pyNei
+leaves it out.
+
+### A rate on the edge of a bin
+
+The rate is the division of two whole numbers as `f64`, and it falls in
+the bin that `numpy.histogram` puts that `f64` in, by the edges of "In
+Python and in TypeScript" of the pass. A rate that is a fraction such as
+3/20 is not the decimal it is written as, and neither is the edge it
+seems to fall on: 3/20 is 0.1499999999999999944 as an `f64`, and the
+sixth edge of 40 bins from 0 to 1, 6 x 0.025, is 0.15000000000000002, so
+3 missing genotypes of 20 are in bin 5, counted from 0, and not in bin 6.
+In `popA` of `many.vcf`, 51 variants are there, which the test below
+asserts.
+
+### How it runs
+
+From the genotype counts of each population, which the observed
+heterozygosity takes already, and whose missing genotypes are one of the
+three: one division and one bin for each variant and population more. The
+number of individuals of each population is known before the pass.
+
+### How it is verified
+
+Against plink2 v2.0.0-a.7.7, whose `--missing variant-only` gives
+`MISSING_CT`, the missing genotypes, and `OBS_CT`, the individuals, of
+each variant, with `--vcf-half-call m`, which reads a half called
+genotype as missing, as `docs/specs/filters.md` does for the same filter.
+On `many.vcf`, read with every variant given, over every individual and,
+with `--keep`, over `popA`, its first 20 individuals, and over `popB`, its
+other 30, of `tests/reference/stats/many_pops.txt`, run on 26 September
+2026, the missing rate being `MISSING_CT / OBS_CT` as `f64` and the
+histogram numpy's with 40 bins from 0 to 1:
+
+| population | individuals | mean | the bins with a count, bin: count |
+|---|---|---|---|
+| all | 50 | 0.06044 | 0: 101, 1: 114, 2: 102, 3: 88, 4: 77, 5: 10, 6: 6, 7: 1, 8: 1 |
+| popA | 20 | 0.0602 | 0: 144, 2: 180, 4: 116, 5: 51, 8: 8, 10: 1 |
+| popB | 30 | 0.0606 | 0: 88, 1: 146, 2: 124, 4: 84, 5: 41, 6: 9, 8: 5, 9: 1, 10: 1, 11: 1 |
+
+The script `make_reference.py` of `tests/reference/stats/` runs the
+three, keeps their `.vmiss` beside it, `many.vmiss`, `many.popA.vmiss` and
+`many.popB.vmiss`, and checks this table against them.
+The pytest test, made at `calc_per_var_distribs` with `pops` of those two
+populations and with no `pops`, compares the histograms exactly and the
+means within 1e-12 relative, the tolerance of the pass, and asserts the
+first five missing genotypes of each, 4, 3, 3, 1, 3 over all, 2, 1, 0, 1,
+2 in `popA` and 2, 2, 3, 0, 1 in `popB`, through the rates they give.
+
+The worked example of the pass, whose genotypes are in "How it is
+verified" of the per variant distributions, with pop1 = i1, i2 and pop2 =
+i3, i4, i5 and 4 bins: the missing rates are 0.2, 0.4, 0.2, 1, 0 and 1
+over the five individuals, 0, 0, 0, 1, 0 and 1 in pop1, and 1/3, 2/3, 1/3,
+1, 0 and 1 in pop2. The means are 0.466667, 0.333333 and 0.555556, and the
+histograms 3, 1, 0, 2 over the five, 4, 0, 0, 2 in pop1 and 1, 2, 1, 2 in
+pop2, worked out from the genotypes of the table and the missing rates of
+the filter's worked example. The cargo test is made at
+`calc_per_var_distribs`, since no function above it shows the value of one
+variant, and it asserts the three means and the three histograms.
+
 ## The per individual statistics
 
 ### What they give
@@ -1076,6 +1178,195 @@ the missing rates 2/6, 2/6, 2/6, 3/6 and 5/6, and the heterozygosity
 rates 1/4, 3/4, 1/4, 1/3 and 0/1 = 0. Individual i5 has two half called
 genotypes, at variants 1 and 2, which are missing.
 
+## The density of the variants along the chromosomes
+
+### What it gives
+
+How many variants fall in each window of a given width along each
+chromosome, so that a user sees where the variants of a panel are
+crowded, where there are none, a centromere or a region that did not map,
+and how evenly a filter took variants out. A window here is a stretch of
+`window_size` base pairs, and the windows of a chromosome are laid end to
+end from position 1 and do not overlap: window k, counted from 0, holds
+the positions from k x `window_size` + 1 to (k + 1) x `window_size`, both
+included. With a width of 1000 the first three are 1 to 1000, 1001 to
+2000 and 2001 to 3000. The owner decided on 26 September 2026 that the
+windows do not overlap; a window that slides by a step smaller than its
+width would be a later argument.
+
+Where the windows of a chromosome end depends on whether its length is
+known, which the owner decided on the same day:
+
+- With a length, the windows cover the chromosome to its end, and the
+  last one ends at the length, so it is shorter than the others when the
+  length is not a multiple of the width: a chromosome of 2000 in windows
+  of 600 has 1 to 600, 601 to 1200, 1201 to 1800 and 1801 to 2000.
+- Without one, the windows go up to the one that holds the last variant
+  of the chromosome, and that one ends at its full width, past the last
+  variant.
+
+A window with no variant is in the result with a count of 0, from the
+first window of the chromosome, since a gap is what a user looks for.
+
+A variant is counted in the one window that holds its position, the POS of
+the VCF, whatever the length of its REF: a deletion `ACGT` at 1999 is
+counted in 1001 to 2000 alone in windows of 1000, although its REF covers
+2000 to 2002 as well. The density counts variants, and a variant counted
+once is what makes the counts add up to the variants of the pass.
+
+The length of a chromosome is the one the user gives in `chrom_lengths`,
+and when they give none, the one the source has: the `##contig` lines of
+the VCF that have a `length`, and the lengths the vars file keeps of the
+VCF it was written from (`docs/specs/io_vcf.md`, `docs/specs/io_vars.md`).
+A `chrom_lengths` that is given replaces the lengths of the source: those
+of the source are not read for any chromosome, and a chromosome it does
+not name has no length, so a user knows which lengths were used. A
+chromosome with a length is in the result whether or not it has a
+variant, all its windows at 0 when it has none.
+
+### In Python and in TypeScript
+
+```python
+def calc_var_density(
+    variants: Variants,
+    window_size: int,
+    chrom_lengths: dict[str, int] | None = None,
+) -> VarDensity
+```
+
+It is a consumer of the `Variants`, with one pass. `VarDensity` is a
+frozen dataclass with `windows`, a pandas frame with one row per window
+and the columns `chrom`, the name, `start` and `end`, the first and the
+last position of the window, of the dtype `uint64`, which holds every
+position a source gives, and `num_vars`, the count, of the dtype
+`uint32`, and `pass_stats`. The chromosomes are in the order of the lengths, those of
+`chrom_lengths` or of the source, and after them those with variants and
+no length, in the order their first variant came; the windows of each in
+the order of their positions.
+
+`window_size` is a whole number of 1 or more, and each length of
+`chrom_lengths` too; what is no whole number is a `TypeError` and one
+below 1 a `ValueError`, which names the argument. A variant whose position
+is past the length of its chromosome is a `ValueError` that names the
+chromosome, the position, the length and whether the length came from
+`chrom_lengths` or from the source: a count with a variant beyond the end
+of its chromosome would say nothing of the length being wrong. A result
+of more than 10 million windows is a `ValueError` that gives the number
+and asks for a wider window, which is decided here: 10 million windows are
+3.1 billion bases, a human genome, in windows of 310 base pairs, and each
+is a row of the frame, about 100 bytes of it with the name of its
+chromosome. Without lengths, the count of windows is known as the pass
+goes, and the error comes when it passes that number. A pass that gives
+no variant is a `ValueError`, as for the other calculations of this
+spec, whatever the lengths.
+
+Four more cases, decided on 26 September 2026 when the code was written,
+each so that no count is wrong in silence:
+
+- A variant at position 0 is a `ValueError` that names the chromosome.
+  The VCF format allows it for a telomere, and it lies in no window,
+  since the first starts at 1. tabix 1.24 counts such a line in the
+  region 1 to 1000, with the warning `Coordinate <= 0 detected`, and a
+  window that counts a variant outside it is as wrong as one that counts
+  a variant beyond the length, which the telomere at the length plus 1 is.
+- A window that would count more than 4294967295 variants, the most its
+  `u32` holds, is a `ValueError` that names the chromosome and the
+  window. Only a source of more than 4 billion variants at the positions
+  of one window reaches it.
+- A chromosome named twice in `chrom_lengths` is a `ValueError` that
+  names it. A Python dict and a TypeScript object cannot hold a name
+  twice, so only a caller of the core crate reaches it.
+- The last window of a chromosome with no length ends at its full width,
+  or at 18446744073709551615, the largest position a source holds, when
+  the full width would pass it: windows of 10^19 and a variant at 1.5 x
+  10^19 give the windows 1 to 10^19 and 10^19 + 1 to
+  18446744073709551615. The count of windows is bounded, so this happens
+  only with windows of more than 1.8 x 10^12 base pairs.
+
+In TypeScript it is `calcVarDensity(variants, windowSize, {chromLengths})`,
+with `chromLengths` a plain object of chromosome name to length, one whose
+prototype is `Object.prototype` or `null`; anything else, a `Map` among
+it, which has no own keys and would be read as no lengths, is an `Error`
+that names `chromLengths`. The order of the lengths is the order
+JavaScript gives the keys of the object, which puts the keys that are
+whole numbers first, in ascending order, and then the others in the order
+they were written: `{X: 1, "10": 1, "2": 1}` gives 2, 10 and X, where the
+same dict in Python gives X, 10 and 2. That was noted on 27 September
+2026 and is the owner's to weigh against taking a `Map` or pairs. It gives
+`chroms`, the name of each window's chromosome as an array of strings,
+`start` and `end` as `Float64Array`, as `iterBlocks` gives the positions,
+`numVars` as a `Uint32Array`, and `passStats`. A float64 holds every
+whole number up to 2^53 and rounds the ones above it, so a window that
+ends past 9007199254740992, which a length of a `##contig` line can give,
+is an `Error` that names the chromosome and the end, as a position past it
+is for `iterBlocks`, and not a window with another end than the one
+Python gives. `windowSize` and each length of `chromLengths` are whole
+numbers from 1 to 2^53 - 1, `Number.MAX_SAFE_INTEGER`, the largest one a
+number of JavaScript counts to one by one, and anything else is an
+`Error` that names the argument before the pass starts. This was decided
+on 26 September 2026, when the binding was written.
+
+pyNei has no density of the variants, so nothing is mirrored and nothing
+differs.
+
+### How it runs
+
+It asks its reader for the chromosome and the position alone. The VCF
+reader then parses neither the genotypes nor the other columns of a line,
+and the vars file reader decompresses the two columns and no other. For
+each chromosome it keeps a vector of counts, one `u32` for each window,
+which grows as the variants go past the end of it, so the variants need
+not be sorted: the memory is the windows, 4 bytes each, 40 MB at the
+most. A pass over positions is not worth the threads of rayon, and the
+counts are added up one row after another.
+
+### How it is verified
+
+Against tabix 1.24, which counts the variants of any region of a
+bgzipped VCF with an index: `tabix many.vcf.gz chr1:1-1000 | wc -l` for
+each window, run on 26 September 2026 on `many.vcf.gz` with an index that
+`tabix -p vcf` made, and a count of the positions of the file window by
+window, worked out with `awk`, gave the same numbers. tabix counts a line
+in every region its REF overlaps, where the density counts it in the
+window of its POS alone, so the two agree on `many.vcf` because every
+variant of it has a REF of one base; a deletion `ACGT` at 1999 is in
+1001-2000 and in 2001-3000 for tabix 1.24. With windows of 1000
+and no lengths, since the `##contig` lines of `many.vcf` have none, and
+with every variant given:
+
+| chromosome | windows | the counts, window after window |
+|---|---|---|
+| chr1 | 11, 1 to 11000 | 1, 27 nine times, 6 |
+| chr2 | 20, 1 to 20000 | 0 ten times, 21, 27 eight times, 13 |
+
+The first variant of chr1 is at 1000 and its last at 10213, and those of
+chr2 at 10250 and 19463. With `chrom_lengths={"chr1": 12000, "chr2":
+19500}`, chr1 has one window more, 11001 to 12000, with 0, and the last
+window of chr2 is 19001 to 19500, still with 13. With
+`chrom_lengths={"chr1": 10000, "chr2": 20000}` the pass is the
+`ValueError` of the variant at chr1 10028, the first of the six past
+10000, which is where the pass stops. The pytest tests,
+made at `calc_var_density`, assert the two tables, the error and a
+`window_size` of 0.
+
+The worked example, the first cargo test, made at `calc_var_density` of
+"The Rust interface": `write.vcf` of the VCF writer of
+`docs/specs/io_vcf.md`, read with the default, so its line of chr1 250,
+which failed its filter, is not there, and with the lengths of its
+header, chr1 2000 and chr2 1500. Windows of 500 give chr1 1 to 500 with
+1, 501 to 1000 with 1, 1001 to 1500 with 1 and 1501 to 2000 with 0; and
+chr2 1 to 500 with 1, 501 to 1000 with 0 and 1001 to 1500 with 1.
+Windows of 600 give chr1 1 to 600 with 1, 601 to 1200 with 2, 1201 to
+1800 with 0 and 1801 to 2000 with 0; and chr2 1 to 600 with 1, 601 to
+1200 with 0 and 1201 to 1500 with 1. The same file with its `##contig`
+lines taken out, in windows of 500, gives chr1 three windows, 1 to 1500,
+with 1, 1 and 1, and chr2 three, with 1, 0 and 1; in windows of 600 it
+gives chr1 two, 1 to 1200, with 1 and 2, and chr2 three, 1 to 1800, with
+1, 0 and 1. tabix 1.24 gave those counts on 26 September 2026 for each
+window, over the file bgzipped with its `##contig` lines and its line of
+chr1 250 taken out. The TypeScript test
+asserts the first table of `many.vcf`.
+
 ## The Rust interface
 
 The populations of a pass: each one's name and the indices of its
@@ -1131,8 +1422,9 @@ TypeScript" of the pass says, and a value is placed by them.
 Python. A histogram a person reads has tens of bins, pyNei's default is
 40, and each bin is a count of 8 bytes for every population and every
 statistic, held once by the pass and once more by each chunk of rows a
-thread is reading, so 100000 bins of the four statistics of one population
-are 3.2 MB per chunk. Above the bound the counts are a vector no machine
+thread is reading, so 100000 bins of the five statistics with a
+histogram, the missing rate among them, of one population are 4 MB per
+chunk. Above the bound the counts are a vector no machine
 gives: 2^60 bins are the `PanicException` of a capacity that overflowed,
 which derives from `BaseException`, so `except Exception` does not catch
 it and a notebook dies, and 1e12 bins abort the interpreter where the
@@ -1250,19 +1542,19 @@ had none or the steps kept none, with the counts of each filter.
 
 A user writes the statistics they want and the kind of bins as names, in
 Python and in TypeScript alike, so the core turns a name into the thing
-and refuses the names of nothing: the five names, the two of the bins and
+and refuses the names of nothing: the six names, the two of the bins and
 the two messages are written once and not once in each binding crate.
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PerVarStat { ObsHet, Maf, ExpHet, UnbiasedExpHet, PolyVarsRatio }
+pub enum PerVarStat { ObsHet, Maf, ExpHet, UnbiasedExpHet, PolyVarsRatio, MissingRate }
 impl PerVarStat {
-    /// The name of each of the five, in the order above: what a user
+    /// The name of each of the six, in the order above: what a user
     /// writes in `stats`, and the field of the result that holds it.
-    pub const NAMES: [&'static str; 5];
+    pub const NAMES: [&'static str; 6];
     pub fn name(self) -> &'static str;
     /// The statistic a user named. An error for a name that is of none of
-    /// the five, which names them, a `ValueError` in Python.
+    /// the six, which names them, a `ValueError` in Python.
     pub fn of_name(name: &str) -> Result<PerVarStat>;
 }
 
@@ -1309,6 +1601,7 @@ pub struct PerVarDistribs {
     pub exp_het: Option<StatsDistrib>,
     pub unbiased_exp_het: Option<StatsDistrib>,
     pub poly_vars_ratio: Option<PolyVarsStats>,
+    pub missing_rate: Option<StatsDistrib>,
     /// The variants the pass gave.
     pub num_vars: u64,
 }
@@ -1344,6 +1637,84 @@ impl PerIndividualStats {
 pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(reader: &mut R)
     -> Result<PerIndividualStats>;
 ```
+
+The density of the variants. The start of window k of a chromosome is k x
+`window_size` + 1 and its end (k + 1) x `window_size`, except for the last
+window of a chromosome with a length, which ends at the length, and the
+last of one with no length whose full width would pass
+18446744073709551615, which ends there. `windows()` gives each window
+with its chromosome, its start, its end and its count, and the binding
+crates build the frame and the arrays from it, so that neither works out
+a start or an end.
+
+```rust
+/// The most windows a density has, over all its chromosomes.
+pub const MAX_NUM_WINDOWS: usize = 10_000_000;
+
+/// Where the length of a chromosome came from, which the error of a
+/// variant past it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LengthsFrom { ChromLengths, Source }
+
+pub struct VarDensity { /* private */ }
+impl VarDensity {
+    pub fn window_size(&self) -> u64;
+    /// The chromosomes in the order of the result.
+    pub fn chroms(&self) -> &[DensityOfChrom];
+    pub fn num_vars(&self) -> u64;
+    /// The windows over all the chromosomes, `MAX_NUM_WINDOWS` at most.
+    pub fn num_windows(&self) -> usize;
+    /// Every window, the chromosomes in the order of the result and the
+    /// windows of each in the order of their positions.
+    pub fn windows(&self) -> impl Iterator<Item = DensityWindow<'_>>;
+}
+
+pub struct DensityOfChrom {
+    pub name: String,
+    /// None when neither the caller nor the source gave one.
+    pub length: Option<u64>,
+    /// One count for each window, from the first.
+    pub counts: Vec<u32>,
+}
+
+/// One window, a row of the frame of Python.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DensityWindow<'a> {
+    pub chrom: &'a str,
+    /// The first and the last position of the window, both included.
+    pub start: u64,
+    pub end: u64,
+    pub num_vars: u32,
+}
+
+/// One pass over `reader`, asking it for the chromosome and the position
+/// alone. `chrom_lengths` of None reads the lengths of
+/// `reader.header()`, of `docs/specs/block.md`.
+pub fn calc_var_density<R: BlockReader + ?Sized>(
+    reader: &mut R, window_size: u64, chrom_lengths: Option<&[(String, u64)]>,
+) -> Result<VarDensity>;
+```
+
+Its errors are new cases of the error of the crate, each a `ValueError`
+in Python but where this paragraph says otherwise: a `window_size` of 0;
+a length of 0, with the chromosome and where the length came from; a
+chromosome named twice among the lengths, with the same; a variant past the length of its chromosome, with the
+chromosome, the position, the length and where the length came from; a
+variant at position 0, with the chromosome; more than `MAX_NUM_WINDOWS`
+windows, with the number; and a window of more than 4294967295
+variants, with the chromosome and the window. A source gives no length of
+0 and no chromosome twice, the VCF reader and the vars file reader refuse
+both, and the density refuses them from any source all the same: from the
+lengths of a source the two are a defect of its reader, a `RuntimeError`
+in Python, as the owner's convention has a defect of popnei, and from
+`chrom_lengths` a `ValueError`. A block
+whose chromosome number has no name in the table of its reader is a
+defect of that reader, a `RuntimeError` in Python. It gives two that are
+there already: the error of a pass that gave no variant, and, for a
+source with no chromosome and position, a vars file written without them
+or a `Variants` built from an array of genotypes, the error of
+`docs/specs/variant.md` for a field that a consumer depends on and did not
+get.
 
 The binding crates build the Python and TypeScript results from these,
 NaN for a `None`, and the names of the individuals from `individuals()`
@@ -1443,9 +1814,43 @@ individual statistics; popnei on 18 cores against pyNei on 6, 1.9, 3.9 and
 number to reach is set with the first measurement, as
 `docs/specs/dists.md` set its.
 
+The missing rate has not been measured. It is one division and one bin
+for each variant and population, from counts the pass takes already, and
+the numbers to reach above hold for the six statistics as they did for
+the five; a measurement of the pass with the six says whether they still
+are reached.
+
+The density was first measured on 27 September 2026, with
+`calc_var_density(variants, 100000)` called from Python by
+`crates/popnei/benches/time_stats.py density`, over `big.vars` and over
+`big.vcf` of `docs/specs/io_vcf.md`, a build of `maturin develop
+--release` at 22803af of the branch `plan/writer-regions-density`, on the
+same machine, the files in the page cache, at a load average of the
+minute before each set of 3.5. Each set is one run that is not timed and
+five that are, and each run opens the file again. Beside it, the read of
+the same file with `iter_blocks` and the genotypes alone, `time_stats.py
+read`, in the same session:
+
+| | the density, five runs | the read with the genotypes, the median |
+|---|---|---|
+| `big.vars`, 1 thread | 0.005 s in each | 0.103 s |
+| `big.vars`, 18 threads | 0.005 s in each | 0.026 s |
+| `big.vcf`, 1 thread | 0.040, 0.040, 0.041, 0.041, 0.042 s | 0.575 s |
+| `big.vcf`, 18 threads | 0.039 s in each | 0.083 s |
+
+The density asks the source for the chromosome and the position alone, so
+the vars file reader reads two columns of each batch and the VCF reader
+parses no genotype, and the threads change nothing: on the VCF what is left
+is its serial pass over the lines. Both files give 1000 windows, 500 on each
+of the two chromosomes, of 100 variants each. There is no number to reach
+yet; these are the first numbers the owner can set one against.
+
 ## Open points
 
-None. The owner decided the seven this spec had on 22 September 2026,
+None. The owner decided on 26 September 2026 how the windows of the
+density are laid and where they end, written under its item with the
+options not taken. The owner decided the seven this spec had before that
+on 22 September 2026,
 and each is written where it applies, with the option that was not
 taken: a block with nothing called gives no value, under "What pyNei does
 that is odd" of the expected heterozygosity; the unbiased correction is
@@ -1478,6 +1883,9 @@ per individual statistics; and the bin type of equal widths is spelt
   owner reversed that on that date, after a web application built on the
   TypeScript package asked for all five. F_ST and the other measures
   between two populations are `docs/specs/dists.md`.
+- Windows that slide by a step smaller than their width: the owner
+  decided on 26 September 2026 that the windows do not overlap, and a
+  step would be a later argument.
 - The per variant values themselves, as a frame: a user who wants them
   takes the genotypes with `iter_blocks`.
 - The three threshold filters over the individuals of one population:

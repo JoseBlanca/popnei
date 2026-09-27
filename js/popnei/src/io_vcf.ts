@@ -1,4 +1,4 @@
-/** Reading a VCF. */
+/** Reading and writing a VCF. */
 
 import {
   default_only_passed as defaultOnlyPassed,
@@ -9,11 +9,14 @@ import {
 
 import {
   aBoolean,
+  anObjectOfOptions,
   bytesOrFile as bytesOrFileOf,
   wholeNumberOfOneOrMore,
 } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
-import { Variants } from "./variant.js";
+import { theBytesAndTheCountsOf } from "./io_vars.js";
+import type { PassStats } from "./variant.js";
+import { Variants, sourceOfTheVariants } from "./variant.js";
 
 /**
  * What a source of variants is opened over: the bytes of the file, or the
@@ -90,6 +93,7 @@ export function openVcf(
   options: OpenVcfOptions = {},
 ): Variants {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("openVcf", options, ["ploidy", "onlyPassed"]);
   const ploidy =
     options.ploidy === undefined
       ? defaultPloidy()
@@ -104,4 +108,82 @@ export function openVcf(
       ? openVcfOfTheCore(file, ploidy, onlyPassed)
       : openVcfOfAFileOfTheCore(file, ploidy, onlyPassed),
   );
+}
+
+/** The VCF `writeVcf` wrote, and the counts of the pass it made. */
+export interface VcfWritten {
+  /**
+   * The bytes of the whole file, which a page offers as a download: a tab
+   * has no filesystem.
+   */
+  bytes: Uint8Array;
+
+  /**
+   * How many variants were written, and how many each filter of the
+   * `Variants` was given and kept.
+   */
+  passStats: PassStats;
+}
+
+/** How a VCF is written: bgzipped or as plain text. */
+export interface WriteVcfOptions {
+  /**
+   * Whether the file is compressed with bgzip, which tabix indexes and
+   * bcftools asks a region of. True when it is not given: there is no path
+   * to read the compression from.
+   */
+  bgzip?: boolean;
+}
+
+/**
+ * Every variant of `variants`, after its steps, as the bytes of a VCF,
+ * which a page offers as a download: a tab has no filesystem.
+ *
+ * It is how the variants popnei kept, filtered by missing data, by
+ * individual or by any other step, reach plink2, bcftools or a program of
+ * the user's own. When the source is a VCF, each variant is written as its
+ * line was, every column of it, INFO, FILTER, the phase and the values of
+ * each individual other than GT among them, and the header is the source's
+ * with a `#CHROM` line of the individuals that were kept, in the order the
+ * filter of individuals named them. When that filter took individuals out,
+ * AC and AN, counts over individuals that are no longer in the file, are
+ * taken out of INFO and their `##INFO` lines out of the header, as
+ * `bcftools annotate -x INFO/AC,INFO/AN` does; a filter that keeps every
+ * individual, in any order, leaves them.
+ *
+ * When the source is a vars file, the lines hold what the file holds, with
+ * FILTER and INFO a dot, FORMAT `GT` and the alleles of each genotype
+ * joined by `/`, since a vars file keeps no phase, under a header with one
+ * `##contig` line for each chromosome whose length the vars file keeps.
+ *
+ * The lines are written in the order the source gives them. A VCF opened
+ * with `onlyPassed` false and written with no step and `{bgzip: false}` is
+ * the same bytes, when its lines end in `\n` and none is empty. The call
+ * reads the source once, and the whole file is built in the memory of wasm
+ * before it crosses, in pieces, into the array that is returned.
+ *
+ * pyNei has no VCF writer, so nothing is mirrored; the name follows
+ * `writeVars`.
+ *
+ * @throws {Error} When `variants` is not a `Variants` or was freed, when
+ * `options` is not an object, when `bgzip` is not a boolean, when the source cannot be read, a wrong line of
+ * a VCF among the causes, when the memory of the tab does not take the
+ * file, and when `init` has not been awaited.
+ */
+export function writeVcf(
+  variants: Variants,
+  options: WriteVcfOptions = {},
+): VcfWritten {
+  theWasmHasToBeLoaded();
+  anObjectOfOptions("writeVcf", options, ["bgzip"]);
+  const bgzip =
+    options.bgzip === undefined ? true : aBoolean("bgzip", options.bgzip);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
+  const file = whileTheRunReads(() =>
+    source.write_vcf(bgzip, steps.of_a_pass()),
+  );
+  return theBytesAndTheCountsOf(file, "VCF");
 }

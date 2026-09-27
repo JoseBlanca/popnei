@@ -548,7 +548,7 @@ def test_a_max_num_vars_of_no_variants_is_refused_at_the_call() -> None:
     )
 
 
-def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
+def test_a_source_with_no_variant_is_refused(vcf_of_lines) -> None:
     """A VCF whose header names three individuals and that has no data line.
 
     A matrix of no pair is no answer, so a pass that gives no variant is a
@@ -558,7 +558,7 @@ def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
     core is what writes the sentence, so it is the sentence the distances
     give.
     """
-    path = write_vcf([])
+    path = vcf_of_lines([])
 
     with pytest.raises(ValueError) as refusal:
         calc_rogers_huff_r2_matrix(open_vcf(path))
@@ -570,7 +570,7 @@ def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
 
 
 def test_steps_that_kept_no_variant_are_refused_with_what_the_filter_counted(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """Two variants, each with a missing genotype, and a filter that keeps
     the variants with none.
@@ -579,7 +579,7 @@ def test_steps_that_kept_no_variant_are_refused_with_what_the_filter_counted(
     the message carries them: the filter was given the two variants of the
     source and kept neither.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t./.",
             "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t./.\t1/1",
@@ -598,7 +598,7 @@ def test_steps_that_kept_no_variant_are_refused_with_what_the_filter_counted(
     )
 
 
-def test_a_variant_with_no_called_genotype_gives_a_row_of_nan(write_vcf) -> None:
+def test_a_variant_with_no_called_genotype_gives_a_row_of_nan(vcf_of_lines) -> None:
     """Three variants, one of them called in nobody.
 
     A variant that nobody was called at is called together with no other
@@ -606,7 +606,7 @@ def test_a_variant_with_no_called_genotype_gives_a_row_of_nan(write_vcf) -> None
     its column and its diagonal cell are NaN. It is an answer and not an
     error: the other variants have their r² in the same matrix.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
             "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t./.\t./.\t./.",
@@ -623,7 +623,7 @@ def test_a_variant_with_no_called_genotype_gives_a_row_of_nan(write_vcf) -> None
     assert matrix.chroms == ("chr1", "chr1", "chr1")
 
 
-def test_what_is_no_variants_and_no_cap_is_refused(write_vcf) -> None:
+def test_what_is_no_variants_and_no_cap_is_refused(vcf_of_lines) -> None:
     """The two arguments of the function, each given what it cannot be.
 
     The path of the VCF in the place of the `Variants` is the mistake that
@@ -632,7 +632,7 @@ def test_what_is_no_variants_and_no_cap_is_refused(write_vcf) -> None:
     number 1, and a negative number are refused under the name the user
     wrote them in.
     """
-    path = write_vcf(["chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
+    path = vcf_of_lines(["chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
 
     with pytest.raises(TypeError, match="variants"):
         calc_rogers_huff_r2_matrix(path)
@@ -909,7 +909,7 @@ def test_ld_and_dist_reads_a_shared_individual_in_both_pops_and_an_unnamed_one_i
 
 
 def test_ld_and_dist_leaves_every_bin_empty_when_no_pair_reaches_min_dist(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """A dataset of one chromosome whose variants span less than `min_dist`,
     which "The cases" of `docs/specs/ld.md` says is no error.
@@ -918,7 +918,7 @@ def test_ld_and_dist_leaves_every_bin_empty_when_no_pair_reaches_min_dist(
     and the three variants still passed the major allele frequency, so
     `num_vars_per_pop` counts them.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
             "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
@@ -940,7 +940,7 @@ def test_ld_and_dist_leaves_every_bin_empty_when_no_pair_reaches_min_dist(
 
 
 def test_ld_and_dist_fits_no_curve_to_a_pop_whose_pairs_fall_at_one_distance(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """Two populations that get the three NaN of "The cases" of
     `docs/specs/ld.md`, one for each way a pass reaches them.
@@ -960,7 +960,7 @@ def test_ld_and_dist_fits_no_curve_to_a_pop_whose_pairs_fall_at_one_distance(
     Neither is an error, and the two come back in the order they were given
     and not in the order of their names.
     """
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
             "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/0\t0/1",
@@ -990,7 +990,7 @@ def test_ld_and_dist_fits_no_curve_to_a_pop_whose_pairs_fall_at_one_distance(
 
 
 def test_ld_and_dist_refuses_what_is_no_variants_no_distance_and_no_bins(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """The six arguments of the function, each given what it cannot be.
 
@@ -1003,7 +1003,7 @@ def test_ld_and_dist_refuses_what_is_no_variants_no_distance_and_no_bins(
     a `num_bins` of 0, a `max_allowed_maf` outside 0 to 1, and a population
     that names an individual the dataset has not.
     """
-    path = write_vcf(["chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
+    path = vcf_of_lines(["chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
 
     with pytest.raises(TypeError, match="variants"):
         calc_ld_and_dist_per_pop(path)

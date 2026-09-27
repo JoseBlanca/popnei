@@ -66,6 +66,27 @@ when a filter took variants out, before the vars file writer, and at the
 end of `iter_blocks`. A block that already has the size, with nothing
 waiting from the one before, goes through as it is, with no copy.
 
+A reader gives two things more, added on 26 September 2026 with the VCF
+writer and the filter by regions. It gives what
+its source said of itself before the first variant, the header: the
+length of each chromosome that the source gives one for, and, for a VCF,
+the lines of its header before `#CHROM`. A reader over another reader
+gives its source's. And a source can be handed the regions of the filter
+by regions, and then gives only the variants that filter can keep and
+counts the ones it passed over, which "How it runs" of that filter in
+`docs/specs/filters.md` describes. A reader over another reader that
+changes no variant, the filter of individuals, `reblock` and the reader
+one block ahead, hands the regions on; a filter of variants does not,
+because the variants its source passed over would not reach its counts.
+
+A block can hold one more column, the text of the lines of a VCF, which
+the VCF writer of `docs/specs/io_vcf.md` asks for and nothing else does:
+for each variant the text of its first nine columns and of the column of
+each individual. `retain_vars` compacts it with the other columns,
+`retain_individuals` keeps the texts of the kept individuals in the order
+it keeps their genotypes, and `reblock` joins and cuts it. It is not a
+field that `iter_blocks` gives.
+
 How many variants a block has, when the caller does not say, follows
 pyNei's `calc_num_vars_per_chunk` of `pynei/variants.py`: 5 million
 genotypes divided by the number of individuals, and no fewer than 100
@@ -371,9 +392,15 @@ One thread, spawned inside a `std::thread::scope` so that the chain can be
 lent to it by reference and is back with its owner when the scope ends. One
 channel of capacity zero carries what the thread read, a block with the
 names and the counts the chain then had, or the word that there are no more,
-or the error the chain failed with, and nothing follows either of the last
+or the error the chain failed with, and no block follows either of the last
 two. A second channel, from the pass to the thread, carries a change of the
-fields the pass asks for.
+fields the pass asks for and an offer of the regions of the filter by
+regions, which the thread hands to the chain before it builds its next
+block and whose answer comes back on the first channel. The thread serves
+that second channel after its last word too, until the pass drops the
+handle, so that an offer made at the end of the chain gets the chain's
+answer and not one that depends on when the thread ended. An answer that
+arrives where the pass asked for a block is a defect of popnei.
 
 A pass that returns in the middle, which a calculation whose block fails
 does and which the Ctrl-C of a Python user comes out as, drops the handle;
@@ -451,6 +478,9 @@ pub struct Block {
     pub id: Option<Vec<String>>,
     pub alleles: Option<AllelesColumn>,
     pub qual: Option<Vec<f32>>,
+    /// The text of the lines of a VCF, when `VCF_TEXT` was asked for and
+    /// the source is a VCF.
+    pub vcf_text: Option<VcfText>,
 }
 impl Block {
     /// Which fields the block holds: the columns that are there, and GTS
@@ -478,6 +508,51 @@ The per variant work that uses the threads runs rayon over the rows of
 most calculations read; `variants` is for the work that reads the other
 fields too. A row has one allele at least: every source refuses a ploidy
 of 0 and a file with no individuals.
+
+The text of the lines of a VCF. How it keeps the texts is private, and it
+is meant to be one buffer for a block with the bounds of each text, and
+not a string for each individual.
+
+```rust
+pub struct VcfText { /* private */ }
+impl VcfText {
+    pub fn num_vars(&self) -> usize;
+    pub fn num_individuals(&self) -> usize;
+    /// CHROM to FORMAT of the variant, joined by tabs as the line has them.
+    /// The three texts are empty for a variant or an individual the block
+    /// does not hold; the writer reaches them through a path that refuses
+    /// one instead.
+    pub fn fixed(&self, var: usize) -> &str;
+    /// The column of the individual, `0/1:12` or `./.`.
+    pub fn individual(&self, var: usize, individual: usize) -> &str;
+    /// The columns of every individual of the variant, in the order of
+    /// the block, joined by tabs as the line has them, which the writer
+    /// copies in one piece after the nine first columns.
+    pub fn individuals(&self, var: usize) -> &str;
+}
+```
+
+`check` asks of it what it asks of every column, one entry for each
+variant, and one text for each individual of the block, and that the ends
+of its texts are one for the nine first columns and one for each
+individual of each variant, inside the text of their line.
+
+What a source said of itself before its first variant.
+
+```rust
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SourceHeader {
+    /// The individuals of the source, before any filter of individuals.
+    pub individuals: Vec<String>,
+    /// The chromosomes the source gives a length for, in the order it
+    /// gives them: the `##contig` lines of a VCF with a `length`, and what
+    /// a vars file keeps of them.
+    pub chrom_lengths: Vec<(String, u64)>,
+    /// The lines of the header of a VCF before `#CHROM`, as the file has
+    /// them. None for any other source.
+    pub vcf_meta_lines: Option<Vec<String>>,
+}
+```
 
 The trait of everything that gives blocks, with the contract of "What it
 gives". It can be used as a boxed trait object, `Box<dyn BlockReader>`:
@@ -508,11 +583,27 @@ pub trait BlockReader: Send {
     /// its source, this one first when it is a filter:
     /// `docs/specs/filters.md`. A source gives none.
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
+    /// What the source said of itself. A reader over another reader
+    /// gives its source's.
+    fn header(&self) -> &SourceHeader;
+    /// It offers the reader the regions of the filter by regions, the
+    /// variants the selection does not keep it may skip from the next
+    /// block it builds, and says whether it will. A source that can skip
+    /// says true, a reader over another reader that changes no variant
+    /// hands the offer to its source and says what it answers, and a
+    /// filter of variants says false. An offer that a source took holds
+    /// for as long as that source lives, so the reader that offers owns
+    /// its source. `docs/specs/filters.md`.
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool;
+    /// How many variants the source passed over for the regions it was
+    /// handed, since the pass started. 0 for a reader that skips nothing.
+    fn num_skipped(&self) -> u64;
 }
 ```
 
-`filtering_stats` has no default, so that a reader over another reader
-that forgets to pass on the counts of its source does not compile.
+`filtering_stats`, `header`, `skip_outside` and `num_skipped` have no
+default, so that a reader over another reader that forgets to pass on
+what its source says does not compile.
 
 `reblock`.
 
@@ -584,7 +675,7 @@ pub fn needs_of_the_fields<'a>(
 ) -> Result<Needs>;
 ```
 
-This module adds seven cases to the error of the crate. A
+This module adds eight cases to the error of the crate. A
 `num_vars_per_block` of 0, which `Reblock::new` and every source that
 takes a size refuse. A block the machine cannot give the memory for: a
 reader that is given a size refuses one whose genotypes,
@@ -607,7 +698,10 @@ when a block of its source has another number of individuals or another
 ploidy than the source says it has. A block of no variants, which
 `reblock` refuses. A block whose arrays are not of its size, which `check`
 finds, with the array and the two sizes. A `keep` that has not one value
-for each variant of its block. And a name that is not a field of a block.
+for each variant of its block. A name that is not a field of a block. And
+an answer to an offer of regions that reaches the reader one block ahead
+where it asked for a block, a defect of popnei, a `RuntimeError` in
+Python.
 
 ## Open points
 

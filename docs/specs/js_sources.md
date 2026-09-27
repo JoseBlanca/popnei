@@ -24,8 +24,8 @@ spec stands beside; `docs/specs/block.md` has `iterBlocks`.
 Three words of `docs/glossary.md` are used throughout. A **pass** is one
 reading of a source of variants from its start to its end. A **consumer** is
 what takes a `Variants`, makes the passes it needs and gives a result: a
-calculation, the writer `writeVars`, or `iterBlocks`; the package has twelve
-of them. A **run** is one call of one consumer, with the passes it makes.
+calculation, the writers `writeVars` and `writeVcf`, or `iterBlocks`; the
+package has fourteen of them, `writeVcf` among them since 26 September 2026 and `calcVarDensity` since 27 September 2026. A **run** is one call of one consumer, with the passes it makes.
 
 What the user of an application pays today, with the file taken whole:
 
@@ -294,10 +294,10 @@ of the next run. Setting it changes nothing about the variants a pass
 gives.
 
 Every consumer of the package can throw the value that `told` threw:
-`calcPerVarDistribs`, `calcPerIndividualStats`, `calcPairwiseKosmanDists`,
-`calcPopDists`, `calcPopDiversity`, `calcRogersHuffR2Matrix`,
+`calcPerVarDistribs`, `calcPerIndividualStats`, `calcVarDensity`,
+`calcPairwiseKosmanDists`, `calcPopDists`, `calcPopDiversity`, `calcRogersHuffR2Matrix`,
 `calcLdAndDistPerPop`, `calcKinship`, `doPcaFromVariants`, `calcGwas`,
-`writeVars` and the iteration of `iterBlocks`.
+`writeVars`, `writeVcf` and the iteration of `iterBlocks`.
 
 `onProgress` has no Python counterpart, and neither has `numPassesOf` of the
 item below. Goal 2 of `docs/objectives.md` asks for every difference between
@@ -417,12 +417,12 @@ from it, with ranges of the size popnei chose:
   is one pass.
 - Twelve `iterBlocks` over one source, opened together and read one after
   another, give calls of `pass` 1 and `numPasses` 1 for each of the twelve.
-- For each of the twelve consumers, a function that throws on its first
+- For each of the fourteen consumers, a function that throws on its first
   call: the consumer throws that same value, checked with `===` and not by
   its message, and the same `Variants` then gives its variants through
   `iterBlocks`, the 475 of `many.vcf` that passed a filter of the file, or
   the 500 it holds when it was opened with `onlyPassed` false.
-- For each of the twelve consumers, a function that calls the `free()` of
+- For each of the fourteen consumers, a function that calls the `free()` of
   the variants the run is reading: the `free()` is refused with popnei's own
   `Error`, that error leaves the function as any other thrown value does and
   the consumer gives it back, and the same `Variants` then gives its
@@ -433,7 +433,7 @@ from it, with ranges of the size popnei chose:
   about a value it holds, after the generated `free` had zeroed the pointer
   of the handle and dropped its entry of the `FinalizationRegistry`, so the
   source stayed in the memory of wasm with no handle left to free it. The
-  list of the twelve the two loops run over is held to the twelve the
+  list of the fourteen the two loops run over is held to the fourteen the
   binding crate names, which it writes in the message of a name that is of
   no consumer.
 - A function that throws on the first call of the second pass: the PCA
@@ -458,7 +458,7 @@ from it, with ranges of the size popnei chose:
   pass read on, was still told of the first read of that pass, which is one
   call of pass 1 of 1, and passed that check while it gave popnei's error
   for the failed read in place of the value the application threw.
-- For each of the twelve consumers, the largest `pass` of the calls of one
+- For each of the fourteen consumers, the largest `pass` of the calls of one
   run equals `numPassesOf` of it with the same options, and the last call of
   each of its passes says the 117346 bytes of `many.vcf`. The association
   study is run twice here, once with the GRAMMAR-Gamma approximation and
@@ -527,7 +527,7 @@ the default of the exact denominator; each of the eleven names other than
 among them; a name that is of no consumer throws, and so does a
 `numPrinComps` of -1 and a `useGrammarGammaApprox` that is not a boolean.
 The test of the item above
-runs each of the twelve and compares the passes the calls showed with the
+runs each of the thirteen and compares the passes the calls showed with the
 number this function gives, which is what would catch a consumer that grew a
 pass and did not say so.
 
@@ -737,7 +737,7 @@ another over one source and tags each with a key of its own, since the
 function can carry that key, and it leaves the options of every consumer as
 the ones of the Python API, which goal 3 of `docs/objectives.md` asks the
 TypeScript API to mirror. An argument of every consumer is the same power
-with twelve places to add it to and twelve more lines of documentation.
+with thirteen places to add it to and thirteen more lines of documentation.
 Recommendation: the method of `Variants`. Meanwhile the implementer writes
 that.
 

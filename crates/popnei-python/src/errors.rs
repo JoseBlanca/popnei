@@ -388,15 +388,15 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             format!("the file could not be read: {}", what_went_wrong(&source)),
             path,
         ),
-        // The vars file that a call was writing and that the file system
-        // or arrow-rs refused, which is an error of that file and not of
+        // The vars file or the VCF that a call was writing and that the
+        // file system or arrow-rs refused, which is an error of that file and not of
         // the source the call was reading: `path` is the file being
         // written wherever this case travels, and the message of the core
         // says already that it could not be written. The number is the
         // system's when the file system is what refused, so that Python
         // raises the exception of that number, and there is none when
         // arrow-rs refused what it was handed.
-        popnei::Error::VarsFileNotWritten { ref source, .. } => {
+        popnei::Error::FileNotWritten { ref source, .. } => {
             let number = source.as_ref().and_then(std::io::Error::raw_os_error);
             os_error(number, without_the_number(message, number), path)
         }
@@ -453,15 +453,52 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::MoreAllelesThanACountHolds { .. }
         | popnei::Error::AlleleBelowTheMissingOne { .. }
         | popnei::Error::IndividualBeyondTheVariant { .. }
+        // The missing rate of a population of no individual, which only a
+        // caller of the core that built its populations without
+        // `Pops::from_names` gives.
+        | popnei::Error::MissingRateOfAPopOfNoIndividual { .. }
         | popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
+        | popnei::Error::ReadAheadAnswerInPlaceOfABlock
         | popnei::Error::BlockWithNoGenotypeOfAVariant { .. }
         | popnei::Error::KeepOfAnotherSize { .. }
         | popnei::Error::VcfParseNotFinished { .. }
         | popnei::Error::VarsBlockDoesNotFit { .. }
         | popnei::Error::VarsBlockColumns { .. }
         | popnei::Error::VarsChromNameMissing { .. }
+        // The two of the VCF writer, which are of the same kind: a block
+        // that holds neither the text of its lines nor every column a line
+        // is written from, and a chromosome number its reader has no name
+        // for. `write_vcf` asks its reader for both, so a user reaches them
+        // only through a reader with a defect.
+        | popnei::Error::VcfWriterFieldsMissing { .. }
+        | popnei::Error::VcfWriterChromNameMissing { .. }
+        // The one of the filter by regions, which is of the same kind: a
+        // block whose chromosome number the table of its reader has no name
+        // for, which the filter looks the regions up by.
+        | popnei::Error::RegionFilterChromNameMissing { .. }
+        // The one of the density of the variants, which is of the same kind:
+        // a block whose chromosome number the table of its reader has no
+        // name for, which the lengths are looked up by.
+        | popnei::Error::VarDensityChromNameMissing { .. }
+        // And the two of its lengths that only a reader with a defect gives:
+        // a length of 0 and a chromosome twice among the lengths the header
+        // of the source has, which the VCF reader and the vars file reader
+        // refuse when they read the header. From `chrom_lengths` the same
+        // two are of what a user wrote, a `ValueError` below.
+        | popnei::Error::VarDensityChromLengthZero {
+            from: popnei::stats::LengthsFrom::Source,
+            ..
+        }
+        | popnei::Error::VarDensityChromLengthTwice {
+            from: popnei::stats::LengthsFrom::Source,
+            ..
+        }
+        // A member of bgzip that the writer could not put together, which
+        // its cutting of the text into members and its stored block of a
+        // text deflate does not shrink make impossible.
+        | popnei::Error::VcfWriterMemberNotBuilt { .. }
         // A population of the fall-off of r² with distance that has no
         // dosages when the pass has ended, which is one more of that kind:
         // the pass refuses a reader that gave no variant before it fits any

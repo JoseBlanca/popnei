@@ -259,6 +259,7 @@ mod fixtures {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         }
     }
 

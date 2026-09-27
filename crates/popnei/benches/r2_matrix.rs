@@ -125,8 +125,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use popnei::block::{Block, BlockReader, Reblock};
-use popnei::filters::FilteringStats;
+use popnei::block::{Block, BlockReader, Reblock, SourceHeader};
+use popnei::filters::{FilteringStats, RegionSelection};
 use popnei::io::vars::VarsReader;
 use popnei::ld::bench_internals::the_r2_matrix_in_tiles_of;
 use popnei::variant::{ChromTable, Needs};
@@ -308,6 +308,20 @@ impl BlockReader for TheFirstVarsOfTheFile {
 
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         self.reader.filtering_stats()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        self.reader.header()
+    }
+
+    /// False: this reader gives the first variants of its source, which
+    /// would be others if the source passed over some.
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    fn num_skipped(&self) -> u64 {
+        0
     }
 }
 

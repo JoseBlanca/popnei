@@ -1140,6 +1140,18 @@ mod tests {
         fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
             Vec::new()
         }
+
+        fn header(&self) -> &crate::block::SourceHeader {
+            &crate::block::AN_EMPTY_HEADER
+        }
+
+        fn skip_outside(&mut self, _selection: crate::filters::RegionSelection) -> bool {
+            false
+        }
+
+        fn num_skipped(&self) -> u64 {
+            0
+        }
     }
 
     /// The pass over the blocks of a reader of the tests, over every
@@ -1181,6 +1193,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         }
     }
 

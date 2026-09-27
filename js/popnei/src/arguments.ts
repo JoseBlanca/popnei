@@ -242,6 +242,67 @@ export function aNumber(argument: string, value: unknown): number {
  *
  * @throws {Error} When `value` is not a boolean.
  */
+/**
+ * That the options given to `functionName` are an object that holds none
+ * but `options`: `null`, which JavaScript reads a property of with its own
+ * `TypeError` that names neither popnei nor the argument, is refused with
+ * popnei's `Error`, and so is a key that is not one of `options`.
+ *
+ * @throws {Error} When `value` is not an object, or is `null` or an array,
+ * and what `onlyTheseOptions` throws.
+ */
+export function anObjectOfOptions(
+  functionName: string,
+  value: unknown,
+  options: readonly string[],
+): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `popnei: the options of \`${functionName}\` are an object, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  onlyTheseOptions(functionName, value, options);
+}
+
+/**
+ * That the object of options given to `functionName` holds none but
+ * `options`.
+ *
+ * An option that is misspelt, `{excluded: true}` for `{exclude: true}` or
+ * `{onlypassed: false}` for `{onlyPassed: false}`, is an option that was
+ * not given, so the call would run with the default and say nothing of it:
+ * `filterByRegions` would keep the variants inside the regions where the
+ * user asked for those outside. TypeScript refuses such a key in an object
+ * written in the call, and not in one built elsewhere nor in JavaScript.
+ *
+ * @throws {Error} When `value` holds a key that is not one of `options`,
+ * which the message names with the options there are.
+ */
+export function onlyTheseOptions(
+  functionName: string,
+  value: object,
+  options: readonly string[],
+): void {
+  for (const key of Object.keys(value)) {
+    if (!options.includes(key)) {
+      throw new Error(
+        `popnei: \`${key}\` is not an option of \`${functionName}\`, whose ` +
+          `options are ${listed(options)}`,
+      );
+    }
+  }
+}
+
+/** The names, each in backticks, joined with commas and a last `and`. */
+function listed(names: readonly string[]): string {
+  const quoted = names.map((name) => `\`${name}\``);
+  const last = quoted.pop();
+  if (last === undefined) {
+    return "none";
+  }
+  return quoted.length === 0 ? last : `${quoted.join(", ")} and ${last}`;
+}
+
 export function aBoolean(argument: string, value: unknown): boolean {
   if (typeof value !== "boolean") {
     throw new Error(
@@ -298,6 +359,36 @@ export function bytesOrFile(
   // any code of popnei runs, and an allocation that fails there is a trap
   // that leaves the module unusable. This asks for the memory first, and
   // what it grew is what that copy then finds.
+  roomForBytes(value.length);
+  return value;
+}
+
+/**
+ * The bytes of `value` when it is a `Uint8Array` that can be read and that
+ * the memory of wasm takes, and an `Error` otherwise: the checks of
+ * `bytesOrFile` for an argument that is read whole at the call, and so is
+ * never the `File` of a page.
+ *
+ * @throws {Error} When `value` is not a `Uint8Array`, when its buffer was
+ * transferred, and when the memory of wasm does not take a copy of it.
+ */
+export function bytesOfAFile(argument: string, value: unknown): Uint8Array {
+  if (!(value instanceof Uint8Array)) {
+    throw new Error(
+      `popnei: \`${argument}\` is the bytes of the file, a Uint8Array, and ` +
+        `${whatWasGiven(value)} was given; text is turned into bytes with new ` +
+        "TextEncoder().encode(text), a file of node is read with new " +
+        "Uint8Array(await readFile(path)), and the File of a page with new " +
+        "Uint8Array(await file.arrayBuffer())",
+    );
+  }
+  if ((value.buffer as { detached?: unknown }).detached === true) {
+    throw new Error(
+      `popnei: the buffer of \`${argument}\` was transferred, to a web worker ` +
+        "or somewhere else, and the bytes of the file are there and not in " +
+        "this array",
+    );
+  }
   roomForBytes(value.length);
   return value;
 }

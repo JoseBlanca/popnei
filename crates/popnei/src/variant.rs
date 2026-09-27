@@ -38,16 +38,17 @@ pub const MISSING_ALLELE: i8 = -1;
 pub const MAX_ALLELE: i8 = i8::MAX;
 
 /// The name of each field, for the messages. In the order of the bits.
-const NAMES_OF_THE_NEEDS: [(Needs, &str); 5] = [
+const NAMES_OF_THE_NEEDS: [(Needs, &str); 6] = [
     (Needs::GTS, "gts"),
     (Needs::CHROM_POS, "chrom and pos"),
     (Needs::ID, "id"),
     (Needs::ALLELES, "alleles"),
     (Needs::QUAL, "qual"),
+    (Needs::VCF_TEXT, "vcf_text"),
 ];
 
 /// Which fields of the variants a consumer wants, or which ones a block
-/// holds: a set of the five fields, with union, [`Needs::contains`] and
+/// holds: a set of the six fields, with union, [`Needs::contains`] and
 /// [`Needs::difference`].
 ///
 /// A reader is asked for a set with
@@ -68,8 +69,17 @@ impl Needs {
     pub const ALLELES: Needs = Needs(8);
     /// The quality of the variant.
     pub const QUAL: Needs = Needs(16);
-    /// The five fields, built from the five constants, so that a field
-    /// added to this set later cannot be left out of it.
+    /// The text of the line of each variant of a VCF, CHROM to FORMAT and
+    /// the column of each individual, which only the VCF writer asks for
+    /// and only the VCF reader gives: [`VcfText`](crate::block::VcfText).
+    /// It is not in [`Needs::ALL`], the fields that the writer of a vars
+    /// file asks for, since that file has no place for it.
+    pub const VCF_TEXT: Needs = Needs(32);
+    /// The five fields of a variant that a vars file holds, the genotypes to
+    /// the quality, which the writer of a vars file asks for. A field added
+    /// to `Needs` is added here by hand when a vars file holds it:
+    /// [`Needs::VCF_TEXT`] is left out, since that file has no place for
+    /// the text of the lines of a VCF.
     pub const ALL: Needs = Needs::GTS
         .union(Needs::CHROM_POS)
         .union(Needs::ID)
@@ -2043,6 +2053,7 @@ mod tests {
                 id: None,
                 alleles: None,
                 qual: None,
+                vcf_text: None,
             };
             let mut standardized: Vec<f64> = Vec::new();
 

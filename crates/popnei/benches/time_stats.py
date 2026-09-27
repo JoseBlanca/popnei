@@ -6,7 +6,7 @@ same passes of pyNei that `time_pynei_stats.py` times.
 `docs/reports/stats-measurement.md` has the numbers and the load averages
 they were taken at, and says what each pass does.
 
-The six passes it can time, one per invocation:
+The seven passes it can time, one per invocation:
 
     read              `iter_blocks` with the genotypes as the only field,
                       which is the read of the file and nothing else
@@ -21,6 +21,10 @@ The six passes it can time, one per invocation:
     per-var-maf       the same with the major allele frequency alone and no
                       `pops`
     per-individual    `calc_per_individual_stats`
+    density           `calc_var_density` in windows of 100000 base pairs,
+                      with the lengths the file gives, which is the first
+                      measurement "Speed" of `docs/specs/stats.md` asks of
+                      the density
 
 The two passes with one statistic say how the pass with five divides up,
 and they are the rows pyNei's table of "Speed" of `docs/specs/stats.md`
@@ -78,6 +82,7 @@ WHATS = (
     "per-var-obs-het",
     "per-var-maf",
     "per-individual",
+    "density",
 )
 
 
@@ -173,6 +178,8 @@ def one_pass(path: str, what: str, pops: dict[str, list[str]] | None = None) -> 
         ).pass_stats.num_vars
     if what == "per-individual":
         return popnei.calc_per_individual_stats(variants).pass_stats.num_vars
+    if what == "density":
+        return popnei.calc_var_density(variants, 100_000).pass_stats.num_vars
     raise ValueError(f"the pass to time is one of {WHATS}, and {what!r} was given")
 
 

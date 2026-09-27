@@ -19,6 +19,7 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
+pub mod density;
 pub mod dists;
 pub mod diversity;
 pub mod errors;

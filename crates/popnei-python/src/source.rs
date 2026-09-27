@@ -92,6 +92,11 @@ pub(crate) trait OpenSource: Sync {
         &self,
         num_vars_per_block: Option<usize>,
     ) -> Result<Box<dyn BlockReader>, popnei::Error>;
+
+    /// The size of the blocks that a pass of the VCF writer opens the
+    /// source with, which `num_vars_per_block_of_write_vcf` of the core
+    /// chooses for the kind of source this is.
+    fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize>;
 }
 
 /// The source that `object` is, which is one of the two classes a
@@ -277,6 +282,9 @@ impl Blocks {
             id,
             alleles,
             qual,
+            // The text of the lines of a VCF is for its writer, and not a
+            // field that `iter_blocks` gives.
+            vcf_text: _,
         } = block;
         // The three dimensions are given to the array as it is built and
         // not by reshaping one of a single dimension, whose array would

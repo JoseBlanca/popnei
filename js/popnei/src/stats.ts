@@ -19,6 +19,9 @@
  * is missing and the share of its called genotypes at which it is
  * heterozygous. It takes no `pops`, since each of its values is of one
  * individual.
+ *
+ * `calcVarDensity` takes no `pops` either: it counts the variants in windows
+ * along each chromosome, and reads no genotype.
  */
 
 import {
@@ -30,8 +33,10 @@ import {
 } from "../wasm/popnei.js";
 
 import {
+  anObjectOfOptions,
   aNumber,
   aString,
+  distanceInBasePairs,
   namesOf,
   popsOfTheObject,
   whatWasGiven,
@@ -42,7 +47,7 @@ import type { PassStats, Variants } from "./variant.js";
 import { passStatsOf, sourceOfTheVariants } from "./variant.js";
 
 /**
- * The five statistics `calcPerVarDistribs` calculates, each named as the
+ * The six statistics `calcPerVarDistribs` calculates, each named as the
  * field of the result that holds it is named in Python.
  */
 const THE_STATISTICS = [
@@ -51,18 +56,20 @@ const THE_STATISTICS = [
   "exp_het",
   "unbiased_exp_het",
   "poly_vars_ratio",
+  "missing_rate",
 ] as const;
 
 /**
- * The name of one of the five statistics of a variant: the observed
+ * The name of one of the six statistics of a variant: the observed
  * heterozygosity, the heterozygous genotypes of a population over its called
  * ones; the major allele frequency, the count of its commonest allele over
  * its called alleles; the expected heterozygosity, the chance that gene
  * copies taken at random from the population are not all of the same allele,
  * plain and corrected for the frequencies being estimated from the copies
- * the statistic is computed over; and the polymorphism ratio, how many of
- * the variants vary in the population, which is a count and not a
- * distribution.
+ * the statistic is computed over; the polymorphism ratio, how many of the
+ * variants vary in the population, which is a count and not a distribution;
+ * and the missing rate, the missing genotypes of the population over its
+ * individuals, called or not, a half called genotype being missing.
  */
 export type PerVarStat = (typeof THE_STATISTICS)[number];
 
@@ -91,7 +98,7 @@ export interface HistKwargs {
 /** What `calcPerVarDistribs` calculates, for which populations and how. */
 export interface PerVarDistribsOptions {
   /**
-   * Which of the five statistics to calculate, all of them when it is not
+   * Which of the six statistics to calculate, all of them when it is not
    * given. Asking for fewer is a saving of work and changes no value, and a
    * result holds `null` for one nobody asked for.
    */
@@ -114,7 +121,8 @@ export interface PerVarDistribsOptions {
    * the called data counted in genotypes, the called alleles of the
    * population over the ploidy, which is a half when a genotype is half
    * called, and the variant has no value when that number is strictly less
-   * than the threshold. A variant with no value in a population is out of
+   * than the threshold, for every statistic but the missing rate, which
+   * every variant has. A variant with no value in a population is out of
    * the mean and in no bin of the histogram of that population.
    */
   minNumIndividuals?: number;
@@ -158,9 +166,9 @@ export interface StatsDistrib {
   /**
    * The edges of the bins, one more number than there are bins.
    *
-   * The four distributions of one result share this array, as pyNei's do,
+   * The five distributions of one result share this array, as pyNei's do,
    * so it is read only: a number written into the edges of one statistic
-   * would be in the edges of the other three.
+   * would be in the edges of the other four.
    */
   histBinEdges: Readonly<Float64Array>;
 
@@ -228,6 +236,12 @@ export interface PerVarDistribs {
   polyVarsRatio: PolyVarsStats | null;
 
   /**
+   * The distribution of the missing rate, which every variant has in every
+   * population.
+   */
+  missingRate: StatsDistrib | null;
+
+  /**
    * How many variants the pass gave, after the steps of the `Variants`, and
    * what each filter of it was given and kept.
    */
@@ -235,7 +249,7 @@ export interface PerVarDistribs {
 }
 
 /**
- * Up to five statistics of every variant and every population of `variants`,
+ * Up to six statistics of every variant and every population of `variants`,
  * in one pass over them, as a mean and a histogram each.
  *
  * The statistics are the observed heterozygosity, the heterozygous genotypes
@@ -244,8 +258,12 @@ export interface PerVarDistribs {
  * heterozygosity, the chance that gene copies taken at random from the
  * population are not all of the same allele, plain and corrected for the
  * frequencies being estimated from the copies the statistic is computed
- * over; and the polymorphism ratio, how many of the variants vary in the
- * population, which is a count and not a distribution.
+ * over; the polymorphism ratio, how many of the variants vary in the
+ * population, which is a count and not a distribution; and the missing
+ * rate, the missing genotypes of the population over its individuals, called
+ * or not, a half called genotype being missing. The missing rate has a value
+ * at every variant, whatever `minNumIndividuals` is, and a variant with
+ * nothing called in a population has a rate of 1 there.
  *
  * It is a consumer of the `variants`: it makes one pass over the source
  * through the steps the `Variants` has when it is called, and the `Variants`
@@ -271,7 +289,7 @@ export interface PerVarDistribs {
  * diploid one at every ploidy; `ploidy` is the exponent alone, where pyNei
  * also counts with it the alleles the individuals are expected to hold; a
  * duplicated name in a population, an empty population and an empty `pops`
- * are refused; and the result has `passStats`.
+ * are refused; the result has `passStats`; and pyNei has no missing rate.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed; when
  * `stats` is not an array of names, when a name of it is of no statistic and
@@ -292,6 +310,7 @@ export function calcPerVarDistribs(
   options: PerVarDistribsOptions = {},
 ): PerVarDistribs {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("calcPerVarDistribs", options, ["stats", "pops", "minNumIndividuals", "histKwargs", "ploidy", "polyThreshold"]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,
@@ -368,6 +387,12 @@ export function calcPerVarDistribs(
         distribs.num_variable(),
         distribs.num_vars_with_data(),
       ),
+      missingRate: distribOf(
+        edges,
+        distribs.missing_rate_mean(),
+        distribs.missing_rate_hist_counts(),
+        "missing_rate",
+      ),
       passStats: passStatsOf(distribs.pass_stats()),
     };
   } finally {
@@ -377,7 +402,7 @@ export function calcPerVarDistribs(
 
 /**
  * The names of the statistics a user asked for, each once and in the order
- * they named them, and the five of them when they named none.
+ * they named them, and the six of them when they named none.
  *
  * Which names there are is the binding crate's rule, as the two kinds of
  * bins are: what is refused here is what is no array of names and an array
@@ -394,7 +419,7 @@ function theStats(stats: readonly PerVarStat[] | undefined): string[] {
   if (asked.length === 0) {
     throw new Error(
       "popnei: `stats` names no statistic, and a result holds the ones that " +
-        "were asked for: leave `stats` out for the five of them",
+        "were asked for: leave `stats` out for the six of them",
     );
   }
   return [...new Set(asked)];
@@ -638,4 +663,166 @@ export function calcPerIndividualStats(
   } finally {
     stats.free();
   }
+}
+
+/** The options of `calcVarDensity`. */
+export interface VarDensityOptions {
+  /**
+   * The length of each chromosome, an object of chromosome name to length,
+   * which replaces the lengths of the source for every chromosome: one it
+   * does not name has no length. When it is not given the lengths are those
+   * of the source, the `##contig` lines of a VCF that have a `length` and
+   * what a vars file keeps of them.
+   */
+  chromLengths?: Record<string, number>;
+}
+
+/** What `calcVarDensity` gives back, one entry of each array per window. */
+export interface VarDensity {
+  /** The name of the chromosome of each window. */
+  chroms: readonly string[];
+
+  /** The first position of each window, counted from 1. */
+  start: Float64Array;
+
+  /** The last position of each window, included. */
+  end: Float64Array;
+
+  /** How many variants of the pass are at a position from start to end. */
+  numVars: Uint32Array;
+
+  /**
+   * How many variants the pass gave, after the steps of the `Variants`, and
+   * what each filter of it was given and kept.
+   */
+  passStats: PassStats;
+}
+
+/**
+ * How many variants fall in each window of `windowSize` base pairs along
+ * each chromosome, in one pass over `variants`.
+ *
+ * A user sees with it where the variants are crowded, where there are none,
+ * a centromere or a region that did not map, and how evenly a filter took
+ * variants out. The windows of a chromosome are laid end to end from the
+ * position 1 and do not overlap: window k, counted from 0, holds the
+ * positions from k x `windowSize` + 1 to (k + 1) x `windowSize`. A window
+ * with no variant is in the result with a count of 0.
+ *
+ * With the length of a chromosome the windows cover it to its end, and the
+ * last one ends at the length. Without one, the windows go up to the one
+ * that holds the last variant of the chromosome, and that one ends at its
+ * full width. A chromosome with a length is in the result whether or not it
+ * has a variant. The chromosomes are in the order of the lengths, and after
+ * them those with variants and no length, in the order their first variant
+ * came; the windows of each in the order of their positions. The order of
+ * `chromLengths` is the order JavaScript gives the keys of an object, which
+ * puts the keys that are whole numbers first, in ascending order, and then
+ * the others in the order they were written: `{X: 1, "10": 1, "2": 1}` gives
+ * 2, 10 and X, where the same dict in Python gives X, 10 and 2.
+ *
+ * It is a consumer of the `variants`: it makes one pass over the source
+ * through the steps the `Variants` has when it is called, reading only the
+ * chromosome and the position of each variant, and the `Variants` is as it
+ * was afterwards. The variants need not be sorted. pyNei has no density of
+ * the variants; the result is the columns of the frame of Python, one array
+ * each.
+ *
+ * @throws {Error} When `windowSize` or a length of `chromLengths` is not a
+ * whole number from 1 to 2^53 - 1; when `chromLengths` is not a plain
+ * object, a `Map` among the rest; when a variant is past the length of its
+ * chromosome, which the message says came from `chromLengths` or from the
+ * source, or at the position 0; when the density would have more than 10
+ * million windows; when a window ends past 2^53, which a number of
+ * JavaScript would round; when the arrays of the windows do not fit in the
+ * memory the page has left; when the source cannot be read; when the pass
+ * gives no variant; and when `init` has not been awaited.
+ */
+export function calcVarDensity(
+  variants: Variants,
+  windowSize: number,
+  options: VarDensityOptions = {},
+): VarDensity {
+  theWasmHasToBeLoaded();
+  anObjectOfOptions("calcVarDensity", options, ["chromLengths"]);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
+  const width = distanceInBasePairs("windowSize", windowSize, 1);
+  const lengths = theChromLengths(options.chromLengths);
+  // The steps of the pass are a copy of the list, made after every argument
+  // was checked so that nothing refused here leaves one behind: the call
+  // takes it over and frees it.
+  const density = whileTheRunReads(() =>
+    source.calc_var_density(
+      steps.of_a_pass(),
+      width,
+      lengths?.names,
+      lengths?.lengths ?? new Float64Array(0),
+    ),
+  );
+  // Every array is copied out of the memory of wasm as it is read, and the
+  // result holds that memory until it is freed, which is here: what the user
+  // gets are the copies.
+  try {
+    const names = density.chroms();
+    const windowsPerChrom = density.windows_per_chrom();
+    const chroms: string[] = [];
+    for (const [which, name] of names.entries()) {
+      for (let window = 0; window < (windowsPerChrom[which] ?? 0); window++) {
+        chroms.push(name);
+      }
+    }
+    return {
+      chroms: Object.freeze(chroms),
+      start: density.starts(),
+      end: density.ends(),
+      numVars: density.num_vars(),
+      passStats: passStatsOf(density.pass_stats()),
+    };
+  } finally {
+    density.free();
+  }
+}
+
+/**
+ * The names and the lengths of `chromLengths`, in the order its keys
+ * iterate in, or `undefined` when it was not given.
+ *
+ * @throws {Error} When it is not a plain object, one whose prototype is
+ * `Object.prototype` or `null`, a `Map` among the rest, or a length is not a
+ * whole number from 1 to 2^53 - 1.
+ */
+function theChromLengths(
+  value: unknown,
+): { names: string[]; lengths: Float64Array } | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  // A `Map`, and any object of a class of its own, keeps its entries where
+  // `Object.keys` does not look, so it would be read as no lengths and say
+  // nothing of it: the windows up to each length would not be there, and a
+  // variant past a length would not be refused.
+  const prototype =
+    typeof value === "object" && value !== null
+      ? Object.getPrototypeOf(value)
+      : undefined;
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(
+      "popnei: `chromLengths` is a plain object of chromosome name to length, " +
+        `{chr1: 248956422}, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  const given = value as Record<string, unknown>;
+  const names = Object.keys(given);
+  const lengths = new Float64Array(names.length);
+  for (const [which, name] of names.entries()) {
+    lengths[which] = distanceInBasePairs(
+      `chromLengths.${name}`,
+      given[name],
+      1,
+    );
+  }
+  return { names, lengths };
 }

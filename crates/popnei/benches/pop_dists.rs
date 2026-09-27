@@ -119,8 +119,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use popnei::block::{Block, BlockReader};
-use popnei::filters::FilteringStats;
+use popnei::block::{Block, BlockReader, SourceHeader};
+use popnei::filters::{FilteringStats, RegionSelection};
 use popnei::io::vars::VarsReader;
 use popnei::pop_dists::{JackknifeGroups, PopDistMeasure, PopDistOptions, calc_pop_dist_sums};
 use popnei::stats::{DEFAULT_MIN_NUM_INDIVIDUALS, Pops};
@@ -500,8 +500,16 @@ fn block_of(gts: &[i8], chrom: u32, first_var: usize) -> Block {
         id: None,
         alleles: None,
         qual: None,
+        vcf_text: None,
     }
 }
+
+/// The header of a source in memory, which says nothing of itself.
+static NO_HEADER: SourceHeader = SourceHeader {
+    individuals: Vec::new(),
+    chrom_lengths: Vec::new(),
+    vcf_meta_lines: None,
+};
 
 impl BlockReader for BlocksInMemory {
     fn next_block(&mut self) -> popnei::Result<Option<Block>> {
@@ -528,6 +536,19 @@ impl BlockReader for BlocksInMemory {
 
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         Vec::new()
+    }
+
+    fn header(&self) -> &SourceHeader {
+        &NO_HEADER
+    }
+
+    /// False: the blocks are in memory and every one is given.
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        false
+    }
+
+    fn num_skipped(&self) -> u64 {
+        0
     }
 }
 

@@ -28,6 +28,7 @@ import { theWasmHasToBeLoaded } from "./core.js";
 export type ConsumerName =
   | "calcPerVarDistribs"
   | "calcPerIndividualStats"
+  | "calcVarDensity"
   | "calcPairwiseKosmanDists"
   | "calcPopDists"
   | "calcPopDiversity"
@@ -37,6 +38,7 @@ export type ConsumerName =
   | "doPcaFromVariants"
   | "calcGwas"
   | "writeVars"
+  | "writeVcf"
   | "iterBlocks";
 
 /**

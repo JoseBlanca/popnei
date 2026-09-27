@@ -31,10 +31,23 @@ their reports beside itself:
 and on many.vcf the bcftools commands of the maf and of the observed
 heterozygosity, whose counts go into `many.counts.tsv`, one line per variant
 with the position, AN and AC of popA, of popB and of all, and the
-heterozygous and the called genotypes, and the plink2 command of the per
-individual statistics with a half called genotype read as missing:
+heterozygous and the called genotypes, the plink2 command of the per
+individual statistics with a half called genotype read as missing, and the
+plink2 command of the missing rate of each variant, with a half called
+genotype read as missing too, over every individual and, with `--keep`,
+over popA and over popB:
 
     many.counts.tsv  many.smiss  many.scount
+    many.vmiss       many.popA.vmiss  many.popB.vmiss
+
+and, for the density of the variants, the count tabix 1.24 gives of each
+window of 1000 base pairs of many.vcf.gz, the command of "How it is
+verified" of the density, over an index that `tabix -p vcf` makes of a copy
+of the file in a directory it throws away, chr1 from 1 to 11000 and chr2
+from 1 to 20000, one line per window with the chromosome, the start, the
+end and the count:
+
+    many.density.tsv
 
 The script checks what it got against the literals the spec gives, and stops
 at the first one that differs.
@@ -42,8 +55,10 @@ at the first one that differs.
 
 import csv
 import gzip
+import io
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy
@@ -55,6 +70,12 @@ ROOT = HERE.parent.parent.parent
 MANY_VCF = ROOT / "tests" / "reference" / "vcf" / "many.vcf"
 PLINK2_VERSION = "v2.0.0-a.7.7"
 BCFTOOLS_VERSION = "1.24"
+TABIX_VERSION = "1.24"
+MANY_VCF_GZ = ROOT / "tests" / "reference" / "vcf" / "many.vcf.gz"
+# The windows of 1000 base pairs of "How it is verified" of the density: the
+# last variant of chr1 is at 10213 and that of chr2 at 19463.
+DENSITY_WINDOW = 1000
+DENSITY_CHROMS = (("chr1", 11), ("chr2", 20))
 
 
 def pynei_reference_dir():
@@ -81,6 +102,9 @@ def check_versions():
     bcftools = subprocess.run(["bcftools", "--version"], capture_output=True, text=True)
     if bcftools.stdout.splitlines()[0] != f"bcftools {BCFTOOLS_VERSION}":
         raise SystemExit(f"bcftools {BCFTOOLS_VERSION} is needed; found: {bcftools.stdout.splitlines()[0]}")
+    tabix = subprocess.run(["tabix", "--version"], capture_output=True, text=True)
+    if tabix.stdout.splitlines()[0] != f"tabix (htslib) {TABIX_VERSION}":
+        raise SystemExit(f"tabix {TABIX_VERSION} is needed; found: {tabix.stdout.splitlines()[0]}")
 
 
 def write_panel(ref_dir):
@@ -96,20 +120,35 @@ def write_panel(ref_dir):
     with open(HERE / "panel_pops_bcftools.txt", "w") as f:
         for name in individuals:
             f.write(f"{name}\t{pop_of[name]}\n")
-    with gzip.open(HERE / "panel.vcf.gz", "wt") as f:
-        f.write("##fileformat=VCFv4.2\n")
-        f.write("##contig=<ID=1>\n")
-        f.write('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n')
-        f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(individuals) + "\n")
-        pos = 0
-        for chunk in variants.iter_vars_chunks():
-            gts = chunk.gts.gt_values
-            for var in range(chunk.num_vars):
-                pos += 1
-                row = gts[var]
-                calls = ["./." if numpy.any(g < 0) else f"{g[0]}/{g[1]}" for g in row]
-                f.write(f"1\t{pos}\tvar{pos - 1:04d}\tA\tC\t.\tPASS\t.\tGT\t" + "\t".join(calls) + "\n")
+    f = io.StringIO()
+    f.write("##fileformat=VCFv4.2\n")
+    f.write("##contig=<ID=1>\n")
+    f.write('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n')
+    f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(individuals) + "\n")
+    pos = 0
+    for chunk in variants.iter_vars_chunks():
+        gts = chunk.gts.gt_values
+        for var in range(chunk.num_vars):
+            pos += 1
+            row = gts[var]
+            calls = ["./." if numpy.any(g < 0) else f"{g[0]}/{g[1]}" for g in row]
+            f.write(f"1\t{pos}\tvar{pos - 1:04d}\tA\tC\t.\tPASS\t.\tGT\t" + "\t".join(calls) + "\n")
+    write_gzipped_if_changed(HERE / "panel.vcf.gz", f.getvalue())
     return individuals
+
+
+def write_gzipped_if_changed(path, text):
+    """`text` gzipped into `path`, which is left as it is when it holds that
+    text already: gzip writes the time into its header, so the same text
+    written again is other bytes, and a run of this script would leave a
+    committed file changed for nothing. A new file is written with a time
+    of 0, so the same text gives the same bytes."""
+    if path.exists():
+        with gzip.open(path, "rt") as existing:
+            if existing.read() == text:
+                return
+    with open(path, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gzipped:
+        gzipped.write(text.encode())
 
 
 def run(command):
@@ -164,8 +203,44 @@ def run_bcftools_on_many():
 def run_plink2_on_many():
     run(["plink2", "--vcf", str(MANY_VCF), "--vcf-half-call", "m", "--missing",
          "--sample-counts", "cols=+hom,+het,+missing", "--nonfounders", "--out", str(HERE / "many")])
-    for name in ("many.log", "many.vmiss"):
-        (HERE / name).unlink(missing_ok=True)
+    (HERE / "many.log").unlink(missing_ok=True)
+    (HERE / "many.vmiss").unlink(missing_ok=True)
+    # The missing rate of each variant, the command of "How it is verified"
+    # of the missing rate, over every individual and over each population.
+    # `--keep` reads one IID a line, which many_pops.txt, IID and population,
+    # is not, so the two lists are written apart and thrown away.
+    run(["plink2", "--vcf", str(MANY_VCF), "--vcf-half-call", "m", "--missing", "variant-only",
+         "--out", str(HERE / "many")])
+    pops = [line.split("\t") for line in (HERE / "many_pops.txt").read_text().splitlines()]
+    with tempfile.TemporaryDirectory() as keep_dir:
+        for pop in ("popA", "popB"):
+            keep = Path(keep_dir) / f"{pop}.txt"
+            keep.write_text("".join(f"{name}\n" for name, of_the_pop in pops if of_the_pop == pop))
+            run(["plink2", "--vcf", str(MANY_VCF), "--vcf-half-call", "m", "--missing", "variant-only",
+                 "--keep", str(keep), "--out", str(HERE / f"many.{pop}")])
+    for log in HERE.glob("many*.log"):
+        log.unlink()
+
+
+def run_tabix_on_many():
+    """The count of each window, `tabix many.vcf.gz chr1:1-1000 | wc -l` and
+    the same for every other window, over an index made of a copy of the
+    file, so that no index is left beside the committed one."""
+    with tempfile.TemporaryDirectory() as index_dir:
+        copy = Path(index_dir) / "many.vcf.gz"
+        copy.write_bytes(MANY_VCF_GZ.read_bytes())
+        run(["tabix", "-p", "vcf", str(copy)])
+        with open(HERE / "many.density.tsv", "w") as f:
+            f.write("chrom\tstart\tend\tnum_vars\n")
+            for chrom, num_windows in DENSITY_CHROMS:
+                for window in range(num_windows):
+                    start = window * DENSITY_WINDOW + 1
+                    end = (window + 1) * DENSITY_WINDOW
+                    lines = subprocess.run(
+                        ["tabix", str(copy), f"{chrom}:{start}-{end}"],
+                        check=True, capture_output=True, text=True,
+                    ).stdout.splitlines()
+                    f.write(f"{chrom}\t{start}\t{end}\t{len(lines)}\n")
 
 
 def read_table(path):
@@ -216,6 +291,42 @@ def check():
     many_scount = read_table(HERE / "many.scount")
     assert (many_smiss[0]["MISSING_CT"], many_smiss[0]["OBS_CT"], many_scount[0]["HET_CT"]) == ("29", "500", "201"), (many_smiss[0], many_scount[0])
     assert (many_smiss[1]["MISSING_CT"], many_scount[1]["HET_CT"]) == ("25", "195"), (many_smiss[1], many_scount[1])
+    check_the_missing_rate_of_many()
+    check_the_density_of_many()
+
+
+def check_the_density_of_many():
+    """The first table of "How it is verified" of the density: chr1 in 11
+    windows, 1, 27 nine times and 6, and chr2 in 20, 0 ten times, 21, 27
+    eight times and 13."""
+    rows = read_table(HERE / "many.density.tsv")
+    counts = {chrom: [int(row["num_vars"]) for row in rows if row["chrom"] == chrom] for chrom, _ in DENSITY_CHROMS}
+    assert counts["chr1"] == [1] + [27] * 9 + [6], counts["chr1"]
+    assert counts["chr2"] == [0] * 10 + [21] + [27] * 8 + [13], counts["chr2"]
+
+
+def check_the_missing_rate_of_many():
+    """The table of "How it is verified" of the missing rate: the individuals,
+    the mean and the bins with a count of the 40 from 0 to 1 over every
+    individual, popA and popB, and the first five missing genotypes of each."""
+    expected = {
+        "all": ("many.vmiss", 50, "0.06044", {0: 101, 1: 114, 2: 102, 3: 88, 4: 77, 5: 10, 6: 6, 7: 1, 8: 1},
+                [4, 3, 3, 1, 3]),
+        "popA": ("many.popA.vmiss", 20, "0.0602", {0: 144, 2: 180, 4: 116, 5: 51, 8: 8, 10: 1}, [2, 1, 0, 1, 2]),
+        "popB": ("many.popB.vmiss", 30, "0.0606",
+                 {0: 88, 1: 146, 2: 124, 4: 84, 5: 41, 6: 9, 8: 5, 9: 1, 10: 1, 11: 1}, [2, 2, 3, 0, 1]),
+    }
+    for pop, (name, num_individuals, mean, bins, first_five) in expected.items():
+        rows = read_table(HERE / name)
+        assert len(rows) == 500, (pop, len(rows))
+        assert {int(row["OBS_CT"]) for row in rows} == {num_individuals}, pop
+        assert [int(row["MISSING_CT"]) for row in rows[:5]] == first_five, pop
+        rates = numpy.array([int(row["MISSING_CT"]) / int(row["OBS_CT"]) for row in rows])
+        # The mean is printed to the digits it has: a whole number of missing
+        # genotypes over 500 variants of these individuals.
+        assert f"{rates.mean():.12g}" == mean, (pop, rates.mean())
+        counts, _ = numpy.histogram(rates, bins=40, range=(0, 1))
+        assert {bin: int(count) for bin, count in enumerate(counts) if count} == bins, (pop, counts)
 
 
 if __name__ == "__main__":
@@ -227,5 +338,6 @@ if __name__ == "__main__":
     write_many_pops()
     run_bcftools_on_many()
     run_plink2_on_many()
+    run_tabix_on_many()
     check()
     print("done", file=sys.stderr)

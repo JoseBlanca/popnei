@@ -54,8 +54,13 @@ export type {
 } from "./ld.js";
 export { openVars, writeVars } from "./io_vars.js";
 export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
-export { openVcf } from "./io_vcf.js";
-export type { BytesOrFile, OpenVcfOptions } from "./io_vcf.js";
+export { openVcf, writeVcf } from "./io_vcf.js";
+export type {
+  BytesOrFile,
+  OpenVcfOptions,
+  VcfWritten,
+  WriteVcfOptions,
+} from "./io_vcf.js";
 export { doPca, doPcaFromVariants } from "./pca.js";
 export type {
   DoPcaFromVariantsOptions,
@@ -72,7 +77,11 @@ export type {
   PopDistMeasure,
   PopDists,
 } from "./pop_dists.js";
-export { calcPerIndividualStats, calcPerVarDistribs } from "./stats.js";
+export {
+  calcPerIndividualStats,
+  calcPerVarDistribs,
+  calcVarDensity,
+} from "./stats.js";
 export type {
   BinType,
   HistKwargs,
@@ -82,6 +91,8 @@ export type {
   PerVarStat,
   PolyVarsStats,
   StatsDistrib,
+  VarDensity,
+  VarDensityOptions,
 } from "./stats.js";
 export { Variants } from "./variant.js";
 export type {

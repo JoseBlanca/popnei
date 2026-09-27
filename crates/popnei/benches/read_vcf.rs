@@ -59,6 +59,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use popnei::block::BlockReader;
+use popnei::filters::{RegionSelection, Regions};
 use popnei::io::vcf::{VcfOptions, VcfReader};
 use popnei::variant::Needs;
 
@@ -78,13 +79,17 @@ struct Arguments {
     runs: usize,
     lines_per_batch: Option<usize>,
     bytes_per_batch: Option<usize>,
+    /// The BED whose regions the reader is handed, as the filter by
+    /// regions hands them to its source, so that it passes over the lines
+    /// outside them.
+    bed: Option<PathBuf>,
 }
 
 /// What the benchmark does and what its command line takes, which is what
 /// an argument it does not know and `--help` are answered with.
 const USAGE: &str = "\
 read_vcf <path to a VCF> [--threads n] [--runs n] [--lines-per-batch n]
-         [--bytes-per-batch n]
+         [--bytes-per-batch n] [--bed path]
 
 It times whole reads of that VCF, plain or gzipped: opening the file,
 its header, its lines, the parse and the genotypes, block after block
@@ -97,6 +102,8 @@ and blocks of the size popnei picks for the individuals of the file.
   --runs n              how many times it reads the file, 5 by default
   --lines-per-batch n   how many lines the reader parses together
   --bytes-per-batch n   how many bytes of them it holds at most
+  --bed path            the regions of a BED the reader is handed, whose
+                        lines outside them it passes over
   --help                this
 
 The two bounds of a batch are the constants of io::vcf when the command
@@ -117,8 +124,16 @@ fn arguments() -> Result<Arguments, String> {
     let mut runs = DEFAULT_RUNS;
     let mut lines_per_batch: Option<usize> = None;
     let mut bytes_per_batch: Option<usize> = None;
+    let mut bed: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
+        if arg == "--bed" {
+            let Some(path) = args.next() else {
+                return Err("--bed takes a path and none came after it".to_string());
+            };
+            bed = Some(PathBuf::from(path));
+            continue;
+        }
         let mut number = |name: &str| {
             args.next()
                 .ok_or_else(|| format!("{name} takes a number and none came after it"))?
@@ -163,6 +178,7 @@ fn arguments() -> Result<Arguments, String> {
         runs,
         lines_per_batch,
         bytes_per_batch,
+        bed,
     })
 }
 
@@ -181,6 +197,14 @@ fn read_the_whole_file(path: &Path, arguments: &Arguments) -> Result<u64, popnei
     }
     if let Some(bytes) = arguments.bytes_per_batch {
         reader.set_bytes_per_batch(bytes);
+    }
+    if let Some(bed) = &arguments.bed {
+        let file = std::fs::File::open(bed).map_err(popnei::Error::Io)?;
+        let regions = Regions::from_bed(std::io::BufReader::new(file))?;
+        reader.skip_outside(RegionSelection {
+            regions: std::sync::Arc::new(regions),
+            exclude: false,
+        });
     }
     reader.set_needs(Needs::GTS);
     let mut variants: u64 = 0;

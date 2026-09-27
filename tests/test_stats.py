@@ -1,4 +1,4 @@
-"""The two passes of the stats module from Python: the five statistics of
+"""The two passes of the stats module from Python: the six statistics of
 every variant, per population, the missing rate and the heterozygosity rate
 of every individual, and what each call refuses.
 
@@ -30,6 +30,11 @@ datasets. Its `calc_per_sample_stats` divides the heterozygous genotypes of
 an individual by every variant and popnei divides them by the called
 genotypes of that individual, which the owner decided on 22 September 2026,
 so popnei's rate is pyNei's times the variants over the called genotypes.
+
+pyNei has no missing rate of a variant, so the comparisons with it leave
+that statistic out, and it is compared with plink2 v2.0.0-a.7.7 instead:
+the `.vmiss` reports of `many.vcf` over every individual, `popA` and `popB`
+that `make_reference.py` keeps beside it.
 """
 
 import dataclasses
@@ -62,9 +67,13 @@ STATS_REFERENCE_DIR = Path(__file__).parent / "reference" / "stats"
 PANEL = STATS_REFERENCE_DIR / "panel.vcf.gz"
 MANY = Path(__file__).parent / "reference" / "vcf" / "many.vcf"
 
-# The four statistics that have a distribution, under the name of the field
-# of the result that holds each one.
+# The four statistics that have a distribution and that pyNei has too, under
+# the name of the field of the result that holds each one.
 DISTRIBS = ("obs_het", "maf", "exp_het", "unbiased_exp_het")
+
+# The same with the missing rate, which pyNei has not: the five that have a
+# distribution.
+ALL_DISTRIBS = (*DISTRIBS, "missing_rate")
 
 # The variants and the individuals of the two datasets.
 PANEL_NUM_VARS = 1200
@@ -304,6 +313,11 @@ def test_per_var_distribs_leave_a_population_of_15_without_a_value_by_default() 
         distrib = getattr(ours, stat)
         assert math.isnan(float(distrib.mean["small"])), stat
         assert int(numpy.asarray(distrib.hist_counts["small"]).sum()) == 0, stat
+    # The missing rate is not held to `min_num_individuals`: every variant
+    # has one, in a bin, since a rate is from 0 to 1.
+    missing_rate = ours.missing_rate
+    assert not math.isnan(float(missing_rate.mean["small"]))
+    assert int(numpy.asarray(missing_rate.hist_counts["small"]).sum()) == PANEL_NUM_VARS
     poly = ours.poly_vars_ratio
     assert int(poly.num_poly["small"]) == 0
     assert int(poly.num_variable["small"]) == 0
@@ -312,14 +326,22 @@ def test_per_var_distribs_leave_a_population_of_15_without_a_value_by_default() 
     assert math.isnan(float(poly.poly_ratio_over_variables["small"]))
 
 
-def test_per_var_distribs_calculates_the_five_statistics_by_default() -> None:
+def test_per_var_distribs_calculates_the_six_statistics_by_default() -> None:
     """Every statistic is there when `stats` is not given, and each one is
     keyed by the names of the populations."""
     ours = calc_per_var_distribs(
         _many(), pops=MANY_POPS, min_num_individuals=MANY_MIN_NUM_INDIVIDUALS
     )
 
-    for stat in DISTRIBS:
+    assert [str(stat) for stat in PerVarStat] == [
+        "obs_het",
+        "maf",
+        "exp_het",
+        "unbiased_exp_het",
+        "poly_vars_ratio",
+        "missing_rate",
+    ]
+    for stat in ALL_DISTRIBS:
         assert isinstance(getattr(ours, stat), StatsDistrib), stat
     assert isinstance(ours.poly_vars_ratio, PolyVarsStats)
     assert list(ours.maf.mean.index) == ["popA", "popB"]
@@ -339,7 +361,7 @@ def test_per_var_distribs_give_every_count_as_a_signed_number() -> None:
     assert int((poly.num_poly - poly.num_variable)["pop"]) == -16
     for counts in (poly.num_poly, poly.num_variable, poly.tot_num_variants_with_data):
         assert counts.dtype == numpy.int64
-    for stat in DISTRIBS:
+    for stat in ALL_DISTRIBS:
         counts = getattr(ours, stat).hist_counts["pop"]
         assert counts.dtype == numpy.int64, stat
         assert int((counts - int(counts.max())).min()) < 0, stat
@@ -359,6 +381,7 @@ def test_per_var_distribs_calculates_only_the_statistics_asked_for() -> None:
     assert ours.exp_het is None
     assert ours.unbiased_exp_het is None
     assert ours.poly_vars_ratio is None
+    assert ours.missing_rate is None
 
 
 def test_per_var_distribs_takes_one_statistic_on_its_own() -> None:
@@ -389,6 +412,18 @@ def test_per_var_distribs_refuses_a_statistic_written_as_a_string() -> None:
         calc_per_var_distribs(_many(), stats=("mafs",))
 
 
+def test_per_var_distribs_name_the_member_of_the_string_that_was_given() -> None:
+    """A name written as a string that is the value of a member is refused
+    with that member in the example of what to write, and a name of no
+    member with the example of the major allele frequency."""
+    with pytest.raises(TypeError, match=r"stats=\(PerVarStat\.MISSING_RATE,\)"):
+        calc_per_var_distribs(_many(), stats="missing_rate")
+    with pytest.raises(TypeError, match=r"stats=\(PerVarStat\.OBS_HET,\)"):
+        calc_per_var_distribs(_many(), stats=("obs_het",))
+    with pytest.raises(TypeError, match=r"stats=\(PerVarStat\.MAF,\)"):
+        calc_per_var_distribs(_many(), stats=("missing",))
+
+
 def test_per_var_distribs_refuse_a_stats_that_names_nothing_at_all() -> None:
     """What is no sequence of members names no statistic, and the message
     says which argument it was and what was given, where Python's own says
@@ -404,7 +439,7 @@ def test_per_var_distribs_refuses_no_statistic_at_all() -> None:
 
 
 def test_per_var_distribs_of_one_pass_are_those_of_one_statistic_at_a_time() -> None:
-    """The five statistics of one pass are the five of five passes of one
+    """The six statistics of one pass are the six of six passes of one
     each: asking for fewer is a saving of work and changes no value."""
     together = calc_per_var_distribs(
         _many(),
@@ -429,6 +464,71 @@ def test_per_var_distribs_of_one_pass_are_those_of_one_statistic_at_a_time() -> 
             numpy.testing.assert_array_equal(
                 one.hist_counts.to_numpy(), in_the_pass.hist_counts.to_numpy()
             )
+
+
+# The `.vmiss` report of plink2 of each population of `many.vcf`, and of
+# every individual, which "How it is verified" of the missing rate names.
+_VMISS_OF = {
+    "pop": STATS_REFERENCE_DIR / "many.vmiss",
+    "popA": STATS_REFERENCE_DIR / "many.popA.vmiss",
+    "popB": STATS_REFERENCE_DIR / "many.popB.vmiss",
+}
+
+
+def _plink2s_missing_rates(path: Path) -> numpy.ndarray:
+    """The missing rate of each variant of a `.vmiss` report, `MISSING_CT`
+    over `OBS_CT` as float64, in the order of the variants."""
+    with open(path) as report:
+        header = report.readline().lstrip("#").rstrip("\n").split("\t")
+        rows = [
+            dict(zip(header, line.rstrip("\n").split("\t"), strict=True))
+            for line in report
+        ]
+    return numpy.array(
+        [int(row["MISSING_CT"]) / int(row["OBS_CT"]) for row in rows], dtype=float
+    )
+
+
+@pytest.mark.parametrize("pops", [MANY_POPS, None], ids=["two_pops", "no_pops"])
+def test_per_var_missing_rate_of_many_vcf_is_plink2s(pops) -> None:
+    """The missing rate of the 500 variants of `many.vcf`, over `popA` and
+    `popB` and over every individual, against plink2's `--missing
+    variant-only` with a half called genotype read as missing: the default
+    40 bins from 0 to 1 count what numpy's histogram counts of plink2's
+    rates, exactly, and the means agree within 1e-12 relative.
+
+    The first five missing genotypes of each population, through the rates
+    they give, and the 51 variants of `popA` in bin 5 are the literals of
+    the spec. 3 missing genotypes of 20 are 0.1499999999999999944 as a
+    float64, below the edge 6 x 0.025 = 0.15000000000000002, so they are in
+    bin 5 and not in bin 6.
+    """
+    ours = calc_per_var_distribs(
+        _many(), stats=(PerVarStat.MISSING_RATE,), pops=pops
+    ).missing_rate
+    first_five = {
+        "pop": ([4, 3, 3, 1, 3], 50),
+        "popA": ([2, 1, 0, 1, 2], 20),
+        "popB": ([2, 2, 3, 0, 1], 30),
+    }
+
+    for pop in ["popA", "popB"] if pops else ["pop"]:
+        theirs = _plink2s_missing_rates(_VMISS_OF[pop])
+        assert len(theirs) == MANY_NUM_VARS
+        missing, num_individuals = first_five[pop]
+        assert list(theirs[:5]) == [count / num_individuals for count in missing]
+        their_counts, their_edges = numpy.histogram(theirs, bins=40, range=(0, 1))
+        numpy.testing.assert_array_equal(ours.hist_bin_edges, their_edges)
+        numpy.testing.assert_array_equal(
+            numpy.asarray(ours.hist_counts[pop]), their_counts, err_msg=pop
+        )
+        assert _the_same_number(ours.mean[pop], theirs.mean()), (
+            pop,
+            ours.mean[pop],
+            theirs.mean(),
+        )
+    if pops:
+        assert int(ours.hist_counts["popA"].iloc[5]) == 51
 
 
 def test_per_var_distribs_arguments_of_one_statistic_change_no_other() -> None:
@@ -481,11 +581,11 @@ def test_per_var_distribs_of_a_pass_whose_filter_kept_no_variant_is_refused() ->
     assert "the `maf` filter was given 500 and kept 0" in str(refusal.value)
 
 
-def test_per_var_distribs_of_a_source_with_no_variant_is_refused(write_vcf) -> None:
+def test_per_var_distribs_of_a_source_with_no_variant_is_refused(vcf_of_lines) -> None:
     """A VCF with a header and no data line holds no variant, which the
     message says apart from the steps keeping none."""
     with pytest.raises(ValueError, match="its source holds none"):
-        calc_per_var_distribs(open_vcf(write_vcf([])))
+        calc_per_var_distribs(open_vcf(vcf_of_lines([])))
 
 
 def test_per_var_distribs_does_not_change_hist_kwargs() -> None:
@@ -615,7 +715,7 @@ def test_per_var_distribs_refuse_a_key_of_hist_kwargs_that_is_not_one_of_the_thr
 def test_per_var_distribs_key_every_statistic_by_the_population_names(
     stat: PerVarStat,
 ) -> None:
-    """Each of the five is calculated per population, keyed by the names the
+    """Each of the six is calculated per population, keyed by the names the
     user gave, and each refuses an individual that is not in the pass."""
     ours = getattr(
         calc_per_var_distribs(
@@ -641,7 +741,7 @@ def test_per_var_distribs_keep_the_populations_in_the_order_of_the_keys() -> Non
         _many(), pops=backwards, min_num_individuals=MANY_MIN_NUM_INDIVIDUALS
     )
 
-    for stat in DISTRIBS:
+    for stat in ALL_DISTRIBS:
         distrib = getattr(ours, stat)
         assert list(distrib.mean.index) == ["popB", "popA"]
         assert list(distrib.hist_counts.columns) == ["popB", "popA"]
@@ -788,14 +888,14 @@ print(
         {
             "means": {
                 stat: [float(value) for value in getattr(distribs, stat).mean]
-                for stat in ("obs_het", "maf", "exp_het", "unbiased_exp_het")
+                for stat in ("obs_het", "maf", "exp_het", "unbiased_exp_het", "missing_rate")
             },
             "hist": {
                 stat: [
                     int(count)
                     for count in getattr(distribs, stat).hist_counts.to_numpy().ravel()
                 ]
-                for stat in ("obs_het", "maf", "exp_het", "unbiased_exp_het")
+                for stat in ("obs_het", "maf", "exp_het", "unbiased_exp_het", "missing_rate")
             },
             "poly": [int(count) for count in distribs.poly_vars_ratio.num_poly],
             "poly_ratio": [
@@ -831,7 +931,7 @@ def test_per_var_distribs_are_the_same_in_pools_of_one_and_of_four_threads() -> 
 
     assert of_one["hist"] == of_four["hist"]
     assert of_one["poly"] == of_four["poly"]
-    for stat in DISTRIBS:
+    for stat in ALL_DISTRIBS:
         for ours, theirs in zip(
             of_one["means"][stat], of_four["means"][stat], strict=True
         ):
@@ -967,14 +1067,14 @@ def test_per_individual_stats_divide_pyneis_three_variants_by_the_called_genotyp
 
 
 def test_per_individual_stats_leave_an_individual_with_no_called_genotype_without_a_rate(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """An individual whose genotype is missing at every variant has a
     missing rate of 1 and no heterozygosity rate, NaN, since that rate is
     over the called genotypes and it has none."""
     ours = calc_per_individual_stats(
         open_vcf(
-            write_vcf(
+            vcf_of_lines(
                 [
                     "chr1\t1\t.\tA\tC\t.\tPASS\t.\tGT\t0/1\t0/0\t./.",
                     "chr1\t2\t.\tA\tC\t.\tPASS\t.\tGT\t0/0\t0/1\t./.",
@@ -991,13 +1091,13 @@ def test_per_individual_stats_leave_an_individual_with_no_called_genotype_withou
 
 
 def test_per_individual_stats_of_a_source_with_no_variant_are_refused(
-    write_vcf,
+    vcf_of_lines,
 ) -> None:
     """A VCF with a header and no data line holds no variant, and a rate
     over no variant is no number: the message says that the source holds
     none."""
     with pytest.raises(ValueError, match="the pass gave no variant") as refusal:
-        calc_per_individual_stats(open_vcf(write_vcf([])))
+        calc_per_individual_stats(open_vcf(vcf_of_lines([])))
     assert "its source holds none" in str(refusal.value)
 
 

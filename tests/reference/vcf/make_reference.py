@@ -19,6 +19,19 @@ It writes, beside itself:
 - cases.bcftools.tsv, differences.bcftools.tsv and many.bcftools.tsv, what
   `bcftools query` prints for each: chrom, pos, id, ref, alt, qual, filter and
   the GT of every individual.
+- write.vcf, the six lines of "How it is verified" of the VCF writer, with
+  INFO values, a second value for each individual, phase, a FILTER that
+  failed, a deletion and the lengths of the two chromosomes.
+- write.c_a.bcftools.vcf, what `bcftools view -I -s c,a` followed by
+  `bcftools annotate -x INFO/AC,INFO/AN` writes of write.vcf: the file the
+  writer gives for the filter of individuals that keeps c and a, but for the
+  `##FILTER=<ID=PASS,...>` line that bcftools adds and popnei does not.
+- write.passed.bcftools.tsv, what `bcftools query` prints of the lines of
+  write.vcf whose FILTER is PASS or a dot: chrom, pos, id, ref, alt, qual and
+  the GT of every individual, the rows of the file the writer gives from the
+  vars file of write.vcf, but for the phase, which a vars file does not keep.
+- many.missing_0.04.bcftools.vcf, the 215 data lines that
+  `bcftools view -H -i 'F_MISSING<=0.04'` prints of many.vcf.
 
 docs/specs/io_vcf.md says how the tests use them.
 """
@@ -112,6 +125,69 @@ def write_many(num_vars=500, num_individuals=50, seed=42):
     (HERE / "many.vcf").write_text("".join(lines))
 
 
+WRITE_VCF = """##fileformat=VCFv4.3
+##contig=<ID=chr1,length=2000>
+##contig=<ID=chr2,length=1500>
+##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="Allele number">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FILTER=<ID=q10,Description="Quality below 10">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+#CHROM POS ID REF ALT QUAL FILTER INFO FORMAT a b c
+chr1 100 rs1 A T 29.5 PASS AC=4;AN=6;DP=12 GT:DP 0/1:4 0|1:5 1/1:3
+chr1 250 . AT A . q10 AC=1;AN=4;DP=5 GT:DP ./.:0 0/1:3 0/0:2
+chr1 1000 rs3 G C,T 50 PASS AC=2,1;AN=6;DP=20 GT:DP 1/2:7 0/1:6 0/0:7
+chr1 1001 . C . 12 . DP=9 GT 0/0 0/0 0/0
+chr2 1 . T G 40 PASS AC=2;AN=5;DP=8 GT:DP 1|1:4 0/.:2 0/0:2
+chr2 1500 rs6 A G 33 PASS AC=1;AN=6 GT 0/0 1/0 0/0
+"""
+WRITE_QUERY_FORMAT = r"%CHROM\t%POS\t%ID\t%REF\t%ALT\t%QUAL[\t%GT]\n"
+
+
+def write_the_writer_cases():
+    """write.vcf and what bcftools 1.24 writes and prints of it and of many.vcf
+    for the tests of the VCF writer."""
+    lines = []
+    for line in WRITE_VCF.splitlines():
+        # the meta lines have their blanks, the others are cut at them
+        lines.append(line if line.startswith("##") else "\t".join(line.split(" ")))
+    write_vcf = HERE / "write.vcf"
+    write_vcf.write_text("\n".join(lines) + "\n")
+    view = subprocess.run(
+        ["bcftools", "view", "--no-version", "-I", "-s", "c,a", str(write_vcf)],
+        capture_output=True,
+        check=True,
+    )
+    with (HERE / "write.c_a.bcftools.vcf").open("wb") as out:
+        subprocess.run(
+            ["bcftools", "annotate", "--no-version", "-x", "INFO/AC,INFO/AN"],
+            input=view.stdout,
+            stdout=out,
+            check=True,
+        )
+    with (HERE / "write.passed.bcftools.tsv").open("wb") as tsv:
+        subprocess.run(
+            [
+                "bcftools",
+                "query",
+                "-i",
+                'FILTER="PASS" || FILTER="."',
+                "-f",
+                WRITE_QUERY_FORMAT,
+                str(write_vcf),
+            ],
+            stdout=tsv,
+            check=True,
+        )
+    with (HERE / "many.missing_0.04.bcftools.vcf").open("wb") as out:
+        subprocess.run(
+            ["bcftools", "view", "-H", "-i", "F_MISSING<=0.04", str(HERE / "many.vcf")],
+            stdout=out,
+            check=True,
+        )
+
+
 def run_tools(name):
     vcf = HERE / f"{name}.vcf"
     with (HERE / f"{name}.vcf.gz").open("wb") as gz:
@@ -128,3 +204,4 @@ if __name__ == "__main__":
     write_many()
     for name in ("cases", "differences", "many"):
         run_tools(name)
+    write_the_writer_cases()

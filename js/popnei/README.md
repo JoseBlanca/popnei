@@ -11,7 +11,8 @@ the page, and gives a `Variants`, the handle whose `iterBlocks` gives the
 genotypes block by block; `writeVars`, which
 gives back the bytes of a vars file with every variant of a `Variants`, and
 `openVars`, which opens such a file, its bytes or the file of the page, as
-another `Variants`. A vars file is
+another `Variants`; and `writeVcf`, which gives back the bytes of a VCF,
+bgzipped by default, with every variant of a `Variants`. A vars file is
 one arrow IPC file, also called feather v2, which pandas, R and polars open
 as a table with no popnei installed: it is where a user keeps their
 variants once the VCF has been read. `numPassesOf` and the `onProgress` of
@@ -37,11 +38,14 @@ components of the individuals over those same dosages, where each of them
 is a direction along which the individuals differ most: the projection of
 every individual on the first ones, how much of the variance each holds and
 the weight every variant has in them. `calcPerVarDistribs` gives, for each
-population a user names in `pops` and each of five statistics of a variant,
+population a user names in `pops` and each of six statistics of a variant,
 the mean over the variants that had a value and a histogram of them. The
-five are the observed heterozygosity, the major allele frequency, the
-expected heterozygosity, plain and unbiased, and the polymorphism ratio,
-which is three counts and two ratios per population and not a distribution.
+six are the observed heterozygosity, the major allele frequency, the
+expected heterozygosity, plain and unbiased, the polymorphism ratio, which
+is three counts and two ratios per population and not a distribution, and
+the missing rate, `missing_rate` in `stats` and `missingRate` in the
+result: the missing genotypes of a population over its individuals, which
+every variant has whatever `minNumIndividuals` is.
 `calcPerIndividualStats` gives two numbers for each individual instead of
 one for each population: the share of the variants at which its genotype is
 missing, `missingGtRate`, and the share of its called genotypes at which it
@@ -91,7 +95,8 @@ consumer of a `Variants`, gives the components of a table of individuals and
 traits handed to it as numbers, which is the same analysis over values an
 application holds and not over a source of variants.
 
-Each of the twelve consumers of a `Variants`, `iterBlocks`, `writeVars`,
+Each of the thirteen consumers of a `Variants`, `iterBlocks`, `writeVars`,
+`writeVcf`,
 `calcPairwiseKosmanDists`, `calcPopDists`, `calcPopDiversity`,
 `calcRogersHuffR2Matrix`, `calcLdAndDistPerPop`, `calcKinship`,
 `doPcaFromVariants`, `calcGwas`, `calcPerVarDistribs` and
@@ -523,6 +528,28 @@ A `Variants` of a vars file is a source like the one of a VCF: it goes to
 `iterBlocks` and back to `writeVars`, which writes the file again with
 another size of batch.
 
+The variants of a `Variants`, after its steps, go back to a VCF with
+`writeVcf` of `docs/specs/io_vcf.md`, which plink2, bcftools and every
+other program of the field read:
+
+```ts
+import { init, openVcf, writeVcf } from "popnei";
+
+await init();
+const variants = openVcf(new Uint8Array(await readFile("many.vcf")));
+variants.filterByMissingData(0.04);
+// Bgzipped, which tabix indexes, unless `{ bgzip: false }` asks for text.
+const { bytes, passStats } = writeVcf(variants);
+console.log(passStats.numVars);
+variants.free();
+```
+
+A line of a VCF source is written as the source had it, INFO, FILTER, the
+phase and every value of each individual among them; the filter of
+individuals keeps the columns of the individuals it keeps and takes AC and
+AN out when it took individuals out. A vars file source gives lines of
+what the file holds, with FILTER and INFO a dot.
+
 The first calculation over such a handle is the Kosman distance of every
 pair of individuals, `docs/specs/dists.md`:
 
@@ -556,7 +583,7 @@ A pass that gives no variant is an `Error` that says whether the source
 held none or the steps kept none, and for the steps how many variants each
 filter was given and kept.
 
-One pass gives the five statistics of every variant and every population:
+One pass gives the six statistics of every variant and every population:
 
 ```ts
 import { calcPerVarDistribs, init, openVcf } from "popnei";
@@ -564,11 +591,11 @@ import { calcPerVarDistribs, init, openVcf } from "popnei";
 await init();
 const panel = openVcf(new Uint8Array(await readFile("panel.vcf.gz")));
 const distribs = calcPerVarDistribs(panel, {
-  // The five when `stats` is left out. The populations are looked up among
+  // The six when `stats` is left out. The populations are looked up among
   // the individuals the pass gives, which are the ones a
   // `filterIndividuals` kept when the variants carry one, and with no
   // `pops` there is one population, `pop`, of every individual.
-  stats: ["maf", "poly_vars_ratio"],
+  stats: ["maf", "poly_vars_ratio", "missing_rate"],
   pops: { p0: ["s000", "s001"], p1: ["s002", "s003"] },
   // How many called genotypes a population needs at a variant to have a
   // value there, 20 when it is left out.
@@ -585,6 +612,8 @@ console.log(distribs.maf?.histBinEdges, distribs.maf?.histCounts);
 // The polymorphic variants of each population, those that vary at all, and
 // the ones that have a major allele frequency there.
 console.log(distribs.polyVarsRatio?.numPoly, distribs.passStats.numVars);
+// The mean share of the genotypes of each population that are missing.
+console.log(distribs.missingRate?.mean);
 panel.free();
 ```
 
@@ -650,7 +679,7 @@ refused. The names given to `filterIndividuals` are read against the
 individuals of the source at the call, so a name that is not one of them, a
 name that is there twice and a call with no name are each an `Error` there
 and not when a pass runs. Which names the core knows is the core's to
-refuse: a statistic that is none of the five and a kind of bins that is
+refuse: a statistic that is none of the six and a kind of bins that is
 neither `linear` nor `logarithmic` are an `Error` of the binding crate,
 whose message writes the names there are. In TypeScript
 `fields` and `stats` take their names and nothing

@@ -23,6 +23,7 @@ import {
 
 import {
   namesOf,
+  onlyTheseOptions,
   popsOfTheObject,
   whatWasGiven,
   wholeNumberOfZeroOrMore,
@@ -365,6 +366,11 @@ export function calcPopDists(
   // default and a call that left it out has nothing else worth telling its
   // writer about.
   const group = theJackknifeGroup(options);
+  onlyTheseOptions("calcPopDists", options, [
+    "jackknifeGroup",
+    "measures",
+    "minNumIndividuals",
+  ]);
   const measures = theMeasures(options.measures);
   const thePops = popsOfTheObject(pops);
   const minNumIndividuals =

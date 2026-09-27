@@ -1,19 +1,23 @@
-# The filters module: variants kept by missing data, major allele frequency and observed heterozygosity
+# The filters module: variants kept by missing data, major allele frequency, observed heterozygosity, linkage and region
 
 September 2026. The `filters` module gives a user of popnei the variants of
 a dataset that pass a threshold, before any calculation sees them: those
 with few missing genotypes, those whose commonest allele is not too
-frequent, those with few heterozygous individuals, and those that do not
-repeat what a variant near them on the chromosome already said. It also
+frequent, those with few heterozygous individuals, those that do not
+repeat what a variant near them on the chromosome already said, and those
+inside, or outside, the regions of a BED file. It also
 tells the user how many variants each filter was given and how many it
 kept. And it keeps, of every variant, the genotypes of the individuals a
-user names and drops those of the rest. There is code for the three thresholds, the counts and the
-individuals, and none for the filter by linkage disequilibrium. This spec
+user names and drops those of the rest. There is code for the three thresholds, the counts, the
+individuals and the filter by linkage disequilibrium, and none for the
+filter by regions. This spec
 develops the row `filters` of the table in section 9
 of `docs/architecture.md`, and it covers the three filters that compare one
 number of a variant with a threshold, the counts, the filter of
-individuals and the filter that takes out the variants that repeat what a
-variant before them said, the last two added on 22 September 2026: the
+individuals, the filter that takes out the variants that repeat what a
+variant before them said, and the filter by regions. The filter by regions
+was added on 26 September 2026 and has no code; the two before it were
+added on 22 September 2026: the
 filter of individuals with `docs/specs/stats.md`, whose statistics per
 population are the first to need it. It depends on
 `docs/specs/block.md`, which has the `Block`, the run of consecutive
@@ -23,7 +27,9 @@ which has the counts of the genotypes and of the alleles of one variant,
 the `Variants` that a user puts the filters on, and the `PassStats` in
 which the counts reach them; and, for the filter by linkage
 disequilibrium alone, on `docs/specs/ld.md`, which has the r² that filter
-compares and the dosages it reads the genotypes as.
+compares and the dosages it reads the genotypes as. The filter by regions
+hands its regions to the readers of `docs/specs/io_vcf.md` and
+`docs/specs/io_vars.md`, which skip the variants outside them.
 
 That last dependency puts the `filters` module on the `ld` module and so
 on the linear algebra, while `docs/specs/ld.md` is on this one for the
@@ -152,7 +158,8 @@ holds in `variants.steps`, a tuple with a `Step` for each step, in order:
 ```python
 @dataclass(frozen=True)
 class Step:
-    kind: str                  # "missing_data", "maf", "obs_het", "individuals" or "ld"
+    kind: str                  # "missing_data", "maf", "obs_het", "individuals", "ld",
+                               # "regions" or "excluded_regions"
     args: dict[str, object]    # {"max_allowed_maf": 0.95}
 ```
 
@@ -358,7 +365,8 @@ The counts are in what a pass produces, and not in the `Variants`: every
 result of a consumer has a `pass_stats`, the `PassStats` of
 `docs/specs/variant.md`, and so has the iterator that `iter_blocks`
 returns. Its `filtering` is a dict of the kind of each filter,
-`"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`, to its
+`"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`, `"regions"` or
+`"excluded_regions"`, to its
 `FilteringStats`, in the order of the steps, and it is empty when the `Variants` had no filter.
 
 ```python
@@ -994,6 +1002,265 @@ and asserts the 133 variants of the second row of the table, their first
 five positions, and the `Error` of a `maxAllowedR2` of 1.5.
 
 
+## The filter by regions
+
+### What it gives
+
+It keeps the variants that fall inside the regions a user lists in a BED
+file, or, with `exclude`, the ones that fall outside all of them. A user
+keeps the variants of the genes they study, or the ones a capture
+targeted, and takes out those of repeats or of regions known to map
+badly.
+
+A BED file is a text with one region on each line: the chromosome, the
+start and the end, separated by tabs, and any columns after those three,
+which are not read. BED counts the bases from 0 and leaves the end out, so
+the line `chr1 0 2000` is the first 2000 bases of chr1. A region of popnei,
+as `docs/glossary.md` has it, counts from 1 as a VCF does and includes both
+ends, so that line is the region from 1 to 2000, and a line of start `s`
+and end `e` is the region from `s + 1` to `e`.
+
+A variant is inside a region when its chromosome has the name of the
+region's, written the same way, and its position, the POS of its VCF, is
+in the region. Only the position is looked at, and not the bases its
+reference allele covers, so a deletion that starts before a region and
+reaches into it is outside. The owner decided it on 26 September 2026:
+it is what `bcftools view -T` and `plink2 --extract bed0` do, and the
+same for every variant of one base. The option not taken was any base the
+reference allele covers, as `bcftools view -R` does, which would have the
+filter and the skip read the alleles, and the vars file keep the longest
+reference allele of each batch. A variant on a chromosome
+that the BED does not name is outside. Regions that overlap or that touch
+act as the one region they cover together, and the order of the lines
+does not matter.
+
+### In Python and in TypeScript
+
+```python
+Variants.filter_by_regions(bed_path: str | Path, exclude: bool = False) -> None
+```
+
+It is a step, as the other filters of this spec are: it adds itself to the
+`Variants`, reads no variant and returns nothing. It reads the BED file at
+the call, so an error of the file comes at the call and the regions are
+those the file had then. The step is of the kind `"regions"`, or
+`"excluded_regions"` with `exclude`, and its `args` are the path and the
+number of regions left once the overlapping ones are joined:
+`{"bed_path": "genes.bed", "num_regions": 412}`. A second step of one kind
+is refused, as for every filter of this spec, and the two kinds can stand
+together: a user keeps the variants of the genes and excludes from them
+those of the repeats. The owner decided on 26 September 2026 that the
+filter keeps by default and excludes with `exclude=True`.
+
+In TypeScript, `variants.filterByRegions(bed, {exclude = false})`, with
+`bed` a `Uint8Array` with the bytes of the BED file, and `args` of
+`{numRegions}` alone, since there is no path. A `bed` that is not a
+`Uint8Array` and an `exclude` that is not a boolean are an `Error` at the
+call.
+
+pyNei has no filter by regions, so nothing is mirrored and nothing
+differs.
+
+The lines of a BED file that are not regions are skipped: an empty line,
+one that starts with `#`, and one whose first word is `track` or
+`browser`, which the tools of the UCSC genome browser write and which
+bedtools skips, by its documentation; bcftools 1.24 refuses a BED that
+has them, tried on 26 September 2026. The word is the whole of what comes
+before the first blank, a space or a tab, or the end of the line, so
+`tracks1 0 5`, whose chromosome is `tracks1`, is a region, as bcftools
+1.24 and plink2 v2.0.0-a.7.7 read it. A BED that starts with the two
+bytes of gzip, `1f 8b`, is read through gzip, as a VCF is, and the three
+bytes of the UTF-8 byte order mark, `ef bb bf`, which some editors of
+Windows write at the start of a text, are dropped from the start of the
+text, so that they are not read as the start of the first chromosome
+name. What is refused, a `ValueError` in Python that names the file
+and the line, and in TypeScript an `Error` that names the line: What is refused, a `ValueError` in Python that names the file
+and the line, and in TypeScript an `Error` that names the line:
+
+- A line of fewer than three columns separated by tabs. A line with
+  spaces between its columns is one of these, and the message says that
+  BED separates them by tabs.
+- A chromosome that is empty, a line that starts with a tab, which names
+  no chromosome a variant can be on; plink2 v2.0.0-a.7.7 refuses it too.
+- A start or an end that is not a whole number of 0 or more, or that is
+  above 18446744073709551615, the largest number of 64 bits.
+- A start that is not below its end. BED allows a start equal to its end
+  for a point between two bases, which holds no position of popnei's.
+- A BED with no region.
+
+The lines are counted from 1 over the whole file, the skipped ones among
+them, so the number in a message is the one an editor shows. A line that
+ends in a carriage return before its newline, as a file written on
+Windows does, is read without it, as bcftools 1.24 and plink2
+v2.0.0-a.7.7 read one, tried on 26 September 2026. A start and an end are
+written in digits alone and fit in 64 bits: `+99`, which bcftools reads
+as 99, is refused. The name of a chromosome is compared with the name the
+source gives byte for byte, so a name that is not UTF-8 text is not
+refused and matches no variant.
+
+### The cases a reader of the rules would not guess
+
+- The filter needs the chromosome and the position. It asks its source
+  for them besides what its consumer asked for, and a source that lacks
+  them, a vars file written without those columns, gives at its first
+  block the error of
+  `docs/specs/variant.md` for a field that a consumer depends on and did
+  not get, a `ValueError` in Python that names the field.
+- A BED that names its chromosomes `1` where the source names them `chr1`
+  keeps nothing, and the consumer then gives the error of a pass that gave
+  no variant, whose message has the counts of this filter, 500 given and 0
+  kept on `many.vcf`. popnei does not match `chr1` with `1`: a match that
+  is wrong for one file would keep the wrong variants and say nothing.
+- The counts are those of the variants this filter was given and kept,
+  whether or not its source skipped the variants outside the regions,
+  which "How it runs" says.
+
+### How it runs
+
+The regions of each chromosome are held sorted and joined, and a variant
+is looked up by its position among them with a binary search, over the
+rows of a block with rayon as the threshold filters are. What is kept from
+one block to the next is the regions and the two counts.
+
+The owner decided on 26 September 2026 that the source skips the variants
+this filter would take out, so that they are not built at all, where the
+option not taken was a filter that looks at every variant and leaves the
+skipping for later. When this filter is the first filter of variants of
+the chain, so that nothing stands between it and the source but, at most,
+the filter of individuals, it hands its regions to the source when the chain is built,
+with `skip_outside` of `docs/specs/block.md`, and the source gives only
+the variants the filter can keep:
+
+- The VCF reader reads CHROM and POS of each line in the serial pass that
+  already finds its FILTER, and a line outside gets no row: its columns
+  of individuals, 92 in 100 of the time of a read on one thread by the
+  profile of "Speed" of `docs/specs/io_vcf.md`, are never parsed. The line
+  is still read, and decompressed when the file is bgzipped.
+- The vars file reader does not read a batch whose chromosomes, with the
+  smallest and the largest position of each that the footer keeps
+  (`docs/specs/io_vars.md`), overlap no region, or, with `exclude`, lie
+  each inside one region. It seeks past the batch, and nothing of it is
+  decompressed. In the other batches it gives every variant, and the
+  filter takes them out.
+
+The source counts the variants it passed over since the pass started, and
+gives that number with `num_skipped`. The filter's count of the variants
+it was given is the variants that reached it plus that number, read when
+its counts are read, so the counts are the ones the filter gives without
+the skip. A filter of variants gives 0 as its `num_skipped`, since it
+passed its source nothing to skip, so a second filter by regions, which
+has the first below it, adds nothing that the first counted. A line that the VCF reader skips for
+its FILTER is counted by neither, as it is not a variant of the source.
+
+When a filter of variants comes before this one, the source is not handed
+the regions: skipping would take variants from that filter too and change
+its counts. This filter then looks at every variant it gets, which is the
+same variants and slower, and it is given what the filter before it kept. A user who puts the filter by regions first
+gets the skip. When a `"regions"` and an `"excluded_regions"` step are
+both in the chain, the first of the two can hand its regions to the
+source and the second looks at every variant.
+
+A line that the VCF reader skips is not parsed past CHROM, POS and FILTER,
+so a wrong genotype, a genotype of another ploidy or an undeclared allele
+in it is no error with the skip and is one without it, and when a filter
+of variants comes first. This is decided here, and it is what the reader
+does already for a column that no consumer asked for: "How it runs" of
+the reader in `docs/specs/io_vcf.md` does not check a column it does not
+parse. A line outside the regions holds no variant of the pass either
+way.
+
+What the reader checks of every line whatever is asked for, the shape of
+the line of "How it runs" of `docs/specs/io_vcf.md`, it checks of a line
+it skips too: the nine first columns are there and are UTF-8, the FORMAT
+has a `GT` key, and, when the genotypes or the text of the lines are asked
+for, the line has one column after the FORMAT for each individual of the
+header. A line that fails any of them gets a row, so the parse gives its
+error with the skip as without it. A plain VCF that was cut inside its
+last line has nothing else that says it was cut, and that line has too
+few columns. The checks count the tabs of the line, which the skip reads
+whole. A POS that does not parse as a number gives the line a row, so the
+parse gives the error of that column whatever the regions are. The serial
+pass reads a POS written in digits alone that fit in 64 bits, and any
+other gets a row: `+5`, which the parse reads as 5, reaches the filter,
+which takes it out when it is outside, so it is counted among the
+variants the filter was given and not among those the source skipped.
+
+The offer holds from the next block the source builds. A block the reader
+one block ahead of `docs/specs/block.md` had built before the offer
+reached its thread is given whole, and the filter takes out what it does
+not keep, so the counts are the same and fewer variants are skipped.
+
+With the skip, a chromosome whose lines are all skipped gets no number in
+the table of chromosome names, so the numbers of the chromosomes can
+differ with and without it; the names and the positions of the variants
+do not.
+
+### How it is verified
+
+Against bcftools 1.24 and plink2 v2.0.0-a.7.7, which keep a variant by
+its position alone, as this filter does: `bcftools view -T file.bed`,
+whose `-T` reads a file named `.bed` as a BED and matches the position,
+and `plink2 --extract bed0 file.bed`, whose `bed0` says that the file
+counts from 0. `bcftools view -R`, which reads a region with an index,
+keeps a variant whose reference allele reaches into a region, and is not
+the reference here. On `many.vcf` of `docs/specs/io_vcf.md`, read with
+every variant given because neither program honours FILTER, with this
+BED:
+
+    track name=test
+    # a comment
+    chr2    19000   30000
+    chr1    0       2000
+    chr1    5000    5100
+    chr1    4990    5050
+    chr2    10249   10250
+    chr3    0       100000
+
+it has six regions, which join into five: chr1 1 to 2000, chr1 4991 to
+5100, chr2 10250 alone, chr2 19001 to 30000 and chr3 1 to 100000. Given
+the six lines of regions alone, since bcftools refuses the first two,
+`bcftools view -H -T` keeps 45 variants and `-T ^` 455, and `plink2
+--vcf-half-call m --extract bed0` and `--exclude bed0` keep the same 45 and
+455, run on 26 September 2026. The 45 are 28 of chr1 up to 2000, the three
+at chr1 4996, 5033 and 5070, chr2 10250, and the 13 of chr2 from 19001,
+counted from the positions of the file. chr3 has no variant. The cargo
+tests, made at `next_block` of a `RegionsReader` over a `VcfReader` on
+`many.vcf`, in blocks of 7 variants and of the default size, assert the 45
+positions and the 455, the counts 500 given and 45 kept, and the same with
+the skip of the source and without it, the variants compared by the names
+of their chromosomes and their positions.
+
+The same variants written as a vars file in batches of 100 variants have
+five batches, whose regions in the footer are chr1 1000 to 4663; chr1 4700
+to 8363; chr1 8400 to 10213 and chr2 10250 to 12063; chr2 12100 to 15763;
+and chr2 15800 to 19463. With the BED above the reader skips the fourth
+batch alone, and with `exclude` none, since no batch lies inside one
+region. A cargo test at the vars file reader asserts which batches it
+decompressed, with a count that the reader keeps for the tests, and that
+the variants and the counts are those of the VCF.
+
+The worked example, the first cargo test, made at `RegionFilter` of "The
+Rust interface" on the six lines of `write.vcf` of the VCF writer in
+`docs/specs/io_vcf.md`, read with every variant given, with the BED
+
+    chr1    99      100
+    chr1    250     251
+    chr1    999     1000
+    chr2    0       1
+
+keeps chr1 100, chr1 1000 and chr2 1, and with `exclude` chr1 250, chr1
+1001 and chr2 1500, as `bcftools view -T` and `-T ^` do and as `plink2
+--extract bed0` does, run on 26 September 2026. `chr1 99 100` is position
+100 alone, and `chr1 999 1000` holds 1000 and not 1001. `chr1 250 251` is
+position 251, so the deletion `AT` at chr1 250, which covers 250 and 251,
+is outside; `bcftools view -R` keeps it.
+
+The pytest tests, made at `filter_by_regions`, assert the 45 of `many.vcf`
+and their counts, the `steps` of both kinds with their `args`, the
+refusal of a second step of one kind, each of the four refusals of a BED
+with the line it names, and the error of a pass over a source with no
+positions. The TypeScript test asserts the 45 and the 455.
+
 ## The Rust interface
 
 What a filter compares, with the largest value that keeps the variant.
@@ -1265,6 +1532,95 @@ pub fn refuse_a_second_filter_of_a_kind(
 ) -> Result<()>;
 ```
 
+The filter by regions. The regions of a BED file, joined where they
+overlap or touch and sorted within each chromosome, are read once at the
+call of the method and shared, behind an `Arc`, by the step and by every
+pass built from it. A source that is handed them reads them too.
+
+```rust
+pub struct Regions { /* private */ }
+impl Regions {
+    /// The regions of the BED text of `source`, plain or gzipped. An
+    /// error, with the line, for each of the four refusals of "In Python
+    /// and in TypeScript" of this filter, and an error of the input when
+    /// `source` cannot be read.
+    pub fn from_bed<S: Read>(source: S) -> Result<Regions>;
+    /// How many regions are left once those that overlap or touch are
+    /// joined.
+    pub fn num_regions(&self) -> usize;
+    /// Whether position `pos` of the chromosome named `chrom` is in a
+    /// region.
+    pub fn contains(&self, chrom: &str, pos: u64) -> bool;
+}
+
+/// Which variants the filter keeps: those inside the regions, or, with
+/// `exclude`, those outside all of them.
+#[derive(Debug, Clone)]
+pub struct RegionSelection {
+    pub regions: Arc<Regions>,
+    pub exclude: bool,
+}
+impl RegionSelection {
+    /// "regions", or "excluded_regions" with `exclude`.
+    pub fn kind(&self) -> &'static str;
+    pub fn keeps(&self, chrom: &str, pos: u64) -> bool;
+    /// Whether no position from `min_pos` to `max_pos` of `chrom`, both
+    /// included, is one this selection keeps, which is what lets the vars
+    /// file reader skip a batch.
+    pub fn keeps_none_of(&self, chrom: &str, min_pos: u64, max_pos: u64) -> bool;
+}
+
+pub struct RegionFilter { /* private */ }
+impl RegionFilter {
+    pub fn new(selection: RegionSelection) -> RegionFilter;
+    pub fn selection(&self) -> &RegionSelection;
+    /// It keeps the variants of the block that the selection keeps, in
+    /// place, and adds to the counts; `chroms` names the chromosome
+    /// numbers of the block. A block that does not pass `check`, or that
+    /// has variants and no chromosome or no position, is an error, the
+    /// block is as it was and nothing is added.
+    pub fn filter_block(&mut self, block: &mut Block, chroms: &ChromTable) -> Result<()>;
+    /// Over the blocks it was given. `RegionsReader` adds the
+    /// `num_skipped` of its source to `vars_processed` when its counts are
+    /// read.
+    pub fn stats(&self) -> FilteringStats;
+}
+
+pub struct RegionsReader<R: BlockReader> { /* private */ }
+impl<R: BlockReader> RegionsReader<R> {
+    /// An error when `reader` already has a filter of the kind of
+    /// `filter`. It offers the selection to `reader` with `skip_outside`,
+    /// and asks it for the chromosome and the position besides what its
+    /// consumer asks for.
+    pub fn new(reader: R, filter: RegionFilter) -> Result<RegionsReader<R>>;
+}
+impl<R: BlockReader> BlockReader for RegionsReader<R> { /* ... */ }
+```
+
+The step, one more member of `PassStep`, for which `chain_of` builds a
+`RegionsReader` and `refuse_a_second_filter_of_a_kind` refuses a second
+step of the same kind:
+
+```rust
+    /// The variants the selection keeps.
+    Regions(RegionSelection),
+```
+
+The two methods this filter adds to `BlockReader` are in
+`docs/specs/block.md`: `skip_outside`, which a source takes and a filter
+of variants refuses, and `num_skipped`. The cases it adds to the error of
+the crate are four. Three are a `ValueError` in Python: a wrong line of a
+BED file, with the number of the line and what is wrong with it, and a
+BED with no region, in front of whose message the binding crate puts the
+path of the file, as it does for a VCF; and a second filter by regions of
+one kind, with the kind, which names no file, as the second threshold
+filter does not. Neither case of a second filter that there is fits it:
+one carries two thresholds and the other says that two lists of
+individuals are one. The fourth is a defect, a `RuntimeError`: a block
+given to `RegionFilter` whose chromosome number the table of its reader
+has no name for, which the two writers refuse in the same words, since
+the regions are looked up by the name.
+
 ## Speed
 
 ### The three threshold filters
@@ -1417,9 +1773,72 @@ make it twelve times larger, 5 MB to 60 MB at a window of 2500 variants of
 1000 individuals, and "How it runs" of this item chose the smaller window.
 That trade is the owner's and is in the report.
 
+### The filter by regions
+
+The numbers to reach were worked out from the profile of the VCF reader
+before the skip was built: on `big.vcf` of `docs/specs/io_vcf.md`, on one
+thread, with a BED that keeps 1000 of its 100000 variants in one run of
+the chromosome, handed to the source, the pass takes no more than 0.15 s
+plain, against the 0.563 s of reading the whole file, and no more than
+0.45 s bgzipped, against 0.890 s. In the plain file 92 in 100 of the read
+is the columns of the individuals, which the skip does not parse, and
+what is left, 0.045 s, is the part the skip keeps; in the bgzipped one the
+decompression, 0.33 s by the difference of the two reads, is kept too. On
+`big.vars`, whose batches are of 5000 variants, the same BED keeps the
+variants of one batch, and the pass takes no more than 0.02 s, against the
+0.102 s of the whole pass of `docs/specs/stats.md`.
+
+The skip was measured on 27 September 2026, on the owner's Apple M5 Pro,
+18 cores, release builds, the files in the page cache, at a load average
+of the minute before each set of 3.2 to 3.5. The BED is the one line
+`chr1 0 1000000`, which keeps the variants at positions 1000 to 1000000 of
+`chr1`, 1000 of the 100000, all in the first batch of `big.vars`; the
+bgzipped file is `big.vcf` bgzipped by bgzip, 38 MB. The reads of the VCF
+are `crates/popnei/benches/read_vcf.rs --bed`, which hands the regions to
+the reader and asks for the genotypes, five runs each; the passes through
+the filter are `crates/popnei/benches/filter_vars.rs --bed`, which puts
+the filter by regions on the pass with `chain_of`, as `filter_by_regions`
+does, one pass not timed and five timed. Every pass gave 1000 variants,
+and the filter was given the 100000 and kept those 1000.
+
+| | the runs | the median | the target | met |
+|---|---|---|---|---|
+| `big.vcf` plain, the read with the regions, 1 thread | 0.042, 0.039, 0.039, 0.039, 0.038 s | 0.039 s | 0.15 s | yes |
+| the same, the pass through the filter | 0.040, 0.038, 0.038, 0.038, 0.039 s | 0.038 s | 0.15 s | yes |
+| `big.vcf` bgzipped, the read with the regions, 1 thread | 0.314, 0.312, 0.312, 0.312, 0.312 s | 0.312 s | 0.45 s | yes |
+| the same, the pass through the filter | 0.312, 0.311, 0.312, 0.312, 0.312 s | 0.312 s | 0.45 s | yes |
+| `big.vars`, the pass through the filter, 1 thread | 0.005 s in each of the five | 0.005 s | 0.02 s | yes |
+
+On 18 threads the read with the regions takes 0.035, 0.035, 0.034, 0.034
+and 0.034 s plain and 0.310, 0.310, 0.309, 0.308 and 0.307 s bgzipped,
+and the pass over `big.vars` 0.005 to 0.006 s: what is left is the serial
+pass over the lines, which reads their POS, and the decompression, and
+neither runs on the pool. The whole of the bgzipped file is still
+decompressed, which is why it takes eight times the plain one.
+
+The skip adds the reading of POS to the serial pass of the reader, so the
+read of the whole plain file with no regions was measured in the same
+session against the targets of "Speed" of `docs/specs/io_vcf.md`: 0.583,
+0.545, 0.542, 0.540 and 0.541 s on one thread, a median of 0.542 s against
+0.594 s, and 0.082, 0.081, 0.082, 0.081 and 0.083 s on 18, a median of
+0.082 s against 0.108 s. Both are met, and both are under the 0.563 and
+0.093 s of the reader of 21 September. The whole bgzipped file took a
+median of 0.849 s on one thread and 0.364 s on 18, against 0.924 and 0.44
+s.
+
+For comparison, in the same session, `bcftools view -H -T` with the same
+BED, which reads the whole file and writes the 1000 lines to
+`/dev/null`, took 0.78, 0.74 and 0.77 s plain and 0.84, 0.84 and 0.82 s
+bgzipped, on one thread; `tabix` with the region `chr1:1-1000000` over the
+index of the bgzipped file, which seeks to the region and reads none of
+the rest, took 0.01 s or less in each of three runs.
+
 ## Open points
 
-None. What the owner decided on 21 September 2026 about the three
+None. The owner decided on 26 September 2026 the one the filter by regions
+had, that a variant is in a region by its position alone, which is
+written under "What it gives" of that filter with the option not taken.
+What the owner decided on 21 September 2026 about the three
 threshold filters and the counts, and on 22 September 2026 about the
 filter by linkage disequilibrium and about the order of the kept
 individuals, in chat, is written where it applies, with the option that
@@ -1433,8 +1852,11 @@ filter compares.
 
 ## Not in this spec
 
-- The variants of a region of a chromosome, which
-  `docs/specs/io_vars.md` leaves to this spec: a later item.
+- Chromosome names matched with and without `chr`, `chr1` with `1`: not
+  done, under the cases of the filter by regions.
+- The regions of an index of a bgzipped VCF, which tabix makes, so that
+  the reader seeks to them: `docs/specs/io_vcf.md` does not plan it, and
+  the skip of the filter by regions still decompresses the whole file.
 - A lowest maf, or a threshold on the frequency of the minor allele: pyNei
   has neither, and popnei does not add them.
 - The three filters over the individuals of one population and not over

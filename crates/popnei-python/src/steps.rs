@@ -11,27 +11,32 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The five methods that add a filter are here as well, one for each of the
+//! The six methods that add a filter are here as well, one for each of the
 //! three numbers of a variant a filter compares, one for the filter by
-//! linkage disequilibrium and one for the individuals to keep, and each of
-//! them refuses at the call what a user cannot filter by: a threshold that
-//! is not a number from 0 to 1, under the name of the argument they wrote it
-//! in; a window of fewer than 1 base pairs; a name that is not an individual
-//! of the source, a name that is there twice and no name at all; and a
-//! second filter of a kind the list holds, with the threshold of the one
-//! that is set when both are threshold filters. No reader exists at that call, so
+//! linkage disequilibrium, one for the individuals to keep and one for the
+//! regions of a BED file, and each of them refuses at the call what a user
+//! cannot filter by: a threshold that is not a number from 0 to 1, under the
+//! name of the argument they wrote it in; a window of fewer than 1 base
+//! pairs; a name that is not an individual of the source, a name that is
+//! there twice and no name at all; a BED file that cannot be read or that
+//! holds a line that is not a region, or no region; and a second filter of a
+//! kind the list holds, with the threshold of the one that is set when both
+//! are threshold filters. No reader exists at that call, so
 //! none of those refusals can come from the chain, and the individuals of
 //! the source, which the names are resolved against, are held here from the
 //! moment the `Variants` is built.
 
-use std::sync::{Mutex, MutexGuard};
+use std::fs::File;
+use std::io::BufReader;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use pyo3::prelude::*;
 use pyo3::types::{PyFloat, PyTuple};
 
 use popnei::block::BlockReader;
 use popnei::filters::{
-    LdFilter, PassStep, VarFilter, VarFilteringCriterion, individuals_of,
+    LdFilter, PassStep, RegionSelection, Regions, VarFilter, VarFilteringCriterion, individuals_of,
     refuse_a_second_filter_of_a_kind, resolve_individuals,
 };
 
@@ -58,20 +63,24 @@ pub(crate) struct Step {
 
 /// What a user gave one argument of a step: the threshold of a filter, a
 /// number from 0 to 1, the window of the filter by linkage disequilibrium,
-/// a whole number of base pairs, or the names of the individuals to keep,
-/// in the order they named them.
+/// a whole number of base pairs, the names of the individuals to keep, in
+/// the order they named them, or the path of a BED file; or what the step
+/// found in what it was given, the number of regions of that file once
+/// those that overlap or touch are joined.
 ///
 /// It goes to Python as the value of that argument, a float for a
-/// threshold, an `int` for the window and a tuple of strings for the
-/// individuals, which is what "In Python and in TypeScript" of
-/// `docs/specs/filters.md` gives the `args` of each step. A window is a
-/// whole number of base pairs and is not a rate, so a user who wrote 10000
-/// reads 10000 back and not `10000.0`.
+/// threshold, an `int` for the window and for the number of regions, a
+/// tuple of strings for the individuals and a string for the path, which is
+/// what "In Python and in TypeScript" of `docs/specs/filters.md` gives the
+/// `args` of each step. A window is a whole number of base pairs and is not
+/// a rate, so a user who wrote 10000 reads 10000 back and not `10000.0`.
 #[derive(Clone)]
 enum Argument {
     Threshold(f64),
     Distance(u64),
     Individuals(Vec<String>),
+    Path(String),
+    Count(usize),
 }
 
 impl<'py> IntoPyObject<'py> for Argument {
@@ -84,6 +93,8 @@ impl<'py> IntoPyObject<'py> for Argument {
             Argument::Threshold(threshold) => Ok(PyFloat::new(py, threshold).into_any()),
             Argument::Distance(distance) => Ok(distance.into_pyobject(py)?.into_any()),
             Argument::Individuals(names) => Ok(PyTuple::new(py, names)?.into_any()),
+            Argument::Path(path) => Ok(path.into_pyobject(py)?.into_any()),
+            Argument::Count(count) => Ok(count.into_pyobject(py)?.into_any()),
         }
     }
 }
@@ -100,6 +111,8 @@ const MAX_ALLOWED_OBS_HET: &str = "max_allowed_obs_het";
 const MAX_ALLOWED_R2: &str = "max_allowed_r2";
 const MAX_DIST: &str = "max_dist";
 const INDIVIDUALS: &str = "individuals";
+const BED_PATH: &str = "bed_path";
+const NUM_REGIONS: &str = "num_regions";
 
 /// The kind of one step and its arguments on their way to Python, which the
 /// package puts in the `Step` of `docs/specs/filters.md`.
@@ -244,6 +257,49 @@ impl Steps {
         let step = Step {
             pass_step: PassStep::KeepIndividuals(individuals.clone()),
             args: vec![(INDIVIDUALS, Argument::Individuals(individuals))],
+        };
+        let mut steps = self.locked()?;
+        refuse_a_second_filter_of_a_kind(&pass_steps_of(&steps), &step.pass_step)?;
+        steps.push(step);
+        Ok(())
+    }
+
+    // The variants inside the regions of the BED file at `bed_path`, or,
+    // with `exclude`, those outside all of them. The file is read at this
+    // call, with the interpreter released, so an error of it comes here and
+    // the regions are those it held now; every pass shares them. The file
+    // is read before the list is looked at, since a file that cannot be
+    // read is wrong whatever the list holds, and an error of it names the
+    // file, where a second filter of a kind names none.
+    fn filter_by_regions(
+        &self,
+        py: Python<'_>,
+        bed_path: PathBuf,
+        exclude: bool,
+    ) -> Result<(), PyPopneiError> {
+        let regions = py
+            .detach(|| -> Result<Regions, popnei::Error> {
+                let file =
+                    File::open(&bed_path).map_err(|source| popnei::Error::FileNotOpened {
+                        path: bed_path.clone(),
+                        source,
+                    })?;
+                Regions::from_bed(BufReader::new(file))
+            })
+            .map_err(|error| PyPopneiError::of_the_file(error, &bed_path))?;
+        let num_regions = regions.num_regions();
+        let step = Step {
+            pass_step: PassStep::Regions(RegionSelection {
+                regions: Arc::new(regions),
+                exclude,
+            }),
+            args: vec![
+                (
+                    BED_PATH,
+                    Argument::Path(bed_path.to_string_lossy().into_owned()),
+                ),
+                (NUM_REGIONS, Argument::Count(num_regions)),
+            ],
         };
         let mut steps = self.locked()?;
         refuse_a_second_filter_of_a_kind(&pass_steps_of(&steps), &step.pass_step)?;

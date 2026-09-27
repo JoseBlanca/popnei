@@ -1,5 +1,5 @@
 /**
- * The two passes of the stats module from TypeScript: the five statistics of
+ * The two passes of the stats module from TypeScript: the six statistics of
  * every variant, per population, the missing rate and the heterozygosity
  * rate of every individual, and what each call refuses.
  *
@@ -28,6 +28,11 @@
  * `tests/reference/vcf/`, 500 variants of 50 diploid individuals with 257
  * half called genotypes, which the same commands read with `--vcf-half-call
  * m`.
+ *
+ * The missing rate of the variants of `many.vcf` is read through its means
+ * over every individual and over `popA`, its first 20, which are the table
+ * of "How it is verified" of the missing rate, from the `--missing
+ * variant-only` reports of the same plink2 with `--vcf-half-call m`.
  */
 
 import assert from "node:assert/strict";
@@ -464,6 +469,15 @@ test("a population of 15 individuals has no value at the default threshold", () 
   assert.deepEqual(poly.totNumVariantsWithData, Uint32Array.of(0));
   assert.ok(Number.isNaN(poly.polyRatio[0]));
   assert.ok(Number.isNaN(poly.polyRatioOverVariables[0]));
+  // The missing rate is among the statistics when `stats` is left out, and
+  // it is not held to `minNumIndividuals`: every variant has one, in a bin,
+  // since a rate is from 0 to 1.
+  const missingRate = distribOf(distribs.missingRate, "missing rate");
+  assert.ok(
+    !Number.isNaN(missingRate.mean[0]),
+    "the mean missing rate of a population of 15 is NaN",
+  );
+  assert.equal(variantsInTheHistogram(missingRate.histCounts), PANEL_NUM_VARS);
   variants.free();
 });
 
@@ -515,6 +529,7 @@ test("only the statistics that were asked for are calculated", () => {
   assert.equal(distribs.obsHet, null);
   assert.equal(distribs.expHet, null);
   assert.equal(distribs.unbiasedExpHet, null);
+  assert.equal(distribs.missingRate, null);
   assert.notEqual(distribs.polyVarsRatio, null);
   assertValue(
     meanOf(distribs, distribs.maf, "major allele frequency", "p0"),
@@ -743,8 +758,8 @@ test("a pass that calculates no statistic at all is refused", () => {
   variants.free();
 });
 
-test("a statistic that is not one of the five is refused", () => {
-  // The five are a union of string literals in TypeScript, so a typo does
+test("a statistic that is not one of the six is refused", () => {
+  // The six are a union of string literals in TypeScript, so a typo does
   // not compile; what reaches the call is a name written in JavaScript.
   const variants = theFirstVariant();
 
@@ -757,7 +772,8 @@ test("a statistic that is not one of the five is refused", () => {
     (error: unknown) =>
       error instanceof Error &&
       error.message.includes("obs_hets") &&
-      error.message.includes("poly_vars_ratio"),
+      error.message.includes("poly_vars_ratio") &&
+      error.message.includes("missing_rate"),
   );
 
   variants.free();
@@ -772,6 +788,80 @@ test("a statistic that is not one of the five is refused", () => {
 function many(): Variants {
   return openVcf(MANY, { onlyPassed: false });
 }
+
+/** The individuals `ind00` to `ind49` of `many.vcf` from `first` up to and
+ * without `end`. */
+function individualsOfMany(first: number, end: number): string[] {
+  return Array.from(
+    { length: end - first },
+    (_, offset) => `ind${String(first + offset).padStart(2, "0")}`,
+  );
+}
+
+/** A histogram of the 40 default bins, one population, with the counts
+ * `withACount` of the bins it names, as the table of the spec lists them. */
+function fortyBins(withACount: readonly (readonly [number, number])[]): Uint32Array {
+  const counts = new Uint32Array(DEFAULT_NUM_BINS);
+  for (const [bin, count] of withACount) {
+    counts[bin] = count;
+  }
+  return counts;
+}
+
+test("the missing rate of many.vcf over all, popA and popB is plink2's", () => {
+  // The table of the spec, from the `--missing variant-only` reports of
+  // plink2 with a half called genotype read as missing: 1511 missing
+  // genotypes of the 500 variants of 50 individuals, 602 of the 20 of
+  // `popA` and 909 of the 30 of `popB`. Each mean is a quotient of whole
+  // counts, so what is left to allow for is the last bits of the sum. The
+  // 51 variants of `popA` in bin 5 of the 40 are 3 missing genotypes of 20,
+  // whose rate is below the edge 6 x 0.025 as float64 numbers are.
+  //
+  // The two populations are asked for in one call, so a binding that gave
+  // one population the numbers of the other would be seen here.
+  const overAll = many();
+  const inTwo = many();
+
+  const ofAll = calcPerVarDistribs(overAll, { stats: ["missing_rate"] });
+  const ofTwo = calcPerVarDistribs(inTwo, {
+    stats: ["missing_rate"],
+    pops: { popA: individualsOfMany(0, 20), popB: individualsOfMany(20, 50) },
+  });
+
+  assert.deepEqual(ofTwo.pops, ["popA", "popB"]);
+  assert.equal(ofTwo.obsHet, null);
+  for (const [distribs, pop, expected] of [
+    [ofAll, "pop", 0.06044],
+    [ofTwo, "popA", 0.0602],
+    [ofTwo, "popB", 0.0606],
+  ] as const) {
+    assertValue(
+      meanOf(distribs, distribs.missingRate, "missing rate", pop),
+      expected,
+      OF_A_QUOTIENT_OF_COUNTS * expected,
+      `the mean missing rate of ${pop}`,
+    );
+  }
+  assert.deepEqual(
+    distribOf(ofAll.missingRate, "missing rate").histCounts,
+    fortyBins([
+      [0, 101], [1, 114], [2, 102], [3, 88], [4, 77], [5, 10], [6, 6], [7, 1], [8, 1],
+    ]),
+  );
+  const ofTheTwo = distribOf(ofTwo.missingRate, "missing rate").histCounts;
+  assert.deepEqual(
+    ofTheTwo.subarray(0, DEFAULT_NUM_BINS),
+    fortyBins([[0, 144], [2, 180], [4, 116], [5, 51], [8, 8], [10, 1]]),
+  );
+  assert.deepEqual(
+    ofTheTwo.subarray(DEFAULT_NUM_BINS),
+    fortyBins([
+      [0, 88], [1, 146], [2, 124], [4, 84], [5, 41], [6, 9], [8, 5], [9, 1], [10, 1], [11, 1],
+    ]),
+  );
+  overAll.free();
+  inTwo.free();
+});
 
 /** The missing rate and the heterozygosity rate of the individual `name` of
  * a result, in that order. */

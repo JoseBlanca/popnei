@@ -12,7 +12,11 @@
 //! against any variant the filter has kept within that many base pairs
 //! behind it on its chromosome. The two filters may be given together or
 //! apart, and with neither the same pass runs with no filter, as it does
-//! today. Each of them goes on the pass through `chain_of`, which is what
+//! today. With `--bed` the pass goes through the filter by regions first,
+//! nearest the source, which keeps the variants inside the regions of that
+//! BED and hands them to the source, so that the VCF reader does not parse
+//! the lines outside them and the vars file reader does not read the
+//! batches outside them: the pass of `filter_by_regions`. Each of them goes on the pass through `chain_of`, which is what
 //! builds the chain of readers of a pass for a Python and a TypeScript
 //! user, so what is timed is the pass that `filter_by_missing_data` and
 //! `filter_by_ld` give them; with both, the filter of missing data is the
@@ -113,10 +117,11 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use popnei::block::BlockReader;
-use popnei::filters::{PassStep, VarFilteringCriterion, chain_of};
+use popnei::filters::{PassStep, RegionSelection, Regions, VarFilteringCriterion, chain_of};
 use popnei::io::vars::VarsReader;
 use popnei::io::vcf::{VcfOptions, VcfReader};
 use popnei::variant::Needs;
@@ -142,6 +147,9 @@ struct Arguments {
     max_missing_rate: Option<f64>,
     max_ld_r2: Option<f64>,
     max_dist: Option<u64>,
+    /// The regions of the BED of `--bed`, read once before the runs, and
+    /// the path they were read from.
+    regions: Option<(PathBuf, Arc<Regions>)>,
 }
 
 impl Arguments {
@@ -151,6 +159,12 @@ impl Arguments {
     /// variants the first one left.
     fn steps(&self) -> Vec<PassStep> {
         let mut steps = Vec::new();
+        if let Some((_, regions)) = &self.regions {
+            steps.push(PassStep::Regions(RegionSelection {
+                regions: Arc::clone(regions),
+                exclude: false,
+            }));
+        }
         if let Some(rate) = self.max_missing_rate {
             steps.push(PassStep::VarFilter(VarFilteringCriterion::MaxMissingRate(
                 rate,
@@ -169,6 +183,9 @@ impl Arguments {
     /// through with their thresholds, or that it had none.
     fn what_the_pass_has(&self) -> String {
         let mut filters = Vec::new();
+        if let Some((path, _)) = &self.regions {
+            filters.push(format!("the filter by regions of {}", path.display()));
+        }
         if let Some(rate) = self.max_missing_rate {
             filters.push(format!("the missing data filter at {rate}"));
         }
@@ -188,7 +205,7 @@ impl Arguments {
 /// an argument it does not know and `--help` are answered with.
 const USAGE: &str = "\
 filter_vars <path to a VCF or a vars file> [--threads n] [--runs n]
-            [--max-missing-rate r] [--max-ld-r2 r --max-dist d]
+            [--max-missing-rate r] [--max-ld-r2 r --max-dist d] [--bed path]
 
 It times whole passes over that file with the genotypes alone asked for:
 opening the file, its header, every block to the end of it. With
@@ -210,6 +227,9 @@ the filter costs.
                            --max-dist with it
   --max-dist d             how many base pairs behind a variant its window
                            reaches, 1 or more; it takes --max-ld-r2 with it
+  --bed path               the filter by regions of that BED first, which
+                           keeps the variants inside its regions and hands
+                           them to the source, so that it passes over the rest
   --help                   this
 
 A path that ends in `.vars` is read as a vars file and anything else as a
@@ -240,6 +260,7 @@ fn arguments() -> Result<Arguments, String> {
     let mut max_missing_rate: Option<f64> = None;
     let mut max_ld_r2: Option<f64> = None;
     let mut max_dist: Option<u64> = None;
+    let mut bed: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -268,6 +289,11 @@ fn arguments() -> Result<Arguments, String> {
                 } else {
                     max_ld_r2 = Some(number);
                 }
+            }
+            "--bed" => {
+                bed = Some(PathBuf::from(args.next().ok_or_else(|| {
+                    "--bed takes a path and none came after it".to_owned()
+                })?));
             }
             "--max-dist" => {
                 max_dist = Some(
@@ -309,6 +335,16 @@ fn arguments() -> Result<Arguments, String> {
     if max_ld_r2.is_some() != max_dist.is_some() {
         return Err("--max-ld-r2 and --max-dist are given together".to_owned());
     }
+    let regions = match bed {
+        None => None,
+        Some(bed) => {
+            let file =
+                std::fs::File::open(&bed).map_err(|error| format!("{}: {error}", bed.display()))?;
+            let regions = Regions::from_bed(std::io::BufReader::new(file))
+                .map_err(|error| format!("{}: {error}", bed.display()))?;
+            Some((bed, Arc::new(regions)))
+        }
+    };
     Ok(Arguments {
         path,
         threads,
@@ -316,6 +352,7 @@ fn arguments() -> Result<Arguments, String> {
         max_missing_rate,
         max_ld_r2,
         max_dist,
+        regions,
     })
 }
 

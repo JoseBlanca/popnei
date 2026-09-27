@@ -25,7 +25,7 @@
 //!
 //! `docs/specs/io_vcf.md` has the rules and where each one comes from.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -35,13 +35,19 @@ use std::path::Path;
 use flate2::bufread::MultiGzDecoder;
 
 use crate::block::{
-    AllelesColumn, Block, BlockReader, BlockSize, check_the_size_of_a_block,
+    AllelesColumn, Block, BlockReader, BlockSize, SourceHeader, VcfText, check_the_size_of_a_block,
     default_num_vars_per_block, size_of_the_blocks,
 };
 use crate::error::{Error, Result};
-use crate::filters::FilteringStats;
+use crate::filters::{FilteringStats, PlaceOfAChrom, RegionSelection};
 use crate::io::bgzf::BgzfReader;
 use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs};
+
+mod writer;
+pub use writer::{
+    VcfWriteOptions, WriterSource, num_vars_per_block_of_write_vcf, vcf_text_num_vars_per_block,
+    write_vcf,
+};
 
 /// The ploidy a VCF is read with when the caller asks for no other, the
 /// ploidy of a diploid organism. pyNei has no such argument and reports 2
@@ -195,6 +201,11 @@ const BYTES_PER_BATCH: usize = 16 * 1024 * 1024;
 /// 256 KiB is where the gain stops: 1 MiB buys nothing more and holds four
 /// times the bytes. `std::io::BufReader::new` would give 8 KiB.
 const BYTES_OF_THE_FILE_BUFFER: usize = 256 * 1024;
+
+/// The most bytes of a line whose text a block keeps for the VCF writer,
+/// 4294967295: the ends of its texts are 32 bit places in it,
+/// `docs/specs/io_vcf.md`.
+const MOST_BYTES_OF_A_LINE_OF_TEXT: u32 = u32::MAX;
 
 /// The nine first columns of the `#CHROM` line of a VCF with genotypes. The
 /// columns after them are the individuals.
@@ -525,6 +536,10 @@ struct BatchRow {
     /// What the line gave, but for its genotypes, which went into the row
     /// of the block.
     row: ParsedRow,
+    /// Where the nine first columns of the line end and where the column
+    /// of each individual ends, counted from the start of the line, when
+    /// the text of the lines was asked for, and nothing when it was not.
+    text_ends: Vec<u32>,
     /// The error of its parse, when it has one. The reader gives the error
     /// of the first line of the file that has one.
     error: Option<Error>,
@@ -538,18 +553,32 @@ impl BatchRow {
             line: 0..0,
             number: 0,
             row: ParsedRow::default(),
+            text_ends: Vec::new(),
             error: None,
         }
     }
 
     /// The line parsed into its row, with its genotypes into `gts`, the
     /// alleles of that variant in the block, and what went wrong into its
-    /// own `error`.
+    /// own `error`. When the text of the lines was asked for, the ends of
+    /// its texts too, which are found here, on the threads of the parse, so
+    /// that what the reader does serially with the text is to copy it.
     fn parse(&mut self, text: &[u8], gts: &mut [i8], rules: &RowRules<'_>) {
         #[cfg(test)]
         tests::panic_if_the_test_asked_for_it(self.number, rules);
         let line = text.get(self.line.clone()).unwrap_or_default();
-        self.error = parse_row(line, self.number, rules, gts, &mut self.row).err();
+        self.error = parse_row(line, self.number, rules, gts, &mut self.row)
+            .and_then(|()| match rules.needs.contains(Needs::VCF_TEXT) {
+                true => fill_text_ends(
+                    line,
+                    self.number,
+                    rules.individuals,
+                    rules.most_bytes_of_a_line_of_text,
+                    &mut self.text_ends,
+                ),
+                false => Ok(()),
+            })
+            .err();
     }
 }
 
@@ -635,6 +664,9 @@ pub struct VcfReader<R: BufRead + Send> {
     source: VcfSource<R>,
     options: VcfOptions,
     individuals: Vec<String>,
+    /// What the header said of the file: its individuals, the lines before
+    /// `#CHROM` and the lengths of its `##contig` lines.
+    header: SourceHeader,
     chroms: ChromTable,
     needs: Needs,
     /// How many variants a block holds: the size the caller asked for, or
@@ -663,6 +695,9 @@ pub struct VcfReader<R: BufRead + Send> {
     /// [`BYTES_PER_BATCH`]: the bound that a file of many individuals
     /// reaches before the lines are counted.
     bytes_per_batch: usize,
+    /// The most bytes of a line whose text is kept,
+    /// [`MOST_BYTES_OF_A_LINE_OF_TEXT`] but in a test.
+    most_bytes_of_a_line_of_text: u32,
     /// How many batches were filled, which is how the tests see that a
     /// bound cut them.
     #[cfg(test)]
@@ -691,6 +726,20 @@ pub struct VcfReader<R: BufRead + Send> {
     /// after a panic in its parse sets and nothing else can.
     #[cfg(test)]
     panic_at_line: Option<u64>,
+    /// The regions of the filter by regions over this reader, once it took
+    /// them with [`BlockReader::skip_outside`]: a line whose CHROM and POS
+    /// they keep none of is passed over in the serial pass and given no
+    /// row.
+    skip_outside: Option<RegionSelection>,
+    /// How many lines were passed over for those regions since the reader
+    /// was built.
+    num_skipped: u64,
+    /// The CHROM of the last line the serial pass looked the regions up
+    /// for, and where its regions are, kept from one batch to the next so
+    /// that a run of lines of one chromosome looks its name up once, also
+    /// in wasm, whose batches are of one line.
+    chrom_of_the_line_before: Vec<u8>,
+    place_of_the_chrom_before: Option<PlaceOfAChrom>,
 }
 
 impl<R: BufRead + Send> VcfReader<R> {
@@ -721,6 +770,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             source,
             options,
             individuals: Vec::new(),
+            header: SourceHeader::default(),
             chroms: ChromTable::new(),
             needs: Needs::ALL,
             num_vars_per_block: 0,
@@ -731,6 +781,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             filled: 0,
             lines_per_batch: LINES_PER_BATCH,
             bytes_per_batch: BYTES_PER_BATCH,
+            most_bytes_of_a_line_of_text: MOST_BYTES_OF_A_LINE_OF_TEXT,
             #[cfg(test)]
             batches_filled: 0,
             line_number: 0,
@@ -741,6 +792,10 @@ impl<R: BufRead + Send> VcfReader<R> {
             parsing: false,
             #[cfg(test)]
             panic_at_line: None,
+            skip_outside: None,
+            num_skipped: 0,
+            chrom_of_the_line_before: Vec::new(),
+            place_of_the_chrom_before: None,
         };
         reader.read_header()?;
         // The individuals are known now, so the alleles of one variant and
@@ -763,14 +818,19 @@ impl<R: BufRead + Send> VcfReader<R> {
         Ok(reader)
     }
 
-    /// It skips the `##` lines and takes the individuals from the `#CHROM`
-    /// line, which it leaves consumed, so that the next line read is the
-    /// first data line.
+    /// It keeps the `##` lines and the lengths of the `##contig` lines in
+    /// the header, and takes the individuals from the `#CHROM` line, which
+    /// it leaves consumed, so that the next line read is the first data
+    /// line.
     ///
     /// The line it reads into is its own: the header is read once, when the
     /// reader is built, and the text of the batch is not there yet.
     fn read_header(&mut self) -> Result<()> {
         let mut line = Vec::new();
+        // The length of each chromosome that a `##contig` line gave, beside
+        // the list of the header that keeps their order, so that a genome of
+        // a million scaffolds does not look each name up in that list.
+        let mut lengths_given: HashMap<String, u64> = HashMap::new();
         loop {
             line.clear();
             let number = next_line_number(self.line_number);
@@ -796,11 +856,49 @@ impl<R: BufRead + Send> VcfReader<R> {
                 });
             };
             if text.starts_with("##") {
+                if let Some((chrom, length)) = contig_length_of(text, number)? {
+                    self.add_the_contig_length(&mut lengths_given, chrom, length, number)?;
+                }
+                self.header
+                    .vcf_meta_lines
+                    .get_or_insert_with(Vec::new)
+                    .push(text.to_owned());
                 continue;
             }
             self.individuals = individuals_of(text, self.line_number)?;
+            self.header.individuals.clone_from(&self.individuals);
+            self.header.vcf_meta_lines.get_or_insert_with(Vec::new);
             return Ok(());
         }
+    }
+
+    /// The length of `chrom` that the `##contig` line `line_number` gives,
+    /// kept in the header and in `lengths_given`, which holds the lengths
+    /// the lines before it gave. A second line of the same chromosome with
+    /// the same length adds nothing, and one with another length is a wrong
+    /// header.
+    fn add_the_contig_length(
+        &mut self,
+        lengths_given: &mut HashMap<String, u64>,
+        chrom: &str,
+        length: u64,
+        line_number: u64,
+    ) -> Result<()> {
+        match lengths_given.get(chrom) {
+            None => {
+                lengths_given.insert(chrom.to_owned(), length);
+                self.header.chrom_lengths.push((chrom.to_owned(), length));
+            }
+            Some(kept) if *kept == length => {}
+            Some(kept) => {
+                return Err(Error::VcfHeader {
+                    problem: format!(
+                        "its line {line_number} gives the chromosome {chrom} a length of {length}, and a line before it gave it {kept}"
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// The error of a block of `num_vars_per_block` variants of this file
@@ -848,6 +946,13 @@ impl<R: BufRead + Send> VcfReader<R> {
     #[cfg(test)]
     fn batches_filled(&self) -> u64 {
         self.batches_filled
+    }
+
+    /// The most bytes of a line whose text is kept, which the test of the
+    /// line that is longer lowers from the 4294967295 no test writes.
+    #[cfg(test)]
+    pub(crate) fn set_most_bytes_of_a_line_of_text(&mut self, most_bytes: u32) {
+        self.most_bytes_of_a_line_of_text = most_bytes;
     }
 
     /// The line whose parse panics, for the test of what a reader does
@@ -904,6 +1009,15 @@ impl<R: BufRead + Send> VcfReader<R> {
             true => Some(AllelesColumn::with_num_vars(num_vars).map_err(|_| too_large())?),
             false => None,
         };
+        // The ends of the texts of a full block; their bytes are asked for
+        // one batch at a time, when the reader knows how many there are.
+        let vcf_text = match self.needs.contains(Needs::VCF_TEXT) {
+            true => Some(
+                VcfText::with_num_vars(num_vars, self.individuals.len())
+                    .map_err(|_| too_large())?,
+            ),
+            false => None,
+        };
         Ok(Block {
             num_vars: 0,
             num_individuals: self.individuals.len(),
@@ -914,6 +1028,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             id: self.reserved_column(Needs::ID, num_vars)?,
             alleles,
             qual: self.reserved_column(Needs::QUAL, num_vars)?,
+            vcf_text,
         })
     }
 
@@ -940,10 +1055,22 @@ impl<R: BufRead + Send> VcfReader<R> {
             line_error,
             end_error,
             source_done,
+            skip_outside,
+            num_skipped,
+            chrom_of_the_line_before,
+            place_of_the_chrom_before,
+            individuals,
+            needs,
             #[cfg(test)]
             batches_filled,
             ..
         } = self;
+        // The columns of individuals a line skipped for the regions has to
+        // have, which the parse checks when it reads the genotypes or the
+        // text of the line, and not otherwise.
+        let columns_of_individuals = (needs.contains(Needs::GTS)
+            || needs.contains(Needs::VCF_TEXT))
+        .then_some(individuals.len());
         *filled = 0;
         text.clear();
         #[cfg(test)]
@@ -1005,6 +1132,29 @@ impl<R: BufRead + Send> VcfReader<R> {
                 text.truncate(start);
                 continue;
             }
+            if let Some(selection) = skip_outside.as_ref()
+                && let Some((chrom, pos)) = chrom_and_pos_of(line)
+            {
+                let place = match *place_of_the_chrom_before {
+                    Some(place) if chrom == chrom_of_the_line_before.as_slice() => place,
+                    Some(_) | None => {
+                        chrom_of_the_line_before.clear();
+                        chrom_of_the_line_before.extend_from_slice(chrom);
+                        let place = selection.place_of(chrom);
+                        *place_of_the_chrom_before = Some(place);
+                        place
+                    }
+                };
+                let regions = selection.regions_at(place);
+                if !regions.keeps(pos) && has_the_shape_of_a_line(line, columns_of_individuals) {
+                    text.truncate(start);
+                    // A line is one byte at least of what was read, and
+                    // no source gives the reader 2^64 bytes, so the count
+                    // does not reach the largest `u64`.
+                    *num_skipped = num_skipped.saturating_add(1);
+                    continue;
+                }
+            }
             if batch.len() <= *filled {
                 batch.push(BatchRow::new());
             }
@@ -1038,8 +1188,17 @@ impl<R: BufRead + Send> VcfReader<R> {
     /// is the first one of the file, since the batches are parsed one after
     /// another. The block is lost with it.
     fn append_batch(&mut self, block: &mut Block) -> Result<usize> {
+        // The bytes of the lines of the batch are at most its text, which
+        // holds their ends of line too, and the memory of them is asked for
+        // before any is copied.
+        if let Some(vcf_text) = block.vcf_text.as_mut() {
+            vcf_text
+                .try_reserve(self.filled, self.text.len())
+                .map_err(|_| self.block_too_large(self.num_vars_per_block))?;
+        }
         let VcfReader {
             chroms,
+            text,
             batch,
             filled,
             ..
@@ -1064,6 +1223,10 @@ impl<R: BufRead + Send> VcfReader<R> {
             }
             if let Some(qual) = block.qual.as_mut() {
                 qual.push(row.qual);
+            }
+            if let Some(vcf_text) = block.vcf_text.as_mut() {
+                let bytes = text.get(line.line.clone()).unwrap_or_default();
+                vcf_text.push(bytes, &line.text_ends)?;
             }
         }
         Ok(*filled)
@@ -1112,6 +1275,7 @@ impl<R: BufRead + Send> VcfReader<R> {
                 batch,
                 filled,
                 parsing,
+                most_bytes_of_a_line_of_text,
                 #[cfg(test)]
                 panic_at_line,
                 ..
@@ -1120,6 +1284,7 @@ impl<R: BufRead + Send> VcfReader<R> {
                 needs: *needs,
                 ploidy: options.ploidy,
                 individuals,
+                most_bytes_of_a_line_of_text: *most_bytes_of_a_line_of_text,
                 #[cfg(test)]
                 panic_at_line: *panic_at_line,
             };
@@ -1146,6 +1311,79 @@ impl<R: BufRead + Send> VcfReader<R> {
         block.num_vars = num_vars;
         Ok(Some(block))
     }
+}
+
+/// The CHROM and the POS of a data line, for the serial pass that passes
+/// over the lines outside the regions of the filter by regions, or None
+/// when the line has fewer than three columns or a POS that is not digits
+/// alone that fit in a `u64`: such a line is given a row, so that its parse
+/// gives the error of its column, or reads the POS the serial pass could
+/// not, whatever the regions are.
+fn chrom_and_pos_of(line: &[u8]) -> Option<(&[u8], u64)> {
+    let mut tabs = memchr::memchr_iter(b'\t', line);
+    let first = tabs.next()?;
+    let second = tabs.next()?;
+    let chrom = line.get(..first)?;
+    let pos = line.get(first.saturating_add(1)..second)?;
+    if pos.is_empty() {
+        return None;
+    }
+    let pos = pos.iter().try_fold(0_u64, |number, byte| {
+        let digit = byte.checked_sub(b'0').filter(|digit| *digit <= 9)?;
+        number.checked_mul(10)?.checked_add(u64::from(digit))
+    })?;
+    Some((chrom, pos))
+}
+
+/// Whether a data line has what the reader checks of every line it gives a
+/// row, whatever is asked for, so that a line outside the regions can be
+/// passed over and give no error the parse would have given: the nine
+/// first columns, UTF-8, a FORMAT with a `GT` key, one column after it at
+/// least and, when `columns_of_individuals` is a number, that many columns
+/// after the FORMAT.
+///
+/// A line that has not is given a row, and its parse gives its error. The
+/// tabs are counted over the whole line, which is the one part of the line
+/// the skip reads past its first columns.
+fn has_the_shape_of_a_line(line: &[u8], columns_of_individuals: Option<usize>) -> bool {
+    let mut tabs = memchr::memchr_iter(b'\t', line);
+    let (Some(eighth), Some(ninth)) = (tabs.nth(7), tabs.next()) else {
+        return false;
+    };
+    let (Some(fixed), Some(format)) =
+        (line.get(..ninth), line.get(eighth.saturating_add(1)..ninth))
+    else {
+        return false;
+    };
+    if std::str::from_utf8(fixed).is_err()
+        || !format.split(|byte| *byte == b':').any(|key| key == b"GT")
+    {
+        return false;
+    }
+    match columns_of_individuals {
+        // Nine tabs before the first column of an individual and one before
+        // each of the others.
+        Some(columns) => tabs_in(line) == columns.saturating_add(8),
+        None => true,
+    }
+}
+
+/// How many tabs `line` holds.
+///
+/// The bytes are counted in runs of 255 into a byte each, which the
+/// compiler turns into additions of many bytes at once, where a count into
+/// a `usize` for each byte is not: the read of the plain `big.vcf` of
+/// `docs/specs/io_vcf.md` with the regions of 1000 of its variants, on one
+/// thread, took 0.080 s with the second and takes 0.044 s, measured on 27
+/// September 2026.
+fn tabs_in(line: &[u8]) -> usize {
+    line.chunks(usize::from(u8::MAX))
+        .map(|run| {
+            usize::from(run.iter().fold(0_u8, |tabs, byte| {
+                tabs.wrapping_add(u8::from(*byte == b'\t'))
+            }))
+        })
+        .fold(0_usize, usize::saturating_add)
 }
 
 /// Whether the line is given a row: its FILTER, the bytes between its sixth
@@ -1245,6 +1483,30 @@ impl<R: BufRead + Send> BlockReader for VcfReader<R> {
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
         Vec::new()
     }
+
+    fn header(&self) -> &SourceHeader {
+        &self.header
+    }
+
+    /// True: from the next batch it reads, a line whose CHROM and POS the
+    /// selection keeps none of is read, and decompressed when the file is
+    /// bgzipped, and not parsed past those two columns and its FILTER: its
+    /// columns of individuals, most of the time of a read, are never
+    /// parsed. A line whose POS is not a number is given a row, so the
+    /// parse gives the error of that column.
+    fn skip_outside(&mut self, selection: RegionSelection) -> bool {
+        self.skip_outside = Some(selection);
+        // A place is of the regions it was looked up in.
+        self.place_of_the_chrom_before = None;
+        true
+    }
+
+    /// The lines passed over for the regions since the reader was built. A
+    /// line left out for its FILTER is not one of them: it is not a variant
+    /// of the source.
+    fn num_skipped(&self) -> u64 {
+        self.num_skipped
+    }
 }
 
 impl VcfReader<BufReader<File>> {
@@ -1265,6 +1527,120 @@ impl VcfReader<BufReader<File>> {
             options,
         )
     }
+}
+
+/// The chromosome and the length of the `##contig` line `text`, the line
+/// `line_number` of the file, or `None` when it is another line of the
+/// header or a `##contig` line with no length.
+///
+/// The fields are read between `<` and `>`, separated by commas outside
+/// quotes, with the blanks around each field, around its `=` and after the
+/// `>` left out, as htslib reads them.
+///
+/// # Errors
+///
+/// When the length is not a whole number above 0, written in digits alone,
+/// `length=0`, `length=abc`, `length=+5`, or is past the largest a `u64`
+/// holds; when the line has a length and no ID, an empty ID, two `ID` or
+/// two `length` fields; and when its value does not start with `<`, does
+/// not end in `>` or leaves a quote open.
+fn contig_length_of(text: &str, line_number: u64) -> Result<Option<(&str, u64)>> {
+    let Some(value) = text.strip_prefix("##contig=") else {
+        return Ok(None);
+    };
+    let wrong = |what: &str| Error::VcfHeader {
+        problem: format!("its line {line_number} is a ##contig line {what}"),
+    };
+    // The VCF format makes every `##contig` line a structured one, so a
+    // value that is not `<...>` would lose its length in silence.
+    let Some(rest) = value.trim_start().strip_prefix('<') else {
+        return Err(wrong("whose value does not start with `<`"));
+    };
+    let Some(inner) = rest.trim_end().strip_suffix('>') else {
+        return Err(wrong("that does not end in `>`"));
+    };
+    let Some(fields) = fields_outside_quotes(inner) else {
+        return Err(wrong("whose quotes are not closed"));
+    };
+    let mut id = None;
+    let mut length = None;
+    for field in fields {
+        let Some((key, value)) = field.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let kept = match key {
+            "ID" => &mut id,
+            "length" => &mut length,
+            _ => continue,
+        };
+        if kept.is_some() {
+            return Err(wrong(&format!("with two `{key}` fields")));
+        }
+        *kept = Some(value.trim());
+    }
+    if id == Some("") {
+        return Err(wrong("with an empty ID"));
+    }
+    let Some(length) = length else {
+        return Ok(None);
+    };
+    // The VCF specification asks every `##contig` line for an ID, and a
+    // length of no chromosome passed over in silence would be lost.
+    let Some(chrom) = id else {
+        return Err(Error::VcfHeader {
+            problem: format!(
+                "its line {line_number} gives a chromosome the length {length} and no ID, which a ##contig line needs"
+            ),
+        });
+    };
+    let whole_number = !length.is_empty() && length.bytes().all(|byte| byte.is_ascii_digit());
+    match length.parse::<u64>() {
+        Ok(parsed) if whole_number && parsed > 0 => Ok(Some((chrom, parsed))),
+        Err(_) if whole_number => Err(Error::VcfHeader {
+            problem: format!(
+                "the length of the chromosome {chrom} in its line {line_number} is {length}, past the largest length popnei reads, {largest}",
+                largest = u64::MAX
+            ),
+        }),
+        _ => Err(Error::VcfHeader {
+            problem: format!(
+                "the length of the chromosome {chrom} in its line {line_number} is {length}, and a length is a whole number above 0"
+            ),
+        }),
+    }
+}
+
+/// The fields of the `<...>` of a line of the header, `fields` without
+/// its brackets, cut at the commas that are outside quotes, or `None` when
+/// a quote is not closed. Inside quotes the character after a `\` is
+/// taken as it is, so a `\"` does not end them.
+fn fields_outside_quotes(fields: &str) -> Option<Vec<&str>> {
+    let mut cut = Vec::new();
+    let mut in_quotes = false;
+    let mut escaped = false;
+    let mut start = 0_usize;
+    for (at, character) in fields.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if in_quotes => escaped = true,
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                cut.push(fields.get(start..at).unwrap_or_default());
+                // A comma is one byte, so the next field starts one byte on.
+                start = at.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    if in_quotes {
+        return None;
+    }
+    cut.push(fields.get(start..).unwrap_or_default());
+    Some(cut)
 }
 
 /// The individuals of the `#CHROM` line, whose nine first columns have to
@@ -1513,6 +1889,9 @@ struct RowRules<'a> {
     /// The individuals of the header, in the order of their columns, by the
     /// name that an error of one of them carries.
     individuals: &'a [String],
+    /// The most bytes a line whose text is kept holds,
+    /// [`MOST_BYTES_OF_A_LINE_OF_TEXT`], which a test lowers.
+    most_bytes_of_a_line_of_text: u32,
     /// The line whose parse panics. No VCF makes the parse panic, and this
     /// is how the test of what a reader does after a panic in its parse
     /// makes one happen; nothing outside the tests can set it.
@@ -1802,6 +2181,96 @@ fn without_the_bytes_of_the_line_end(line: &[u8]) -> &[u8] {
     line.strip_suffix(b"\r").unwrap_or(line)
 }
 
+/// Where the nine first columns of the data line `line` end and where the
+/// column of each of the `individuals` ends, counted from the start of the
+/// line, into `ends`: what the text of the lines of `docs/specs/io_vcf.md`
+/// keeps for the VCF writer beside the bytes of the line. `line` is one
+/// that [`parse_row`] read, so it has its nine first columns and one column
+/// of an individual at least.
+///
+/// # Errors
+///
+/// The wrong data line `number` when the line has not one column for each
+/// individual; when the bytes of the column of an individual are not
+/// UTF-8, which names the individual; and when the line is longer than
+/// `most_bytes`, the 4294967295 bytes that the 32 bit numbers of its ends
+/// reach but in a test.
+fn fill_text_ends(
+    line: &[u8],
+    number: u64,
+    individuals: &[String],
+    most_bytes: u32,
+    ends: &mut Vec<u32>,
+) -> Result<()> {
+    let wrong = |problem: String| Error::VcfDataLine {
+        line: number,
+        place: VcfPlace::Line,
+        problem,
+    };
+    ends.clear();
+    let num_individuals = individuals.len();
+    let Some(length) = u32::try_from(line.len())
+        .ok()
+        .filter(|length| *length <= most_bytes)
+    else {
+        return Err(wrong(format!(
+            "it is {length} bytes long, and the text of a line that popnei keeps for the VCF \
+             writer is {most_bytes} bytes at most",
+            length = line.len(),
+        )));
+    };
+    // The tabs after the eighth end the nine first columns and the column
+    // of each individual but the last, which the end of the line ends. A
+    // tab is inside the line, so its place is below its length.
+    for tab in memchr::memchr_iter(b'\t', line).skip(8) {
+        ends.push(u32::try_from(tab).unwrap_or(length));
+    }
+    ends.push(length);
+    let num_columns = ends.len().saturating_sub(1);
+    if num_columns < num_individuals {
+        return Err(wrong(format!(
+            "it has the columns of {num_columns} individuals and the header has {num_individuals}"
+        )));
+    }
+    if num_columns > num_individuals {
+        let left_over = num_columns.saturating_sub(num_individuals);
+        return Err(wrong(format!(
+            "it has {left_over} {columns} more than the {num_individuals} individuals of the header",
+            columns = if left_over == 1 { "column" } else { "columns" },
+        )));
+    }
+    let individual_columns = ends
+        .first()
+        .and_then(|fixed_end| usize::try_from(*fixed_end).ok())
+        .and_then(|fixed_end| line.get(fixed_end..))
+        .unwrap_or_default();
+    if std::str::from_utf8(individual_columns).is_ok() {
+        return Ok(());
+    }
+    // A character of UTF-8 holds no tab, so the columns are text when the
+    // whole of them is, and the one that is not is looked for only here.
+    let not_text = ends.windows(2).zip(individuals).find(|(pair, _)| {
+        let (Some(start), Some(end)) = (pair.first(), pair.get(1)) else {
+            return false;
+        };
+        let column = usize::try_from(*start)
+            .ok()
+            .and_then(|start| start.checked_add(1))
+            .zip(usize::try_from(*end).ok())
+            .and_then(|(start, end)| line.get(start..end))
+            .unwrap_or_default();
+        std::str::from_utf8(column).is_err()
+    });
+    Err(Error::VcfDataLine {
+        line: number,
+        place: match not_text {
+            Some((_, individual)) => VcfPlace::Individual(individual.clone()),
+            None => VcfPlace::Line,
+        },
+        problem: "its bytes are not valid UTF-8, and a VCF is text".to_string(),
+    })
+}
+
 /// The genotype of every individual of the line, into the row `gts` of the
 /// block: the value of the key `GT` of each column, which an individual
 /// that drops its last values still has.
@@ -1983,7 +2452,7 @@ mod tests {
     use super::{
         BYTES_PER_BATCH, BatchRow, GZIP_FLAGS, LINES_PER_BATCH, MAX_PLOIDY, MISSING_VALUE,
         ParsedRow, RowRules, VcfOptions, VcfPlace, VcfReader, parse_row, parse_rows,
-        parse_rows_one_by_one, read_line_of, written_by_bgzip,
+        parse_rows_one_by_one, read_line_of, tabs_in, written_by_bgzip,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -2010,6 +2479,241 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/reference/vcf")
             .join(name)
+    }
+
+    /// The header of `write.vcf` of "How it is verified" of the writer in
+    /// `docs/specs/io_vcf.md`: the nine lines before `#CHROM` as the file
+    /// has them, and the lengths of its two `##contig` lines in their
+    /// order.
+    #[test]
+    fn source_header_of_write_vcf_has_its_nine_meta_lines_and_the_lengths_of_its_contigs() {
+        let reader = reader_of_file("write.vcf", VcfOptions::default());
+        let header = reader.header();
+        assert_eq!(header.individuals, ["a", "b", "c"]);
+        assert_eq!(
+            header.chrom_lengths,
+            [("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)]
+        );
+        assert_eq!(
+            header.vcf_meta_lines.as_deref(),
+            Some(
+                [
+                    "##fileformat=VCFv4.3",
+                    "##contig=<ID=chr1,length=2000>",
+                    "##contig=<ID=chr2,length=1500>",
+                    "##INFO=<ID=AC,Number=A,Type=Integer,Description=\"Allele count\">",
+                    "##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Allele number\">",
+                    "##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">",
+                    "##FILTER=<ID=q10,Description=\"Quality below 10\">",
+                    "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
+                    "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Read depth\">",
+                ]
+                .map(str::to_owned)
+                .as_slice()
+            )
+        );
+    }
+
+    /// The header of a VCF of the tests whose lines before `#CHROM` are
+    /// `meta_lines`, each ended by `line_end`.
+    fn vcf_with_meta_lines(meta_lines: &[&str], line_end: &str) -> String {
+        let mut vcf = String::new();
+        for line in meta_lines {
+            vcf.push_str(line);
+            vcf.push_str(line_end);
+        }
+        vcf.push_str("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tind1");
+        vcf.push_str(line_end);
+        vcf
+    }
+
+    /// A `##contig` line with no length gives none, a second line of one
+    /// chromosome with the same length adds nothing, a comma inside quotes
+    /// does not cut a field, and the lines are kept without their `\r\n`.
+    #[test]
+    fn source_header_keeps_one_length_for_each_contig_that_has_one() {
+        let vcf = vcf_with_meta_lines(
+            &[
+                "##fileformat=VCFv4.3",
+                "##contig=<ID=chr1,Description=\"a, length=5\",length=300>",
+                "##contig=<ID=chr2>",
+                "##contig=<ID=chr1,length=300>",
+            ],
+            "\r\n",
+        );
+        let reader = VcfReader::new(Cursor::new(vcf.into_bytes()), VcfOptions::default()).unwrap();
+        let header = reader.header();
+        assert_eq!(header.chrom_lengths, [("chr1".to_owned(), 300)]);
+        assert_eq!(header.vcf_meta_lines.as_ref().map(Vec::len), Some(4));
+        assert_eq!(
+            header
+                .vcf_meta_lines
+                .as_ref()
+                .and_then(|lines| lines.get(2))
+                .map(String::as_str),
+            Some("##contig=<ID=chr2>")
+        );
+    }
+
+    /// The lengths of the chromosomes of a VCF whose one line before
+    /// `#CHROM` is `contig`.
+    fn lengths_of_the_contig_line(contig: &str) -> Vec<(String, u64)> {
+        let vcf = vcf_with_meta_lines(&[contig], "\n");
+        let reader = VcfReader::new(Cursor::new(vcf.into_bytes()), VcfOptions::default())
+            .unwrap_or_else(|error| panic!("{contig}: {error}"));
+        reader.header().chrom_lengths.clone()
+    }
+
+    /// The blanks around a field, around its `=` and after the `>` are not
+    /// part of it, as bcftools 1.24 reads them.
+    #[test]
+    fn source_header_reads_a_contig_line_with_blanks_as_bcftools_does() {
+        for contig in [
+            "##contig=<ID=chr1, length=300>",
+            "##contig=< ID=chr1,length=300>",
+            "##contig=<ID=chr1,length=300> ",
+            "##contig=<ID = chr1,length = 300>",
+            "##contig= <ID=chr1,length=300>",
+        ] {
+            assert_eq!(
+                lengths_of_the_contig_line(contig),
+                [("chr1".to_owned(), 300)],
+                "{contig}"
+            );
+        }
+    }
+
+    /// Inside quotes the character after a `\` is taken as it is, so a
+    /// `\"` does not end the quotes and a `length=` inside them is text.
+    #[test]
+    fn source_header_takes_an_escaped_quote_inside_quotes_as_text() {
+        for contig in [
+            r#"##contig=<ID=chr1,length=300,Description="note \",length=5,\" end">"#,
+            r#"##contig=<ID=chr1,Description="x\",length=5",length=300>"#,
+        ] {
+            assert_eq!(
+                lengths_of_the_contig_line(contig),
+                [("chr1".to_owned(), 300)],
+                "{contig}"
+            );
+        }
+    }
+
+    /// A comma inside quotes does not end a field, so the `length=5` of the
+    /// description, which comes after the length of the line, is text.
+    #[test]
+    fn source_header_takes_a_comma_inside_quotes_as_text() {
+        assert_eq!(
+            lengths_of_the_contig_line(r#"##contig=<ID=chr1,length=300,Description="a,length=5">"#),
+            [("chr1".to_owned(), 300)]
+        );
+    }
+
+    /// A `##contig=<` line that htslib reads and this reader could not read
+    /// as it does is a wrong header, which names the line.
+    #[test]
+    fn source_header_refuses_a_contig_line_it_cannot_read_as_bcftools_does() {
+        let problem_of = |contig: &str| {
+            let error = error_of(&vcf_with_meta_lines(&[contig], "\n"), VcfOptions::default());
+            let Error::VcfHeader { problem } = error else {
+                panic!("{contig}: {error}");
+            };
+            problem
+        };
+        for (contig, expected) in [
+            (
+                "##contig=<ID=chr1,length=300,length=5>",
+                "its line 1 is a ##contig line with two `length` fields",
+            ),
+            (
+                "##contig=<ID=chr1,ID=chr2,length=300>",
+                "its line 1 is a ##contig line with two `ID` fields",
+            ),
+            (
+                "##contig=<ID=,length=300>",
+                "its line 1 is a ##contig line with an empty ID",
+            ),
+            (
+                "##contig=<ID=chr1,length=300",
+                "its line 1 is a ##contig line that does not end in `>`",
+            ),
+            (
+                "##contig=ID=chr1,length=300",
+                "its line 1 is a ##contig line whose value does not start with `<`",
+            ),
+            (
+                r#"##contig=<ID=chr1,length=300,Description="a>"#,
+                "its line 1 is a ##contig line whose quotes are not closed",
+            ),
+        ] {
+            assert_eq!(problem_of(contig), expected, "{contig}");
+        }
+    }
+
+    /// A length past the largest a `u64` holds is refused for that, and not
+    /// as a length that is no whole number.
+    #[test]
+    fn source_header_refuses_a_contig_length_past_the_largest_a_u64_holds() {
+        let error = error_of(
+            &vcf_with_meta_lines(&["##contig=<ID=chr1,length=18446744073709551616>"], "\n"),
+            VcfOptions::default(),
+        );
+        let Error::VcfHeader { problem } = error else {
+            panic!("{error}");
+        };
+        assert_eq!(
+            problem,
+            "the length of the chromosome chr1 in its line 1 is 18446744073709551616, past the largest length popnei reads, 18446744073709551615"
+        );
+    }
+
+    /// A VCF with no line before `#CHROM` has meta lines, none of them.
+    #[test]
+    fn source_header_of_a_vcf_with_no_meta_line_has_an_empty_list_of_them() {
+        let vcf = vcf_with_meta_lines(&[], "\n");
+        let reader = VcfReader::new(Cursor::new(vcf.into_bytes()), VcfOptions::default()).unwrap();
+        assert_eq!(reader.header().vcf_meta_lines, Some(Vec::new()));
+        assert!(reader.header().chrom_lengths.is_empty());
+    }
+
+    /// A length of 0, one that is not a number, a length with no ID, and two
+    /// lengths for one chromosome are a wrong header, which names the line.
+    #[test]
+    fn source_header_refuses_a_contig_length_of_0_of_abc_with_no_id_and_two_of_one_id() {
+        let problem_of = |meta_lines: &[&str]| {
+            let error = error_of(
+                &vcf_with_meta_lines(meta_lines, "\n"),
+                VcfOptions::default(),
+            );
+            let Error::VcfHeader { problem } = error else {
+                panic!("{error}");
+            };
+            problem
+        };
+        assert_eq!(
+            problem_of(&["##fileformat=VCFv4.3", "##contig=<ID=chr1,length=0>"]),
+            "the length of the chromosome chr1 in its line 2 is 0, and a length is a whole number above 0"
+        );
+        assert_eq!(
+            problem_of(&["##contig=<ID=chr1,length=abc>"]),
+            "the length of the chromosome chr1 in its line 1 is abc, and a length is a whole number above 0"
+        );
+        assert_eq!(
+            problem_of(&["##contig=<ID=chr1,length=+5>"]),
+            "the length of the chromosome chr1 in its line 1 is +5, and a length is a whole number above 0"
+        );
+        assert_eq!(
+            problem_of(&["##fileformat=VCFv4.3", "##contig=<length=7>"]),
+            "its line 2 gives a chromosome the length 7 and no ID, which a ##contig line needs"
+        );
+        assert_eq!(
+            problem_of(&[
+                "##contig=<ID=chr1,length=2000>",
+                "##contig=<ID=chr2,length=10>",
+                "##contig=<ID=chr1,length=1999>",
+            ]),
+            "its line 3 gives the chromosome chr1 a length of 1999, and a line before it gave it 2000"
+        );
     }
 
     /// The error of a VCF that `VcfReader::new` has to refuse.
@@ -4402,6 +5106,7 @@ mod tests {
             needs,
             ploidy,
             individuals,
+            most_bytes_of_a_line_of_text: super::MOST_BYTES_OF_A_LINE_OF_TEXT,
             panic_at_line: None,
         };
         let mut gts = if needs.contains(Needs::GTS) {
@@ -4923,6 +5628,7 @@ mod tests {
             needs: Needs::GTS,
             ploidy: 2,
             individuals: &individuals,
+            most_bytes_of_a_line_of_text: super::MOST_BYTES_OF_A_LINE_OF_TEXT,
             panic_at_line: None,
         };
         let line = data_line("chr1 100 . A T . PASS . GT 0/0 0/1 1/1");
@@ -5422,6 +6128,7 @@ mod tests {
             needs: Needs::ALL,
             ploidy: MANY_PLOIDY,
             individuals: &individuals,
+            most_bytes_of_a_line_of_text: super::MOST_BYTES_OF_A_LINE_OF_TEXT,
             panic_at_line: None,
         };
         let gts_per_variant = individuals.len().saturating_mul(MANY_PLOIDY);
@@ -5539,5 +6246,19 @@ mod tests {
             "with a bound of 1024 bytes a batch holds {} bytes",
             reader.text.capacity()
         );
+    }
+
+    /// The tabs of a line are counted in runs of 255 bytes: a run of 255
+    /// tabs is the most a byte holds, and the count goes on across runs.
+    #[test]
+    fn the_tabs_of_a_line_are_counted_across_runs_of_255_bytes() {
+        assert_eq!(tabs_in(b""), 0);
+        assert_eq!(tabs_in(&[b'\t'; 255]), 255);
+        assert_eq!(tabs_in(&[b'\t'; 256]), 256);
+        assert_eq!(tabs_in(&[b'\t'; 1000]), 1000);
+        let line: Vec<u8> = (0..3000)
+            .map(|at| if at % 3 == 0 { b'\t' } else { b'x' })
+            .collect();
+        assert_eq!(tabs_in(&line), 1000);
     }
 }

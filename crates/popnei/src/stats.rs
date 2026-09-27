@@ -1,12 +1,16 @@
 //! The statistics of the variants and of the individuals, per population.
 //!
 //! A population is a named set of individuals that a calculation treats as
-//! a group, and every statistic of this module is calculated for each
-//! population over its individuals alone. [`Pops`] is what a pass works
+//! a group, and every statistic of this module but one is calculated for
+//! each population over its individuals alone. [`Pops`] is what a pass works
 //! with: the name of each population and the indices of its individuals
 //! among the individuals the pass gives, which are those of the source
 //! after the filter of individuals of `docs/specs/filters.md` when the
 //! variants carry one.
+//!
+//! The one is the density of the variants along the chromosomes,
+//! [`calc_var_density`], which counts the variants in windows of their
+//! positions and reads no genotype.
 //!
 //! `docs/specs/stats.md` has the design, and the row `stats` of section 9
 //! of `docs/architecture.md` where the module sits.
@@ -21,6 +25,11 @@ use crate::phases::{Phase, timed};
 use crate::variant::{
     AlleleCounts, GtCounts, Needs, count_alleles, count_alleles_of, count_gts, count_gts_of,
     count_the_genotype,
+};
+
+mod density;
+pub use density::{
+    DensityOfChrom, DensityWindow, LengthsFrom, MAX_NUM_WINDOWS, VarDensity, calc_var_density,
 };
 
 /// The name of the one population of a calculation that was given no
@@ -40,7 +49,7 @@ pub const DEFAULT_MIN_NUM_INDIVIDUALS: u32 = 20;
 pub const DEFAULT_POLY_THRESHOLD: f64 = 0.95;
 
 /// The two ends of the range a histogram of a statistic covers when the
-/// caller asks for no other, 0 and 1, which is where the five statistics
+/// caller asks for no other, 0 and 1, which is where the six statistics
 /// of a variant lie. It is pyNei's `default_range` of `_prepare_bins`.
 pub const DEFAULT_HIST_RANGE: (f64, f64) = (0.0, 1.0);
 
@@ -53,8 +62,8 @@ pub const DEFAULT_NUM_BINS: usize = 40;
 /// A histogram a person reads has tens of bins, and [`DEFAULT_NUM_BINS`],
 /// pyNei's, is 40. Every bin is a count of 8 bytes for each population and
 /// each statistic, held once by a pass and once more by every chunk of rows
-/// a thread is reading, so 100000 bins of the four statistics that have
-/// them, over one population, are 3.2 MB in a chunk. More bins than this
+/// a thread is reading, so 100000 bins of the five statistics that have
+/// them, over one population, are 4 MB in a chunk. More bins than this
 /// are refused, because their counts are a vector no machine gives: the
 /// allocation of 2^60 of them panics, and a panic in the core is a
 /// `PanicException` in Python, which derives from `BaseException` and ends
@@ -712,7 +721,7 @@ pub(crate) fn min_called_alleles(min_num_individuals: u32, ploidy: u32) -> u64 {
     u64::from(min_num_individuals).saturating_mul(u64::from(ploidy))
 }
 
-/// One of the five statistics that [`calc_per_var_distribs`] calculates for
+/// One of the six statistics that [`calc_per_var_distribs`] calculates for
 /// every variant and every population.
 ///
 /// The names are the ones a Python and a TypeScript user writes, and each
@@ -735,44 +744,50 @@ pub enum PerVarStat {
     /// How many of the variants vary in a population, in three counts and
     /// two ratios, which is a count and not a distribution.
     PolyVarsRatio,
+    /// The missing genotypes of a population over its individuals, called
+    /// or not, a half called genotype being missing. Every variant has one
+    /// in every population, whatever `min_num_individuals` is.
+    MissingRate,
 }
 
 impl PerVarStat {
-    /// The name of each of the five statistics, in the order of the
+    /// The name of each of the six statistics, in the order of the
     /// variants above, which is the order of the fields of a result.
     ///
     /// The names are what a Python and a TypeScript user writes in `stats`,
     /// and each one is the field of the result that holds that statistic.
     /// They are here and not in the binding crates so that a rename is one
     /// change and not four.
-    pub const NAMES: [&'static str; 5] = [
+    pub const NAMES: [&'static str; 6] = [
         "obs_het",
         "maf",
         "exp_het",
         "unbiased_exp_het",
         "poly_vars_ratio",
+        "missing_rate",
     ];
 
     /// The name a user writes for this statistic, which is the field of the
     /// result that holds it.
     #[must_use]
     pub fn name(self) -> &'static str {
-        let of_the_five = match self {
+        let of_the_six = match self {
             PerVarStat::ObsHet => 0,
             PerVarStat::Maf => 1,
             PerVarStat::ExpHet => 2,
             PerVarStat::UnbiasedExpHet => 3,
             PerVarStat::PolyVarsRatio => 4,
+            PerVarStat::MissingRate => 5,
         };
-        // The five names are there, one for each variant of the enum.
-        PerVarStat::NAMES.get(of_the_five).copied().unwrap_or("")
+        // The six names are there, one for each variant of the enum.
+        PerVarStat::NAMES.get(of_the_six).copied().unwrap_or("")
     }
 
     /// The statistic a user named.
     ///
     /// # Errors
     ///
-    /// A name that is of none of the five, with the five names.
+    /// A name that is of none of the six, with the six names.
     pub fn of_name(name: &str) -> Result<PerVarStat> {
         // The names are in [`PerVarStat::NAMES`] alone, in the order of the
         // variants, so a name that is renamed is renamed in one place.
@@ -782,6 +797,7 @@ impl PerVarStat {
             Some(2) => Ok(PerVarStat::ExpHet),
             Some(3) => Ok(PerVarStat::UnbiasedExpHet),
             Some(4) => Ok(PerVarStat::PolyVarsRatio),
+            Some(5) => Ok(PerVarStat::MissingRate),
             Some(_) | None => Err(Error::StatOfAnUnknownName {
                 name: name.to_owned(),
             }),
@@ -995,11 +1011,13 @@ pub struct PerVarDistribs {
     pub unbiased_exp_het: Option<StatsDistrib>,
     /// The counts of the polymorphism ratio.
     pub poly_vars_ratio: Option<PolyVarsStats>,
+    /// The missing rate.
+    pub missing_rate: Option<StatsDistrib>,
     /// The variants the pass gave, after the steps the variants carried.
     pub num_vars: u64,
 }
 
-/// Which of the five statistics a pass was asked for, and what has to be
+/// Which of the six statistics a pass was asked for, and what has to be
 /// counted for them.
 #[derive(Debug, Clone, Copy)]
 struct Asked {
@@ -1008,6 +1026,7 @@ struct Asked {
     exp_het: bool,
     unbiased_exp_het: bool,
     poly_vars_ratio: bool,
+    missing_rate: bool,
 }
 
 impl Asked {
@@ -1020,6 +1039,7 @@ impl Asked {
             exp_het: false,
             unbiased_exp_het: false,
             poly_vars_ratio: false,
+            missing_rate: false,
         };
         for stat in stats {
             match *stat {
@@ -1028,13 +1048,21 @@ impl Asked {
                 PerVarStat::ExpHet => asked.exp_het = true,
                 PerVarStat::UnbiasedExpHet => asked.unbiased_exp_het = true,
                 PerVarStat::PolyVarsRatio => asked.poly_vars_ratio = true,
+                PerVarStat::MissingRate => asked.missing_rate = true,
             }
         }
         asked
     }
 
+    /// Whether the genotypes of a row have to be counted for a population:
+    /// the observed heterozygosity and the missing rate follow from those
+    /// counts.
+    fn the_gt_counts(self) -> bool {
+        self.obs_het || self.missing_rate
+    }
+
     /// Whether the alleles of a row have to be counted for a population:
-    /// three of the five statistics follow from those counts, and the
+    /// three of the six statistics follow from those counts, and the
     /// fourth, the polymorphism ratio, from the major allele frequency they
     /// give.
     fn the_allele_counts(self) -> bool {
@@ -1161,6 +1189,7 @@ struct OfAPop {
     exp_het: Accumulated,
     unbiased_exp_het: Accumulated,
     poly: PolyCounts,
+    missing_rate: Accumulated,
 }
 
 /// What a pass, or one chunk of the rows of a block, has added up over
@@ -1186,6 +1215,7 @@ impl Totals {
                     exp_het: Accumulated::of(num_bins, asked.exp_het),
                     unbiased_exp_het: Accumulated::of(num_bins, asked.unbiased_exp_het),
                     poly: PolyCounts::none(),
+                    missing_rate: Accumulated::of(num_bins, asked.missing_rate),
                 })
                 .collect(),
         }
@@ -1202,6 +1232,9 @@ impl Totals {
                 .unbiased_exp_het
                 .add_the_chunk(&of_the_chunk.unbiased_exp_het);
             of_the_pass.poly.add_the_chunk(of_the_chunk.poly);
+            of_the_pass
+                .missing_rate
+                .add_the_chunk(&of_the_chunk.missing_rate);
         }
     }
 
@@ -1214,6 +1247,7 @@ impl Totals {
             of_the_pop.exp_het.forget_what_it_holds();
             of_the_pop.unbiased_exp_het.forget_what_it_holds();
             of_the_pop.poly = PolyCounts::none();
+            of_the_pop.missing_rate.forget_what_it_holds();
         }
     }
 
@@ -1248,7 +1282,7 @@ impl Totals {
 /// alone, and a variant with too little data in a population is out of that
 /// population's mean and in no bin of its histogram. A `config` that names
 /// no statistic is a pass that reads the rows and gives a result of `None`
-/// for each of the five, which the binding crates refuse before they get
+/// for each of the six, which the binding crates refuse before they get
 /// here.
 ///
 /// # Errors
@@ -1257,8 +1291,10 @@ impl Totals {
 /// fails with; a block that holds no genotypes, which is a reader that was
 /// asked for them and gave none, a block of no variants and a block whose
 /// individuals or ploidy are not the ones the reader says its source has,
-/// each a defect of a reader too; and a pass that gave no variant, whether
-/// its source holds none or its steps kept none of them.
+/// each a defect of a reader too; the missing rate asked for over a
+/// population of no individual, which `Pops::from_names` never builds; and
+/// a pass that gave no variant, whether its source holds none or its steps
+/// kept none of them.
 pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
     reader: &mut R,
     config: &PerVarDistribsConfig,
@@ -1270,7 +1306,7 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
         });
     }
     let asked = Asked::of(&config.stats);
-    // The five statistics follow from the genotypes of a row, so no column
+    // The six statistics follow from the genotypes of a row, so no column
     // of a block is read and the reader is asked to fill none of them.
     reader.set_needs(Needs::GTS);
     let mut totals = Totals::of(config.pops.len(), config.bins.num_bins(), asked);
@@ -1445,8 +1481,9 @@ fn add_the_chunks_one_by_one(
 ///
 /// `gts` holds whole rows of `alleles_per_var` alleles each. The counts of
 /// one row over one population are taken once and the statistics that were
-/// asked for follow from them: the observed heterozygosity from the counts
-/// of the genotypes, the other four from the counts of the alleles.
+/// asked for follow from them: the observed heterozygosity and the missing
+/// rate from the counts of the genotypes, the other four from the counts of
+/// the alleles.
 ///
 /// # Errors
 ///
@@ -1463,8 +1500,8 @@ fn add_the_rows(
     // `count_alleles_of` clears before it counts, so the loop over the rows
     // allocates nothing for a variant. What the pass allocates is the
     // `Totals` of each chunk of rows: the `Vec` of its populations and, in
-    // it, one `Vec` of bin counts for each population and each of the four
-    // statistics that have bins, which for 50 populations is 200 of them
+    // it, one `Vec` of bin counts for each population and each of the five
+    // statistics that have bins, which for 50 populations is 250 of them
     // per chunk.
     let mut counts: AlleleCounts = [0; 128];
     for row in gts.chunks_exact(alleles_per_var) {
@@ -1477,14 +1514,20 @@ fn add_the_rows(
             // population does not hold.
             let of_the_whole_row = config.pops.is_all(pop)
                 && individuals.len().saturating_mul(ploidy) == alleles_per_var;
-            if asked.obs_het {
+            if asked.the_gt_counts() {
                 let of_the_gts = if of_the_whole_row {
                     count_gts(row, ploidy)?
                 } else {
                     count_gts_of(row, ploidy, individuals)?
                 };
-                if let Some(value) = config.obs_het.of_var(of_the_gts) {
+                if asked.obs_het
+                    && let Some(value) = config.obs_het.of_var(of_the_gts)
+                {
                     of_the_pop.obs_het.add(value, &config.bins);
+                }
+                if asked.missing_rate {
+                    let value = missing_rate_of_var(of_the_gts, || config.pops.name(pop))?;
+                    of_the_pop.missing_rate.add(value, &config.bins);
                 }
             }
             if !asked.the_allele_counts() {
@@ -1520,6 +1563,39 @@ fn add_the_rows(
     Ok(())
 }
 
+/// The missing rate of one variant in one population, from the genotype
+/// counts of the population: its missing genotypes, the half called among
+/// them, over all its genotypes, called or not, which are its individuals.
+///
+/// It is not held to `min_num_individuals`: a population has one individual
+/// at least, so every variant has a rate, and one with nothing called has a
+/// rate of 1.
+///
+/// # Errors
+///
+/// Counts of no genotype at all, a population of no individual, which
+/// `Pops::from_names` refuses: `name_of_the_pop` gives its name for the
+/// message, and is called only then.
+fn missing_rate_of_var<'pops>(
+    counts: GtCounts,
+    name_of_the_pop: impl FnOnce() -> &'pops str,
+) -> Result<f64> {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "two u32 widened to u64, whose sum is below 2^33"
+    )]
+    let num_individuals = u64::from(counts.called) + u64::from(counts.missing);
+    if num_individuals == 0 {
+        return Err(Error::MissingRateOfAPopOfNoIndividual {
+            pop: name_of_the_pop().to_owned(),
+        });
+    }
+    // Both counts are below 2^53, where a `f64` holds the whole numbers
+    // exactly, so the rate is the one division of the two, which is what
+    // `numpy.histogram` bins in the reference.
+    Ok(f64::from(counts.missing) / num_individuals as f64)
+}
+
 /// The result of a pass, with the statistics that were asked for and
 /// `None` for the ones that were not.
 fn the_distribs(
@@ -1537,6 +1613,7 @@ fn the_distribs(
         exp_het: distrib(asked.exp_het, |pop| &pop.exp_het),
         unbiased_exp_het: distrib(asked.unbiased_exp_het, |pop| &pop.unbiased_exp_het),
         poly_vars_ratio: asked.poly_vars_ratio.then(|| totals.poly_vars_stats()),
+        missing_rate: distrib(asked.missing_rate, |pop| &pop.missing_rate),
         num_vars,
     }
 }
@@ -2111,7 +2188,8 @@ mod per_var_stat {
                 "maf",
                 "exp_het",
                 "unbiased_exp_het",
-                "poly_vars_ratio"
+                "poly_vars_ratio",
+                "missing_rate"
             ]
         );
         for (name, statistic) in [
@@ -2120,6 +2198,7 @@ mod per_var_stat {
             ("exp_het", PerVarStat::ExpHet),
             ("unbiased_exp_het", PerVarStat::UnbiasedExpHet),
             ("poly_vars_ratio", PerVarStat::PolyVarsRatio),
+            ("missing_rate", PerVarStat::MissingRate),
         ] {
             assert_eq!(
                 PerVarStat::of_name(name).unwrap_or_else(|error| panic!("{name}: {error}")),
@@ -2129,19 +2208,19 @@ mod per_var_stat {
         }
     }
 
-    /// A name that is of none of the five is refused, with the five names:
+    /// A name that is of none of the six is refused, with the six names:
     /// a user who writes one of them wrong has to read which they are.
     #[test]
-    fn a_name_of_no_statistic_is_refused_with_the_five() {
-        for name in ["obs_hets", "OBS_HET", "", "exp_het "] {
+    fn a_name_of_no_statistic_is_refused_with_the_six() {
+        for name in ["obs_hets", "OBS_HET", "", "exp_het ", "missing"] {
             let error = PerVarStat::of_name(name).unwrap_err();
             assert!(
                 matches!(&error, Error::StatOfAnUnknownName { name: found } if found == name),
                 "{name}: {error:?}"
             );
             let message = error.to_string();
-            for of_the_five in PerVarStat::NAMES {
-                assert!(message.contains(of_the_five), "{message}");
+            for of_the_six in PerVarStat::NAMES {
+                assert!(message.contains(of_the_six), "{message}");
             }
         }
     }
@@ -2386,6 +2465,18 @@ mod fixtures {
         fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
             Vec::new()
         }
+
+        fn header(&self) -> &crate::block::SourceHeader {
+            &crate::block::AN_EMPTY_HEADER
+        }
+
+        fn skip_outside(&mut self, _selection: crate::filters::RegionSelection) -> bool {
+            false
+        }
+
+        fn num_skipped(&self) -> u64 {
+            0
+        }
     }
 
     /// The blocks of `num_vars_per_block` variants that hold `variants`, the
@@ -2403,6 +2494,7 @@ mod fixtures {
                 id: None,
                 alleles: None,
                 qual: None,
+                vcf_text: None,
             })
             .collect()
     }
@@ -3476,7 +3568,7 @@ mod distribs {
         .expect("the two populations of the worked example")
     }
 
-    /// The five statistics over `pops`, with `min_num_individuals`, the
+    /// The six statistics over `pops`, with `min_num_individuals`, the
     /// four bins of the worked examples and the default threshold of the
     /// polymorphism ratio.
     fn config_of(pops: Pops, min_num_individuals: u32) -> PerVarDistribsConfig {
@@ -3487,6 +3579,7 @@ mod distribs {
                 PerVarStat::ExpHet,
                 PerVarStat::UnbiasedExpHet,
                 PerVarStat::PolyVarsRatio,
+                PerVarStat::MissingRate,
             ],
             pops,
             bins: HistBins::linear(0.0, 1.0, 4).expect("the four bins of the worked example"),
@@ -3582,6 +3675,19 @@ mod distribs {
         ]
     }
 
+    /// The five distributions of a result: the four of the tables of the
+    /// spec and the missing rate.
+    fn the_five_distribs(found: &PerVarDistribs) -> [(Option<&StatsDistrib>, &'static str); 5] {
+        let [obs_het, maf, exp_het, unbiased_exp_het] = the_four_distribs(found);
+        [
+            obs_het,
+            maf,
+            exp_het,
+            unbiased_exp_het,
+            (found.missing_rate.as_ref(), "the missing rate"),
+        ]
+    }
+
     /// The same example with no `pops`, which is the one population of the
     /// five individuals in the order of the source: the means and the
     /// histograms of the paragraph after the tables, over the variants 1,
@@ -3611,6 +3717,307 @@ mod distribs {
                     "{what} is over the variants 1, 2, 3 and 5"
                 );
             }
+        }
+    }
+
+    /// The missing rate of the worked example of the pass over its two
+    /// populations, from "How it is verified" of the missing rate: 0, 0, 0,
+    /// 1, 0 and 1 in pop1, of i1 and i2, and 1/3, 2/3, 1/3, 1, 0 and 1 in
+    /// pop2, of i3, i4 and i5, over the four bins 0, 0.25, 0.5, 0.75 and 1.
+    /// The means are 0.333333 and 0.555556 and the histograms 4, 0, 0, 2
+    /// and 1, 2, 1, 2: the rate of 1 of variants 4 and 6 is in the last
+    /// bin, which takes its right edge, and the rate of 0 in the first.
+    ///
+    /// Every variant has a rate, variants 4 and 6 with nothing called
+    /// among them, so the mean of each population is over the six.
+    #[test]
+    fn per_var_missing_rate_of_the_worked_example_over_the_two_populations() {
+        for num_vars_per_block in [6, 2, 1] {
+            let mut reader = the_worked_example(num_vars_per_block);
+            let found = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
+                .expect("the distributions of the worked example");
+
+            for (pop, mean, hist) in [
+                (0, 0.333_333, [4_u64, 0, 0, 2]),
+                (1, 0.555_556, [1, 2, 1, 2]),
+            ] {
+                let what = &format!(
+                    "the missing rate of the population {pop}, blocks of {num_vars_per_block}"
+                );
+                assert_mean(found.missing_rate.as_ref(), pop, mean, what);
+                assert_hist(found.missing_rate.as_ref(), pop, &hist, what);
+                assert_eq!(
+                    found
+                        .missing_rate
+                        .as_ref()
+                        .expect("the missing rate")
+                        .num_vars_with_value(pop),
+                    6,
+                    "{what} is over the six variants"
+                );
+            }
+        }
+    }
+
+    /// The same example with no `pops`, over the five individuals: the
+    /// rates 0.2, 0.4, 0.2, 1, 0 and 1, whose mean is 0.466667 and whose
+    /// histogram is 3, 1, 0, 2. Variant 1 has one half called genotype,
+    /// `0/.`, of five, and its 0.2 is that genotype counted as missing.
+    #[test]
+    fn per_var_missing_rate_of_the_worked_example_with_no_pops() {
+        for num_vars_per_block in [6, 2, 1] {
+            let mut reader = the_worked_example(num_vars_per_block);
+            let found = calc_per_var_distribs(&mut reader, &config_of(Pops::all(5), 1))
+                .expect("the distributions of the five individuals");
+
+            let what = &format!(
+                "the missing rate of the five individuals, blocks of {num_vars_per_block}"
+            );
+            assert_mean(found.missing_rate.as_ref(), 0, 0.466_667, what);
+            assert_hist(found.missing_rate.as_ref(), 0, &[3, 1, 0, 2], what);
+            assert_eq!(
+                found
+                    .missing_rate
+                    .as_ref()
+                    .expect("the missing rate")
+                    .num_vars_with_value(0),
+                6,
+                "{what} is over the six variants"
+            );
+        }
+    }
+
+    /// The missing rate is not held to `min_num_individuals`, which "What it
+    /// gives" of the missing rate decides: at a threshold of 20, which no
+    /// population of the worked example reaches, the observed
+    /// heterozygosity has no value at any variant and the missing rate
+    /// still has the six of each population, with the means and the
+    /// histograms it has at a threshold of 1.
+    #[test]
+    fn per_var_missing_rate_is_not_held_to_min_num_individuals() {
+        let mut reader = the_worked_example(6);
+        let found = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 20))
+            .expect("the distributions of the worked example");
+
+        let obs_het = found.obs_het.as_ref().expect("the observed heterozygosity");
+        assert_eq!(obs_het.num_vars_with_value(0), 0);
+        assert_eq!(obs_het.num_vars_with_value(1), 0);
+        for (pop, mean, hist) in [
+            (0, 0.333_333, [4_u64, 0, 0, 2]),
+            (1, 0.555_556, [1, 2, 1, 2]),
+        ] {
+            let what = &format!("the missing rate of the population {pop} at a threshold of 20");
+            assert_mean(found.missing_rate.as_ref(), pop, mean, what);
+            assert_hist(found.missing_rate.as_ref(), pop, &hist, what);
+        }
+    }
+
+    /// A population of no individual has no missing rate, 0 missing
+    /// genotypes over 0 individuals, and the pass refuses it as the defect
+    /// it is instead of leaving every variant out of the mean and the bins:
+    /// `Pops::from_names` refuses such a population, and `Pops::all(0)` is
+    /// the one way to build one.
+    #[test]
+    fn per_var_missing_rate_of_a_population_of_no_individual_is_refused() {
+        let mut reader = the_worked_example(6);
+        let mut config = config_of(Pops::all(0), 1);
+        config.stats = vec![PerVarStat::MissingRate];
+        let error = calc_per_var_distribs(&mut reader, &config)
+            .expect_err("the missing rate of a population of no individual");
+        assert!(
+            matches!(
+                &error,
+                Error::MissingRateOfAPopOfNoIndividual { pop } if pop == "pop"
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// A block of `num_individuals` diploid individuals, one row of
+    /// genotypes for each variant of `rows`, for a reader of a source of
+    /// that many individuals.
+    fn block_of(num_individuals: usize, rows: &[Vec<i8>]) -> Block {
+        Block {
+            num_vars: rows.len(),
+            num_individuals,
+            ploidy: 2,
+            gts: rows.iter().flatten().copied().collect(),
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+            vcf_text: None,
+        }
+    }
+
+    /// The genotypes of `num_individuals` diploid individuals of which the
+    /// first `num_missing` are missing, every other one of them half
+    /// called, `0/.`, and the rest `./.`, and the others `0/1`.
+    fn a_row_with_missing(num_individuals: usize, num_missing: usize) -> Vec<i8> {
+        (0..num_individuals)
+            .flat_map(|individual| {
+                if individual >= num_missing {
+                    [0, 1]
+                } else if individual % 2 == 0 {
+                    [0, -1]
+                } else {
+                    [-1, -1]
+                }
+            })
+            .collect()
+    }
+
+    /// The pass over one population of every individual of a source of
+    /// `num_individuals`, the missing rate alone, in `bins`.
+    fn missing_rate_of(num_individuals: usize, rows: &[Vec<i8>], bins: HistBins) -> StatsDistrib {
+        let mut reader =
+            GivenBlocks::of_a_source_of(num_individuals, 2, vec![block_of(num_individuals, rows)]);
+        let mut config = config_of(Pops::all(num_individuals), 1);
+        config.stats = vec![PerVarStat::MissingRate];
+        config.bins = bins;
+        calc_per_var_distribs(&mut reader, &config)
+            .expect("the missing rate")
+            .missing_rate
+            .expect("the missing rate was asked for")
+    }
+
+    /// Four individuals with 0, 1, 2, 3 and 4 missing genotypes give the
+    /// rates 0, 0.25, 0.5, 0.75 and 1, each exactly an edge of the four bins
+    /// 0, 0.25, 0.5, 0.75 and 1 as a float64. A rate on an interior edge is
+    /// in the bin that starts there and the rate of 1 in the last bin, as
+    /// "In Python and in TypeScript" of the pass has them, so the histogram
+    /// is 1, 1, 1, 2 and the mean 0.5. A pass that put a rate on an edge
+    /// in the bin that ends there would give 2, 1, 1, 1, and one that left
+    /// the right edge of the last bin out would give 1, 1, 1, 1.
+    #[test]
+    fn per_var_missing_rate_on_an_edge_is_in_the_bin_that_starts_there() {
+        let rows: Vec<Vec<i8>> = (0..=4)
+            .map(|num_missing| a_row_with_missing(4, num_missing))
+            .collect();
+        let found = missing_rate_of(
+            4,
+            &rows,
+            HistBins::linear(0.0, 1.0, 4).expect("the four bins"),
+        );
+
+        assert_eq!(found.hist_counts(0), [1, 1, 1, 2]);
+        assert_eq!(found.num_vars_with_value(0), 5);
+        assert_eq!(found.mean(0), Some(0.5));
+    }
+
+    /// 3 missing genotypes of 20 are in bin 5 of the 40 bins from 0 to 1,
+    /// counted from 0, and not in bin 6, as "A rate on the edge of a bin"
+    /// of the missing rate works out: 3/20 is 0.1499999999999999944 as a
+    /// float64 and the sixth edge, 6 x 0.025, is 0.15000000000000002. A
+    /// pass that found the bin as the rate times the bins, rounded down,
+    /// would put it in bin 6, since 0.15 x 40 rounds to 6.0 exactly.
+    #[test]
+    fn per_var_missing_rate_of_3_of_20_is_in_bin_5_of_40() {
+        let found = missing_rate_of(
+            20,
+            &[a_row_with_missing(20, 3)],
+            HistBins::linear(0.0, 1.0, 40).expect("the forty bins"),
+        );
+
+        let mut expected = [0_u64; 40];
+        if let Some(bin) = expected.get_mut(5) {
+            *bin = 1;
+        }
+        assert_eq!(found.hist_counts(0), expected);
+    }
+
+    /// The histogram of 40 bins from 0 to 1 whose bins with a count are
+    /// `with_a_count`, bin and count, as the table of the spec lists them.
+    fn forty_bins_of(with_a_count: &[(usize, u64)]) -> [u64; 40] {
+        let mut hist = [0_u64; 40];
+        for (bin, count) in with_a_count {
+            *hist.get_mut(*bin).expect("a bin of the forty") = *count;
+        }
+        hist
+    }
+
+    /// The missing rate of `many.vcf` over its 50 individuals, over `popA`
+    /// of its first 20 and over `popB` of its other 30, from the table of
+    /// "How it is verified" of the missing rate, which plink2 v2.0.0-a.7.7
+    /// gave with `--missing variant-only` and `--vcf-half-call m`, with the
+    /// default 40 bins from 0 to 1. The 51 variants of `popA` in bin 5 are
+    /// the 3 missing genotypes of 20 that are in bin 5 and not in bin 6.
+    ///
+    /// The means are printed to four and five digits, and each is a whole
+    /// number of missing genotypes over the 500 variants times the
+    /// individuals of the population, 1511 of 25000, 602 of 10000 and 909
+    /// of 15000, so they are compared within the 1e-12 relative of the
+    /// pass.
+    #[test]
+    fn per_var_missing_rate_of_many_vcf_is_the_table_of_plink2() {
+        let mut reader = vcf_reader("vcf/many.vcf");
+        let pops = the_pops_of_many_vcf(&reader);
+        let mut config = config_of(pops, 5);
+        config.bins = HistBins::linear(0.0, 1.0, 40).expect("the forty bins");
+        let found =
+            calc_per_var_distribs(&mut reader, &config).expect("the distributions of many.vcf");
+        let mut reader = vcf_reader("vcf/many.vcf");
+        config.pops = Pops::all(50);
+        let of_all = calc_per_var_distribs(&mut reader, &config)
+            .expect("the distributions of many.vcf over its 50 individuals");
+
+        for (distrib, pop, mean, with_a_count, what) in [
+            (
+                &of_all,
+                0,
+                0.060_44,
+                &[
+                    (0, 101),
+                    (1, 114),
+                    (2, 102),
+                    (3, 88),
+                    (4, 77),
+                    (5, 10),
+                    (6, 6),
+                    (7, 1),
+                    (8, 1),
+                ][..],
+                "all",
+            ),
+            (
+                &found,
+                0,
+                0.060_2,
+                &[(0, 144), (2, 180), (4, 116), (5, 51), (8, 8), (10, 1)][..],
+                "popA",
+            ),
+            (
+                &found,
+                1,
+                0.060_6,
+                &[
+                    (0, 88),
+                    (1, 146),
+                    (2, 124),
+                    (4, 84),
+                    (5, 41),
+                    (6, 9),
+                    (8, 5),
+                    (9, 1),
+                    (10, 1),
+                    (11, 1),
+                ][..],
+                "popB",
+            ),
+        ] {
+            let missing_rate = distrib.missing_rate.as_ref().expect("the missing rate");
+            assert_eq!(
+                missing_rate.hist_counts(pop),
+                forty_bins_of(with_a_count),
+                "the histogram of the missing rate of {what}"
+            );
+            assert_eq!(missing_rate.num_vars_with_value(pop), 500, "{what}");
+            let found_mean = missing_rate.mean(pop).expect("a mean of the missing rate");
+            assert!(
+                (found_mean - mean).abs() <= OF_TWO_BLOCK_SIZES * mean,
+                "the mean of the missing rate of {what} is {found_mean}, and it is {mean}"
+            );
         }
     }
 
@@ -4000,6 +4407,7 @@ mod distribs {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
         let mut reader = GivenBlocks::of(vec![of_no_individual]);
         let error = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
@@ -4035,6 +4443,7 @@ mod distribs {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
         let mut reader = GivenBlocks::of_a_source_of(3, 2, vec![of_three_individuals]);
         let error = calc_per_var_distribs(&mut reader, &config_of(Pops::all(5), 1))
@@ -4070,6 +4479,7 @@ mod distribs {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         };
         let mut blocks = blocks_of(&THE_SIX_VARIANTS, 6);
         blocks.push(of_seven_individuals);
@@ -4092,7 +4502,7 @@ mod distribs {
     }
 
     /// The pass asks its reader for the genotypes alone, which "How it
-    /// runs" of the per variant distributions states: the five statistics
+    /// runs" of the per variant distributions states: the six statistics
     /// follow from them, and a reader that filled the columns of the
     /// chromosome, the position, the id, the alleles and the quality would
     /// read and hold what nothing reads.
@@ -4118,6 +4528,7 @@ mod distribs {
         assert!(found.exp_het.is_none());
         assert!(found.unbiased_exp_het.is_none());
         assert!(found.poly_vars_ratio.is_none());
+        assert!(found.missing_rate.is_none());
         assert_mean(found.maf.as_ref(), 0, 0.6875, "the maf of pop1");
         assert_hist(found.maf.as_ref(), 0, &[0, 1, 0, 3], "the maf of pop1");
     }
@@ -4289,9 +4700,9 @@ mod distribs {
         what: &str,
     ) {
         assert_eq!(left.num_vars, right.num_vars, "the variants of {what}");
-        for ((of_left, statistic), (of_right, _)) in the_four_distribs(left)
+        for ((of_left, statistic), (of_right, _)) in the_five_distribs(left)
             .into_iter()
-            .zip(the_four_distribs(right))
+            .zip(the_five_distribs(right))
         {
             let of_left = of_left.unwrap_or_else(|| panic!("{statistic} of {what}"));
             let of_right = of_right.unwrap_or_else(|| panic!("{statistic} of {what}"));
@@ -4416,6 +4827,7 @@ mod per_individual {
             id: None,
             alleles: None,
             qual: None,
+            vcf_text: None,
         }
     }
 

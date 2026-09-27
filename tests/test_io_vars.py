@@ -47,7 +47,7 @@ REFERENCE_VCF_DIR = Path(__file__).parent / "reference" / "vcf"
 # the schema a reader of another version looks at first.
 POPNEI_KEY = b"popnei"
 POPNEI_BATCHES_KEY = b"popnei_batches"
-FORMAT_VERSION = "1.0"
+FORMAT_VERSION = "1.1"
 
 # An allele that was not called, which bcftools prints as a dot.
 MISSING_ALLELE = -1
@@ -275,6 +275,8 @@ def test_write_vars_writes_many_vcf_as_pyarrow_reads_it_back(
     assert len(read.popnei["individuals"]) == MANY_NUM_INDIVIDUALS
     assert read.popnei["ploidy"] == 2
     assert read.popnei["num_vars_per_block"] == size_of_the_key
+    # The `##contig` lines of `many.vcf` give no length.
+    assert read.popnei["chrom_lengths"] == []
     assert [batch["num_vars"] for batch in read.batches] == num_vars_of_each_batch
     assert read.num_vars_of_each_batch == num_vars_of_each_batch
     assert _regions_found(read) == regions
@@ -293,8 +295,21 @@ def test_write_vars_writes_many_vcf_as_pyarrow_reads_it_back(
         assert found == row, f"the variant {index}, counted from 0"
 
 
+def test_write_vars_keeps_the_chrom_lengths_of_the_contig_lines_of_write_vcf(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """The two `##contig` lines of `write.vcf` with a length, in their order."""
+    path = tmp_path / "write.vars"
+
+    write_vars(open_vcf(reference_vcf_dir / "write.vcf"), path)
+
+    read = _pyarrow_reads(path)
+    assert read.popnei["format_version"] == FORMAT_VERSION
+    assert read.popnei["chrom_lengths"] == [["chr1", 2000], ["chr2", 1500]]
+
+
 def test_write_vars_writes_a_file_of_no_batch_for_a_source_with_no_variants(
-    write_vcf, tmp_path: Path
+    vcf_of_lines, tmp_path: Path
 ) -> None:
     """A VCF with a header and no data line, which is not an error.
 
@@ -302,7 +317,7 @@ def test_write_vars_writes_a_file_of_no_batch_for_a_source_with_no_variants(
     block has the one column every vars file has, the genotypes, of the
     width of its three diploid individuals.
     """
-    variants = open_vcf(write_vcf([]))
+    variants = open_vcf(vcf_of_lines([]))
     path = tmp_path / "no_variant.vars"
 
     write_vars(variants, path)
@@ -314,6 +329,7 @@ def test_write_vars_writes_a_file_of_no_batch_for_a_source_with_no_variants(
         "individuals": ["ind1", "ind2", "ind3"],
         "ploidy": 2,
         "num_vars_per_block": LARGEST_NUM_VARS_PER_BLOCK,
+        "chrom_lengths": [],
     }
     assert read.batches == []
     assert read.num_vars_of_each_batch == []
@@ -321,7 +337,7 @@ def test_write_vars_writes_a_file_of_no_batch_for_a_source_with_no_variants(
 
 
 def test_write_vars_leaves_no_file_when_the_vcf_fails_half_way(
-    write_vcf, tmp_path: Path
+    vcf_of_lines, tmp_path: Path
 ) -> None:
     """A tetraploid genotype in the third variant of a diploid VCF.
 
@@ -329,7 +345,7 @@ def test_write_vars_leaves_no_file_when_the_vcf_fails_half_way(
     user wrote to is free afterwards, so the same call can be made again
     once the VCF is fixed. pyNei leaves the file it was writing.
     """
-    vcf_path = write_vcf(
+    vcf_path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
             "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",

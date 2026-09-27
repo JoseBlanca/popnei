@@ -338,9 +338,12 @@ many variants fall in it is whatever the dataset has there. The filter by
 linkage disequilibrium of `docs/specs/filters.md` holds the variants it
 has kept inside the window of the variant it is looking at, and the curve
 of linkage disequilibrium against distance of `docs/specs/ld.md` compares
-each variant with the ones inside its own. Not used: window for a block
-or for a run of blocks, which is what a reader holds and not what a
-calculation compares.
+each variant with the ones inside its own. The density of the variants of
+`docs/specs/stats.md` uses windows of another shape, stretches of a stated
+width laid end to end along each chromosome from position 1, in which it
+counts the variants; that spec says which of the two it means. Not used:
+window for a block or for a run of blocks, which is what a reader holds
+and not what a calculation compares.
 
 **member.** One gzip stream of a gzipped file. A file that bgzip wrote is
 many of them one after another, each with 64 KiB of text at most and each
@@ -352,8 +355,23 @@ it, and the empty member at the end of a bgzipped file is the mark of its
 end and not the empty block.
 
 **region.** A stretch of one chromosome, from a smallest to a largest
-position, both included. The vars file keeps, for each of its batches, the
+position, both included, counted from 1 as a VCF counts. The vars file keeps, for each of its batches, the
 region of every chromosome that has variants in it.
+
+**BED file.** A text file of regions, one on each line: the chromosome,
+the start and the end, separated by tabs. It counts the bases from 0 and
+leaves the end out, so the line `chr1 0 2000` is the region of popnei from
+1 to 2000. The filter by regions of `docs/specs/filters.md` reads it.
+
+**header of a source.** What a source of variants says of itself before
+its first variant: its individuals, the length of each chromosome it gives
+one for and, for a VCF, the lines before `#CHROM`. `SourceHeader`, of
+`docs/specs/block.md`. Not used: metadata, which is the key of the schema
+of a vars file that holds part of it.
+
+**text of the lines.** The text of the columns of each line of a VCF,
+which the VCF reader keeps when it is asked for `VCF_TEXT`, so that the
+VCF writer of `docs/specs/io_vcf.md` writes each line as it was.
 
 **reader.** Anything that gives blocks through the `BlockReader` trait: the
 VCF reader, the vars file reader, and a filter or `reblock`, which are

@@ -3,7 +3,10 @@
  * the `Distances` that every distance calculation of popnei gives.
  */
 
-import { wholeNumberOfZeroOrMore } from "./arguments.js";
+import {
+  anObjectOfOptions,
+  wholeNumberOfZeroOrMore,
+} from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
 import type { PassStats, Variants } from "./variant.js";
 import { passStatsOf, sourceOfTheVariants } from "./variant.js";
@@ -205,6 +208,7 @@ export function calcPairwiseKosmanDists(
   options: CalcPairwiseKosmanDistsOptions = {},
 ): Distances {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("calcPairwiseKosmanDists", options, ["minNumSnps"]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,

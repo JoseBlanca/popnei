@@ -131,9 +131,16 @@ gemm = { version = "0.19.0", default-features = false, features = [
 # `erfc` puts `chi2.sf(x, 1)` within 2.9e-14 of itself, and the spec asks
 # for 1e-12.
 libm = "0.2"
-# The gzip of the VCF reader, with its default backend, miniz_oxide, which
-# is written in Rust and so builds for the two wasm targets.
-flate2 = "1"
+# The gzip and the bgzip of the readers and of the VCF writer, over the
+# backend zlib-rs, a port of zlib to Rust that builds for the two wasm
+# targets. It replaces miniz_oxide, flate2's default, which the default
+# features being off leaves out of the build. The VCF writer bgzips
+# `big.vcf` at level 6 on one thread in 5.5 s with zlib-rs and took 10.7 s
+# with miniz_oxide, against the 8.8 s of bcftools, and the bgzipped read of
+# that file on one thread takes 0.76 s with zlib-rs and 0.83 s with
+# miniz_oxide. The owner chose zlib-rs on 27 September 2026, and the
+# numbers are in "Speed" of docs/specs/io_vcf.md.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 # The threads the VCF reader parses its batches of lines on, and the pool
 # every parallel loop of popnei will run on: section 3 of
 # docs/architecture.md gives rayon the records and the rows of a block, and

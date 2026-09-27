@@ -3,7 +3,10 @@
 September 2026. The vars file is where a user of popnei keeps their variants
 once the VCF has been read, so that the text is parsed once and every later
 pass reads a file of arrays: the genotypes of 20000 variants of 1000
-individuals are decompressed from it in 19 ms. There is no code. This spec
+individuals are decompressed from it in 19 ms. There is code, and none yet
+for two things added on 26 September 2026: the lengths of the chromosomes
+in the file, and the batches the reader skips for the filter by regions of
+`docs/specs/filters.md`. This spec
 develops the row `io::vars` of the table in section 9 of
 `docs/architecture.md` and section 6 of that document. It covers the format of
 the file, the writer and the reader.
@@ -89,10 +92,24 @@ What is known before the first variant goes in the schema, under the key
 
 | key | value |
 |---|---|
-| `format_version` | `"1.0"` |
+| `format_version` | `"1.1"` |
 | `individuals` | the names of the individuals, in order |
 | `ploidy` | how many alleles a genotype holds |
 | `num_vars_per_block` | how many variants a batch holds, the last one aside |
+| `chrom_lengths` | the length of each chromosome the source gave one for, `[["chr1", 2000], ["chr2", 1500]]`, in its order; `[]` when it gave none |
+
+`chrom_lengths` was added on 26 September 2026, for the density of the
+variants of `docs/specs/stats.md` and the `##contig` lines of the VCF
+writer of `docs/specs/io_vcf.md`, and with it the version went from 1.0 to
+1.1. The writer takes it from the header of its source, which for a VCF
+is its `##contig` lines with a `length`. A file of 1.0 has no such key and
+is read with no lengths, and a reader of 1.0 reads a file of 1.1 and
+ignores the key, by the rule of the version below. A file with the key is not a
+vars file, the error of a file as a whole, when the key is not a list of
+pairs of a name and a whole number above 0, or when it gives one
+chromosome twice, which the VCF reader refuses too; a file without it is
+read with no lengths whatever its version says. This was decided on 26
+September 2026 with the code.
 
 What is known only after the last variant goes in the footer, under the key
 `popnei_batches`: arrow-rs writes the metadata of the footer when the file is
@@ -320,8 +337,11 @@ A pytest test made at `write_vars`, on `many.vcf` of `tests/reference/vcf/`,
 the 500 variants of 50 individuals, read with `only_passed=False` and written
 with `num_vars_per_block` 100. pyarrow opens the file. Its schema is the six
 columns with the types and the nulls of the table above, in that order. The
-value of `popnei` parses as json and holds `format_version` `"1.0"`, the 50
-names of the individuals, `ploidy` 2 and `num_vars_per_block` 100. There are
+value of `popnei` parses as json and holds `format_version` `"1.1"`, the 50
+names of the individuals, `ploidy` 2, `num_vars_per_block` 100 and
+`chrom_lengths` `[]`, since the `##contig` lines of `many.vcf` have no
+length. Written from `write.vcf` of the VCF writer of `docs/specs/io_vcf.md`,
+`chrom_lengths` is `[["chr1", 2000], ["chr2", 1500]]`. There are
 five batches of 100 variants. The `id` column has 167 nulls and the `qual`
 column 100, the variants of `many.bcftools.tsv` with a dot in those columns.
 The chromosomes, the positions, the ids, the alleles and the genotypes of the
@@ -653,6 +673,33 @@ Asking for other fields holds from the next block, as `docs/specs/block.md`
 asks of every reader, and the projection of each batch is chosen when it is
 read.
 
+The reader answers `skip_outside` of `docs/specs/block.md` with true. Once
+it is handed the regions of the filter by regions, it does not read a
+batch of which `keeps_none_of` of the selection says, for each chromosome
+of the batch in `popnei_batches`, from its smallest to its largest
+position, that no variant can be kept: it does not seek to it, nothing of
+it is decompressed, and its variants go into `num_skipped`. The message of
+the batch, the few bytes before its buffers, is read, and a batch whose
+message holds another number of rows than its entry of the footer is the
+error of such a batch, as it is when the batch is read. Beyond that the
+footer is trusted for a batch that is skipped: a footer whose regions of a
+batch were changed after the file was written, so that they no longer hold
+its variants, has the batch skipped although the filter would keep some of
+them, and nothing says so. A batch that is read with its chromosomes and
+its positions, which the filter by regions always asks for, is checked
+against its entry: a variant of it on a chromosome the entry does not
+name, or at a position outside the smallest and the largest the entry
+gives for its chromosome, is an error of the batch, a `ValueError` in
+Python that names the file, the batch, the chromosome and the position, and so is a region of the footer
+whose smallest position is above its largest, when the file is opened. The
+owner is asked whether the footer is to be trusted for the batches that
+are skipped. A file with no
+`chrom` and `pos` columns has no regions in its footer, so the reader
+skips nothing and gives its first batch, which the filter refuses with the
+error of a field it depends on. `header()` gives the individuals of
+the file, `chrom_lengths` of its `popnei` key, and no meta lines of a
+VCF.
+
 ### How it is verified
 
 A pytest test made at `open_vars`, on the file that `write_vars` makes from
@@ -731,11 +778,13 @@ What a vars file says about itself, from the `popnei` key of its schema.
 
 ```rust
 pub struct VarsMetadata {
-    /// The whole string, "1.0". Only the part before the dot is checked.
+    /// The whole string, "1.1". Only the part before the dot is checked.
     pub format_version: String,
     pub individuals: Vec<String>,
     pub ploidy: usize,
     pub num_vars_per_block: usize,
+    /// Empty in a file of 1.0, which has no such key.
+    pub chrom_lengths: Vec<(String, u64)>,
 }
 ```
 
@@ -952,11 +1001,9 @@ option that was not taken.
 
 ## Not in this spec
 
-- The function that asks a `Variants` for the variants of a region, in Python
-  and in TypeScript, and the skipping of the batches outside it. The file has
-  what that needs, `popnei_batches`, and the reader gives it as `batches()`. The
-  function belongs with the filters, as a later item of
-  `docs/specs/filters.md`.
+- The function that asks a `Variants` for the variants of regions, in Python
+  and in TypeScript: the filter by regions of `docs/specs/filters.md`, which
+  says when this reader is handed the regions and what it then skips.
 - The read ahead thread that decompresses the next batch while the consumer
   works: with the first calculation that consumes blocks.
 - Genotypes packed in 2 bits, the option to measure of section 4 of the

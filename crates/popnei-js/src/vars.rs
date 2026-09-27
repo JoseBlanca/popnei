@@ -23,6 +23,7 @@ use web_sys::Blob;
 use popnei::block::BlockReader;
 use popnei::io::vars::VarsReader;
 
+use crate::density::{ArgumentsOfTheDensity, VarDensityOfAPass, var_density_of};
 use crate::dists::{KosmanDistances, kosman_dists_of};
 use crate::diversity::{ArgumentsOfTheDiversity, PopDiversityOfAPass, pop_diversity_of};
 use crate::errors::JsPopneiError;
@@ -32,9 +33,9 @@ use crate::ld::{ArgumentsOfTheBins, LdAndDistOfAPass, R2Matrix, ld_and_dist_of, 
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
 use crate::pop_dists::{ArgumentsOfTheDists, PopDistsOfAPass, pop_dists_of};
 use crate::source::{
-    Blocks, Consumer, OpenSource, RunOfAConsumer, TheFileOfASource, VarsFile, blocks_of,
-    bytes_of_a_vars_file, starts_a_run_of, tells_the_progress, the_bytes_of_a_new_source,
-    the_file_of_a_new_source, the_source_was_freed,
+    Blocks, Consumer, OpenSource, RunOfAConsumer, TheFileOfASource, WrittenFile, blocks_of,
+    bytes_of_a_vars_file, bytes_of_a_vcf, starts_a_run_of, tells_the_progress,
+    the_bytes_of_a_new_source, the_file_of_a_new_source, the_source_was_freed,
 };
 use crate::stats::{
     ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, per_individual_stats_of,
@@ -122,8 +123,22 @@ impl VarsSource {
         &self,
         num_vars_per_block: Option<usize>,
         steps: Steps,
-    ) -> Result<VarsFile, JsPopneiError> {
+    ) -> Result<WrittenFile, JsPopneiError> {
         bytes_of_a_vars_file(self, num_vars_per_block, steps)
+    }
+
+    /// The variants of the file, through the steps of `steps`, as a VCF,
+    /// bgzipped when `bgzip` is true and plain text otherwise, which the
+    /// package reads out of the memory of wasm piece by piece, with the
+    /// counts of the pass that wrote it.
+    ///
+    /// # Errors
+    ///
+    /// When the source cannot be read, when a block of it is not one the
+    /// writer can write, and when the memory of the tab does not take the
+    /// file.
+    pub fn write_vcf(&self, bgzip: bool, steps: Steps) -> Result<WrittenFile, JsPopneiError> {
+        bytes_of_a_vcf(self, bgzip, steps)
     }
 
     /// The five per variant statistics of one pass over the file, through
@@ -203,6 +218,35 @@ impl VarsSource {
         steps: Steps,
     ) -> Result<PerIndividualStats, JsPopneiError> {
         per_individual_stats_of(self, &steps)
+    }
+
+    /// The number of variants in each window of `window_size` base pairs
+    /// along each chromosome of one pass over the file, through the steps of
+    /// `steps`, with the lengths of `chrom_lengths` for the chromosomes of
+    /// `chrom_names` when it is not nothing, and those of the source
+    /// otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`var_density_of`]: what the core refuses, a variant past
+    /// the length of its chromosome among it, a window that ends past 2^53,
+    /// a source that cannot be read, and a pass that gives no variant.
+    pub fn calc_var_density(
+        &self,
+        steps: Steps,
+        window_size: f64,
+        chrom_names: Option<Vec<String>>,
+        chrom_lengths: Vec<f64>,
+    ) -> Result<VarDensityOfAPass, JsPopneiError> {
+        var_density_of(
+            self,
+            &steps,
+            &ArgumentsOfTheDensity {
+                window_size,
+                chrom_names,
+                chrom_lengths,
+            },
+        )
     }
 
     /// The principal components of the variants of the file, through the
@@ -550,6 +594,10 @@ impl OpenSource for VarsSource {
         Ok(Box::new(VarsReader::new(
             self.file.a_pass_of(self.in_javascript, run)?,
         )?))
+    }
+
+    fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize> {
+        popnei::io::vcf::num_vars_per_block_of_write_vcf(popnei::io::vcf::WriterSource::VarsFile)
     }
 }
 

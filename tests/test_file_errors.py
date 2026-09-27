@@ -85,11 +85,11 @@ def test_the_number_of_the_system_is_said_once(tmp_path: Path) -> None:
     assert refusal.value.errno == 2
 
 
-def test_the_message_of_a_wrong_data_line_starts_with_the_file(write_vcf) -> None:
+def test_the_message_of_a_wrong_data_line_starts_with_the_file(vcf_of_lines) -> None:
     """The `x` in the POS column is a `ValueError`, a file whose content is
     not what a VCF holds, and the message names the file and then the line
     and the column, which is what the core says."""
-    path = write_vcf(["chr1\tx\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
+    path = vcf_of_lines(["chr1\tx\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
     variants = open_vcf(path)
     with pytest.raises(ValueError) as refusal:
         list(variants.iter_blocks())

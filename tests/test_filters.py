@@ -727,7 +727,7 @@ def test_a_second_filter_by_ld_is_refused_with_the_threshold_that_is_set() -> No
     ],
 )
 def test_a_source_whose_variants_do_not_come_in_order_is_refused(
-    write_vcf, last_variant: tuple[str, int], positions: tuple[str, str]
+    vcf_of_lines, last_variant: tuple[str, int], positions: tuple[str, str]
 ) -> None:
     """The window of a variant is the variants kept behind it on its
     chromosome, so this filter is the one reader of popnei that needs the
@@ -741,7 +741,7 @@ def test_a_source_whose_variants_do_not_come_in_order_is_refused(
     """
     gts = "GT\t0/0\t0/1\t1/1"
     chrom, pos = last_variant
-    path = write_vcf(
+    path = vcf_of_lines(
         [
             f"chr0\t1000\t.\tA\tC\t.\tPASS\t.\t{gts}",
             f"chr1\t2000\t.\tA\tC\t.\tPASS\t.\t{gts}",

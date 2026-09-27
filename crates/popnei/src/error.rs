@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use thiserror::Error as ThisError;
 
 use crate::block::BlockSize;
-use crate::filters::FilteringStats;
+use crate::filters::{BedLineProblem, FilteringStats};
 use crate::io::vcf::VcfPlace;
 use crate::ld::{MAX_ALLELES_OF_A_VARIANT, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES};
 use crate::variant::{MAX_ALLELE, MISSING_ALLELE, Needs};
@@ -201,6 +201,15 @@ pub enum Error {
         "a reader gave a block of no variants, and every block holds 1 variant at least; the reader that gave it has a defect"
     )]
     ReaderGaveABlockOfNoVariants,
+
+    /// The reader one block ahead was sent the answer to an offer of
+    /// regions where it asked its thread for a block. Only
+    /// `skip_outside` makes the thread answer, and it waits for the answer
+    /// and takes it, so this is a defect of popnei.
+    #[error(
+        "the reader one block ahead was given the answer to an offer of regions where it asked for a block, which is a defect of popnei"
+    )]
+    ReadAheadAnswerInPlaceOfABlock,
 
     /// A reader gave a block that holds the genotypes of no individual,
     /// either because it has no individual or because its ploidy is 0, and
@@ -453,6 +462,59 @@ pub enum Error {
         kind: &'static str,
     },
 
+    /// A line of a BED file given to the filter by regions is not a region
+    /// popnei can read: it has fewer than three columns separated by tabs,
+    /// its chromosome is empty, its start or its end is not a whole number
+    /// of 0 or more or is above the largest number of 64 bits, or its start
+    /// is not below its end. The binding crate puts the path of the
+    /// file in front of the message.
+    #[error("line {line} of the BED file: {problem}")]
+    BedLine {
+        /// The number of the line in the file, counted from 1 over every
+        /// line, the empty ones and the comments among them.
+        line: u64,
+        /// What is wrong with it.
+        problem: BedLineProblem,
+    },
+
+    /// A BED file given to the filter by regions holds no region: every
+    /// line of it is empty, a comment, or a `track` or a `browser` line.
+    /// The filter would keep no variant, or with `exclude` every one, and
+    /// say nothing of why.
+    #[error(
+        "the BED file holds no region: each of its lines is empty or starts with `#`, `track` or `browser`, which are not regions"
+    )]
+    BedWithNoRegion,
+
+    /// A second filter by regions of a kind the variants are filtered by
+    /// already: two sets of regions whose variants are kept keep those in
+    /// both, and two whose variants are excluded exclude those in either,
+    /// which one BED file says in either case. It is what a user wrote, so
+    /// it names no file. A `regions` and an `excluded_regions` step stand
+    /// together.
+    #[error(
+        "the variants are filtered by {kind} already, and a second filter of that kind is one set of regions, which one BED file holds; a filter that keeps the variants inside regions and one that excludes them can stand together"
+    )]
+    RegionFilterOfAKindThatIsSet {
+        /// The kind that is filtered twice: `regions` or
+        /// `excluded_regions`.
+        kind: &'static str,
+    },
+
+    /// A block given to the filter by regions holds a chromosome number
+    /// that the table of names given with it has no name for. The regions
+    /// are looked up by the name of the chromosome, so the variant could be
+    /// put on neither side of them. The table is the one of the reader the
+    /// block came from and has the names of every block that reader gave,
+    /// so a user reaches this only through a reader with a defect.
+    #[error(
+        "a block given to the filter by regions holds the chromosome number {number}, and the table of chromosome names of its reader has no name for it"
+    )]
+    RegionFilterChromNameMissing {
+        /// The number that has no name.
+        number: u32,
+    },
+
     /// A name in one of the populations of `pops` is not an individual of
     /// the variants the statistic is calculated over, which are those of
     /// the source after the filter of individuals when there is one. It is
@@ -591,11 +653,11 @@ pub enum Error {
     },
 
     /// A user asked for a statistic of a variant under a name that is of
-    /// none of the five. The names are those of the fields of the result,
+    /// none of the six. The names are those of the fields of the result,
     /// and they are `stats::PerVarStat::NAMES`, which the message lists.
     #[error(
-        "`{name}` is not one of the statistics of a variant, which are {the_five}",
-        the_five = the_five_statistics()
+        "`{name}` is not one of the statistics of a variant, which are {the_six}",
+        the_six = the_six_statistics()
     )]
     StatOfAnUnknownName {
         /// The name the user wrote.
@@ -658,6 +720,134 @@ pub enum Error {
         /// given and the ones it kept, the outermost first, as
         /// `filtering_stats` of a reader gives them.
         filters: Vec<(&'static str, FilteringStats)>,
+    },
+
+    /// The missing rate of a variant was asked for over a population that
+    /// holds no individual, whose missing genotypes over its individuals
+    /// are 0 over 0. `Pops::from_names` refuses a population of no
+    /// individual and every reader of popnei refuses a source of none, so
+    /// only a caller of the core that built its populations otherwise, a
+    /// `Pops::all(0)`, reaches this: it is a defect of popnei, a
+    /// `RuntimeError` in Python.
+    #[error(
+        "the missing rate of a variant was asked for over the population {pop}, which holds no individual, and the rate is the missing genotypes of a population over its individuals; every population of a pass holds one individual at least, so this is a defect of popnei"
+    )]
+    MissingRateOfAPopOfNoIndividual {
+        /// The name of the population.
+        pop: String,
+    },
+
+    /// The density of the variants was asked for windows of 0 base pairs,
+    /// which hold no position.
+    #[error(
+        "`window_size` is 0, and a window of the density of the variants is 1 base pair wide at least: it is how many base pairs each window counts the variants of"
+    )]
+    VarDensityWindowSizeZero,
+
+    /// A length of a chromosome that the density of the variants was given
+    /// is 0, which is a chromosome with no position. The VCF reader and the
+    /// vars file reader refuse such a length, so from a source only a
+    /// reader with a defect gives one.
+    #[error(
+        "the length of the chromosome {chrom} in {from} is 0, and a length is 1 at least: it is the last position of the chromosome, counted from 1"
+    )]
+    VarDensityChromLengthZero {
+        /// The chromosome.
+        chrom: String,
+        /// Where the length came from.
+        from: crate::stats::LengthsFrom,
+    },
+
+    /// A chromosome is named twice among the lengths the density of the
+    /// variants was given, which could each put its last window elsewhere.
+    /// A Python dict and a TypeScript object cannot hold a name twice, and
+    /// the VCF reader and the vars file reader give one length for each
+    /// chromosome, so only a caller of the core crate reaches it.
+    #[error("the chromosome {chrom} is named twice in {from}, and each chromosome has one length")]
+    VarDensityChromLengthTwice {
+        /// The chromosome.
+        chrom: String,
+        /// Where the lengths came from.
+        from: crate::stats::LengthsFrom,
+    },
+
+    /// A variant of the density of the variants is past the length of its
+    /// chromosome. A count with a variant beyond the end of its chromosome
+    /// would say nothing of the length being wrong, and the telomere that
+    /// the VCF format puts at the length plus 1 is one such variant.
+    #[error(
+        "a variant of the chromosome {chrom} is at the position {pos}, past the length of the chromosome, {length}, which {from} gave: the windows of a chromosome with a length end at it, so either the length or the position is wrong"
+    )]
+    VarDensityVarPastTheLength {
+        /// The chromosome of the variant.
+        chrom: String,
+        /// Its position, counted from 1.
+        pos: u64,
+        /// The length of the chromosome.
+        length: u64,
+        /// Where the length came from.
+        from: crate::stats::LengthsFrom,
+    },
+
+    /// A variant of the density of the variants is at the position 0, which
+    /// the VCF format allows for a telomere and which lies in no window,
+    /// since the first window of a chromosome starts at 1. tabix 1.24
+    /// counts such a line in the region 1 to 1000, with the warning
+    /// `Coordinate <= 0 detected`.
+    #[error(
+        "a variant of the chromosome {chrom} is at the position 0, and the windows of the density of the variants start at the position 1, so it is in none of them; the VCF format puts a telomere there"
+    )]
+    VarDensityVarAtPositionZero {
+        /// The chromosome of the variant.
+        chrom: String,
+    },
+
+    /// The density of the variants would have more windows, over all its
+    /// chromosomes, than `stats::MAX_NUM_WINDOWS`. With the lengths of the
+    /// chromosomes the number is known before the pass, and without them
+    /// it is the number the pass had reached when it passed the bound, so
+    /// the density has that many at least.
+    #[error(
+        "the density of the variants in windows of {window_size} base pairs has {num_windows} windows at least, and it has {largest} at most: each window is a row of the result, and a wider window gives fewer of them"
+    )]
+    VarDensityTooManyWindows {
+        /// How many windows it has at least.
+        num_windows: u64,
+        /// The width of a window it was asked for.
+        window_size: u64,
+        /// The most it has, `stats::MAX_NUM_WINDOWS`.
+        largest: usize,
+    },
+
+    /// One window of the density of the variants would count more variants
+    /// than its count holds, 4294967295, which only a source of more than 4
+    /// billion variants at the positions of one window reaches.
+    #[error(
+        "the window {start} to {end} of the chromosome {chrom} holds more than {largest} variants, the most the count of a window of the density of the variants holds"
+    )]
+    VarDensityWindowTooFull {
+        /// The chromosome of the window.
+        chrom: String,
+        /// The first position of the window.
+        start: u64,
+        /// The last position of the window.
+        end: u64,
+        /// The most a count holds, `u32::MAX`.
+        largest: u32,
+    },
+
+    /// A block given to the density of the variants holds a chromosome
+    /// number that the table of names of its reader has no name for. The
+    /// lengths are looked up by the name of the chromosome and the result
+    /// gives each chromosome by its name, so the variant could be counted
+    /// in no chromosome. The table has the names of every block its reader
+    /// gave, so a user reaches this only through a reader with a defect.
+    #[error(
+        "a block given to the density of the variants holds the chromosome number {number}, and the table of chromosome names of its reader has no name for it"
+    )]
+    VarDensityChromNameMissing {
+        /// The number that has no name.
+        number: u32,
     },
 
     /// A value of the table of a principal component analysis is not
@@ -2338,7 +2528,9 @@ pub enum Error {
 
     /// The header of the VCF is not one popnei can read. It needs the
     /// `#CHROM` line, its nine first columns and one individual or more
-    /// after them, each with its own name.
+    /// after them, each with its own name; and the length of a `##contig`
+    /// line, when it has one, a whole number above 0, one for each
+    /// chromosome.
     #[error("the header of the VCF cannot be read: {problem}")]
     VcfHeader {
         /// What is wrong with the header.
@@ -2583,6 +2775,24 @@ pub enum Error {
         expected: usize,
     },
 
+    /// A batch of the vars file holds a variant that its entry of the
+    /// `popnei_batches` key of the footer does not: on a chromosome the
+    /// entry does not name, or outside the smallest and the largest
+    /// position it gives for its chromosome. The filter by regions skips a
+    /// batch by that entry, so a footer changed after the file was written
+    /// would have batches skipped that hold variants the filter keeps.
+    #[error(
+        "the batch {batch} of the vars file holds a variant at {chrom} {pos}, which its entry of the `popnei_batches` key of the footer does not hold; the footer was changed after the file was written, so the file has to be written again"
+    )]
+    VarsBatchOutsideItsRegions {
+        /// Which batch of the file it is, counted from 1.
+        batch: u64,
+        /// The chromosome of the variant.
+        chrom: String,
+        /// Its position.
+        pos: u64,
+    },
+
     /// The buffers of the vars file are compressed with zstd, which no
     /// build of popnei carries: arrow takes zstd from a crate that wraps
     /// the C library, and popnei builds for WebAssembly with no second
@@ -2693,17 +2903,70 @@ pub enum Error {
         /// How many one column of a batch holds.
         largest: u64,
     },
+    /// A block of a VCF given to the VCF writer does not hold the text of
+    /// its lines. The writer asks a VCF for it, so a block without it comes
+    /// from a reader with a defect.
+    #[error(
+        "a block of a VCF given to the VCF writer does not hold {fields}, which the writer asked its reader for"
+    )]
+    VcfWriterFieldsMissing {
+        /// The fields the block does not hold, the text of its lines.
+        fields: Needs,
+    },
 
-    /// The vars file could not be written: the sink refused the bytes, a
-    /// disc that filled up among them, or arrow-rs could not write what it
-    /// was given.
+    /// The source of the VCF writer has no column of the chromosome, of the
+    /// position, of the alleles or of the genotypes, which every line needs:
+    /// a vars file that another program wrote without it, since the reader
+    /// of a vars file gives a block without a column the file lacks. It is
+    /// of the file that was read, which it names in Python.
+    #[error(
+        "the source has no `{column}` column, and every line of a VCF written from it needs one"
+    )]
+    VcfWriterColumnMissing {
+        /// The column: `chrom`, `pos`, `alleles` or `gts`.
+        column: &'static str,
+    },
+
+    /// A member of bgzip that the VCF writer could not put together: a text
+    /// of more bytes than a member holds, or a member of more bytes than its
+    /// header can state. The writer cuts the text into members of 65280
+    /// bytes and stores one that deflate did not shrink, so it is a defect
+    /// of popnei; it is of the file being written, which it names in
+    /// Python.
+    #[error(
+        "a member of bgzip could not be put together: its {what} is {found} bytes, and a member holds {most} at most"
+    )]
+    VcfWriterMemberNotBuilt {
+        /// `text` or `whole member`.
+        what: &'static str,
+        /// How many bytes it is.
+        found: usize,
+        /// How many it holds at most.
+        most: usize,
+    },
+
+    /// A block given to the VCF writer holds a chromosome number that the
+    /// table of the reader it came from has no name for. That table has the
+    /// names of every block the reader gave, so a user reaches this only
+    /// through a reader with a defect.
+    #[error(
+        "a block given to the VCF writer holds the chromosome number {number}, and the table of chromosome names of its reader has no name for it"
+    )]
+    VcfWriterChromNameMissing {
+        /// The number that has no name.
+        number: u32,
+    },
+
+    /// The vars file or the VCF could not be written: the sink refused the
+    /// bytes, a disc that filled up among them, or arrow-rs could not write
+    /// what it was given.
     ///
     /// It is not [`Error::Io`], which is a source that could not be read. A
-    /// call that writes a vars file reads another file, and which of the
+    /// call that writes a file reads another one, and which of the
     /// two went wrong is what a user acts on, so the write says that it was
     /// the write.
-    #[error("the vars file could not be written: {problem}")]
-    VarsFileNotWritten {
+    #[error("the file could not be written: {problem}")]
+    FileNotWritten {
         /// What went wrong, as the system or arrow-rs said it.
         problem: String,
         /// The error the file system gave, when the cause is one and not a
@@ -2810,6 +3073,7 @@ impl Error {
             | Self::VcfPloidyOutOfRange { .. }
             | Self::VarFilterThresholdOutOfRange { .. }
             | Self::VarFilterOfAKindThatIsSet { .. }
+            | Self::RegionFilterOfAKindThatIsSet { .. }
             | Self::LdFilterMaxDistTooSmall { .. }
             | Self::IndividualNotInTheSource { .. }
             | Self::IndividualNamedTwice { .. }
@@ -2943,7 +3207,20 @@ impl Error {
             | Self::DiversityMoreBinsThanTheMachineHolds { .. }
             | Self::DiversityPopWithNoIndividual { .. }
             | Self::DiversityIndividualNotInTheDataset { .. }
-            | Self::DiversityIndividualAskedForTwice { .. } => false,
+            | Self::DiversityIndividualAskedForTwice { .. }
+            // The three of the density of the variants that are of what a
+            // user wrote: windows of 0 base pairs, and a length of 0 or a
+            // chromosome named twice in `chrom_lengths`. The same two of
+            // the lengths a source gave are of that file, below.
+            | Self::VarDensityWindowSizeZero
+            | Self::VarDensityChromLengthZero {
+                from: crate::stats::LengthsFrom::ChromLengths,
+                ..
+            }
+            | Self::VarDensityChromLengthTwice {
+                from: crate::stats::LengthsFrom::ChromLengths,
+                ..
+            } => false,
             // The dataset a user gave, which is a file: a pass that gave
             // no variant with variance, a source of no individual, a
             // variant of more than two alleles among its called genotypes
@@ -3007,7 +3284,8 @@ impl Error {
             | Self::DiversityMoreVarsThanACountHolds { .. }
             // The defects: a reader that gave blocks which do not hold
             // one dataset, a block whose arrays are not of its size, a
-            // block of no variants, the counts and the indices a caller of
+            // block of no variants, a block that one of the two writers
+            // cannot write, the counts and the indices a caller of
             // the core passes it, a parse that did not come back, the
             // buffers and the sizes a calculation builds for itself, and an
             // operation of the linear algebra that did not run. A user who
@@ -3020,15 +3298,21 @@ impl Error {
             | Self::MoreAllelesThanACountHolds { .. }
             | Self::AlleleBelowTheMissingOne { .. }
             | Self::IndividualBeyondTheVariant { .. }
+            | Self::MissingRateOfAPopOfNoIndividual { .. }
             | Self::BlocksDoNotFitTogether { .. }
             | Self::BlockArrayOfAnotherSize { .. }
             | Self::ReaderGaveABlockOfNoVariants
+            | Self::ReadAheadAnswerInPlaceOfABlock
             | Self::BlockWithNoGenotypeOfAVariant { .. }
             | Self::KeepOfAnotherSize { .. }
             | Self::VcfParseNotFinished { .. }
             | Self::VarsBlockDoesNotFit { .. }
             | Self::VarsBlockColumns { .. }
             | Self::VarsChromNameMissing { .. }
+            | Self::VcfWriterFieldsMissing { .. }
+            | Self::VcfWriterChromNameMissing { .. }
+            | Self::VcfWriterMemberNotBuilt { .. }
+            | Self::RegionFilterChromNameMissing { .. }
             | Self::PcaTableOfAnotherSize { .. }
             | Self::PcaLinalg { .. }
             | Self::PcaSecondPassMissing { .. }
@@ -3052,7 +3336,7 @@ impl Error {
             // `filename`.
             | Self::FileNotOpened { .. }
             | Self::Io(..)
-            | Self::VarsFileNotWritten { .. }
+            | Self::FileNotWritten { .. }
             | Self::VcfBgzipEndMissing
             | Self::VcfBgzipCorrupted { .. }
             | Self::VarsFileCutShort { .. }
@@ -3060,7 +3344,8 @@ impl Error {
             // What a reader found in what it read, or was asked of a
             // file it had read: a source that is not a VCF and one that is
             // not a vars file, a header popnei cannot read, a wrong data
-            // line, a genotype of the wrong ploidy, the thirteen of the
+            // line, a genotype of the wrong ploidy, a wrong line of a BED
+            // file and one with no region, the thirteen of the
             // vars file that "The Rust interface" of `docs/specs/io_vars.md`
             // lists, a variant whose position goes back within its
             // chromosome, which the filter by linkage disequilibrium is the
@@ -3085,7 +3370,10 @@ impl Error {
             | Self::NotAVcf { .. }
             | Self::VcfHeader { .. }
             | Self::VcfDataLine { .. }
+            | Self::VcfWriterColumnMissing { .. }
             | Self::VcfGenotypePloidy { .. }
+            | Self::BedLine { .. }
+            | Self::BedWithNoRegion
             | Self::NotAVarsFile { .. }
             | Self::VarsFormatVersion { .. }
             | Self::VarsColumnType { .. }
@@ -3095,10 +3383,35 @@ impl Error {
             | Self::VarsAlleleBelowMissing { .. }
             | Self::VarsBatchesDoNotMatch { .. }
             | Self::VarsBatchNumVars { .. }
+            | Self::VarsBatchOutsideItsRegions { .. }
             | Self::VarsZstd
             | Self::VarsIndividualTwice { .. }
             | Self::VarsFileOfNoGenotypes { .. }
-            | Self::VarsTextTooLarge { .. } => true,
+            | Self::VarsTextTooLarge { .. }
+            // The six of the density of the variants that are of the file:
+            // a length of 0 or a chromosome twice among the lengths its
+            // header gave, which no reader of popnei gives; a variant past
+            // the length of its chromosome, whether the length came from
+            // `chrom_lengths` or from the file, since the variant is of the
+            // file; a variant at the position 0; more windows than the
+            // density has, which the lengths and the variants of the file
+            // decide with the width a user wrote, so a user who runs over
+            // a directory of files needs to know which one it was; a window
+            // of more variants than its count holds; and a block whose
+            // chromosome number its reader has no name for, a defect.
+            | Self::VarDensityChromLengthZero {
+                from: crate::stats::LengthsFrom::Source,
+                ..
+            }
+            | Self::VarDensityChromLengthTwice {
+                from: crate::stats::LengthsFrom::Source,
+                ..
+            }
+            | Self::VarDensityVarPastTheLength { .. }
+            | Self::VarDensityVarAtPositionZero { .. }
+            | Self::VarDensityTooManyWindows { .. }
+            | Self::VarDensityWindowTooFull { .. }
+            | Self::VarDensityChromNameMissing { .. } => true,
         }
     }
 }
@@ -3208,10 +3521,11 @@ fn the_remedies_of_a_fit_that_did_not_settle(model: crate::gwas::GwasModel) -> &
     }
 }
 
-/// The five statistics of a variant under the names a user writes them, for
+/// The six statistics of a variant under the names a user writes them, for
 /// the message that refuses a name that is of none of them: "`obs_het`,
-/// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
-fn the_five_statistics() -> String {
+/// `maf`, `exp_het`, `unbiased_exp_het`, `poly_vars_ratio` and
+/// `missing_rate`".
+fn the_six_statistics() -> String {
     listed(&crate::stats::PerVarStat::NAMES)
 }
 
