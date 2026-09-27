@@ -444,8 +444,9 @@ def do_pcoa_from_variants(
     The names of the individuals are the index of the projections, and the
     counts of the pass are in ``pass_stats``. Fewer than 2 individuals, a
     pass that gives no variant and distances that are all 0 are a
-    ``ValueError``; what is not a ``Variants`` is a ``TypeError``, and so is
-    a `min_num_snps` that is not a whole number.
+    ``ValueError``; what is not a ``Variants`` is a ``TypeError``, and so are
+    a `min_num_snps` that is not a whole number and a `correct_by_lingoes`
+    that is not a bool or a ``numpy.bool_``.
 
     It is pyNei's ``do_pcoa_from_variants`` with `correct_by_lingoes` added
     and without `use_approx_embedding_algorithm` and `num_threads`. pyNei
@@ -462,6 +463,13 @@ def do_pcoa_from_variants(
             f"do_pcoa_from_variants(open_vcf(vcf_path))"
         )
     min_num_vars = _min_num_vars_of(min_num_snps)
+    if not isinstance(correct_by_lingoes, bool | numpy.bool_):
+        # pyo3 refuses it with `'int' object is not an instance of 'bool'`,
+        # which names neither the argument nor the call.
+        raise TypeError(
+            f"`correct_by_lingoes` is True or False, and {correct_by_lingoes!r}, "
+            f"of the type {type(correct_by_lingoes).__name__}, was given"
+        )
     # The core names an individual of a pair with no distance by its
     # position among those the pass gives, which are these.
     individuals = variants.individuals
@@ -475,7 +483,7 @@ def do_pcoa_from_variants(
         ) = _core.pcoa_of_variants(
             variants._source,
             min_num_vars,
-            correct_by_lingoes,
+            bool(correct_by_lingoes),
             variants._steps,
         )
     except _core.PcoaPairsWithNoDistance as error:

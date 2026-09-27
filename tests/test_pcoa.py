@@ -543,3 +543,16 @@ def test_the_correction_of_the_variants_is_off_by_default_as_the_core_says():
     )
     assert default is _core.DEFAULT_CORRECT_BY_LINGOES
     assert _core.DEFAULT_CORRECT_BY_LINGOES is False
+
+
+@pytest.mark.parametrize("given", [1, "yes", None, numpy.int64(1)])
+def test_a_correct_by_lingoes_that_is_not_a_bool_is_refused_by_its_name(given):
+    with pytest.raises(TypeError, match="`correct_by_lingoes` is True or False"):
+        do_pcoa_from_variants(open_vcf(PANEL_VCF), correct_by_lingoes=given)
+
+
+def test_a_correct_by_lingoes_of_numpy_is_taken():
+    result = do_pcoa_from_variants(
+        open_vcf(PANEL_VCF), correct_by_lingoes=numpy.bool_(True)
+    )
+    assert result.projections.shape == (200, PANEL_NUM_COMPS)
