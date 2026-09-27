@@ -556,3 +556,31 @@ def test_a_correct_by_lingoes_of_numpy_is_taken():
         open_vcf(PANEL_VCF), correct_by_lingoes=numpy.bool_(True)
     )
     assert result.projections.shape == (200, PANEL_NUM_COMPS)
+
+
+# Three individuals of which the first two are never called at one variant,
+# so their pair has no distance whatever `min_num_snps` is.
+NEVER_CALLED_TOGETHER = (
+    "##fileformat=VCFv4.2\n"
+    "##contig=<ID=1>\n"
+    '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti0\ti1\ti2\n"
+    "1\t1\t.\tA\tC\t.\t.\t.\tGT\t0/0\t./.\t1/1\n"
+    "1\t2\t.\tA\tC\t.\t.\t.\tGT\t./.\t0/1\t0/0\n"
+    "1\t3\t.\tA\tC\t.\t.\t.\tGT\t1/1\t./.\t0/1\n"
+    "1\t4\t.\tA\tC\t.\t.\t.\tGT\t./.\t1/1\t0/1\n"
+)
+
+
+@pytest.mark.parametrize("min_num_snps", [None, 0, 1])
+def test_a_pair_called_together_at_no_variant_is_not_sent_to_min_num_snps(
+    tmp_path, min_num_snps
+):
+    vcf = tmp_path / "never_called_together.vcf"
+    vcf.write_text(NEVER_CALLED_TOGETHER)
+    with pytest.raises(ValueError) as refused:
+        do_pcoa_from_variants(open_vcf(vcf), min_num_snps=min_num_snps)
+    said = str(refused.value)
+    assert "'i0' and 'i1'" in said, said
+    assert "called together at no variant" in said, said
+    assert "min_num_snps" not in said, said

@@ -81,7 +81,12 @@ pub enum PcoaInput {
     Distances,
     /// The Kosman distances of a pass over the variants, of
     /// `do_pcoa_from_variants`.
-    Variants,
+    Variants {
+        /// How many variants a pair needed to be called together at to get
+        /// a distance, the `min_num_snps` of Python, which decides whether
+        /// lowering it can give a pair with none a distance.
+        min_num_vars: u32,
+    },
 }
 
 /// The principal coordinates of the distance vector `dist_vector` of
@@ -283,7 +288,10 @@ pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
     let sums = calc_kosman_sums(reader)?;
     let num_vars = sums.num_vars();
     let dists = || sums.dists(options.min_num_vars);
-    let largest = the_largest_distance(dists, num_individuals, PcoaInput::Variants)?;
+    let from = PcoaInput::Variants {
+        min_num_vars: options.min_num_vars,
+    };
+    let largest = the_largest_distance(dists, num_individuals, from)?;
     let centered = the_centered_matrix(matrix, dists(), num_individuals, largest);
     drop(sums);
     let when_not_euclidean = if options.correct_by_lingoes {
@@ -291,13 +299,7 @@ pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
     } else {
         WhenNotEuclidean::Refuse
     };
-    let pcoa = the_analysis_of(
-        centered,
-        num_individuals,
-        largest,
-        when_not_euclidean,
-        PcoaInput::Variants,
-    )?;
+    let pcoa = the_analysis_of(centered, num_individuals, largest, when_not_euclidean, from)?;
     Ok(PcoaOfVariants { pcoa, num_vars })
 }
 
@@ -1075,7 +1077,15 @@ pub fn the_remedy_of_the_pairs_with_no_distance(from: PcoaInput) -> &'static str
         PcoaInput::Distances => {
             "a principal coordinate analysis places every individual by its distance to every other, so each of those pairs has to be given a distance or one of its two individuals taken out of the distances"
         }
-        PcoaInput::Variants => {
+        // With 0 or 1 a pair needs one variant called in both, so a pair
+        // with no distance was called together at none, and lowering
+        // `min_num_snps` could not help it.
+        PcoaInput::Variants {
+            min_num_vars: 0 | 1,
+        } => {
+            "those pairs were called together at no variant; take that individual out with `filter_individuals`, or run the PCA of the variants, which gives every individual a projection"
+        }
+        PcoaInput::Variants { .. } => {
             "those pairs were called together at fewer variants than `min_num_snps`, or at none; take that individual out with `filter_individuals`, lower `min_num_snps`, or run the PCA of the variants, which gives every individual a projection"
         }
     }
@@ -1102,7 +1112,7 @@ pub fn have_or_has(count: usize) -> &'static str {
 pub(crate) fn the_correction_of(from: PcoaInput) -> &'static str {
     match from {
         PcoaInput::Distances => "`correct_dists_by_lingoes`",
-        PcoaInput::Variants => "`correct_by_lingoes`",
+        PcoaInput::Variants { .. } => "`correct_by_lingoes`",
     }
 }
 
@@ -1972,7 +1982,7 @@ mod tests {
                     (negative_eigenvalues_percent - 2.98343616373556).abs() <= TOLERANCE,
                     "{negative_eigenvalues_percent}"
                 );
-                assert_eq!(from, PcoaInput::Variants);
+                assert!(matches!(from, PcoaInput::Variants { .. }), "{from:?}");
                 let message = error.to_string();
                 assert!(message.contains("`correct_by_lingoes`"), "{message}");
                 assert!(!message.contains("correct_dists_by_lingoes"), "{message}");
@@ -2007,7 +2017,7 @@ mod tests {
                 assert_eq!((num_pairs_with_no_distance, num_pairs), (35, 19900));
                 assert_eq!((first_of_the_first, second_of_the_first), (1, 82));
                 assert_eq!((most_often, most_often_count), (82, 17));
-                assert_eq!(from, PcoaInput::Variants);
+                assert!(matches!(from, PcoaInput::Variants { .. }), "{from:?}");
                 let message = error.to_string();
                 assert!(message.contains("`min_num_snps`"), "{message}");
                 assert!(message.contains("`filter_individuals`"), "{message}");
@@ -2279,7 +2289,8 @@ mod tests {
     /// the one of the sums of a pass, whatever the distances came from.
     fn corrected_inside(dist_vector: &[f64], num_individuals: usize) -> Pcoa {
         let dists = || super::the_distances_of_the_vector(dist_vector);
-        let largest = super::the_largest_distance(dists, num_individuals, PcoaInput::Variants)
+        let from = PcoaInput::Variants { min_num_vars: 0 };
+        let largest = super::the_largest_distance(dists, num_individuals, from)
             .unwrap_or_else(|error| panic!("{error}"));
         let matrix =
             super::the_matrix_of(num_individuals).unwrap_or_else(|error| panic!("{error}"));
@@ -2289,7 +2300,7 @@ mod tests {
             num_individuals,
             largest,
             super::WhenNotEuclidean::Correct,
-            PcoaInput::Variants,
+            from,
         )
         .unwrap_or_else(|error| panic!("{error}"))
     }
@@ -2417,6 +2428,58 @@ mod tests {
                 assert!(error.to_string().contains("popnei has a defect"), "{error}")
             }
             other => panic!("the component along the vector of ones was given: {other:?}"),
+        }
+    }
+
+    /// A VCF of three individuals and four variants in which the first two
+    /// are never called at one variant, so their pair has no distance
+    /// whatever `min_num_snps` is.
+    const NEVER_CALLED_TOGETHER: &str = "##fileformat=VCFv4.2\n\
+        ##contig=<ID=1>\n\
+        ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+        #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti0\ti1\ti2\n\
+        1\t1\t.\tA\tC\t.\t.\t.\tGT\t0/0\t./.\t1/1\n\
+        1\t2\t.\tA\tC\t.\t.\t.\tGT\t./.\t0/1\t0/0\n\
+        1\t3\t.\tA\tC\t.\t.\t.\tGT\t1/1\t./.\t0/1\n\
+        1\t4\t.\tA\tC\t.\t.\t.\tGT\t./.\t1/1\t0/1\n";
+
+    /// A pair called together at no variant has no distance whatever
+    /// `min_num_snps` is, so with 0 or 1 the message says that the pair was
+    /// called together at no variant and does not tell the user to lower
+    /// `min_num_snps`, which could not help; with 2 it does.
+    #[test]
+    fn a_pair_called_together_at_no_variant_is_not_sent_to_min_num_snps() {
+        for min_num_vars in [0, 1, 2] {
+            let options = VariantPcoaOptions {
+                min_num_vars,
+                correct_by_lingoes: false,
+            };
+            let mut reader = VcfReader::new(
+                std::io::Cursor::new(NEVER_CALLED_TOGETHER.as_bytes().to_vec()),
+                VcfOptions::default(),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+            match pcoa_of_variants(&mut reader, &options) {
+                Err(
+                    error @ Error::PcoaPairsWithNoDistance {
+                        first_of_the_first: 0,
+                        second_of_the_first: 1,
+                        ..
+                    },
+                ) => {
+                    let message = error.to_string();
+                    if min_num_vars <= 1 {
+                        assert!(message.contains("at no variant"), "{message}");
+                        assert!(!message.contains("min_num_snps"), "{message}");
+                        assert!(message.contains("`filter_individuals`"), "{message}");
+                    } else {
+                        assert!(message.contains("`min_num_snps`"), "{message}");
+                    }
+                }
+                other => {
+                    panic!("{min_num_vars}: the pair with no distance was not refused: {other:?}")
+                }
+            }
         }
     }
 

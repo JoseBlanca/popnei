@@ -3667,11 +3667,11 @@ impl Error {
             | Self::PcoaNoMemory { .. }
             | Self::PcoaAllDistancesZero
             | Self::PcoaPairsWithNoDistance {
-                from: crate::pca::pcoa::PcoaInput::Variants,
+                from: crate::pca::pcoa::PcoaInput::Variants { .. },
                 ..
             }
             | Self::PcoaNotEuclidean {
-                from: crate::pca::pcoa::PcoaInput::Variants,
+                from: crate::pca::pcoa::PcoaInput::Variants { .. },
                 ..
             }
             | Self::PcoaDistVectorOfAnotherSize { .. }
