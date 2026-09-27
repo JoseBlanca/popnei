@@ -3021,6 +3021,142 @@ pub enum Error {
     /// The bytes of a source could not be read.
     #[error("the source could not be read: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A principal coordinate analysis, or Lingoes' correction, of fewer
+    /// than 2 individuals: with one there is no distance to place it by.
+    /// pyNei gives a percentage of NaN. In Python it is a `ValueError`.
+    #[error(
+        "there are {num_individuals} individuals, and a principal coordinate analysis places 2 at least by the distance of each pair"
+    )]
+    PcoaTooFewIndividuals {
+        /// How many individuals the distances are of.
+        num_individuals: usize,
+    },
+
+    /// A principal coordinate analysis, or Lingoes' correction, of more
+    /// individuals than the linear algebra decomposes the individuals x
+    /// individuals matrix of. In Python it is a `ValueError`.
+    #[error(
+        "there are {num_individuals} individuals, and the individuals x individuals matrix of the principal coordinate analysis would hold more values than the 2147483647 the linear algebra counts in, which is {largest} individuals",
+        largest = crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS
+    )]
+    PcoaTooManyIndividuals {
+        /// How many individuals the distances are of.
+        num_individuals: usize,
+    },
+
+    /// Pairs of individuals that have no distance, a NaN in the distance
+    /// vector. A principal coordinate analysis places every individual by
+    /// its distance to every other, so it has nothing to place them by.
+    /// pyNei says "dists array has nan values". The positions are of the
+    /// individuals in the order of the distances, counted from 0, and each
+    /// binding crate puts their names in the message. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "{num_pairs_with_no_distance} of the {num_pairs} pairs of individuals have no distance, the first of them the individuals at the positions {first_of_the_first} and {second_of_the_first}, and the individual at the position {most_often} is in {most_often_count} of them, counting from 0; {remedy}",
+        remedy = crate::pca::pcoa::the_remedy_of_the_pairs_with_no_distance(*from)
+    )]
+    PcoaPairsWithNoDistance {
+        /// How many pairs have no distance.
+        num_pairs_with_no_distance: usize,
+        /// How many pairs there are, n(n - 1)/2 of n individuals.
+        num_pairs: usize,
+        /// The position of the first individual of the first pair with no
+        /// distance, in the order of the distance vector.
+        first_of_the_first: usize,
+        /// The position of the second individual of that pair.
+        second_of_the_first: usize,
+        /// The position of the individual that is in the most pairs with no
+        /// distance, the first of them in the order of the individuals when
+        /// two are in as many.
+        most_often: usize,
+        /// How many pairs with no distance that individual is in.
+        most_often_count: usize,
+        /// Whether the distances were given or came from the variants,
+        /// which decides what the user can do about them.
+        from: crate::pca::pcoa::PcoaInput,
+    },
+
+    /// A distance given to a principal coordinate analysis, or to Lingoes'
+    /// correction, that is negative or infinite. pyNei squares a negative
+    /// one, which gives it the place of its absolute value and says
+    /// nothing. The Kosman distances are never negative; F_ST and f_2 of
+    /// two populations that the dataset cannot tell apart are. In Python
+    /// it is a `ValueError`.
+    #[error(
+        "the distance of the individuals at the positions {first} and {second}, counting from 0, is {value}, and a principal coordinate analysis needs every distance finite and 0 or above; a negative F_ST or f_2 is of two populations the dataset cannot tell apart"
+    )]
+    PcoaDistanceOutOfRange {
+        /// The position of the first individual of the pair.
+        first: usize,
+        /// The position of the second individual of the pair.
+        second: usize,
+        /// The distance given.
+        value: f64,
+    },
+
+    /// Every distance given to a principal coordinate analysis, or to
+    /// Lingoes' correction, is 0. The individuals are all at one point, the
+    /// matrix the analysis decomposes is 0, and so is every eigenvalue.
+    /// pyNei gives a percentage of NaN. In Python it is a `ValueError`.
+    #[error(
+        "every distance is 0, so the individuals are all at one point and there is nothing to do a PCoA with"
+    )]
+    PcoaAllDistancesZero,
+
+    /// The distances of a principal coordinate analysis are not Euclidean:
+    /// no space has points whose straight line distances are those, and
+    /// the matrix the analysis decomposes has negative eigenvalues, each a
+    /// direction whose projections would be the square root of a negative
+    /// number. Lingoes' correction makes them Euclidean. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "{num_negative} of the {num_individuals} eigenvalues of the matrix of the squared distances are negative, {percent} percent of the sum of all of them, so the distances are not Euclidean and a principal coordinate analysis of them would draw directions that no space has; {correction} makes them Euclidean by adding the same amount to every squared distance",
+        percent = crate::pca::pcoa::the_percent_shown(*negative_eigenvalues_percent),
+        correction = crate::pca::pcoa::the_correction_of(*from)
+    )]
+    PcoaNotEuclidean {
+        /// How many eigenvalues are below minus the threshold of the
+        /// components.
+        num_negative: usize,
+        /// How many individuals, which is how many eigenvalues there are.
+        num_individuals: usize,
+        /// 100 times the sum of the absolute values of the negative
+        /// eigenvalues over the sum of every eigenvalue.
+        negative_eigenvalues_percent: f64,
+        /// Whether the distances were given or came from the variants,
+        /// which decides which correction the message names.
+        from: crate::pca::pcoa::PcoaInput,
+    },
+
+    /// A distance vector whose length is not n(n - 1)/2 of the individuals
+    /// it was said to be of. Only a caller of the function of the core
+    /// crate reaches it, since a `Distances` of Python or of TypeScript
+    /// refuses such a vector when it is built, so in Python it is a
+    /// `RuntimeError`.
+    #[error(
+        "the distance vector holds {num_dists} distances and was said to be of {num_individuals} individuals, which have n(n - 1)/2 pairs"
+    )]
+    PcoaDistVectorOfAnotherSize {
+        /// How many distances the vector holds.
+        num_dists: usize,
+        /// The individuals it was said to be of.
+        num_individuals: usize,
+    },
+
+    /// An operation of the crate `popnei-linalg` that a principal
+    /// coordinate analysis asked for did not run. The dimensions and the
+    /// values that crate refuses are checked before it is called, so what
+    /// is left is a machine with too little memory for the workspace of the
+    /// eigendecomposition, or a routine that did not converge. In Python it
+    /// is a `RuntimeError`.
+    #[error("the {operation} of the principal coordinate analysis could not be done: {source}")]
+    PcoaLinalg {
+        /// What was being computed.
+        operation: &'static str,
+        /// What the linear algebra said.
+        source: popnei_linalg::Error,
+    },
 }
 
 impl Error {
@@ -3220,6 +3356,20 @@ impl Error {
             | Self::VarDensityChromLengthTwice {
                 from: crate::stats::LengthsFrom::ChromLengths,
                 ..
+            }
+            // The distances a user gave to a principal coordinate analysis
+            // or to Lingoes' correction, which no file holds: one that is
+            // negative or infinite, pairs that have none, and distances
+            // that are not Euclidean. The same two last of the distances a
+            // pass over the variants worked out are of that file, below.
+            | Self::PcoaDistanceOutOfRange { .. }
+            | Self::PcoaPairsWithNoDistance {
+                from: crate::pca::pcoa::PcoaInput::Distances,
+                ..
+            }
+            | Self::PcoaNotEuclidean {
+                from: crate::pca::pcoa::PcoaInput::Distances,
+                ..
             } => false,
             // The dataset a user gave, which is a file: a pass that gave
             // no variant with variance, a source of no individual, a
@@ -3411,7 +3561,27 @@ impl Error {
             | Self::VarDensityVarAtPositionZero { .. }
             | Self::VarDensityTooManyWindows { .. }
             | Self::VarDensityWindowTooFull { .. }
-            | Self::VarDensityChromNameMissing { .. } => true,
+            | Self::VarDensityChromNameMissing { .. }
+            // The individuals of a principal coordinate analysis, which
+            // for the variants are those of the file: fewer than 2, more
+            // than the linear algebra decomposes the matrix of, distances
+            // that are all 0, pairs with no distance and distances that are
+            // not Euclidean; and its two defects, a distance vector of
+            // another length than its individuals have pairs and an
+            // operation of the linear algebra that did not run.
+            | Self::PcoaTooFewIndividuals { .. }
+            | Self::PcoaTooManyIndividuals { .. }
+            | Self::PcoaAllDistancesZero
+            | Self::PcoaPairsWithNoDistance {
+                from: crate::pca::pcoa::PcoaInput::Variants,
+                ..
+            }
+            | Self::PcoaNotEuclidean {
+                from: crate::pca::pcoa::PcoaInput::Variants,
+                ..
+            }
+            | Self::PcoaDistVectorOfAnotherSize { .. }
+            | Self::PcoaLinalg { .. } => true,
         }
     }
 }

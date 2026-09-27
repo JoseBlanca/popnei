@@ -18,6 +18,10 @@
 //! individuals matrix of the products, which is what the components come
 //! from, is added up block by block.
 //!
+//! The principal coordinates of [`pcoa`] place the individuals in the same
+//! way from the distance of every pair of them instead of a table of their
+//! values; the module [`pcoa`](mod@pcoa) has them.
+//!
 //! The products of matrices and the eigendecomposition are those of the
 //! crate `popnei-linalg`, which runs them on the BLAS and LAPACK of the
 //! system natively, and on faer in WebAssembly and natively when the cargo
@@ -34,6 +38,10 @@ use crate::block::{Block, BlockReader, Reblock, with_one_block_ahead};
 use crate::error::{Error, Result};
 use crate::phases::{Phase, timed};
 use crate::variant::{DosageOptions, DosageScale, Needs, RowPositions};
+
+pub mod pcoa;
+
+pub use pcoa::{Pcoa, PcoaInput, pcoa};
 
 /// Whether the table is centered, which `do_pca` of pyNei does by default
 /// and so does popnei.
@@ -1020,7 +1028,7 @@ fn num_values_of(rows: usize, cols: usize) -> usize {
 /// The share of the total is taken before the 100, so that an eigenvalue
 /// above 1.8e306, which a table of values of 1e153 gives, does not become
 /// an infinity on the way to a number between 0 and 100.
-fn the_percentages_of(values: &[f64], num_comps: usize) -> Vec<f64> {
+pub(crate) fn the_percentages_of(values: &[f64], num_comps: usize) -> Vec<f64> {
     let variance_of_every_component: f64 = values.iter().sum();
     values
         .iter()
@@ -1264,11 +1272,20 @@ pub(crate) fn the_components_with_variance(
     let Some(largest) = values.first() else {
         return 0;
     };
-    let threshold = largest * (num_rows.max(num_cols) as f64 * f64::EPSILON);
+    let threshold = the_threshold_of_variance(*largest, num_rows, num_cols);
     values
         .iter()
         .take_while(|value| **value > threshold)
         .count()
+}
+
+/// The threshold of [`the_components_with_variance`], from the largest
+/// eigenvalue and the two sides of the table: an eigenvalue above it
+/// belongs to a component with variance. The principal coordinates take
+/// the same one with both sides the individuals, and count an eigenvalue
+/// below minus it as negative.
+pub(crate) fn the_threshold_of_variance(largest: f64, num_rows: usize, num_cols: usize) -> f64 {
+    largest * (num_rows.max(num_cols) as f64 * f64::EPSILON)
 }
 
 /// The projections and the weights when the matrix that was decomposed is
