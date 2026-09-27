@@ -203,12 +203,12 @@ Tasks:
       is what guards it: without the projection its test fails. The tests
       of deliverable 1 with the correction. Needs 2.1. Serves deliverables
       1 and 4.
-- [ ] 2.3 The Python function: the binding that opens the reader from the
+- [x] 2.3 The Python function: the binding that opens the reader from the
       source and the steps and reads the counts, as that of
       `calc_pairwise_kosman_dists` does; `do_pcoa_from_variants` in
       `python/popnei/pca.py`; the tests of deliverable 2. Needs 2.2.
       Serves deliverables 2 and 4.
-- [ ] 2.4 The TypeScript function: the binding over `the_run_of` with a
+- [x] 2.4 The TypeScript function: the binding over `the_run_of` with a
       new variant of `Consumer` in `crates/popnei-js/src/source.rs`,
       `doPcoaFromVariants` in `js/popnei/src/pcoa.ts` with the limit
       checked before the run, its name in `ConsumerName` of
