@@ -144,8 +144,9 @@ pub struct LingoesCorrection {
 ///
 /// The errors of [`pcoa`] but [`Error::PcoaNotEuclidean`], which this
 /// corrects, in the same order. [`Error::PcoaLingoesConstantOutOfRange`]
-/// when c, which is in the units of the squared distances, is beyond what
-/// an `f64` holds.
+/// when c, which is in the units of the squared distances, is not a normal
+/// `f64`: above the largest, 1.8e308, or below the smallest normal one,
+/// 2.2e-308.
 pub fn correct_dists_by_lingoes(
     dist_vector: Vec<f64>,
     num_individuals: usize,
@@ -170,11 +171,13 @@ pub fn correct_dists_by_lingoes(
         .last()
         .map_or(0.0, |most_negative| most_negative.abs());
     // c is in the units of a squared distance, which the corrected
-    // distances are not, so distances above 1.3e154, or all of them below
-    // 1e-150, have a c beyond an f64, an infinity or 0, and a 0 would say
-    // that nothing was corrected.
+    // distances are not, so distances of about 1.3e154 and above give a c
+    // above the largest f64, an infinity, and distances all below about
+    // 1e-154 one below the smallest normal f64, 2.2e-308, which keeps only a
+    // few of its significant digits, or is 0 and would say that nothing was
+    // corrected.
     let constant = constant_of_the_scaled * largest * largest;
-    if !(constant.is_finite() && constant > 0.0) {
+    if !constant.is_normal() {
         return Err(Error::PcoaLingoesConstantOutOfRange { largest });
     }
     let mut corrected = dist_vector;
@@ -1137,22 +1140,31 @@ mod tests {
         ));
     }
 
-    /// Distances whose c an `f64` does not hold, an infinity at 1e200 times
-    /// the worked example and 0 at 1e-200 times it, are refused with the
-    /// largest of them, where a c of 0 would say that nothing was
-    /// corrected.
+    /// Distances whose c is not a normal `f64` are refused with the largest
+    /// of them: an infinity at 1e200 times the worked example, a subnormal
+    /// at 1e-160 and 1e-161 times it, which keeps a few significant digits
+    /// of c, and 0 at 1e-200 times it, which would say that nothing was
+    /// corrected. At 1e-153 times it c is 5.2e-308, above the smallest
+    /// normal `f64`, 2.2e-308, and is given.
     #[test]
     fn a_constant_beyond_an_f64_is_refused() {
-        for factor in [1e200, 1e-200] {
+        for factor in [1e200, 1e-160, 1e-161, 1e-200] {
             let scaled: Vec<f64> = SMALL.iter().map(|d| d * factor).collect();
             match correct_dists_by_lingoes(scaled, 5) {
                 Err(error @ Error::PcoaLingoesConstantOutOfRange { largest }) => {
                     assert_eq!(largest.to_bits(), (0.9 * factor).to_bits());
                     assert!(!error.names_the_file(), "{error}");
                 }
-                other => panic!("the constant at {factor} was given: {other:?}"),
+                other => panic!("the constant at {factor:e} was given: {other:?}"),
             }
         }
+        let scaled: Vec<f64> = SMALL.iter().map(|d| d * 1e-153).collect();
+        let constant = the_correction_of(scaled, 5).constant;
+        let expected = 0.0640069399611263e-306;
+        assert!(
+            ((constant - expected) / expected).abs() <= TOLERANCE,
+            "{constant:e}"
+        );
     }
 
     /// A generator of numbers uniform in [0, 1), splitmix64, so that the

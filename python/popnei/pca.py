@@ -418,9 +418,12 @@ def correct_dists_by_lingoes(dists: Distances) -> LingoesCorrection:
     judge how much the picture was changed by.
 
     It refuses what :func:`do_pcoa` refuses but distances that are not
-    Euclidean. Distances of a size near 1e200, or all near 1e-200, give a
-    constant beyond a float64, an infinity or 0, which is a ``ValueError``
-    that says to divide them by a number near the largest first.
+    Euclidean. The constant is in the units of a squared distance, and
+    distances of about 1.3e154 and above give one above the largest float64,
+    and distances all below about 1e-154 one below the smallest normal
+    float64, 2.2e-308, which keeps only a few of its digits or is 0: both are
+    a ``ValueError`` that says to divide the distances by a number near the
+    largest first.
 
     pyNei has no correction.
     """

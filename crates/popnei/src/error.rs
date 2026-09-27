@@ -3144,13 +3144,15 @@ pub enum Error {
         num_individuals: usize,
     },
 
-    /// The constant of Lingoes' correction of the distances given is beyond
-    /// what an `f64` holds. It is in the units of a squared distance, so
-    /// distances above 1.3e154 give an infinity, and distances that are all
-    /// below 1e-150 give 0, which would say that nothing was corrected. In
-    /// Python it is a `ValueError`.
+    /// The constant of Lingoes' correction of the distances given is not a
+    /// normal `f64`. It is in the units of a squared distance, so distances
+    /// of about 1.3e154 and above give one above the largest `f64`, 1.8e308,
+    /// an infinity, and distances that are all below about 1e-154 one below
+    /// the smallest normal `f64`, 2.2e-308, which keeps only a few of its
+    /// significant digits, or is 0 and would say that nothing was corrected.
+    /// In Python it is a `ValueError`.
     #[error(
-        "the largest distance is {largest}, and the constant of Lingoes' correction, which is added to the squared distances, is beyond what a 64 bit float holds at that size; divide the distances by a number near the largest before correcting them"
+        "the largest distance is {largest}, and the constant of Lingoes' correction, which is added to the squared distances, is beyond the range of a 64 bit float at that size, where it would be an infinity or keep only a few of its digits; divide the distances by a number near the largest before correcting them"
     )]
     PcoaLingoesConstantOutOfRange {
         /// The largest distance given.

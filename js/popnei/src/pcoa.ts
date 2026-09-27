@@ -189,9 +189,10 @@ export function doPcoa(distances: Distances): PcoaResult {
  * pairs a distance or take one of its two individuals out; when a distance
  * is negative or infinite, a negative F_ST or f_2 of two populations the
  * dataset cannot tell apart among them; when every distance is 0; when the
- * constant, which is in the units of a squared distance, is beyond what a 64
- * bit float holds, which distances above 1.3e154 or all below 1e-150 reach and
- * whose message says to divide them by a number near the largest first; when
+ * constant, which is in the units of a squared distance, is beyond the range
+ * of a 64 bit float, above 1.8e308 or below the smallest normal one,
+ * 2.2e-308, which distances of about 1.3e154 and above or all below about
+ * 1e-154 reach and whose message says to divide them by a number near the largest first; when
  * the linear algebra of the correction could not be done; and when `init`
  * has not been awaited.
  */

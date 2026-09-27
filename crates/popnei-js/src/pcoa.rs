@@ -161,7 +161,7 @@ pub fn pcoa(dist_vector: Vec<f64>, names: Vec<String>) -> Result<PcoaOfDistances
 ///
 /// Those of [`pcoa`] but the distances that are not Euclidean, which this
 /// corrects, and when the constant of the correction, which is in the units
-/// of the squared distances, is beyond what a 64 bit float holds.
+/// of the squared distances, is not a normal 64 bit float.
 #[wasm_bindgen]
 pub fn correct_dists_by_lingoes(
     dist_vector: Vec<f64>,
