@@ -3179,6 +3179,14 @@ pub enum Error {
         what: &'static str,
     },
 
+    /// Lingoes' correction inside the principal coordinates of the variants
+    /// was asked for, and it is not built yet: task 2.2 of the plan of the
+    /// principal coordinates builds it. In Python it is a `ValueError`.
+    #[error(
+        "`correct_by_lingoes` of the principal coordinates of the variants is not built yet; correct the distances with `correct_dists_by_lingoes` and analyse them with `do_pcoa`"
+    )]
+    PcoaCorrectionNotBuilt,
+
     /// An operation of the crate `popnei-linalg` that a principal
     /// coordinate analysis asked for did not run. The dimensions and the
     /// values that crate refuses are checked before it is called, so what
@@ -3401,6 +3409,7 @@ impl Error {
             // are of that file, below.
             | Self::PcoaDistanceOutOfRange { .. }
             | Self::PcoaLingoesConstantOutOfRange { .. }
+            | Self::PcoaCorrectionNotBuilt
             | Self::PcoaPairsWithNoDistance {
                 from: crate::pca::pcoa::PcoaInput::Distances,
                 ..

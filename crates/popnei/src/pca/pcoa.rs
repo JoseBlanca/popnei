@@ -30,6 +30,8 @@ use std::fmt;
 
 use popnei_linalg::{Eigen, eigh_lower};
 
+use crate::block::BlockReader;
+use crate::dists::calc_kosman_sums;
 use crate::error::{Error, Result};
 use crate::pca::{fix_the_sign_of, the_percentages_of, write_the_projections};
 use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
@@ -94,8 +96,10 @@ pub enum PcoaInput {
 /// one is 0. [`Error::PcoaNotEuclidean`] when B has a negative eigenvalue.
 /// [`Error::PcoaLinalg`] when the eigendecomposition could not be done.
 pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa> {
-    let largest = the_largest_distance(&dist_vector, num_individuals, PcoaInput::Distances)?;
-    let centered = the_centered_matrix(&dist_vector, num_individuals, largest)?;
+    refuse_a_vector_that_cannot_be_analysed(&dist_vector, num_individuals)?;
+    let dists = || the_distances_of_the_vector(&dist_vector);
+    let largest = the_largest_distance(dists, num_individuals, PcoaInput::Distances)?;
+    let centered = the_centered_matrix(dists(), num_individuals, largest)?;
     drop(dist_vector);
     let decomposed = the_decomposition_of(centered, num_individuals)?;
     if decomposed.num_negative > 0 {
@@ -151,8 +155,10 @@ pub fn correct_dists_by_lingoes(
     dist_vector: Vec<f64>,
     num_individuals: usize,
 ) -> Result<LingoesCorrection> {
-    let largest = the_largest_distance(&dist_vector, num_individuals, PcoaInput::Distances)?;
-    let centered = the_centered_matrix(&dist_vector, num_individuals, largest)?;
+    refuse_a_vector_that_cannot_be_analysed(&dist_vector, num_individuals)?;
+    let dists = || the_distances_of_the_vector(&dist_vector);
+    let largest = the_largest_distance(dists, num_individuals, PcoaInput::Distances)?;
+    let centered = the_centered_matrix(dists(), num_individuals, largest)?;
     let decomposed = the_decomposition_of(centered, num_individuals)?;
     if decomposed.num_negative == 0 {
         return Ok(LingoesCorrection {
@@ -189,6 +195,80 @@ pub fn correct_dists_by_lingoes(
         dist_vector: corrected,
         constant,
         negative_eigenvalues_percent: decomposed.negative_eigenvalues_percent,
+    })
+}
+
+/// What the principal coordinates of the variants are asked for.
+#[derive(Debug, Clone, Copy)]
+pub struct VariantPcoaOptions {
+    /// The `min_num_snps` of Python and TypeScript: a pair of individuals
+    /// called together at fewer variants has no distance, and 0 gives one
+    /// to every pair called together at one variant at least.
+    pub min_num_vars: u32,
+    /// Whether Lingoes' correction is applied inside the analysis to
+    /// distances that are not Euclidean, which are refused without it.
+    pub correct_by_lingoes: bool,
+}
+
+/// The principal coordinates of the variants, with how many variants the
+/// pass gave, for the pass stats.
+#[derive(Debug, Clone)]
+pub struct PcoaOfVariants {
+    /// The analysis.
+    pub pcoa: Pcoa,
+    /// How many variants the pass gave, called in a pair or not.
+    pub num_vars: u64,
+}
+
+/// The principal coordinates of the Kosman distances of the individuals of
+/// the variants of `reader`, in one pass.
+///
+/// The pass is `calc_kosman_sums` of the module `dists`, which borrows the
+/// reader, so that the caller reads the counts of the filters from it
+/// afterwards. B is built from the sums of each pair and no vector of
+/// distances is made; the sums are dropped before the eigendecomposition.
+/// A pair called together at fewer than `min_num_vars` variants, or at
+/// none, has no distance. Distances that are not Euclidean are refused
+/// unless `correct_by_lingoes` is asked for.
+///
+/// # Errors
+///
+/// [`Error::PcoaTooManyIndividuals`] and [`Error::PcoaTooFewIndividuals`],
+/// before the pass, from the individuals the reader says its source has.
+/// The errors of `calc_kosman_sums`: a pass that gave no variant, sums of
+/// a pair beyond a `u32`, memory the machine does not give, and the
+/// reader's own. Then [`Error::PcoaPairsWithNoDistance`] and
+/// [`Error::PcoaAllDistancesZero`], on the sums; [`Error::PcoaNoMemory`] and
+/// [`Error::PcoaLinalg`]; and [`Error::PcoaNotEuclidean`] when B has a
+/// negative eigenvalue and the correction was not asked for.
+pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    options: &VariantPcoaOptions,
+) -> Result<PcoaOfVariants> {
+    let num_individuals = reader.individuals().len();
+    refuse_too_many_individuals(num_individuals)?;
+    refuse_too_few_individuals(num_individuals)?;
+    if options.correct_by_lingoes {
+        return Err(Error::PcoaCorrectionNotBuilt);
+    }
+    let sums = calc_kosman_sums(reader)?;
+    let num_vars = sums.num_vars();
+    let dists = || sums.dists(options.min_num_vars);
+    let largest = the_largest_distance(dists, num_individuals, PcoaInput::Variants)?;
+    let centered = the_centered_matrix(dists(), num_individuals, largest)?;
+    drop(sums);
+    let decomposed = the_decomposition_of(centered, num_individuals)?;
+    if decomposed.num_negative > 0 {
+        return Err(Error::PcoaNotEuclidean {
+            num_negative: decomposed.num_negative,
+            num_individuals,
+            negative_eigenvalues_percent: decomposed.negative_eigenvalues_percent,
+            from: PcoaInput::Variants,
+        });
+    }
+    Ok(PcoaOfVariants {
+        pcoa: the_components_of(&decomposed, num_individuals, largest)?,
+        num_vars,
     })
 }
 
@@ -337,48 +417,97 @@ fn zeros_or_no_memory(
     Ok(values)
 }
 
-/// The largest distance of the vector, once the vector and its
-/// individuals are found to be ones a principal coordinate analysis can be
-/// done on.
+/// Refuses a vector, or the individuals it is said to be of, that no
+/// principal coordinate analysis can be done on: more individuals than the
+/// linear algebra decomposes the matrix of, a vector that is not of their
+/// pairs, and fewer than 2 individuals, in that order.
 ///
 /// # Errors
 ///
-/// [`Error::PcoaTooManyIndividuals`], [`Error::PcoaDistVectorOfAnotherSize`],
-/// [`Error::PcoaTooFewIndividuals`], [`Error::PcoaPairsWithNoDistance`],
-/// [`Error::PcoaDistanceOutOfRange`] and [`Error::PcoaAllDistancesZero`],
-/// in that order, as [`pcoa`] says.
-fn the_largest_distance(
+/// [`Error::PcoaTooManyIndividuals`], [`Error::PcoaDistVectorOfAnotherSize`]
+/// and [`Error::PcoaTooFewIndividuals`].
+fn refuse_a_vector_that_cannot_be_analysed(
     dist_vector: &[f64],
     num_individuals: usize,
-    from: PcoaInput,
-) -> Result<f64> {
+) -> Result<()> {
     // Before the length, so that the pairs are counted in a number that
     // holds them, and a caller hears of the size it cannot do before the
     // vector it may not be able to build.
-    if num_individuals > MAX_INDIVIDUALS_OF_THE_VARIANTS {
-        return Err(Error::PcoaTooManyIndividuals { num_individuals });
-    }
-    let num_pairs = the_number_of_pairs(num_individuals);
-    if dist_vector.len() != num_pairs {
+    refuse_too_many_individuals(num_individuals)?;
+    if dist_vector.len() != the_number_of_pairs(num_individuals) {
         return Err(Error::PcoaDistVectorOfAnotherSize {
             num_dists: dist_vector.len(),
             num_individuals,
         });
     }
+    refuse_too_few_individuals(num_individuals)
+}
+
+/// Refuses more individuals than the linear algebra decomposes the
+/// individuals x individuals matrix of.
+///
+/// # Errors
+///
+/// [`Error::PcoaTooManyIndividuals`].
+fn refuse_too_many_individuals(num_individuals: usize) -> Result<()> {
+    if num_individuals > MAX_INDIVIDUALS_OF_THE_VARIANTS {
+        return Err(Error::PcoaTooManyIndividuals { num_individuals });
+    }
+    Ok(())
+}
+
+/// Refuses fewer than 2 individuals, which have no distance to place.
+///
+/// # Errors
+///
+/// [`Error::PcoaTooFewIndividuals`].
+fn refuse_too_few_individuals(num_individuals: usize) -> Result<()> {
     if num_individuals < 2 {
         return Err(Error::PcoaTooFewIndividuals { num_individuals });
     }
-    refuse_the_pairs_with_no_distance(dist_vector, num_individuals, num_pairs, from)?;
+    Ok(())
+}
+
+/// The distances of a vector a user gave, in its order, with `None` for the
+/// NaN of a pair that has no distance.
+fn the_distances_of_the_vector(dist_vector: &[f64]) -> impl Iterator<Item = Option<f64>> + '_ {
+    dist_vector
+        .iter()
+        .map(|dist| if dist.is_nan() { None } else { Some(*dist) })
+}
+
+/// The largest distance of the pairs `dists` gives, once they are found to
+/// be distances a principal coordinate analysis can be done on.
+///
+/// `dists` gives, each time it is called, the distance of every pair of
+/// `num_individuals` individuals in the order of the distance vector,
+/// `None` for a pair that has none: the vector a user gave, or the Kosman
+/// distances worked out from the sums of a pass, of which no vector is
+/// built. The individuals are 2 at least and at most
+/// [`MAX_INDIVIDUALS_OF_THE_VARIANTS`], and the distances are their pairs.
+///
+/// # Errors
+///
+/// [`Error::PcoaPairsWithNoDistance`], [`Error::PcoaDistanceOutOfRange`]
+/// and [`Error::PcoaAllDistancesZero`], in that order.
+fn the_largest_distance<I: Iterator<Item = Option<f64>>>(
+    dists: impl Fn() -> I,
+    num_individuals: usize,
+    from: PcoaInput,
+) -> Result<f64> {
+    refuse_the_pairs_with_no_distance(dists(), num_individuals, from)?;
     let mut largest: f64 = 0.0;
-    for (dist, (first, second)) in dist_vector.iter().zip(the_pairs(num_individuals)) {
-        if *dist < 0.0 || dist.is_infinite() {
+    for (dist, (first, second)) in dists().zip(the_pairs(num_individuals)) {
+        // The pairs with no distance were refused above.
+        let Some(dist) = dist else { continue };
+        if dist < 0.0 || dist.is_infinite() {
             return Err(Error::PcoaDistanceOutOfRange {
                 first,
                 second,
-                value: *dist,
+                value: dist,
             });
         }
-        largest = largest.max(*dist);
+        largest = largest.max(dist);
     }
     if largest <= 0.0 {
         return Err(Error::PcoaAllDistancesZero);
@@ -386,29 +515,32 @@ fn the_largest_distance(
     Ok(largest)
 }
 
-/// Refuses the pairs whose distance is a NaN, with how many there are, the
-/// first of them and the individual in the most of them.
+/// Refuses the pairs that have no distance, `None` in `dists`, with how
+/// many there are, the first of them and the individual in the most of
+/// them.
 ///
 /// # Errors
 ///
 /// [`Error::PcoaPairsWithNoDistance`] when there is one such pair or more.
 fn refuse_the_pairs_with_no_distance(
-    dist_vector: &[f64],
+    dists: impl Iterator<Item = Option<f64>>,
     num_individuals: usize,
-    num_pairs: usize,
     from: PcoaInput,
 ) -> Result<()> {
-    let num_pairs_with_no_distance = dist_vector.iter().filter(|dist| dist.is_nan()).count();
-    if num_pairs_with_no_distance == 0 {
-        return Ok(());
-    }
+    let mut num_pairs_with_no_distance = 0_usize;
     let mut first_pair = None;
-    let mut of_each_individual = vec![0_usize; num_individuals];
-    for (dist, (first, second)) in dist_vector.iter().zip(the_pairs(num_individuals)) {
-        if !dist.is_nan() {
+    // Asked for at the first pair with no distance, which most analyses do
+    // not have.
+    let mut of_each_individual: Vec<usize> = Vec::new();
+    for (dist, (first, second)) in dists.zip(the_pairs(num_individuals)) {
+        if dist.is_some() {
             continue;
         }
+        num_pairs_with_no_distance = num_pairs_with_no_distance.saturating_add(1);
         first_pair.get_or_insert((first, second));
+        if of_each_individual.is_empty() {
+            of_each_individual = vec![0_usize; num_individuals];
+        }
         // Both are below the individuals, which `the_pairs` gives, and a
         // count is at most the pairs of an individual.
         for individual in [first, second] {
@@ -417,6 +549,10 @@ fn refuse_the_pairs_with_no_distance(
             }
         }
     }
+    if num_pairs_with_no_distance == 0 {
+        return Ok(());
+    }
+    let num_pairs = the_number_of_pairs(num_individuals);
     // The first of the individuals with the largest count: a later one
     // replaces it only when its count is above.
     let (most_often, most_often_count) = of_each_individual.iter().enumerate().fold(
@@ -461,8 +597,9 @@ fn the_pairs(num_individuals: usize) -> impl Iterator<Item = (usize, usize)> {
     })
 }
 
-/// B of the distances divided by `largest`, the largest of them, centered
-/// twice, as its lower half: `num_individuals` x `num_individuals`, row after row, of
+/// B of the distances `dists`, in the order of the distance vector,
+/// divided by `largest`, the largest of them, centered twice, as its lower
+/// half: `num_individuals` x `num_individuals`, row after row, of
 /// which the entries of column j at most i of row i are written and the
 /// others are 0.
 ///
@@ -481,7 +618,7 @@ fn the_pairs(num_individuals: usize) -> impl Iterator<Item = (usize, usize)> {
     reason = "the individuals are at most MAX_INDIVIDUALS_OF_THE_VARIANTS, 46340, checked before, so n x n is at most 2147395600, which a usize of 32 bits holds, and first + 1 and (first + 1) x n + first are below it"
 )]
 fn the_centered_matrix(
-    dist_vector: &[f64],
+    dists: impl Iterator<Item = Option<f64>>,
     num_individuals: usize,
     largest: f64,
 ) -> Result<Vec<f64>> {
@@ -491,7 +628,9 @@ fn the_centered_matrix(
     // pairs where the individual is the first, which are the distances of
     // its segment of the vector, and those where it is the second.
     let mut as_the_second = vec![0.0; side];
-    let mut dists = dist_vector.iter();
+    // A pair with no distance was refused before, and a NaN in its place
+    // would make the linear algebra refuse B, not give a number.
+    let mut dists = dists.map(|dist| dist.unwrap_or(f64::NAN));
     let as_the_first: Vec<f64> = (0..side)
         .map(|first| {
             // The pairs (first, second) for every second above first are
@@ -658,9 +797,15 @@ impl fmt::Display for PercentShown {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{LingoesCorrection, Pcoa, PcoaInput, correct_dists_by_lingoes, pcoa};
-    use crate::error::Error;
-    use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
+    use super::{
+        LingoesCorrection, Pcoa, PcoaInput, PcoaOfVariants, VariantPcoaOptions,
+        correct_dists_by_lingoes, pcoa, pcoa_of_variants,
+    };
+    use crate::block::{Block, BlockReader};
+    use crate::error::{Error, Result};
+    use crate::filters::FilteringStats;
+    use crate::io::vcf::{VcfOptions, VcfReader};
+    use crate::variant::{ChromTable, MAX_INDIVIDUALS_OF_THE_VARIANTS, Needs};
 
     /// The tolerance of "How it is verified" of the principal coordinates
     /// in `docs/specs/pca.md`: R's numbers are written with 15 significant
@@ -1418,6 +1563,223 @@ mod tests {
                 other => panic!("the pair with no distance was not refused first: {other:?}"),
             }
         }
+    }
+
+    /// The options of the analysis of the variants without the correction,
+    /// with every pair that was called together at one variant at least
+    /// given a distance.
+    const NOT_CORRECTED: VariantPcoaOptions = VariantPcoaOptions {
+        min_num_vars: 0,
+        correct_by_lingoes: false,
+    };
+
+    /// A VCF reader over one of the diploid reference files of
+    /// `tests/reference/`, `dists/panel.vcf.gz` for one, in blocks of
+    /// `num_vars_per_block` variants.
+    fn reader_of(
+        name: &str,
+        num_vars_per_block: usize,
+    ) -> VcfReader<std::io::BufReader<std::fs::File>> {
+        let options = VcfOptions {
+            ploidy: 2,
+            num_vars_per_block: Some(num_vars_per_block),
+            ..VcfOptions::default()
+        };
+        VcfReader::from_path(&the_reference_path(name), options)
+            .unwrap_or_else(|error| panic!("{name}: {error}"))
+    }
+
+    /// The principal coordinates of the variants of a reference file.
+    fn the_pcoa_of_the_variants(
+        name: &str,
+        options: &VariantPcoaOptions,
+    ) -> Result<PcoaOfVariants> {
+        pcoa_of_variants(&mut reader_of(name, 100), options)
+    }
+
+    /// The panel, 200 individuals and 1200 variants whose Kosman distances
+    /// R's `gd.kosman` gives, is not Euclidean: without the correction it is
+    /// refused with 44 negative eigenvalues of 200 and 2.98343616373556
+    /// percent, and the message names the option that corrects it. It is
+    /// of the file that was read.
+    #[test]
+    fn the_panel_is_refused_without_the_correction() {
+        match the_pcoa_of_the_variants("dists/panel.vcf.gz", &NOT_CORRECTED) {
+            Err(
+                error @ Error::PcoaNotEuclidean {
+                    num_negative,
+                    num_individuals,
+                    negative_eigenvalues_percent,
+                    from,
+                },
+            ) => {
+                assert_eq!((num_negative, num_individuals), (44, 200));
+                assert!(
+                    (negative_eigenvalues_percent - 2.98343616373556).abs() <= TOLERANCE,
+                    "{negative_eigenvalues_percent}"
+                );
+                assert_eq!(from, PcoaInput::Variants);
+                let message = error.to_string();
+                assert!(message.contains("`correct_by_lingoes`"), "{message}");
+                assert!(!message.contains("correct_dists_by_lingoes"), "{message}");
+                assert!(error.names_the_file(), "{message}");
+            }
+            other => panic!("the panel was not refused: {other:?}"),
+        }
+    }
+
+    /// With a pair needing 1105 variants called in both, 35 of the 19900
+    /// pairs of the panel have no distance, the first of them `s001` and
+    /// `s082`, and `s082` is in 17 of them; the message tells a user of the
+    /// variants what to change.
+    #[test]
+    fn the_panel_with_1105_variants_a_pair_has_pairs_with_no_distance() {
+        let options = VariantPcoaOptions {
+            min_num_vars: 1105,
+            correct_by_lingoes: false,
+        };
+        match the_pcoa_of_the_variants("dists/panel.vcf.gz", &options) {
+            Err(
+                error @ Error::PcoaPairsWithNoDistance {
+                    num_pairs_with_no_distance,
+                    num_pairs,
+                    first_of_the_first,
+                    second_of_the_first,
+                    most_often,
+                    most_often_count,
+                    from,
+                },
+            ) => {
+                assert_eq!((num_pairs_with_no_distance, num_pairs), (35, 19900));
+                assert_eq!((first_of_the_first, second_of_the_first), (1, 82));
+                assert_eq!((most_often, most_often_count), (82, 17));
+                assert_eq!(from, PcoaInput::Variants);
+                let message = error.to_string();
+                assert!(message.contains("`min_num_snps`"), "{message}");
+                assert!(message.contains("`filter_individuals`"), "{message}");
+                assert!(error.names_the_file(), "{message}");
+            }
+            other => panic!("the pairs with no distance were not refused: {other:?}"),
+        }
+    }
+
+    /// The Kosman distances of `four_alleles.vcf.gz`, 40 individuals and
+    /// 300 variants, are Euclidean: 39 components, R's, with no constant
+    /// and no negative part, whatever the size of the blocks.
+    #[test]
+    fn the_variants_of_four_alleles_give_the_components_of_r() {
+        for num_vars_per_block in [7, 100, 300] {
+            let result = pcoa_of_variants(
+                &mut reader_of("dists/four_alleles.vcf.gz", num_vars_per_block),
+                &NOT_CORRECTED,
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+            assert_eq!(result.num_vars, 300);
+            assert_eq!(result.pcoa.num_comps, 39);
+            assert_as_r(
+                &result.pcoa,
+                &the_projections_of_r("four_alleles.pcoa.r.projections.tsv"),
+                &the_column_of_r("four_alleles.pcoa.r.percent.tsv"),
+                TOLERANCE,
+            );
+            assert_eq!(result.pcoa.lingoes_constant.to_bits(), 0.0_f64.to_bits());
+            assert_eq!(
+                result.pcoa.negative_eigenvalues_percent.to_bits(),
+                0.0_f64.to_bits()
+            );
+        }
+    }
+
+    /// A reader of one individual is refused before any of its blocks is
+    /// read, and so is one of more individuals than the linear algebra
+    /// takes.
+    #[test]
+    fn a_reader_of_too_few_or_too_many_individuals_is_refused_before_the_pass() {
+        for (num_individuals, refused) in [
+            (1, "fewer than 2"),
+            (
+                MAX_INDIVIDUALS_OF_THE_VARIANTS + 1,
+                "more than the linear algebra takes",
+            ),
+        ] {
+            let mut reader = NotToBeRead::of(num_individuals);
+            let result = pcoa_of_variants(&mut reader, &NOT_CORRECTED);
+            match (num_individuals, &result) {
+                (1, Err(Error::PcoaTooFewIndividuals { num_individuals: 1 }))
+                | (_, Err(Error::PcoaTooManyIndividuals { .. })) => {}
+                _ => panic!("{refused}: {result:?}"),
+            }
+            assert_eq!(reader.num_blocks_asked_for, 0, "{refused}");
+        }
+    }
+
+    /// A reader that counts the blocks it was asked for and gives none, for
+    /// the refusals that come before the pass.
+    struct NotToBeRead {
+        individuals: Vec<String>,
+        chroms: ChromTable,
+        num_blocks_asked_for: usize,
+    }
+
+    impl NotToBeRead {
+        fn of(num_individuals: usize) -> NotToBeRead {
+            NotToBeRead {
+                individuals: (0..num_individuals).map(|at| format!("i{at}")).collect(),
+                chroms: ChromTable::new(),
+                num_blocks_asked_for: 0,
+            }
+        }
+    }
+
+    impl BlockReader for NotToBeRead {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            self.num_blocks_asked_for = self.num_blocks_asked_for.saturating_add(1);
+            Ok(None)
+        }
+
+        fn individuals(&self) -> &[String] {
+            &self.individuals
+        }
+
+        fn ploidy(&self) -> usize {
+            2
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            &self.chroms
+        }
+
+        fn set_needs(&mut self, _needs: Needs) {}
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
+
+        fn header(&self) -> &crate::block::SourceHeader {
+            &crate::block::AN_EMPTY_HEADER
+        }
+
+        fn skip_outside(&mut self, _selection: crate::filters::RegionSelection) -> bool {
+            false
+        }
+
+        fn num_skipped(&self) -> u64 {
+            0
+        }
+    }
+
+    /// The correction inside the analysis is not built yet, and asking for
+    /// it is an error before the pass, not a result without it.
+    #[test]
+    fn the_correction_of_the_variants_is_refused_until_it_is_built() {
+        let options = VariantPcoaOptions {
+            min_num_vars: 0,
+            correct_by_lingoes: true,
+        };
+        assert!(matches!(
+            the_pcoa_of_the_variants("dists/panel.vcf.gz", &options),
+            Err(Error::PcoaCorrectionNotBuilt)
+        ));
     }
 
     /// The percentage of a message has three significant digits, so a
