@@ -47,10 +47,12 @@ pub(crate) const THE_EMPTY_MEMBER: [u8; 28] = [
 
 /// The level of deflate of every member: 6, zlib's default, which bgzip
 /// 1.24 uses when it is given none. On `big.vcf`, 100000 variants x 1000
-/// individuals, on one thread of the owner's M5 Pro on 26 September 2026,
-/// `write_vcf` bgzipped took 10.3 s at this level and gave 38.4 MB, 4.9 s
-/// and 41.6 MB at 5, and 1.7 s and 73.2 MB at 1; `bgzip -@1` took 7.6 s and
-/// gave 37.7 MB.
+/// individuals, on one thread of the owner's M5 Pro on 27 September 2026,
+/// `write_vcf` bgzipped with flate2 over zlib-rs took 5.48 s at this level
+/// and gave 37.4 MB, and `bcftools view -Oz` 8.84 s and 37.7 MB. With
+/// miniz_oxide, the backend before, it took 10.66 s and gave 38.4 MB, and
+/// on 26 September zlib-rs at level 5 took 3.1 s and gave 39.8 MB. The
+/// owner chose zlib-rs at 6 on 27 September 2026.
 pub(crate) const COMPRESSION_LEVEL: u32 = 6;
 
 /// The first byte of a deflate block that stores its text as it is and is
@@ -207,11 +209,18 @@ fn compress_the_members(texts: &[TextOfAMember<'_>], members: &mut [Vec<u8>]) ->
 /// over what it held: the header with the size of the member, the text
 /// deflated, and its CRC32 and length.
 ///
+/// The text of several pieces is joined into one buffer before it is
+/// deflated, since zlib-rs gives other bytes for a text it is fed in pieces
+/// than for the same text fed whole, and the pieces are where the lines of
+/// a block were formatted, so without the copy the file would depend on the
+/// size of the blocks of its source. The copy is of 65280 bytes at most, of
+/// about one member in four of `big.vcf`.
+///
 /// A deflate whose data do not fit the member, or whose stream did not end,
 /// gives a member in which the writer stores the text as it is, one stored
 /// block of deflate, which always fits and decompresses to the same text.
-/// miniz_oxide stores a text it cannot shrink on its own, 65321 bytes of
-/// member for 65280 bytes of random text, so this is for a deflate that
+/// zlib-rs stores a text it cannot shrink on its own, 65326 bytes
+/// of member for 65280 bytes of random text, so this is for a deflate that
 /// does otherwise, which none of the tests reaches: [`the_deflate_fits`] is
 /// tested on its own.
 ///
@@ -239,8 +248,17 @@ fn compress_a_member(
     member.reserve(MOST_BYTES_OF_A_MEMBER);
     member.extend_from_slice(&HEADER_BEFORE_THE_SIZE);
     member.extend_from_slice(&[0, 0]);
+    let joined: Vec<u8>;
+    let text: &[u8] = match pieces {
+        [] => &[],
+        [whole] => whole,
+        _ => {
+            joined = pieces.concat();
+            &joined
+        }
+    };
     compress.reset();
-    let deflated = deflate_the_pieces(compress, pieces, member);
+    let deflated = deflate_the_text(compress, text, member);
     let data = member.len().saturating_sub(BYTES_OF_THE_HEADER);
     if !the_deflate_fits(&deflated, data) {
         member.truncate(BYTES_OF_THE_HEADER);
@@ -249,34 +267,20 @@ fn compress_a_member(
     end_the_member(pieces, length, member)
 }
 
-/// The pieces deflated into `member` as one stream, which ends with the last
-/// of them, and the status the deflate gave at the end. A piece that the
-/// deflate did not take whole, which is what it does when the room of the
-/// member runs out, gives the status `BufError`, and the writer stores the
-/// text then.
-fn deflate_the_pieces(
+/// The text deflated into `member` as one stream, and the status the
+/// deflate gave at its end. A text that the deflate did not take whole,
+/// which is what it does when the room of the member runs out, gives the
+/// status `BufError`, and the writer stores the text then.
+fn deflate_the_text(
     compress: &mut Compress,
-    pieces: &[&[u8]],
+    text: &[u8],
     member: &mut Vec<u8>,
 ) -> std::result::Result<Status, CompressError> {
-    let last = pieces.len().saturating_sub(1);
-    let mut status = Ok(Status::Ok);
-    for (index, piece) in pieces.iter().enumerate() {
-        let flush = match index == last {
-            true => FlushCompress::Finish,
-            false => FlushCompress::None,
-        };
-        let before = compress.total_in();
-        status = compress.compress_vec(piece, member, flush);
-        let taken = compress.total_in().saturating_sub(before);
-        if status.is_err() || u64::try_from(piece.len()).ok() != Some(taken) {
-            return status.and(Ok(Status::BufError));
-        }
+    let status = compress.compress_vec(text, member, FlushCompress::Finish);
+    match u64::try_from(text.len()).ok() == Some(compress.total_in()) {
+        true => status,
+        false => status.and(Ok(Status::BufError)),
     }
-    if pieces.is_empty() {
-        status = compress.compress_vec(&[], member, FlushCompress::Finish);
-    }
-    status
 }
 
 /// Whether a deflate that gave `deflated` and `data` bytes goes into the
@@ -379,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn a_member_of_text_miniz_cannot_shrink_is_stored_by_miniz_and_fits() {
+    fn a_member_of_text_zlib_rs_cannot_shrink_is_stored_by_zlib_rs_and_fits() {
         let text = bytes_that_do_not_shrink();
         let (member, back) = member_and_text(&text);
         assert_eq!(back, text);
