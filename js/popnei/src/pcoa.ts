@@ -130,12 +130,15 @@ export interface LingoesCorrection {
  * of 0 are in its result, and what a correction added and took is in the
  * result of the correction.
  *
- * A page holds 4 GB at a time, and the matrix of the individuals, its
+ * A page holds 4 GB at a time. The matrix of the individuals, its
  * eigenvectors, the workspace of the eigendecomposition and the projections
- * are about 44 bytes per cell of the individuals x individuals matrix,
- * measured under node, where the analysis of 9414 individuals did not fit.
- * So distances of more than 9381 individuals are an `Error` here and are
- * analysed by a program outside the browser, popnei in Python among them.
+ * were measured under node at 44.4 bytes per cell of the individuals x
+ * individuals matrix, and 9413 individuals ran and 9414 did not: the edge
+ * is set by one allocation that does not fit, not by the memory the
+ * analysis holds. So popnei counts 48.8 bytes per cell, the 6.1 times the
+ * matrix of the PCA, and distances of more than 9381 individuals are an
+ * `Error` here and are analysed by a program outside the browser, popnei in
+ * Python among them.
  *
  * @throws {Error} When `distances` is not a `Distances`; when it is of more
  * than 9381 individuals; when it is of fewer than 2; when a pair has no
@@ -322,11 +325,14 @@ export interface DoPcoaFromVariantsOptions {
  * It is pyNei's `do_pcoa_from_variants`, which has no correction and gives a
  * component for every eigenvalue, the negative ones included.
  *
- * A page holds 4 GB at a time, and the analysis holds about 44 bytes per
- * cell of the individuals x individuals matrix, measured under node, where
- * 9414 individuals did not fit, so a pass of more than 9381 individuals is
- * an `Error` here, before the source is read, and is analysed by a program
- * outside the browser, popnei in Python among them.
+ * A page holds 4 GB at a time. The analysis was measured under node at
+ * 44.4 bytes per cell of the individuals x individuals matrix, and 9413
+ * individuals ran and 9414 did not: the edge is set by one allocation that
+ * does not fit, not by the memory the analysis holds. So popnei counts 48.8
+ * bytes per cell, the 6.1 times the matrix of the PCA, and a pass of more
+ * than 9381 individuals is an `Error` here, before the source is read, and
+ * is analysed by a program outside the browser, popnei in Python among
+ * them.
  * The individuals counted are those the pass gives, so a `filterIndividuals`
  * that keeps fewer is analysed.
  *
