@@ -763,8 +763,10 @@ individuals of a `Variants`, which `docs/specs/dists.md` computes. The
 second counts every allele of a variant as itself and takes any ploidy,
 where the PCA of the variants reduces a genotype to its dosage.
 
-The method is Gower's (1966, Biometrika 53: 325), which pyNei took from
-PyCogent and which R's `cmdscale` and `ape::pcoa` compute. With d_ij the
+The method is Gower's (1966, Biometrika 53: 325), which pyNei's code
+took from an older Python library, and which two functions of R compute:
+`cmdscale` of base R, and `pcoa` of the package ape, which gives as well
+each eigenvalue as a share of their sum. With d_ij the
 distance of the individuals i and j, and n the individuals:
 
     A_ij = -d_ij² / 2
@@ -815,10 +817,14 @@ to 100 plus `negative_eigenvalues_percent`: 102.98 on the panel. What a
 percentage means is then the variance of the individuals along that
 component as a share of the total variance of the distances, and
 `negative_eigenvalues_percent` is how far all the components together
-overstate that total. It is also how far the drawing is from the
-distances: over all the components given, every pair of individuals is at
-least as far apart as its distance, and further by what the negative
-eigenvalues hold between them. With a Euclidean matrix it is 0 and the
+overstate that total. The same holds pair by pair. Over all the
+components given, the squared distance between the projections of i and j
+is
+
+    d_ij² + sum over the negative λ_k of |λ_k| (u_ki - u_kj)²
+
+so no pair is drawn nearer than its distance, and each is drawn further by
+what the negative eigenvalues hold between its two individuals. With a Euclidean matrix it is 0 and the
 percentages add up to 100, as in the PCA. What value a user should be
 warned at is the application's to decide; the two matrices of the
 literals below give 2.98 and 7.88.
@@ -972,7 +978,8 @@ spec takes the measured one if it differs.
 
 ### How it is verified
 
-Against R 4.6.1 with ape 5.8.1, `pcoa(d, correction = "none")`, which
+Against R 4.6.1 with ape 5.8.1, `pcoa(d, correction = "none")`, the
+function of ape with no correction of the distances, which
 gives the components of the positive eigenvalues and, as `Relative_eig`,
 each eigenvalue over the sum of every eigenvalue, the negative ones
 included: the rule above. `tests/reference/pca/pcoa_reference.R`, run as
@@ -987,7 +994,8 @@ individuals `i1` to `i5`, in the order of the distance vector: 0.2, 0.3,
 0.9, 0.9, 0.1, 0.8, 0.7, 0.7, 0.8, 0.2. They are not Euclidean. The
 eigenvalues of B are 0.759739804991026, 0.0891457990391564,
 0.0271213359309426, 0 and -0.0640069399611263, whose sum is 0.812, the
-sum of the ten squares, 4.06, over 5. The result has 3 components:
+sum of the ten squares, 4.06, over 5; they are not in the result and are
+given to check B by hand. The result has 3 components:
 
 | | PC0 | PC1 | PC2 |
 |---|---|---|---|
@@ -1116,9 +1124,13 @@ pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa>;
 ```
 
 The PCoA of the Kosman distances of the variants of `reader`, which it
-borrows, as `calc_kosman_sums` does, so that the caller reads the counts of
-the filters from it afterwards. `num_vars` is how many variants the pass
-gave, for the pass stats.
+borrows, as `calc_kosman_sums` of `docs/specs/dists.md`, the pass of the
+Kosman distances, does, so that the caller reads the counts of the filters
+from it afterwards. `min_num_vars` is the `min_num_snps` of Python and
+TypeScript, as `KosmanSums::dist` names it: a pair called together at
+fewer variants has no distance, and 0 gives one to every pair called
+together at one variant at least; the binding crate turns `None` into 0.
+`num_vars` is how many variants the pass gave, for the pass stats.
 
 ```rust
 pub struct PcoaOfVariants {
