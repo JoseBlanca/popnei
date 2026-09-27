@@ -260,9 +260,16 @@ def test_a_pair_with_no_distance_is_refused_before_the_matrix_is_decomposed():
 
 @pytest.mark.parametrize("value", [-0.1, numpy.inf])
 @pytest.mark.parametrize("function", [do_pcoa, correct_dists_by_lingoes])
-def test_a_negative_or_infinite_distance_is_refused(function, value):
-    with pytest.raises(ValueError, match="finite and 0 or above"):
+def test_a_negative_or_infinite_distance_is_refused_by_the_names_of_its_pair(
+    function, value
+):
+    # The distance at 3 is that of the pair (i1, i5).
+    with pytest.raises(ValueError, match="finite and 0 or above") as refused:
         function(ten_dists(at_3=value))
+    said = str(refused.value)
+    assert said.startswith(f"the distance of 'i1' and 'i5' is {value},")
+    assert "F_ST or f_2" in said
+    assert "position" not in said
 
 
 @pytest.mark.parametrize("function", [do_pcoa, correct_dists_by_lingoes])

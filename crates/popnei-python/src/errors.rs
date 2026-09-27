@@ -83,6 +83,21 @@ create_exception!(
      who catches that one catches this one as well."
 );
 
+create_exception!(
+    popnei._core,
+    PcoaDistanceOutOfRange,
+    PyValueError,
+    "A distance given to a principal coordinate analysis or to Lingoes' \
+     correction that is negative or infinite. `args[0]` is what the core \
+     says, which names the two individuals of the pair by their position; \
+     `args[1]` and `args[2]` are those positions in the order of the \
+     distances, from 0; and `args[3]` is the distance.\n\n\
+     `popnei.do_pcoa` and `popnei.correct_dists_by_lingoes` catch it and \
+     raise the `ValueError` their user reads, whose message names the two \
+     as the `Distances` names them, as it is for the pairs with no distance \
+     above. It derives from `ValueError` as well."
+);
+
 /// What a function of this crate fails with.
 pub(crate) enum PyPopneiError {
     /// Something the core crate refused: an argument it takes, or what it
@@ -687,6 +702,19 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             most_often,
             most_often_count,
         )),
+        // A distance of a principal coordinate analysis that is negative or
+        // infinite, whose pair the layer holding the names of the
+        // `Distances` names, as it names the pairs with no distance above.
+        popnei::Error::PcoaDistanceOutOfRange {
+            first,
+            second,
+            value,
+        } => PcoaDistanceOutOfRange::new_err((
+            what_a_user_reads(&error, message, path),
+            first,
+            second,
+            value,
+        )),
         // The wrong inputs of a function, which are a `ValueError`. Which
         // of them carries the file it happened in before its message is
         // `popnei::Error::names_the_file` of the core crate and not this
@@ -924,18 +952,16 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasIndividualTestedTwice { .. }
         | popnei::Error::GwasIndividualsOutOfOrder { .. }
         | popnei::Error::GwasVariantsTooLarge
-        // The six of the principal coordinate analysis and of Lingoes'
+        // The five of the principal coordinate analysis and of Lingoes'
         // correction that are of the distances a user gave, which
         // "Errors and the cases pyNei asserts" of `docs/specs/pca.md` lists:
         // fewer than 2 individuals, more than the linear algebra decomposes
-        // the matrix of, a distance that is negative or infinite, distances
-        // that are all 0, distances that are not Euclidean, which the message
+        // the matrix of, distances that are all 0, distances that are not Euclidean, which the message
         // tells the user to correct, and a constant of the correction beyond
         // an f64, which the message tells the user to scale the distances
         // for.
         | popnei::Error::PcoaTooFewIndividuals { .. }
         | popnei::Error::PcoaTooManyIndividuals { .. }
-        | popnei::Error::PcoaDistanceOutOfRange { .. }
         | popnei::Error::PcoaAllDistancesZero
         | popnei::Error::PcoaNotEuclidean { .. }
         | popnei::Error::PcoaLingoesConstantOutOfRange { .. } => {

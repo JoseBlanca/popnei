@@ -99,6 +99,12 @@ mod _core {
         module.add(
             "PcoaPairsWithNoDistance",
             py.get_type::<super::errors::PcoaPairsWithNoDistance>(),
+        )?;
+        // A distance of it that is negative or infinite, whose pair the same
+        // two functions name.
+        module.add(
+            "PcoaDistanceOutOfRange",
+            py.get_type::<super::errors::PcoaDistanceOutOfRange>(),
         )
     }
 

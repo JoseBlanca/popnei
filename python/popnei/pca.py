@@ -365,8 +365,9 @@ def do_pcoa(dists: Distances) -> PCoAResult:
 
     A pair with no distance, a NaN, is a ``ValueError`` that says how many
     there are, names the first and the individual in the most of them, since
-    every individual is placed by its distance to every other. So are a
-    distance that is negative or infinite, fewer than 2 individuals, and
+    every individual is placed by its distance to every other. A distance
+    that is negative or infinite is a ``ValueError`` that names its pair and
+    gives it. So are fewer than 2 individuals, and
     distances that are all 0. What is not a ``Distances`` is a
     ``TypeError``.
 
@@ -384,6 +385,8 @@ def do_pcoa(dists: Distances) -> PCoAResult:
         )
     except _core.PcoaPairsWithNoDistance as error:
         raise ValueError(_the_pairs_with_no_distance(error, dists.names)) from None
+    except _core.PcoaDistanceOutOfRange as error:
+        raise ValueError(_the_distance_out_of_range(error, dists.names)) from None
     names = _component_names(projections.shape[1])
     # `copy=False` on both, for the reason `do_pca` gives: the arrays come
     # straight from the core crate and only the frames outlive this call.
@@ -428,6 +431,8 @@ def correct_dists_by_lingoes(dists: Distances) -> LingoesCorrection:
         )
     except _core.PcoaPairsWithNoDistance as error:
         raise ValueError(_the_pairs_with_no_distance(error, dists.names)) from None
+    except _core.PcoaDistanceOutOfRange as error:
+        raise ValueError(_the_distance_out_of_range(error, dists.names)) from None
     return LingoesCorrection(
         dists=Distances(
             dist_vector=dist_vector, names=dists.names, pass_stats=dists.pass_stats
@@ -479,6 +484,23 @@ def _the_pairs_with_no_distance(of_the_core: BaseException, names: tuple) -> str
         f"of them; a principal coordinate analysis places every individual by "
         f"its distance to every other, so each of those pairs has to be given a "
         f"distance or one of its two individuals taken out of the distances"
+    )
+
+
+def _the_distance_out_of_range(of_the_core: BaseException, names: tuple) -> str:
+    """What a user is told of a distance of a ``Distances`` that is negative
+    or infinite.
+
+    The core names the two individuals of the pair by their position in the
+    order of the distances, which is where the names of the ``Distances``
+    are read, and gives the distance.
+    """
+    _, first, second, value = of_the_core.args
+    return (
+        f"the distance of {names[first]!r} and {names[second]!r} is {value}, and "
+        f"a principal coordinate analysis needs every distance finite and 0 or "
+        f"above; a negative F_ST or f_2 is of two populations the dataset cannot "
+        f"tell apart"
     )
 
 
