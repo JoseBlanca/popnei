@@ -21,6 +21,8 @@ components in the same way, from the distance of every pair of them instead
 of a table of their values: a principal coordinate analysis, PCoA. It refuses
 distances that are not Euclidean, which no space has points at, and
 :func:`correct_dists_by_lingoes` makes them Euclidean.
+:func:`do_pcoa_from_variants` is the PCoA of the Kosman distances of the
+individuals of a :class:`popnei.Variants`, in one pass over its variants.
 """
 
 from dataclasses import dataclass
@@ -29,7 +31,7 @@ import numpy
 import pandas
 
 from popnei import _core
-from popnei.dists import Distances
+from popnei.dists import Distances, _min_num_vars_of
 from popnei.variant import PassStats, Variants, _pass_stats_of
 
 # What is wrong with a trait whose mean or whose standard deviation the
@@ -398,6 +400,99 @@ def do_pcoa(dists: Distances) -> PCoAResult:
         lingoes_constant=lingoes_constant,
         negative_eigenvalues_percent=negative_percent,
         pass_stats=dists.pass_stats,
+    )
+
+
+def do_pcoa_from_variants(
+    variants: Variants,
+    min_num_snps: int | None = None,
+    correct_by_lingoes: bool = False,
+) -> PCoAResult:
+    """The principal coordinates of the Kosman distances of the individuals
+    of `variants`.
+
+    It is :func:`calc_pairwise_kosman_dists` followed by :func:`do_pcoa`, in
+    one pass over the variants the steps of `variants` keep and with no
+    ``Distances`` built between the two. The Kosman distance counts every
+    allele of a variant as itself and takes any ploidy, where
+    :func:`do_pca_from_variants` reduces a genotype to its dosage.
+
+    `min_num_snps` is how many variants a pair needs to have been called
+    together at to get a distance, as :func:`calc_pairwise_kosman_dists`
+    takes it: ``None`` or 0 is one. A pair with no distance is a
+    ``ValueError`` that says how many there are, names the first and the
+    individual in the most of them, and says that it can be taken out with
+    :meth:`Variants.filter_individuals`, that `min_num_snps` can be lowered,
+    or that :func:`do_pca_from_variants` gives every individual a
+    projection.
+
+    The Kosman distances need not be Euclidean. Without
+    `correct_by_lingoes`, the default, distances that are not are a
+    ``ValueError`` that says how many eigenvalues are negative and what share
+    of the sum of all of them, and names `correct_by_lingoes`. With it,
+    Lingoes' correction is applied inside the analysis, as
+    :func:`correct_dists_by_lingoes` applies it to a ``Distances``: 2c is
+    added to every squared distance, c being the absolute value of the most
+    negative eigenvalue, and the result carries c as ``lingoes_constant``
+    and the share of the negative eigenvalues before the correction as
+    ``negative_eigenvalues_percent``, both 0 for Euclidean distances. The
+    correction pushes every pair apart by the same amount of squared
+    distance, which moves the nearest pairs the most. ``do_pcoa`` of
+    ``correct_dists_by_lingoes`` of the distances gives the same components,
+    within the rounding of the square roots.
+
+    The names of the individuals are the index of the projections, and the
+    counts of the pass are in ``pass_stats``. Fewer than 2 individuals, a
+    pass that gives no variant and distances that are all 0 are a
+    ``ValueError``; what is not a ``Variants`` is a ``TypeError``, and so is
+    a `min_num_snps` that is not a whole number.
+
+    It is pyNei's ``do_pcoa_from_variants`` with `correct_by_lingoes` added
+    and without `use_approx_embedding_algorithm` and `num_threads`. pyNei
+    gives all n components, the negative ones included, and has no
+    correction.
+    """
+    if not isinstance(variants, Variants):
+        # What a user gives instead is usually the path of the VCF, as for
+        # `do_pca_from_variants`.
+        raise TypeError(
+            f"`variants` is {variants!r}, a {type(variants).__name__}, and "
+            f"`do_pcoa_from_variants` reads the variants of a source: give it "
+            f"what `open_vcf` or `open_vars` gives, "
+            f"do_pcoa_from_variants(open_vcf(vcf_path))"
+        )
+    min_num_vars = _min_num_vars_of(min_num_snps)
+    # The core names an individual of a pair with no distance by its
+    # position among those the pass gives, which are these.
+    individuals = variants.individuals
+    try:
+        (
+            projections,
+            percent,
+            lingoes_constant,
+            negative_percent,
+            counts,
+        ) = _core.pcoa_of_variants(
+            variants._source,
+            min_num_vars,
+            correct_by_lingoes,
+            variants._steps,
+        )
+    except _core.PcoaPairsWithNoDistance as error:
+        raise ValueError(
+            f"{variants._source.path()}: "
+            + _the_pairs_with_no_distance(error, individuals)
+        ) from None
+    names = _component_names(projections.shape[1])
+    # `copy=False` on both, for the reason `do_pca` gives.
+    return PCoAResult(
+        projections=pandas.DataFrame(
+            projections, index=list(individuals), columns=names, copy=False
+        ),
+        explained_variance_percent=pandas.Series(percent, index=names, copy=False),
+        lingoes_constant=lingoes_constant,
+        negative_eigenvalues_percent=negative_percent,
+        pass_stats=_pass_stats_of(counts),
     )
 
 

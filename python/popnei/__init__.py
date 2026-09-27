@@ -38,6 +38,7 @@ from popnei.pca import (
     do_pca,
     do_pca_from_variants,
     do_pcoa,
+    do_pcoa_from_variants,
 )
 from popnei.pop_dists import PopDistMeasure, PopDists, calc_pop_dists
 from popnei.stats import (
@@ -107,6 +108,7 @@ __all__ = [
     "do_pca",
     "do_pca_from_variants",
     "do_pcoa",
+    "do_pcoa_from_variants",
     "open_vars",
     "open_vcf",
     "write_vars",

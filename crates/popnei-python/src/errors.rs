@@ -77,9 +77,10 @@ create_exception!(
      pairs, the first of them when two are in as many, and `args[6]` how \
      many it is in; `args[7]` is what the core tells the user to do, which \
      depends on whether the distances were given or came from the variants.\n\n\
-     `popnei.do_pcoa` and `popnei.correct_dists_by_lingoes` catch it and \
-     raise the `ValueError` their user reads, whose message names the \
-     individuals as the `Distances` names them, as it is for the traits and \
+     `popnei.do_pcoa`, `popnei.correct_dists_by_lingoes` and \
+     `popnei.do_pcoa_from_variants` catch it and raise the `ValueError` \
+     their user reads, whose message names the individuals as the \
+     `Distances` or the `Variants` names them, as it is for the traits and \
      the pair of a kinship above. It derives from `ValueError`, so a user \
      who catches that one catches this one as well."
 );
@@ -644,8 +645,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // `Distances` that refused such a vector when it was built; and an
         // operation of the linear algebra that did not run, which is left
         // with a machine with too little memory for the workspace of the
-        // eigendecomposition or a routine that did not converge.
+        // eigendecomposition or a routine that did not converge. And the
+        // one of `do_pcoa_from_variants` with `correct_by_lingoes` that no
+        // argument gives: no eigenvalue 0 for the centering, which every
+        // matrix of the analysis has, found by the correction that keeps it
+        // at 0.
         | popnei::Error::PcoaDistVectorOfAnotherSize { .. }
+        | popnei::Error::PcoaNoEigenvalueOfTheCentering { .. }
         | popnei::Error::PcoaLinalg { .. } => {
             PyRuntimeError::new_err(what_a_user_reads(&error, message, path))
         }
@@ -683,8 +689,9 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         )),
         // The pairs of individuals with no distance of a principal
         // coordinate analysis, which the layer holding the names of the
-        // `Distances` names: the core has the positions of the individuals
-        // and the counts, and `popnei.do_pcoa` raises the `ValueError` a user
+        // `Distances` or of the `Variants` names: the core has the positions
+        // of the individuals and the counts, and `popnei.do_pcoa` and
+        // `popnei.do_pcoa_from_variants` raise the `ValueError` a user
         // reads. It carries what the core says as well, so that a caller of
         // `popnei._core` reads a message and not six numbers.
         popnei::Error::PcoaPairsWithNoDistance {

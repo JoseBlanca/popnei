@@ -18,6 +18,14 @@ The worked example is the ten distances of pyNei's `test_pcoa`, of five
 individuals, which are not Euclidean. Its numbers are those of R 4.6.1 with
 ape 5.8.1 that "How it is verified" of the spec gives and
 `tests/reference/pca/small.lingoes.r.*.tsv` holds.
+
+`do_pcoa_from_variants` is the PCoA of the Kosman distances of a `Variants`
+in one pass. It is checked on `tests/reference/dists/panel.vcf.gz`, 200
+individuals and 1200 variants, whose distances are not Euclidean: with
+`correct_by_lingoes` against pyNei's `do_pcoa` of popnei's
+`correct_dists_by_lingoes` of popnei's `calc_pairwise_kosman_dists` of the
+same file, since pyNei has no correction, and against the literals of R
+that the spec gives; without it, refused.
 """
 
 from pathlib import Path
@@ -26,12 +34,15 @@ import numpy
 import pytest
 from popnei import (
     Distances,
+    FilteringStats,
     LingoesCorrection,
+    PassStats,
     PCoAResult,
     _core,
     calc_pairwise_kosman_dists,
     correct_dists_by_lingoes,
     do_pcoa,
+    do_pcoa_from_variants,
     open_vcf,
 )
 from pynei.dists import Distances as PyneiDistances
@@ -39,6 +50,7 @@ from pynei.pca import do_pcoa as pynei_do_pcoa
 
 FOUR_ALLELES_VCF = Path(__file__).parent / "reference" / "dists" / "four_alleles.vcf.gz"
 FOUR_ALLELES_NUM_INDIVIDUALS = 40
+PANEL_VCF = Path(__file__).parent / "reference" / "dists" / "panel.vcf.gz"
 
 # The tolerance of "How it is verified" of the spec, as an absolute
 # difference. The largest number compared is a percentage of the worked
@@ -350,3 +362,169 @@ def test_the_corrected_distances_have_no_standard_errors():
     )
     corrected = correct_dists_by_lingoes(dists).dists
     assert corrected.standard_errors is None
+
+
+# The panel corrected inside the analysis, from R's ape: 198 components, the
+# constant c, the share of the negative eigenvalues before the correction,
+# the projections of three individuals on the first three components, and
+# the first three percentages.
+PANEL_NUM_COMPS = 198
+PANEL_LINGOES_CONSTANT = 0.014182298472042
+PANEL_NEGATIVE_EIGENVALUES_PERCENT = 2.98343616373556
+PANEL_PROJECTIONS = {
+    "s000": [0.0131009923566961, 0.103593034190948, -0.0461610570616341],
+    "s001": [0.0188069490905941, 0.102449570787996, -0.0506243303501242],
+    "s199": [-0.0728375733863349, -0.0163081366424616, 0.0108102147666687],
+}
+PANEL_PERCENT = [9.62407114041929, 6.65101405201371, 1.73580899943624]
+
+
+@pytest.fixture(scope="module")
+def panel_corrected() -> PCoAResult:
+    """The PCoA of the variants of the panel with Lingoes' correction."""
+    return do_pcoa_from_variants(open_vcf(PANEL_VCF), correct_by_lingoes=True)
+
+
+def test_the_panel_corrected_is_pyneis_pcoa_of_the_corrected_distances(
+    panel_corrected,
+):
+    # pyNei has no correction, so it is given the distances popnei corrects,
+    # and it gives all 200 components, of which the last two are of the two
+    # eigenvalues 0: that of the centering and the most negative one before
+    # the correction.
+    corrected = correct_dists_by_lingoes(
+        calc_pairwise_kosman_dists(open_vcf(PANEL_VCF))
+    ).dists
+    of_pynei = pynei_do_pcoa(
+        PyneiDistances(numpy.array(corrected.dist_vector), names=list(corrected.names))
+    )
+    assert panel_corrected.projections.shape == (200, PANEL_NUM_COMPS)
+    assert of_pynei.projections.shape == (200, 200)
+    numpy.testing.assert_allclose(
+        panel_corrected.projections.to_numpy(),
+        the_signs_fixed(of_pynei.projections.to_numpy()[:, :PANEL_NUM_COMPS]),
+        rtol=0,
+        atol=TOLERANCE,
+    )
+    numpy.testing.assert_allclose(
+        panel_corrected.explained_variance_percent.to_numpy(),
+        of_pynei.explained_variance_percent.to_numpy()[:PANEL_NUM_COMPS],
+        rtol=0,
+        atol=TOLERANCE,
+    )
+    assert list(panel_corrected.projections.index) == list(of_pynei.projections.index)
+
+
+def test_the_panel_corrected_gives_the_numbers_of_ape(panel_corrected):
+    names = [f"PC{number:03d}" for number in range(PANEL_NUM_COMPS)]
+    assert isinstance(panel_corrected, PCoAResult)
+    assert list(panel_corrected.projections.columns) == names
+    assert list(panel_corrected.explained_variance_percent.index) == names
+    assert list(panel_corrected.projections.index) == list(
+        open_vcf(PANEL_VCF).individuals
+    )
+    assert panel_corrected.lingoes_constant == pytest.approx(
+        PANEL_LINGOES_CONSTANT, abs=TOLERANCE
+    )
+    assert panel_corrected.negative_eigenvalues_percent == pytest.approx(
+        PANEL_NEGATIVE_EIGENVALUES_PERCENT, abs=TOLERANCE
+    )
+    for individual, expected in PANEL_PROJECTIONS.items():
+        numpy.testing.assert_allclose(
+            panel_corrected.projections.loc[individual].to_numpy()[:3],
+            expected,
+            rtol=0,
+            atol=TOLERANCE,
+        )
+    numpy.testing.assert_allclose(
+        panel_corrected.explained_variance_percent.to_numpy()[:3],
+        PANEL_PERCENT,
+        rtol=0,
+        atol=TOLERANCE,
+    )
+    assert panel_corrected.explained_variance_percent.sum() == pytest.approx(
+        100, abs=1e-12
+    )
+
+
+def test_the_panel_counts_the_1200_variants_of_its_pass(panel_corrected):
+    assert panel_corrected.pass_stats == PassStats(num_vars=1200, filtering={})
+
+
+def test_the_panel_counts_the_variants_the_maf_filter_kept():
+    # pyNei's `filter_by_maf` at 0.7 keeps 566 of the 1200 variants of the
+    # panel as well.
+    variants = open_vcf(PANEL_VCF)
+    variants.filter_by_maf(0.7)
+    result = do_pcoa_from_variants(variants, correct_by_lingoes=True)
+    assert result.pass_stats == PassStats(
+        num_vars=566,
+        filtering={"maf": FilteringStats(vars_processed=1200, vars_kept=566)},
+    )
+
+
+def test_the_panel_is_refused_without_the_correction_named():
+    with pytest.raises(ValueError) as refused:
+        do_pcoa_from_variants(open_vcf(PANEL_VCF))
+    said = str(refused.value)
+    assert said.startswith(f"{PANEL_VCF}: 44 of the 200 eigenvalues"), said
+    assert "2.98 percent" in said
+    assert "not Euclidean" in said
+    assert "`correct_by_lingoes`" in said
+    assert "correct_dists_by_lingoes" not in said
+
+
+@pytest.mark.parametrize("correct_by_lingoes", [False, True])
+def test_the_pairs_called_together_at_too_few_variants_are_refused_by_their_names(
+    correct_by_lingoes,
+):
+    # With 1105 variants needed, 35 of the 19900 pairs of the panel have no
+    # distance, the first of them s001 and s082, and s082 is in 17 of them;
+    # they are refused before the matrix is decomposed, corrected or not.
+    with pytest.raises(ValueError) as refused:
+        do_pcoa_from_variants(
+            open_vcf(PANEL_VCF),
+            min_num_snps=1105,
+            correct_by_lingoes=correct_by_lingoes,
+        )
+    said = str(refused.value)
+    assert said.startswith(
+        f"{PANEL_VCF}: 35 of the 19900 pairs of individuals have no distance, "
+        f"the first of them 's001' and 's082', and 's082' is in 17 of them; "
+    ), said
+    assert "`min_num_snps`" in said
+    assert "`filter_individuals`" in said
+    assert "position" not in said
+
+
+def test_the_pairs_with_no_distance_are_named_among_the_individuals_kept():
+    # Without s000 the positions of the core are one lower than in the
+    # source, and the names are still s001, s082 and s082: 17 of the 35 pairs
+    # are of s082, and none of them of s000, whose pairs all have a distance.
+    variants = open_vcf(PANEL_VCF)
+    variants.filter_individuals([f"s{number:03d}" for number in range(1, 200)])
+    with pytest.raises(ValueError) as refused:
+        do_pcoa_from_variants(variants, min_num_snps=1105)
+    said = str(refused.value)
+    assert "35 of the 19701 pairs" in said, said
+    assert "the first of them 's001' and 's082', and 's082' is in 17" in said
+
+
+def test_min_num_snps_is_refused_as_the_kosman_distances_refuse_it():
+    with pytest.raises(TypeError, match="`min_num_snps` is 1.5"):
+        do_pcoa_from_variants(open_vcf(PANEL_VCF), min_num_snps=1.5)
+    with pytest.raises(ValueError, match="`min_num_snps` is -1"):
+        do_pcoa_from_variants(open_vcf(PANEL_VCF), min_num_snps=-1)
+
+
+def test_what_is_not_a_variants_is_refused():
+    with pytest.raises(TypeError, match="`do_pcoa_from_variants`"):
+        do_pcoa_from_variants(PANEL_VCF)
+
+
+def test_one_individual_is_refused_before_the_pass():
+    variants = open_vcf(PANEL_VCF)
+    variants.filter_individuals(["s000"])
+    with pytest.raises(ValueError, match="there is 1 individual, and") as refused:
+        do_pcoa_from_variants(variants)
+    assert str(refused.value).startswith(f"{PANEL_VCF}: ")

@@ -12,12 +12,23 @@
 //! names on: the projections and the percentage of each component, or the
 //! corrected vector, with the constant of the correction and the share of
 //! the negative eigenvalues.
+//!
+//! The principal coordinates of the variants, [`pcoa_of_variants`], are one
+//! pass over a source, and what this module does for them is what
+//! `calc_pairwise_kosman_dists` of `dists.rs` does: it builds the chain of
+//! readers of the pass from the steps of the `Variants`, lends it to the
+//! core with the interpreter released, and reads the counts of the filters
+//! from that chain when the call is over.
 
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::prelude::*;
 
+use popnei::pca::{PcoaOfVariants, VariantPcoaOptions};
+
 use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
+use crate::source::{PassCounts, source_of};
+use crate::steps::{Steps, chain_of};
 
 /// A principal coordinate analysis as it goes to Python: the projections,
 /// individuals x components; the percentage of the variance each component
@@ -28,6 +39,16 @@ type PcoaTables<'py> = (
     Bound<'py, PyArray1<f64>>,
     f64,
     f64,
+);
+
+/// A principal coordinate analysis of the variants as it goes to Python:
+/// the tables of [`PcoaTables`] and the counts of the pass.
+type VariantPcoaTables<'py> = (
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    f64,
+    f64,
+    PassCounts,
 );
 
 /// Lingoes' correction as it goes to Python: the corrected distance vector,
@@ -90,6 +111,70 @@ pub(crate) fn correct_dists_by_lingoes<'py>(
         corrected.negative_eigenvalues_percent,
     ))
 }
+
+// The principal coordinates of the Kosman distances of the individuals of
+// `source`, over the variants that the steps of `steps` keep, with
+// `min_num_vars` the variants a pair needs to get a distance and Lingoes'
+// correction applied inside when `correct_by_lingoes` is true. A `///`
+// comment here would become the `__doc__` of
+// `popnei._core.pcoa_of_variants`, for the reason `pcoa` gives.
+#[pyfunction]
+#[pyo3(signature = (source, min_num_vars, correct_by_lingoes, steps))]
+pub(crate) fn pcoa_of_variants<'py>(
+    py: Python<'py>,
+    source: &Bound<'_, PyAny>,
+    min_num_vars: u32,
+    correct_by_lingoes: bool,
+    steps: &Bound<'_, Steps>,
+) -> Result<VariantPcoaTables<'py>, PyPopneiError> {
+    let source = source_of(source)?;
+    let steps = steps.get().of_a_pass()?;
+    // A Ctrl-C that was pending when this was called is raised here, before
+    // the file is opened.
+    py.check_signals()?;
+    let path = source.path();
+    let options = VariantPcoaOptions {
+        min_num_vars,
+        correct_by_lingoes,
+    };
+    // The pass over the whole source and the eigendecomposition are both
+    // inside this one call, so the interpreter is released for all of it,
+    // which also lets the core spread the pairs of a block over the threads
+    // of rayon. A Ctrl-C that arrives meanwhile is raised when the call is
+    // over, for the reason `calc_pairwise_kosman_dists` gives.
+    let (result, filtering) = py
+        .detach(
+            || -> Result<(PcoaOfVariants, FilteringCounts), popnei::Error> {
+                // The source is opened at the size of its own blocks: the sums
+                // of the pass are whole numbers, the same whatever the size.
+                // The chain stays here, lent to the core, so that the counts of
+                // its filters can be read when the call is over.
+                let mut chain = chain_of(source.reader(None)?, &steps)?;
+                let result = popnei::pca::pcoa_of_variants(&mut chain, &options)?;
+                let filtering = chain
+                    .filtering_stats()
+                    .into_iter()
+                    .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
+                    .collect();
+                Ok((result, filtering))
+            },
+        )
+        .map_err(|error| PyPopneiError::of_the_file(error, path))?;
+    raise_a_ctrl_c_before_numpy_is_called(py)?;
+    let pcoa = result.pcoa;
+    let projections = table_of(py, pcoa.projections, pcoa.num_individuals, pcoa.num_comps)?;
+    Ok((
+        projections,
+        pcoa.explained_variance_percent.into_pyarray(py),
+        pcoa.lingoes_constant,
+        pcoa.negative_eigenvalues_percent,
+        (result.num_vars, filtering),
+    ))
+}
+
+/// What each filter of the pass was given and kept, the outermost filter
+/// first, which is the order the package turns around for its user.
+type FilteringCounts = Vec<(&'static str, u64, u64)>;
 
 /// The projections of the result as a numpy array of `rows` x `cols`, which
 /// takes the allocation of the core without copying it.
