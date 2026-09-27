@@ -179,7 +179,7 @@ used: multidimensional scaling, MDS, R's name for the same analysis in
 **Lingoes' correction.** The correction of Lingoes (1971) that makes a
 matrix of distances Euclidean, so that a principal coordinate analysis of
 it has no negative eigenvalue: it adds one constant to every squared
-distance between two individuals. `correct_by_lingoes` and
+distance between two individuals. `correct_dists_by_lingoes`, `correct_by_lingoes` and
 `lingoes_constant` in identifiers. `docs/specs/pca.md`.
 
 **projection.** Where an individual falls along a component, the

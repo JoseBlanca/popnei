@@ -1,4 +1,4 @@
-# What ape's pcoa gives for four distance matrices, the literals of the
+# What ape's pcoa gives for five distance matrices, the literals of the
 # principal coordinates of docs/specs/pca.md. Run from the root of the
 # repository with R 4.6.1 and ape 5.8.1:
 #
@@ -14,6 +14,11 @@
 # - panel, the Kosman distances of the 200 individuals of
 #   tests/reference/dists/panel.vcf.gz, as R's gd.kosman gave them in
 #   tests/reference/dists/panel.gdkosman.tsv.
+# - panel_clone, the panel with a 201st individual, s200, whose genotypes are
+#   those of s000, as make_panel_clone.py writes it into panel_clone.vcf.gz:
+#   its Kosman distances are those of the panel with s200 at 0 from s000 and
+#   at the distances of s000 from the others. Its eigenvalue 0 has two
+#   eigenvectors, as small_twin's has.
 # - four_alleles, the Kosman distances of the 40 individuals of
 #   tests/reference/dists/four_alleles.vcf.gz, from four_alleles.gdkosman.tsv,
 #   which have no negative eigenvalue.
@@ -119,4 +124,7 @@ twin <- square_of(small)
 twin <- rbind(cbind(twin, twin[, 5]), c(twin[5, ], 0))
 write_pcoa("small_twin", twin[lower.tri(twin)], paste0("i", 1:6))
 write_pcoa("panel", gd_kosman("panel"), sprintf("s%03d", 0:199))
+panel <- square_of(gd_kosman("panel"))
+panel_clone <- rbind(cbind(panel, panel[, 1]), c(panel[1, ], 0))
+write_pcoa("panel_clone", panel_clone[lower.tri(panel_clone)], sprintf("s%03d", 0:200))
 write_pcoa("four_alleles", gd_kosman("four_alleles"), sprintf("i%02d", 0:39))

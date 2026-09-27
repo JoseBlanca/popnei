@@ -10,8 +10,9 @@ with its work report in `docs/reports/pcoa.md`.
 When it is done a user calls, natively, under pyodide and from
 TypeScript, `do_pcoa` on a `Distances`, `do_pcoa_from_variants` on a
 `Variants`, and `correct_dists_by_lingoes` on a `Distances`. A matrix
-that is not Euclidean is refused, with a message that names the
-correction, or corrected when asked. The numbers are R's `ape::pcoa` to
+that is not Euclidean is refused by `do_pcoa`, with a message that names
+the correction, and by `do_pcoa_from_variants` unless it is asked to
+correct. The numbers are R's `ape::pcoa` to
 1e-9, on the literals of the spec. popnei_web gets `doPcoaFromVariants`
 for its stage 4.
 
@@ -27,14 +28,9 @@ package, which the owner is asked for when this plan is merged; a
 randomized PCoA for datasets beyond the limit of the browser, which
 nothing asks for.
 
-Open 7 of the spec, whether the correction is also an argument of the two
-PCoAs, is not answered. The tasks follow its "meanwhile" and build both.
-An answer of the function alone takes the argument out of tasks 1.2, 1.3,
-1.4, 2.1, 2.2 and 2.3: a task not yet started is built without it, and
-taking it out of the tasks already committed is one new task, before the
-next one starts. Opens
-1 to 6 of the spec are of the PCA and change nothing here, except that
-Open 3, the components with no variance, is followed here as there.
+The open points of the spec are all of the PCA and change nothing here,
+except that Open 3, the components with no variance, is followed here as
+there.
 
 ## What has to be in place
 
@@ -42,7 +38,8 @@ Open 3, the components with no variance, is followed here as there.
   `tests/reference/pca/pcoa_reference.R` and its 17 `*.pcoa.r.*.tsv` and
   `*.lingoes.r.*.tsv` files, which the script gives again byte for byte
   with R 4.6.1 and ape 5.8.1 at `/opt/homebrew/bin/Rscript`, checked on 27
-  September 2026 by the spec's review. The tests need neither R nor ape.
+  September 2026 by the spec's review; and `panel_clone.vcf.gz`, which
+  `make_panel_clone.py` writes. The tests need neither R nor ape.
 - The branch where the checks of "Before the work is called done" of the
   `coding` skill pass. Run on 27 September 2026 at the commit of the
   spec: `cargo fmt`, `clippy` and both `wasm-check` aliases clean; 1335
@@ -67,7 +64,7 @@ end of the error enum of the core.
 
 ## Work package 1: the PCoA of a distance vector and the correction
 
-What it gives: `do_pcoa(dists, correct_by_lingoes)` and
+What it gives: `do_pcoa(dists)` and
 `correct_dists_by_lingoes(dists)` in Python on a `Distances`, and
 `doPcoa` and `correctDistsByLingoes` in TypeScript, with the results and
 the refusals of the spec.
@@ -76,16 +73,14 @@ Deliverables:
 
 1. `cargo test -p popnei --lib pca::pcoa -- --list` names tests at `pcoa`
    and `correct_dists_by_lingoes` of "The Rust interface" for: the worked
-   example of "How it is verified", refused without the correction with
-   its counts, and with it the table, the percentages, the constant and
-   `negative_eigenvalues_percent`; `correct_dists_by_lingoes` of it, the
-   constant and the first corrected distance, and `pcoa` of the corrected
-   vector, the same table within 1e-9; the twin, the ten distances with a
-   sixth individual at distance 0 from the fifth, which is how the spec
-   checks two clones, its 4 components against
-   the whole of `small_twin.lingoes.r.*.tsv`; the Kosman distances of
-   `four_alleles.gdkosman.tsv`, 39 components, with and without the
-   correction, against `four_alleles.pcoa.r.*.tsv`; and each error of
+   example of "How it is verified", refused with its counts;
+   `correct_dists_by_lingoes` of it, the constant, the percent and the
+   first corrected distance, and `pcoa` of the corrected vector, its table
+   within 1e-9; the twin, the ten distances with a sixth individual at
+   distance 0 from the fifth, corrected and then analysed, its 4
+   components against the whole of `small_twin.lingoes.r.*.tsv`; the
+   Kosman distances of `four_alleles.gdkosman.tsv`, 39 components, and a
+   constant of 0 from the correction, against `four_alleles.pcoa.r.*.tsv`; and each error of
    "Errors and the cases pyNei asserts" that a vector reaches, the pair
    with no distance with its counts and positions, and its tie. 12 tests at
    least, and they pass with and without the default features.
@@ -93,8 +88,8 @@ Deliverables:
    popnei and of pyNei on the Kosman distances of `four_alleles.vcf.gz`,
    as the spec's last paragraph of "How it is verified" says; that
    `do_pcoa` of the ten distances is refused with a message that names
-   `correct_dists_by_lingoes`, and gives the table with
-   `correct_by_lingoes`; `correct_dists_by_lingoes`, its fields and the
+   `correct_dists_by_lingoes`, and gives the table of the spec on the
+   corrected ones; `correct_dists_by_lingoes`, its fields and the
    names and `pass_stats` of the `Distances` it gives; the frame and the
    series of `PCoAResult`, with `PC0` and its zeros; and the message of a
    pair with no distance with the names. They pass.
@@ -112,23 +107,15 @@ Stands on: the `linalg` crate, the PCA's sign rule and threshold, and the
 
 Tasks:
 
-- [ ] 1.1 In the core, the PCoA without the correction: `Pcoa`,
-      `PcoaOptions` and `pcoa` of "The Rust interface", from "What it
-      gives" and "How it runs" of the spec's item; B from the vector,
-      which is dropped before the eigendecomposition; the refusals of a
-      vector; the error cases with what "The Rust interface" says they
-      carry. With `correct_by_lingoes` true it returns the error that the
-      correction is not built yet, which task 1.2 replaces. The tests of
-      deliverable 1 that need no correction first. Serves deliverables 1
-      and 4.
-- [ ] 1.2 Lingoes' correction, in `pcoa` and in
-      `correct_dists_by_lingoes`, as "Lingoes' correction" and the second
-      paragraph of "How it runs" say: the eigenvalues shifted by c, and the
-      eigenvectors of the eigenvalue 0 projected orthogonal to the vector
-      of ones and made orthonormal again. A mistake here is a wrong number
-      and not a crash, so it is its own commit, and the twin is what
-      guards it: without the projection its test fails. Needs 1.1. Serves
-      deliverables 1 and 4.
+- [ ] 1.1 In the core, `Pcoa` and `pcoa` of "The Rust interface", from
+      "What it gives" and "How it runs" of the spec's item; B from the
+      vector, which is dropped before the eigendecomposition; the refusals
+      of a vector; the error cases with what "The Rust interface" says
+      they carry. The tests of deliverable 1 that need no correction
+      first. Serves deliverables 1 and 4.
+- [ ] 1.2 `LingoesCorrection` and `correct_dists_by_lingoes`, as "Lingoes'
+      correction" and "How it runs" say, and the tests of deliverable 1
+      that correct. Needs 1.1. Serves deliverables 1 and 4.
 - [ ] 1.3 The Python functions: the bindings of `pcoa` and
       `correct_dists_by_lingoes` in `crates/popnei-python`, taking the
       vector of a `Distances`; `do_pcoa`, `correct_dists_by_lingoes`,
@@ -148,11 +135,8 @@ Tasks:
       `test/pcoa.test.ts`. Needs 1.2; can run side by side with 1.3.
       Serves deliverables 3 and 4.
 
-What could go wrong: the rule for the eigenvectors of the eigenvalue 0 is
-the part of the spec that no program outside checks directly; ape
-decomposes the corrected matrix again, and the twin is the one case where
-the two routes could differ. The review found them 6e-16 apart with
-numpy's QR. Whether faer and LAPACK give the eigenvalue 0 of the twin
+What could go wrong: whether faer and LAPACK give the eigenvalues 0 of the
+corrected twin
 inside the threshold on both backends is known only when
 `--no-default-features` runs the test. When it fails on one backend
 alone, the threshold is the spec's and is not moved in the code: the
@@ -171,9 +155,10 @@ Deliverables:
 
 1. `cargo test -p popnei --lib pca::pcoa -- --list` names, besides those
    of work package 1, tests at `pcoa_of_variants` on a reader over the VCF
-   for: the panel refused without the correction, with its 44 of 200 and
-   its percent; the panel with the correction, its literals and the whole
-   of `panel.lingoes.r.*.tsv`, and its constant; the panel with
+   for: the panel refused without `correct_by_lingoes`, with its 44 of 200
+   and its percent; the panel with it, its literals and the whole of
+   `panel.lingoes.r.*.tsv`, and its constant; the panel with a clone, the
+   whole of `panel_clone.lingoes.r.*.tsv`; the panel with
    `min_num_vars` 1105, the error with 35 of 19900, the pair (1, 82) and
    the individual 82 in 17; `four_alleles.vcf.gz`, 39 components; and a
    reader of one individual refused before any block is read. 5 tests
@@ -200,24 +185,41 @@ of the binding crates, on `main`.
 Tasks:
 
 - [ ] 2.1 In the core: `VariantPcoaOptions`, `PcoaOfVariants` and
-      `pcoa_of_variants`, as "How it runs" says, B built from the sums of
-      the pass and the sums dropped before the eigendecomposition, the
-      pairs with no distance checked on the sums, and the refusal of fewer
-      than two individuals before the pass. The tests of deliverable 1.
-      Serves deliverables 1 and 4.
-- [ ] 2.2 The Python function: the binding that opens the reader from the
+      `pcoa_of_variants` without the correction, as "How it runs" says, B
+      built from the sums of the pass and the sums dropped before the
+      eigendecomposition, the pairs with no distance checked on the sums,
+      and the refusal of fewer than two individuals before the pass. With
+      `correct_by_lingoes` true it returns an error that the correction is
+      not built yet, which task 2.2 replaces. The tests of deliverable 1
+      that need no correction. Serves deliverables 1 and 4.
+- [ ] 2.2 The correction inside the analysis, as the paragraph of "How it
+      runs" that begins "In `do_pcoa_from_variants` with
+      `correct_by_lingoes`" says: the eigenvalues shifted by c, and the
+      eigenvectors of the eigenvalue 0 projected orthogonal to the vector
+      of ones and made orthonormal again. A mistake here is a wrong number
+      and not a crash, so it is its own commit, and the panel with a clone
+      is what guards it: without the projection its test fails. The tests
+      of deliverable 1 with the correction. Needs 2.1. Serves deliverables
+      1 and 4.
+- [ ] 2.3 The Python function: the binding that opens the reader from the
       source and the steps and reads the counts, as that of
       `calc_pairwise_kosman_dists` does; `do_pcoa_from_variants` in
-      `python/popnei/pca.py`; the tests of deliverable 2. Needs 2.1.
+      `python/popnei/pca.py`; the tests of deliverable 2. Needs 2.2.
       Serves deliverables 2 and 4.
-- [ ] 2.3 The TypeScript function: the binding over `the_run_of` with a
+- [ ] 2.4 The TypeScript function: the binding over `the_run_of` with a
       new variant of `Consumer` in `crates/popnei-js/src/source.rs`,
       `doPcoaFromVariants` in `js/popnei/src/pcoa.ts` with the limit
       checked before the run, its name in `ConsumerName` of
       `js/popnei/src/passes.ts`, the lists of the two tests, and the
       README of `js/popnei`, whose counts of the calculations and of the
-      consumers grow by the new functions. Needs 2.1; can run side by side
-      with 2.2. Serves deliverables 3 and 4.
+      consumers grow by the new functions. Needs 2.2; can run side by side
+      with 2.3. Serves deliverables 3 and 4.
+
+What could go wrong: the rule for the eigenvectors of the eigenvalue 0 of
+task 2.2 is the part of the spec that no program outside checks directly;
+ape decomposes the corrected matrix again, and the panel with a clone is
+the one case where the two routes could differ. The review found them
+6e-16 apart with numpy's QR on the twin.
 
 ## Work package 3: the limit of the browser, measured
 
