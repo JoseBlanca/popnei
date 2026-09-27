@@ -94,6 +94,41 @@ pub enum JsPopneiError {
         /// How many of them are called in the second.
         num_vars_of_other: u64,
     },
+    /// Pairs of individuals of a principal coordinate analysis, or of
+    /// Lingoes' correction, that have no distance, under the names of the
+    /// individuals: the core counts them and names the individuals by their
+    /// positions in the order of the distances, and what a user takes out of
+    /// a `Distances` or of a `Variants` is a name.
+    PairsWithNoDistance {
+        /// How many pairs have no distance.
+        num_pairs_with_no_distance: usize,
+        /// How many pairs there are, n(n - 1)/2 of n individuals.
+        num_pairs: usize,
+        /// The name of the first individual of the first pair with no
+        /// distance, in the order of the distance vector.
+        first_of_the_first: String,
+        /// The name of the second individual of that pair.
+        second_of_the_first: String,
+        /// The name of the individual in the most pairs with no distance.
+        most_often: String,
+        /// How many pairs with no distance that individual is in.
+        most_often_count: usize,
+        /// Whether the distances were given or came from the variants,
+        /// which decides what the message tells the user to do.
+        from: popnei::pca::PcoaInput,
+    },
+    /// A distance given to a principal coordinate analysis, or to Lingoes'
+    /// correction, that is negative or infinite, under the names of its two
+    /// individuals: the core names them by their positions in the order of
+    /// the distances, and what a user looks for in a `Distances` is a name.
+    DistanceOutOfRange {
+        /// The name of the first individual of the pair.
+        first: String,
+        /// The name of the second.
+        second: String,
+        /// The distance given.
+        value: f64,
+    },
     /// The memory of wasm does not take what was asked of it: the bytes of
     /// a file that is being given to popnei. A failed allocation aborts in
     /// wasm, and an abort is a trap that leaves the module unusable, so
@@ -135,8 +170,8 @@ impl From<JsPopneiError> for JsValue {
     /// crosses as it is.
     ///
     /// JavaScript has one exception for everything a library refuses, so
-    /// the eight cases that are an error of popnei are one `Error`, where
-    /// Python tells a `ValueError` from an `OSError`. The ninth,
+    /// the ten cases that are an error of popnei are one `Error`, where
+    /// Python tells a `ValueError` from an `OSError`. The eleventh,
     /// [`Stopped`], is not an error of popnei: what it holds is the value
     /// the application threw, and it goes back as it came.
     ///
@@ -184,6 +219,36 @@ impl From<JsPopneiError> for JsValue {
                 num_vars_of_one,
                 num_vars_of_other,
             } => a_pair_with_no_variant_called(&one, &other, num_vars_of_one, num_vars_of_other),
+            // The pairs of a principal coordinate analysis with no
+            // distance, which the core names by their positions in the order
+            // of the distances: what a user takes out is a name.
+            JsPopneiError::PairsWithNoDistance {
+                num_pairs_with_no_distance,
+                num_pairs,
+                first_of_the_first,
+                second_of_the_first,
+                most_often,
+                most_often_count,
+                from,
+            } => format!(
+                "{num_pairs_with_no_distance} of the {num_pairs} pairs of individuals have \
+                 no distance, the first of them `{first_of_the_first}` and \
+                 `{second_of_the_first}`, and `{most_often}` is in {most_often_count} of \
+                 them; {remedy}",
+                remedy = the_remedy_of_the_pairs_with_no_distance(from)
+            ),
+            // A distance that is negative or infinite, under the names of
+            // its pair, with the value as JavaScript writes it.
+            JsPopneiError::DistanceOutOfRange {
+                first,
+                second,
+                value,
+            } => format!(
+                "the distance of `{first}` and `{second}` is {value}, and a principal \
+                 coordinate analysis needs every distance finite and 0 or above; a \
+                 negative F_ST or f_2 is of two populations the dataset cannot tell apart",
+                value = as_javascript_writes_it(value)
+            ),
             JsPopneiError::NotInJavaScript(message)
             | JsPopneiError::Refused(message)
             | JsPopneiError::NoMemory(message)
@@ -221,7 +286,14 @@ impl From<JsPopneiError> for JsValue {
 /// cannot fill is rewritten here too, and so are the `window_size` and the
 /// `chrom_lengths` of the density of the variants.
 ///
-/// Three of the fourteen names the core writes are left as they are.
+/// The `correct_dists_by_lingoes` and the `correct_by_lingoes` that a matrix
+/// that is not Euclidean is pointed to are rewritten here, and so are the
+/// `min_num_snps` and the `filter_individuals` that the pairs with no
+/// distance of the variants name, which
+/// [`JsPopneiError::PairsWithNoDistance`] writes in TypeScript whenever the
+/// names reach its positions.
+///
+/// Three of the eighteen names the core writes are left as they are.
 /// `num_prin_comps` is in the error of a second pass that was not made,
 /// which `pca.rs` of this crate opens a reader for whenever the weights are
 /// asked for, so no call of TypeScript reaches it. The `max_num_vars` of a
@@ -269,6 +341,23 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
             | popnei::Error::DiversityDrawLargerThanTheDataset { .. }
     ) {
         return message.replace("num_called_alleles", "numCalledAlleles");
+    }
+    // The correction a matrix that is not Euclidean is pointed to, which is
+    // a function of TypeScript for a `Distances` and an option of
+    // `doPcoaFromVariants` for the variants.
+    if matches!(error, popnei::Error::PcoaNotEuclidean { .. }) {
+        return message
+            .replace("correct_dists_by_lingoes", "correctDistsByLingoes")
+            .replace("correct_by_lingoes", "correctByLingoes");
+    }
+    // The pairs with no distance reach this only when a position is beyond
+    // the names, which [`JsPopneiError::PairsWithNoDistance`] otherwise
+    // writes; what the message tells a user of the variants to do names an
+    // option and a function.
+    if matches!(error, popnei::Error::PcoaPairsWithNoDistance { .. }) {
+        return message
+            .replace("min_num_snps", "minNumSnps")
+            .replace("filter_individuals", "filterIndividuals");
     }
     if matches!(error, popnei::Error::VarDensityWindowSizeZero) {
         return message.replace("window_size", "windowSize");
@@ -322,6 +411,26 @@ fn a_pair_with_no_variant_called(
             "variants are"
         },
     )
+}
+
+/// What the message of the pairs with no distance tells a TypeScript user to
+/// do, which is the core's with the names of TypeScript: a `Distances` may be
+/// of populations, so its pairs are given a distance or one of the two is
+/// taken out, and the pairs of a pass over the variants were called together
+/// at too few variants, which three calls of TypeScript change.
+fn the_remedy_of_the_pairs_with_no_distance(from: popnei::pca::PcoaInput) -> &'static str {
+    match from {
+        popnei::pca::PcoaInput::Distances => {
+            "a principal coordinate analysis places every individual by its distance to \
+             every other, so each of those pairs has to be given a distance or one of its \
+             two individuals taken out of the distances"
+        }
+        popnei::pca::PcoaInput::Variants => {
+            "those pairs were called together at fewer variants than `minNumSnps`, or at \
+             none; take that individual out with `filterIndividuals`, lower `minNumSnps`, \
+             or run the PCA of the variants, which gives every individual a projection"
+        }
+    }
 }
 
 /// `number` written as JavaScript writes it, which is how a user wrote it:

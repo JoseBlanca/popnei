@@ -319,11 +319,73 @@ const MEMORY_OF_A_WASM_MODULE: u64 = 4 * 1024 * 1024 * 1024;
 /// smaller of its two sides.
 const TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS: u64 = 61;
 
+/// How much memory a principal coordinate analysis holds at its peak, in
+/// tenths of the individuals x individuals matrix it decomposes, 8 bytes per
+/// cell: 71 is 56.8 bytes per cell, which takes 8695 individuals at most.
+///
+/// It is the count of "How it runs" of "The principal coordinates of
+/// distances" of `docs/specs/pca.md`, an upper bound and not a measurement.
+/// The eigendecomposition of B, its eigenvectors and the workspace of faer
+/// are the 6.1 times the matrix that the PCA measured, 48.8 bytes per cell,
+/// and while the eigenvectors are there the projections are written, up to
+/// one component fewer than the individuals, 8 bytes more per cell. The
+/// distances, 4 bytes per cell, are dropped before the eigendecomposition.
+/// Whether the projections are written while the workspace of faer is still
+/// held is not known, and if not the peak is the PCA's and the limit its
+/// 9381; the plan of the principal coordinates measures it under node and
+/// the spec then takes the measured number. Lingoes' correction writes no
+/// projections and holds its vector instead, 4 bytes per cell, so it holds
+/// less and takes the same limit.
+const TENTHS_OF_THE_MATRIX_THE_PRINCIPAL_COORDINATES_HOLD: u64 = 71;
+
+/// Which of the two analyses over a square matrix is asked about, which
+/// decides how many times that matrix it holds and what the message calls
+/// it.
+#[derive(Clone, Copy)]
+enum TheAnalysis {
+    /// The principal components of a table or of the variants.
+    PrincipalComponents,
+    /// The principal coordinates of distances, and Lingoes' correction of
+    /// them.
+    PrincipalCoordinates,
+}
+
+impl TheAnalysis {
+    /// How many tenths of its matrix the analysis holds at its peak.
+    fn tenths_of_the_matrix(self) -> u64 {
+        match self {
+            Self::PrincipalComponents => TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS,
+            Self::PrincipalCoordinates => TENTHS_OF_THE_MATRIX_THE_PRINCIPAL_COORDINATES_HOLD,
+        }
+    }
+
+    /// What the analysis is called in the message.
+    fn named(self) -> &'static str {
+        match self {
+            Self::PrincipalComponents => "principal components",
+            Self::PrincipalCoordinates => "principal coordinates",
+        }
+    }
+
+    /// What the analysis holds besides its matrix, for the message.
+    fn what_it_holds(self) -> &'static str {
+        match self {
+            Self::PrincipalComponents => {
+                "its eigenvectors and the workspace of the eigendecomposition"
+            }
+            Self::PrincipalCoordinates => {
+                "its eigenvectors, the workspace of the eigendecomposition and the projections"
+            }
+        }
+    }
+}
+
 /// Which side of the data the matrix that is decomposed is of, for the
 /// message of an analysis that does not fit.
 #[derive(Clone, Copy)]
 enum TheSquareOf {
-    /// The individuals of a dataset of variants.
+    /// The individuals of a dataset of variants, or those a `Distances` is
+    /// of.
     Individuals,
     /// The rows of a table that has fewer rows than traits.
     Rows,
@@ -342,21 +404,24 @@ impl TheSquareOf {
     }
 }
 
-/// That the memory of wasm takes the principal components of a dataset whose
-/// smaller side is `side` of `what`.
+/// That the memory of wasm takes `analysis` of a dataset whose smaller side
+/// is `side` of `what`.
 ///
-/// What the analysis holds is
-/// [`TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS`] tenths of the square matrix of
-/// that side, and a page holds 4 GiB of everything at once. What this does
-/// not know is what the tab already holds, the bytes of the file among them,
-/// so a page with little left can still run out; what it stops is the
-/// dataset that cannot fit however empty the tab is, which is the one that
-/// ends the module with no message.
+/// What the analysis holds is the tenths of the square matrix of that side
+/// that [`TheAnalysis::tenths_of_the_matrix`] gives, and a page holds 4 GiB
+/// of everything at once. What this does not know is what the tab already
+/// holds, the bytes of the file among them, so a page with little left can
+/// still run out; what it stops is the dataset that cannot fit however empty
+/// the tab is, which is the one that ends the module with no message.
 ///
 /// # Errors
 ///
 /// When the analysis of that many does not fit in the memory of a page.
-fn room_for_the_square_of(side: usize, what: TheSquareOf) -> Result<(), JsPopneiError> {
+fn room_for_the_square_of(
+    side: usize,
+    what: TheSquareOf,
+    analysis: TheAnalysis,
+) -> Result<(), JsPopneiError> {
     // A count that is beyond what these multiplications hold is a dataset
     // that is far beyond the memory of a page, so every one of them
     // saturates instead of being checked: what the number then says is the
@@ -365,18 +430,19 @@ fn room_for_the_square_of(side: usize, what: TheSquareOf) -> Result<(), JsPopnei
     let wanted = pairs
         .saturating_mul(pairs)
         .saturating_mul(8)
-        .saturating_mul(TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS)
+        .saturating_mul(analysis.tenths_of_the_matrix())
         / 10;
     if wanted <= MEMORY_OF_A_WASM_MODULE {
         return Ok(());
     }
     Err(JsPopneiError::NoMemory(format!(
-        "the principal components of {side} {named} hold about {gigabytes} GB, the \
-         {named} x {named} matrix of the analysis, its eigenvectors and the workspace \
-         of the eigendecomposition, and a page holds at most 4 GB of everything at a \
-         time. Data this large is analysed by a program outside the browser, popnei in \
-         Python among them.",
+        "the {analysis} of {side} {named} hold about {gigabytes} GB, the \
+         {named} x {named} matrix of the analysis, {holds}, and a page holds at \
+         most 4 GB of everything at a time. Data this large is analysed by a \
+         program outside the browser, popnei in Python among them.",
+        analysis = analysis.named(),
         named = what.named(),
+        holds = analysis.what_it_holds(),
         gigabytes = wanted.div_ceil(1000 * 1000 * 1000)
     )))
 }
@@ -391,7 +457,11 @@ fn room_for_the_square_of(side: usize, what: TheSquareOf) -> Result<(), JsPopnei
 /// a page.
 #[wasm_bindgen]
 pub fn room_for_the_analysis_of_the_variants(num_individuals: usize) -> Result<(), JsPopneiError> {
-    room_for_the_square_of(num_individuals, TheSquareOf::Individuals)
+    room_for_the_square_of(
+        num_individuals,
+        TheSquareOf::Individuals,
+        TheAnalysis::PrincipalComponents,
+    )
 }
 
 /// That the memory of wasm takes the principal components of a table of
@@ -410,10 +480,40 @@ pub fn room_for_the_analysis_of_a_table(
     num_cols: usize,
 ) -> Result<(), JsPopneiError> {
     if num_rows <= num_cols {
-        room_for_the_square_of(num_rows, TheSquareOf::Rows)
+        room_for_the_square_of(
+            num_rows,
+            TheSquareOf::Rows,
+            TheAnalysis::PrincipalComponents,
+        )
     } else {
-        room_for_the_square_of(num_cols, TheSquareOf::Traits)
+        room_for_the_square_of(
+            num_cols,
+            TheSquareOf::Traits,
+            TheAnalysis::PrincipalComponents,
+        )
     }
+}
+
+/// That the memory of wasm takes the principal coordinates of the distances
+/// of `num_individuals` individuals, or Lingoes' correction of them, which
+/// decompose the individuals x individuals matrix of the squared distances.
+///
+/// The package calls it before the distances cross into the memory of wasm,
+/// so that a vector the page cannot hold the analysis of is not copied there
+/// first, and the functions of this crate call it again for a caller that
+/// did not.
+///
+/// # Errors
+///
+/// When the analysis of that many individuals does not fit in the memory of
+/// a page, which is above 8695 of them.
+#[wasm_bindgen]
+pub fn room_for_the_principal_coordinates_of(num_individuals: usize) -> Result<(), JsPopneiError> {
+    room_for_the_square_of(
+        num_individuals,
+        TheSquareOf::Individuals,
+        TheAnalysis::PrincipalCoordinates,
+    )
 }
 
 /// The positions of the variants that were used as the `Uint32Array` they

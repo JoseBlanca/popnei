@@ -27,6 +27,7 @@ pub mod gwas;
 pub mod kinship;
 pub mod ld;
 pub mod pca;
+pub mod pcoa;
 pub mod pop_dists;
 pub mod source;
 pub mod stats;
