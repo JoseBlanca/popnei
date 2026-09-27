@@ -5,9 +5,12 @@ dataset on a few axes that hold as much of the variation between them as
 that many axes can, which is how a user sees whether their individuals
 fall into populations before they name any. This module gives two: the
 PCA of the variants, from the genotypes of a `Variants`, and the PCA of
-any table of numbers, individuals by traits. There is no code. This spec
-develops the row `pca` of the table in section 9 of `docs/architecture.md`,
-without the principal coordinates, which are not written yet.
+any table of numbers, individuals by traits. It gives as well the
+principal coordinate analysis, which places the individuals on components
+from the distances between them, added on 27 September 2026: of a
+`Distances`, and of the Kosman distances of a `Variants`. The two PCAs are
+built; the principal coordinates have no code. This spec develops the
+row `pca` of the table in section 9 of `docs/architecture.md`.
 
 It also holds the answer to a question the owner asked with it: whether
 keeping the genotypes in 2 bits, as plink does, or using the vector
@@ -740,6 +743,297 @@ total is not; at 2.5e153 it is 8.9e307, so that eigenvalue times the
 larger side of the table, 3, is an infinity as well, and a threshold of
 infinity leaves no component at all.
 
+## The principal coordinates of distances
+
+Written on 27 September 2026, for stage 4 of popnei_web, the web
+application of popnei, which draws the individuals of a dataset on the
+first three components of this analysis and of the PCA of the variants
+with one piece of code.
+
+### What it gives
+
+A principal coordinate analysis, PCoA, places the individuals on
+components as a PCA does, from the distance of every pair of them instead
+of a table of their values. The individuals are put in a space where the
+straight line between each two of them is as long as their distance, as
+nearly as a space can, and the components are the directions of that
+space along which they vary most. popnei gives two: the PCoA of a
+`Distances` that the user brings, and that of the Kosman distances of the
+individuals of a `Variants`, which `docs/specs/dists.md` computes. The
+second counts every allele of a variant as itself and takes any ploidy,
+where the PCA of the variants reduces a genotype to its dosage.
+
+The method is Gower's (1966, Biometrika 53: 325), which pyNei took from
+PyCogent and which R's `cmdscale` and `ape::pcoa` compute. With d_ij the
+distance of the individuals i and j, and n the individuals:
+
+    A_ij = -d_ij² / 2
+    B_ij = A_ij - (mean of row i of A) - (mean of column j of A) + (mean of A)
+
+B, n x n, takes the part that G of "What both analyses compute" has in
+the PCA. With λ_j its eigenvalues from the largest and u_j its
+eigenvectors of length 1:
+
+    projections of component j        = u_j * sqrt(λ_j)
+    explained_variance_percent of j   = 100 * λ_j / sum of every λ of B
+
+When the distances are the straight line distances between the rows of a
+centered table, B is that table times its transpose, and the projections
+are those of the PCA of the table not standardized. The sign of "The sign"
+and the threshold of "A component with no variance is not given" hold
+here as they do there, with n the individuals.
+
+**Negative eigenvalues.** A matrix of distances is Euclidean when some
+space has points whose straight line distances are those distances, and
+then every eigenvalue of B is 0 or above. Otherwise some are negative,
+and a negative λ is a direction whose projections would be the square
+root of a negative number, which no space has. The Kosman distance is not
+known to be Euclidean, and the distance of each pair is taken over the
+variants both individuals were called at, which is another set of
+variants for each pair. On the panel of "How it is verified", 200
+individuals and 1200 variants with 3 in 100 genotypes missing, B has 155
+positive eigenvalues, 44 negative ones and one of 0, the one that the
+centering takes out. On three datasets of `docs/specs/dists.md` with 5 in
+100 genotypes missing, of 40 diploid, 12 tetraploid and 12 haploid
+individuals, it has none.
+
+popnei gives the components of the positive eigenvalues and leaves the
+negative ones out (**Open 7**, below). An eigenvalue is positive when it
+is above the threshold of the PCA, λ_1 x n x 2.2e-16, negative when it is
+below minus that, and 0 in between. The result says how large the part
+left out is:
+
+    negative_eigenvalues_percent = 100 * (sum of |λ| of the negative ones) / sum of every λ of B
+
+The denominator of both percentages, the sum of every eigenvalue, is the
+sum of the diagonal of B, which is the sum of d² over the pairs divided by
+n. That is the total variance of the individuals placed at their
+distances, and for a Euclidean matrix it is what the percentages of the
+PCA are over. The positive eigenvalues add up to more than it by the sum
+of the negative ones, so the percentages of the components given add up
+to 100 plus `negative_eigenvalues_percent`: 102.98 on the panel. What a
+percentage means is then the variance of the individuals along that
+component as a share of the total variance of the distances, and
+`negative_eigenvalues_percent` is how far all the components together
+overstate that total. It is also how far the drawing is from the
+distances: over all the components given, every pair of individuals is at
+least as far apart as its distance, and further by what the negative
+eigenvalues hold between them. With a Euclidean matrix it is 0 and the
+percentages add up to 100, as in the PCA. What value a user should be
+warned at is the application's to decide; the two matrices of the
+literals below give 2.98 and 7.88.
+
+### What it is in Python and in TypeScript
+
+```python
+do_pcoa(dists: Distances) -> PCoAResult
+
+do_pcoa_from_variants(
+    variants: Variants,
+    min_num_snps: int | None = None,
+) -> PCoAResult
+```
+
+`do_pcoa_from_variants` is the Kosman distances of
+`calc_pairwise_kosman_dists` followed by `do_pcoa`, in one pass over the
+variants and with no `Distances` built between the two. `min_num_snps` is
+passed on as that function takes it: a pair needs that many variants
+called in both individuals to get a distance, and `None` or 0 means one.
+
+`PCoAResult` is pyNei's frozen dataclass with two fields more:
+
+- `projections`, a frame with the names as index, those of the
+  individuals of the `Variants` or the `names` of the `Distances`, and
+  the components as columns, named `PC0`, `PC1` with zeros on the left as
+  the PCA names them;
+- `explained_variance_percent`, a series over the components;
+- `negative_eigenvalues_percent`, a float, new;
+- `pass_stats`, new: the `PassStats` of the pass over the variants, or
+  those of the `Distances` given to `do_pcoa`, which are `None` for a
+  `Distances` the user built.
+
+It mirrors `do_pcoa` and `do_pcoa_from_variants` of `pynei/pca.py`. The
+differences from pyNei:
+
+- The negative eigenvalues are left out, and so is the eigenvalue of 0,
+  as the PCA leaves out its components with no variance (**Open 3**,
+  above); pyNei gives n components, under "What pyNei does that is odd".
+- The sign is fixed, as in the PCA.
+- `negative_eigenvalues_percent` and `pass_stats` are new.
+- `use_approx_embedding_algorithm` and `num_threads` are not arguments,
+  as `docs/specs/dists.md` decided for the Kosman distances.
+- A negative or an infinite distance given to `do_pcoa` is refused. pyNei
+  squares it, which gives a negative distance the place of its absolute
+  value and says nothing. The Kosman distances are never negative. F_ST
+  and f_2 of `calc_pop_dists` are, for two populations that the dataset
+  cannot tell apart, as `docs/specs/dists.md` says, which does not clamp
+  them; what to put in the place of such a value, 0 or another measure,
+  is the user's to choose.
+- Fewer than two individuals, and distances that are all 0, are refused.
+  pyNei gives a percentage of NaN for both.
+- The pair with no distance is refused with a message a user can act on,
+  below; pyNei's is "dists array has nan values".
+
+In TypeScript they are `doPcoa(distances)` and
+`doPcoaFromVariants(variants, {minNumSnps})`. The result of
+`doPcoaFromVariants` has the fields that the result of
+`doPcaFromVariants` has for drawing the individuals, with the same names
+and shapes: `individuals`, an array of names in the order of the source
+after its steps, `filterIndividuals` among them; `numComps`;
+`projections`, a `Float64Array` of individuals x `numComps`, row after
+row; `explainedVariancePercent`, a `Float64Array` of `numComps`; and
+`passStats`. It adds `negativeEigenvaluesPercent`, a number, and it has
+no `numPrinComps`, `princomps` or `usedVars`, since a PCoA has no weights
+of variants. The result of `doPcoa` is the same with `names`, those of
+the `Distances`, where the other has `individuals`, and the `passStats`
+of the `Distances`. `numPassesOf("doPcoaFromVariants")` is 1.
+
+### Errors and the cases pyNei asserts
+
+Each is a `ValueError` in Python and an `Error` with the same message in
+TypeScript, where each is in the `@throws` of the function.
+
+- A pair of individuals with no distance, a NaN. `do_pcoa_from_variants`
+  gives one to a pair whose two individuals were called together at fewer
+  variants than `min_num_snps`, or at none. The message says how many of
+  the pairs have no distance, names the first of them in the order of the
+  distance vector, and names the individual that is in the most of them
+  with how many, so that the user can take that individual out with
+  `filter_individuals`, lower `min_num_snps`, or run the PCA of the
+  variants, which gives every individual a projection. On the panel with
+  `min_num_snps` 1105 it is 35 of the 19900 pairs, the first being
+  `s001` and `s082`, and `s082` is in 17 of them. The core gives the
+  counts and the positions, and each binding puts the names.
+- A negative or an infinite distance given to `do_pcoa`, with the pair,
+  the value, and that a negative F_ST or f_2 is of two populations the
+  dataset cannot tell apart.
+- Fewer than two individuals: with one there is no distance to place.
+- No positive eigenvalue, which is every distance 0: "every distance is
+  0, so the individuals are all at one point and there is nothing to do a
+  PCoA with".
+- More individuals than a page holds the analysis of, in TypeScript
+  alone, which "How it runs" gives: more than 8695. It is checked before
+  the pass, with a message of the form of the PCA's: the principal
+  coordinates of that many individuals hold about that many GB, which a
+  page does not hold, and data this large is analysed by a program
+  outside the browser, popnei in Python among them. More than 46340
+  individuals everywhere, which is the PCA's limit for the linear algebra.
+- The errors of the Kosman pass, given on as `calc_pairwise_kosman_dists`
+  gives them: a pass that gave no variant, sums of a pair beyond a `u32`,
+  a source that could not be read, a `min_num_snps` that is not a whole
+  number of 0 or more.
+
+An error of the `linalg` crate is a `RuntimeError`, as in the PCA.
+
+`test/test_pca.py` of pyNei asserts, of `do_pcoa`, that on the ten
+distances of `test_pcoa` the individual `i1` is nearer `i2` than `i4`
+along `PC0`, and runs `do_pcoa_from_variants` once each way of
+`use_approx_embedding_algorithm` and asserts nothing of its numbers.
+popnei checks those ten distances at the numbers of R below, which say
+more than the order of three projections.
+
+### What pyNei does that is odd
+
+pyNei gives all n components. Those of the negative eigenvalues have
+projections u_j times the square root of |λ_j| and a negative percentage,
+and the one of the eigenvalue 0 has projections of about 5e-9, the square
+root of an eigenvalue of 1e-17 that is rounding. On the panel it gives 200
+components, 44 of them with a negative percentage, and a user who plots
+one of those draws a direction that no space has. Its percentages of the
+positive components are those of R to 1.1e-14, and popnei keeps them.
+
+### How it runs
+
+`do_pcoa_from_variants` makes the one pass of the Kosman distances,
+`calc_kosman_sums` of `docs/specs/dists.md`, over a reader that the
+binding crate opens from the source and the steps of the `Variants`. B is
+then built from the sums of each pair and not from a vector of distances,
+which is never made, and the sums are dropped before the eigendecomposition
+of B by `linalg`. `do_pcoa` builds B from the vector it was given, which the
+core takes over and drops before the eigendecomposition in the same way;
+kept to the end, the vector would add 4 bytes a cell to the peak below.
+
+The memory, counted in bytes for each of the n² cells of an n x n matrix:
+the sums of the pass, two `u32` for each of the n(n - 1)/2 pairs, 4 per
+cell; B, 8. Then B is decomposed, with its eigenvectors and the workspace
+of faer, which the PCA measured under node at 6.1 times the matrix, 48.8
+per cell; and while the eigenvectors are there the projections are
+written, up to n - 1 components of 8 bytes for each individual, 8 per cell
+when every eigenvalue but the one of the centering is positive. The sums
+are dropped before B is decomposed, so the peak is the second of the two
+steps, 56.8 bytes per cell,
+5.7 GB at 10000 individuals natively, where LAPACK's workspace is smaller
+than faer's and the number is an upper bound. In wasm, whose page holds
+4 GiB, 4294967296 bytes, that is 8695 individuals at most, 686 below the
+9381 of the PCA, which has fewer components to write. This number is
+worked out and not measured: the plan measures it under node as the PCA's
+was, on a dataset whose B has nearly every eigenvalue positive, and the
+spec takes the measured one if it differs.
+
+### How it is verified
+
+Against R 4.6.1 with ape 5.8.1, `pcoa(d, correction = "none")`, which
+gives the components of the positive eigenvalues and, as `Relative_eig`,
+each eigenvalue over the sum of every eigenvalue, the negative ones
+included: the rule above. `tests/reference/pca/pcoa_reference.R`, run as
+its header says, writes the projections with the sign rule, the
+percentages and `negative_eigenvalues_percent` of three matrices into
+`*.pcoa.r.*.tsv` beside it, with 15 significant digits. The literals are
+compared within 1e-9, as in the PCA; on the panel pyNei and R differ by
+1.1e-14 at most over the 155 components.
+
+The worked example is the ten distances of pyNei's `test_pcoa`, of five
+individuals `i1` to `i5`, in the order of the distance vector: 0.2, 0.3,
+0.9, 0.9, 0.1, 0.8, 0.7, 0.7, 0.8, 0.2. They are not Euclidean. The
+eigenvalues of B are 0.759739804991026, 0.0891457990391564,
+0.0271213359309426, 0 and -0.0640069399611263, whose sum is 0.812, the
+sum of the ten squares, 4.06, over 5. The result has 3 components:
+
+| | PC0 | PC1 | PC2 |
+|---|---|---|---|
+| i1 | -0.414751210682497 | -0.0316684067742437 | 0.122682551619086 |
+| i2 | -0.272242852294027 | -0.121062978361022 | -0.0757219426581520 |
+| i3 | -0.258364812257264 | 0.162099769690125 | -0.0717271140786949 |
+| i4 | 0.473382964043168 | 0.148884111212777 | 0.0334194841286791 |
+| i5 | 0.471975911190619 | -0.158252495767637 | -0.00865297901091859 |
+| explained_variance_percent | 93.5640153929835 | 10.9785466796991 | 3.34006600134761 |
+
+and `negative_eigenvalues_percent` 7.88262807403034; the three
+percentages add up to 107.88. The largest projection of `PC1` is that of
+`i3`, so the rule turned that component round from what R gave. These are
+the first cargo tests, at `pcoa` of "The Rust interface", and the test of
+`doPcoa` under node.
+
+The panel is `tests/reference/dists/panel.vcf.gz` of `docs/specs/dists.md`,
+whose Kosman distances the tests of that spec check against R's
+`gd.kosman`, and R gets those distances from `panel.gdkosman.tsv`. It has
+155 components and `negative_eigenvalues_percent` 2.98343616373556:
+
+| | PC0 | PC1 | PC2 |
+|---|---|---|---|
+| projection of `s000` | 0.0130219481920162 | 0.102687390137180 | -0.0445949681950252 |
+| projection of `s001` | 0.0186934783289475 | 0.101553923263818 | -0.0489068176849572 |
+| projection of `s199` | -0.0723981116273414 | -0.0161655655990162 | 0.0104434606654983 |
+| explained_variance_percent | 12.3549551224564 | 8.49180080874304 | 2.10504299110778 |
+
+They are checked at `pcoa_of_variants` on a reader over the VCF, with the
+whole of `panel.pcoa.r.projections.tsv`, and at `doPcoaFromVariants`
+under node. The refusal of the panel with `min_num_snps` 1105 is checked
+at both, with its counts and its names.
+
+A matrix with no negative eigenvalue, the Kosman distances of
+`four_alleles.vcf.gz`, 40 individuals: 39 components, a
+`negative_eigenvalues_percent` of 0, percentages that add up to 100 within
+1e-12, and the first of them 4.33989428824864, checked at
+`pcoa_of_variants`.
+
+Against pyNei, in pytest: `do_pcoa_from_variants` of both libraries on
+the panel, the 155 components of popnei against the first 155 of pyNei
+after the test gives pyNei's the sign of the rule, and the percentages,
+within 1e-9; and `do_pcoa` of both on the ten distances, the 3
+components. pyNei's other two components there, of the eigenvalue 0 and
+of the negative one, are not compared.
+
 ## The Rust interface
 
 What an analysis gives. `num_comps` is how many components have variance.
@@ -795,6 +1089,53 @@ pub struct PcaOptions {
 
 pub fn pca(data: &[f64], num_rows: usize, num_cols: usize, options: &PcaOptions) -> Result<Pca>;
 ```
+
+What a principal coordinate analysis gives. `num_comps` is how many
+eigenvalues of B are positive.
+
+```rust
+pub struct Pcoa {
+    pub num_individuals: usize,
+    pub num_comps: usize,
+    /// num_individuals x num_comps, row after row.
+    pub projections: Vec<f64>,
+    /// One per component, over the sum of every eigenvalue of B.
+    pub explained_variance_percent: Vec<f64>,
+    /// 100 times the sum of |λ| of the negative eigenvalues over the sum
+    /// of every eigenvalue of B.
+    pub negative_eigenvalues_percent: f64,
+}
+```
+
+The PCoA of a distance vector of `num_individuals` individuals, in the
+order of `docs/specs/dists.md`, (0, 1), (0, 2), ..., (1, 2), .... It takes
+the vector by value so that it can drop it before the eigendecomposition.
+
+```rust
+pub fn pcoa(dist_vector: Vec<f64>, num_individuals: usize) -> Result<Pcoa>;
+```
+
+The PCoA of the Kosman distances of the variants of `reader`, which it
+borrows, as `calc_kosman_sums` does, so that the caller reads the counts of
+the filters from it afterwards. `num_vars` is how many variants the pass
+gave, for the pass stats.
+
+```rust
+pub struct PcoaOfVariants {
+    pub pcoa: Pcoa,
+    pub num_vars: u64,
+}
+
+pub fn pcoa_of_variants<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    min_num_vars: u32,
+) -> Result<PcoaOfVariants>;
+```
+
+The error of the pairs with no distance carries how many pairs have none,
+how many pairs there are, the positions of the two individuals of the
+first, and the position of the individual in the most of them with how
+many; each binding crate names them.
 
 What this module calls in `linalg`, whose spec settles the names and the
 types: the product of a matrix of r rows and c columns with itself, added
@@ -934,10 +1275,17 @@ takes 20.6 ms. It is 10.1 times faster than pyNei and 3.2 times slower
 than plink2 on the same dataset, and it holds 0.21 GB against pyNei's
 5.59 GB. `docs/reports/pca-measurement.md` has all of it.
 
+The principal coordinates have no target of their own. Their time is the
+pass of the Kosman distances, 0.110 s for 100000 variants x 1000
+individuals of a vars file on the 18 cores of the owner's Apple M5 Pro
+and 0.764 s on one thread (`docs/reports/perf-read-ahead-2026-09-25.md`),
+and one eigendecomposition of an individuals x individuals matrix, which
+is the PCA's: 0.024 s natively at 1000 individuals, above.
+
 ## Open points
 
-The owner decides the first five here, and the sixth in the `linalg`
-spec. Until then the implementer follows the
+The owner decides the first five here and the seventh, and the sixth in
+the `linalg` spec. Until then the implementer follows the
 "meanwhile" of each.
 
 **Open 1: whether `num_prin_comps` also cuts the projections.** The owner
@@ -1004,10 +1352,38 @@ with the options and the recommendation, as Open 1 of
 `docs/specs/linalg.md`; it is here for its numbers. Meanwhile nothing in
 this module depends on it.
 
+**Open 7: the negative eigenvalues of a PCoA.** A matrix of distances
+that is not Euclidean gives B negative eigenvalues, 44 of 200 on the
+panel of Kosman distances. The options:
+
+- Leave them out, the rule of "The principal coordinates of distances":
+  the components of the positive eigenvalues, the percentages over the
+  sum of every eigenvalue, which is pyNei's and ape's denominator, and
+  `negative_eigenvalues_percent` beside them. It is what `ape::pcoa`
+  gives with no correction, so R checks every number. The percentages of
+  a non Euclidean matrix add up to more than 100, 102.98 on the panel,
+  which a user who reads them as the PCA's may not expect.
+- Give them as pyNei does, with projections of the square root of |λ|
+  and a negative percentage. It keeps pyNei's shape of n components, and
+  gives a user a direction that no space has to plot.
+- Correct the distances so that none is negative, the correction of
+  Lingoes (1971), which adds one constant to every squared distance, or
+  of Cailliez (1983), which adds one to every distance, the two that
+  `ape::pcoa` offers. Every eigenvalue is then 0 or above and the
+  percentages add up to 100, but the distances drawn are no longer the
+  Kosman distances, the constant is of the size of the largest negative
+  eigenvalue, and the correction gives the data components that the
+  distances did not have; a user who has only the plot cannot tell.
+
+Recommendation: leave them out, since it draws the distances the user
+asked for, is checked number by number against R, and gives the
+application the share it needs for its warning. Meanwhile the
+implementer leaves them out.
+
 ## Not in this spec
 
-- The principal coordinates, `do_pcoa` and `do_pcoa_from_variants`, which
-  need the distances of `docs/specs/dists.md`: a later item of this spec.
+- A correction of the negative eigenvalues of a PCoA, Lingoes' or
+  Cailliez's, unless the owner chooses one in Open 7.
 - The two backends of the products and of the eigendecomposition, how BLAS
   is linked and the threads of the product: the `linalg` spec.
 - The principal components of the kinship, which the GWAS uses as
