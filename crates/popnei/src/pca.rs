@@ -18,6 +18,10 @@
 //! individuals matrix of the products, which is what the components come
 //! from, is added up block by block.
 //!
+//! The principal coordinates of [`pcoa`] place the individuals in the same
+//! way from the distance of every pair of them instead of a table of their
+//! values; the module [`pcoa`](mod@pcoa) has them.
+//!
 //! The products of matrices and the eigendecomposition are those of the
 //! crate `popnei-linalg`, which runs them on the BLAS and LAPACK of the
 //! system natively, and on faer in WebAssembly and natively when the cargo
@@ -34,6 +38,13 @@ use crate::block::{Block, BlockReader, Reblock, with_one_block_ahead};
 use crate::error::{Error, Result};
 use crate::phases::{Phase, timed};
 use crate::variant::{DosageOptions, DosageScale, Needs, RowPositions};
+
+pub mod pcoa;
+
+pub use pcoa::{
+    DEFAULT_CORRECT_BY_LINGOES, LingoesCorrection, Pcoa, PcoaInput, PcoaOfVariants,
+    VariantPcoaOptions, correct_dists_by_lingoes, pcoa, pcoa_of_variants,
+};
 
 /// Whether the table is centered, which `do_pca` of pyNei does by default
 /// and so does popnei.
@@ -1020,7 +1031,7 @@ fn num_values_of(rows: usize, cols: usize) -> usize {
 /// The share of the total is taken before the 100, so that an eigenvalue
 /// above 1.8e306, which a table of values of 1e153 gives, does not become
 /// an infinity on the way to a number between 0 and 100.
-fn the_percentages_of(values: &[f64], num_comps: usize) -> Vec<f64> {
+pub(crate) fn the_percentages_of(values: &[f64], num_comps: usize) -> Vec<f64> {
     let variance_of_every_component: f64 = values.iter().sum();
     values
         .iter()
@@ -1037,10 +1048,24 @@ fn the_percentages_of(values: &[f64], num_comps: usize) -> Vec<f64> {
 /// each, and their eigenvalues from the largest.
 pub(crate) fn the_projections_of(eigen: &Eigen, num_rows: usize, num_comps: usize) -> Vec<f64> {
     let mut projections = vec![0.0; num_values_of(num_rows, num_comps)];
+    write_the_projections(eigen, num_rows, num_comps, &mut projections);
+    projections
+}
+
+/// Writes into `projections`, `num_rows` x `num_comps` row after row, what
+/// [`the_projections_of`] gives, for a caller that asked for the memory of
+/// the projections itself: the principal coordinates, which ask for it with
+/// `try_reserve_exact`.
+pub(crate) fn write_the_projections(
+    eigen: &Eigen,
+    num_rows: usize,
+    num_comps: usize,
+    projections: &mut [f64],
+) {
     // A matrix of no component has no value to write, and this keeps
     // `step_by` below off a step of 0, which panics.
     if num_comps == 0 {
-        return projections;
+        return;
     }
     for (component, (vector, value)) in eigen
         .vectors
@@ -1059,7 +1084,6 @@ pub(crate) fn the_projections_of(eigen: &Eigen, num_rows: usize, num_comps: usiz
             *projection = coordinate * size;
         }
     }
-    projections
 }
 
 /// Refuses the first value of the table that is an infinity or a NaN, with

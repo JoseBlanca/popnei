@@ -36,6 +36,7 @@ export type ConsumerName =
   | "calcLdAndDistPerPop"
   | "calcKinship"
   | "doPcaFromVariants"
+  | "doPcoaFromVariants"
   | "calcGwas"
   | "writeVars"
   | "writeVcf"

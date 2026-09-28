@@ -164,9 +164,23 @@ distance the fit was given. `half_dist` in identifiers.
 
 **component.** A principal component: one of the directions, at right
 angles to each other, along which the individuals of a standardized table
-vary most, the first the one with the largest variance. "PC" in the names
+vary most, the first the one with the largest variance. A principal
+coordinate analysis has components too: the directions of the space the
+individuals are placed in at their distances. "PC" in the names
 of a result, `PC0`, and `comps` in identifiers. Not used: axis, eigenvector,
 which is how a component is computed and not what it is.
+
+**principal coordinate analysis.** PCoA. The analysis that places the
+individuals on components from the distance of every pair of them, not
+from a table of their values. pyNei: `do_pcoa`. `docs/specs/pca.md`. Not
+used: multidimensional scaling, MDS, R's name for the same analysis in
+`cmdscale`.
+
+**Lingoes' correction.** The correction of Lingoes (1971) that makes a
+matrix of distances Euclidean, so that a principal coordinate analysis of
+it has no negative eigenvalue: it adds one constant to every squared
+distance between two individuals. `correct_dists_by_lingoes`, `correct_by_lingoes` and
+`lingoes_constant` in identifiers. `docs/specs/pca.md`.
 
 **projection.** Where an individual falls along a component, the
 coordinate a user plots. pyNei: `projections`. Not used: score, which is

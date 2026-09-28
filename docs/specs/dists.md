@@ -1872,11 +1872,12 @@ the population distances.
   between the rows of a frame: nothing in the architecture asks for it,
   and pyNei used it for the approximate algorithm.
 - The principal coordinate analysis of any of these distances,
-  `do_pcoa_from_variants` and `do_pcoa`: `docs/specs/pca.md`. It will pass
-  `min_num_snps` on and will have no `use_approx_embedding_algorithm`. The
-  chord distance and the square root of f_2 are Euclidean and the other
-  measures here are not, so that spec has to say what it does with the
-  negative eigenvalues a matrix of F_ST or of Jost's D gives it.
+  `do_pcoa_from_variants` and `do_pcoa`: "The principal coordinates of
+  distances" of `docs/specs/pca.md`, which passes `min_num_snps` on, has
+  no `use_approx_embedding_algorithm`, and says what it does with the
+  negative eigenvalues of a matrix that is not Euclidean. The chord
+  distance and the square root of f_2 are Euclidean and the other
+  measures here are not.
 - The read ahead thread, which reads the next block while the calculation
   works on the one in hand, and which `docs/specs/block.md` leaves for the
   first calculation that consumes blocks: it is a reader over a reader, and

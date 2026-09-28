@@ -30,7 +30,16 @@ from popnei.ld import (
     calc_ld_and_dist_per_pop,
     calc_rogers_huff_r2_matrix,
 )
-from popnei.pca import PCAResult, do_pca, do_pca_from_variants
+from popnei.pca import (
+    LingoesCorrection,
+    PCAResult,
+    PCoAResult,
+    correct_dists_by_lingoes,
+    do_pca,
+    do_pca_from_variants,
+    do_pcoa,
+    do_pcoa_from_variants,
+)
 from popnei.pop_dists import PopDistMeasure, PopDists, calc_pop_dists
 from popnei.stats import (
     PerIndividualStats,
@@ -62,8 +71,10 @@ __all__ = [
     "Kinship",
     "LdAndDistPerPop",
     "LdDecay",
+    "LingoesCorrection",
     "NullModel",
     "PCAResult",
+    "PCoAResult",
     "PassStats",
     "PerIndividualStats",
     "PerVarDistribs",
@@ -93,8 +104,11 @@ __all__ = [
     "calc_pop_diversity",
     "calc_rogers_huff_r2_matrix",
     "calc_var_density",
+    "correct_dists_by_lingoes",
     "do_pca",
     "do_pca_from_variants",
+    "do_pcoa",
+    "do_pcoa_from_variants",
     "open_vars",
     "open_vcf",
     "write_vars",

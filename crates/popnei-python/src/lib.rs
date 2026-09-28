@@ -17,6 +17,7 @@ mod gwas;
 mod kinship;
 mod ld;
 mod pca;
+mod pcoa;
 mod pop_dists;
 mod source;
 mod stats;
@@ -90,6 +91,20 @@ mod _core {
         module.add(
             "KinshipPairWithNoVariantCalled",
             py.get_type::<super::errors::KinshipPairWithNoVariantCalled>(),
+        )?;
+        // The pairs of individuals with no distance of a principal
+        // coordinate analysis, which `popnei.do_pcoa` and
+        // `popnei.correct_dists_by_lingoes` catch to name the individuals as
+        // the `Distances` names them.
+        module.add(
+            "PcoaPairsWithNoDistance",
+            py.get_type::<super::errors::PcoaPairsWithNoDistance>(),
+        )?;
+        // A distance of it that is negative or infinite, whose pair the same
+        // two functions name.
+        module.add(
+            "PcoaDistanceOutOfRange",
+            py.get_type::<super::errors::PcoaDistanceOutOfRange>(),
         )
     }
 
@@ -118,6 +133,11 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_NUM_PRIN_COMPS: usize = popnei::pca::DEFAULT_NUM_PRIN_COMPS;
 
+    // Whether `do_pcoa_from_variants` corrects distances that are not
+    // Euclidean when the user says nothing, from the core as well.
+    #[pymodule_export]
+    const DEFAULT_CORRECT_BY_LINGOES: bool = popnei::pca::DEFAULT_CORRECT_BY_LINGOES;
+
     // Whether a mixed model of `calc_gwas` stands in for the denominator of
     // its test with the GRAMMAR-Gamma approximation when the user says
     // nothing. It is the exact denominator, since the approximation gives up
@@ -140,6 +160,8 @@ mod _core {
     use super::ld::{calc_ld_and_dist_per_pop, calc_rogers_huff_r2_matrix};
     #[pymodule_export]
     use super::pca::{pca, pca_of_variants};
+    #[pymodule_export]
+    use super::pcoa::{correct_dists_by_lingoes, pcoa, pcoa_of_variants};
     #[pymodule_export]
     use super::pop_dists::{calc_pop_dists, pop_dist_measures_that_have_a_value};
     #[pymodule_export]

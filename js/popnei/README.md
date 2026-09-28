@@ -20,7 +20,7 @@ a `Variants` are for an application that shows how far a calculation has
 got and lets its user stop it, and "A file of the page, in a web worker"
 below has both.
 
-Ten calculations read the variants of a `Variants`.
+Twelve calculations read the variants of a `Variants`.
 `calcPairwiseKosmanDists` gives, in a `Distances`, the Kosman distance of
 every pair of individuals, how many alleles the two do not share at a
 variant averaged over the variants at which both were called, which runs
@@ -37,7 +37,18 @@ dosage at the other and 0 when knowing one says nothing about the other.
 components of the individuals over those same dosages, where each of them
 is a direction along which the individuals differ most: the projection of
 every individual on the first ones, how much of the variance each holds and
-the weight every variant has in them. `calcPerVarDistribs` gives, for each
+the weight every variant has in them. `doPcoaFromVariants` gives, in a
+`VariantsPcoaResult`, the principal coordinates of the individuals over
+their Kosman distances, which place each of them where the straight line
+to every other is as long as their distance, with the fields for drawing
+them that the components have: Kosman distances with missing genotypes are
+often not Euclidean, no space holds such distances, and they are refused
+unless `correctByLingoes` asks for Lingoes' correction, which adds one
+constant to every squared distance and is given in the result with the
+share of the negative eigenvalues of the distances before the correction. `calcVarDensity` gives how many
+variants fall in each window of a width the user gives along each
+chromosome, which shows where the variants are crowded and where there are
+none. `calcPerVarDistribs` gives, for each
 population a user names in `pops` and each of six statistics of a variant,
 the mean over the variants that had a value and a histogram of them. The
 six are the observed heterozygosity, the major allele frequency, the
@@ -93,14 +104,19 @@ the panel as a random effect, so that a variant which only marks the
 ancestry of the panel does not look associated. `doPca`, which is not a
 consumer of a `Variants`, gives the components of a table of individuals and
 traits handed to it as numbers, which is the same analysis over values an
-application holds and not over a source of variants.
+application holds and not over a source of variants. `doPcoa` and
+`correctDistsByLingoes` are not consumers either and take a `Distances`,
+the Kosman one or one the application built: the first gives its principal
+coordinates in a `PcoaResult` and refuses distances that are not Euclidean,
+and the second corrects such distances by Lingoes into a new `Distances`,
+with the constant it added.
 
-Each of the thirteen consumers of a `Variants`, `iterBlocks`, `writeVars`,
+Each of the fifteen consumers of a `Variants`, `iterBlocks`, `writeVars`,
 `writeVcf`,
 `calcPairwiseKosmanDists`, `calcPopDists`, `calcPopDiversity`,
 `calcRogersHuffR2Matrix`, `calcLdAndDistPerPop`, `calcKinship`,
-`doPcaFromVariants`, `calcGwas`, `calcPerVarDistribs` and
-`calcPerIndividualStats`, gives back the counts of the pass it made over the
+`doPcaFromVariants`, `doPcoaFromVariants`, `calcGwas`, `calcPerVarDistribs`,
+`calcPerIndividualStats` and `calcVarDensity`, gives back the counts of the pass it made over the
 source, in a `passStats`: how many variants it
 took, and how many each filter of the `Variants` was given and kept. A
 filter is a step, a method of the `Variants` that `steps` then lists, and

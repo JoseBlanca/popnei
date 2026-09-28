@@ -26,9 +26,9 @@ import { theConsumersTheCrateNames } from "./consumers.ts";
 /**
  * How many passes each consumer makes when it is asked with no options.
  *
- * Thirteen of the fourteen read the source once, the principal components of the
+ * Fourteen of the fifteen read the source once, the principal components of the
  * variants being the one that reads it twice for the weights its ten
- * components ask for. The association study is among the thirteen: it reads
+ * components ask for. The association study is among the fourteen: it reads
  * the source twice only when it is asked for the GRAMMAR-Gamma
  * approximation, which the default does not ask for, and the two tests
  * below are of that option.
@@ -55,9 +55,10 @@ const THE_PASSES_OF_EACH_CONSUMER: Record<ConsumerName, number> = {
   writeVcf: 1,
   iterBlocks: 1,
   doPcaFromVariants: 2,
+  doPcoaFromVariants: 1,
 };
 
-/** The fourteen consumers of the package, which are the keys of that table. */
+/** The fifteen consumers of the package, which are the keys of that table. */
 const THE_CONSUMERS = Object.keys(
   THE_PASSES_OF_EACH_CONSUMER,
 ) as ConsumerName[];
@@ -111,12 +112,12 @@ test("a name that is of no consumer is refused, with the names that are", async 
 
 test("every name the refusal gives is a name numPassesOf takes", async () => {
   await init();
-  // The fourteen names live twice in the binding crate, in the function that
+  // The fifteen names live twice in the binding crate, in the function that
   // takes a name and in the list the message of a refused name is built
   // from, and nothing else holds the two together. A name that the message
   // gives and the function refuses fails the loop below; a name the
   // function takes and the message leaves out fails the comparison with the
-  // fourteen of this file, which are the fourteen of
+  // fifteen of this file, which are the fifteen of
   // `docs/specs/js_sources.md`.
   const names = theConsumersTheCrateNames();
   assert.deepEqual([...names].sort(), [...THE_CONSUMERS].sort());

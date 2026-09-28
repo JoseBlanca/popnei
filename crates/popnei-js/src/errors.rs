@@ -94,6 +94,41 @@ pub enum JsPopneiError {
         /// How many of them are called in the second.
         num_vars_of_other: u64,
     },
+    /// Pairs of individuals of a principal coordinate analysis, or of
+    /// Lingoes' correction, that have no distance, under the names of the
+    /// individuals: the core counts them and names the individuals by their
+    /// positions in the order of the distances, and what a user takes out of
+    /// a `Distances` or of a `Variants` is a name.
+    PairsWithNoDistance {
+        /// How many pairs have no distance.
+        num_pairs_with_no_distance: usize,
+        /// How many pairs there are, n(n - 1)/2 of n individuals.
+        num_pairs: usize,
+        /// The name of the first individual of the first pair with no
+        /// distance, in the order of the distance vector.
+        first_of_the_first: String,
+        /// The name of the second individual of that pair.
+        second_of_the_first: String,
+        /// The name of the individual in the most pairs with no distance.
+        most_often: String,
+        /// How many pairs with no distance that individual is in.
+        most_often_count: usize,
+        /// Whether the distances were given or came from the variants,
+        /// which decides what the message tells the user to do.
+        from: popnei::pca::PcoaInput,
+    },
+    /// A distance given to a principal coordinate analysis, or to Lingoes'
+    /// correction, that is negative or infinite, under the names of its two
+    /// individuals: the core names them by their positions in the order of
+    /// the distances, and what a user looks for in a `Distances` is a name.
+    DistanceOutOfRange {
+        /// The name of the first individual of the pair.
+        first: String,
+        /// The name of the second.
+        second: String,
+        /// The distance given.
+        value: f64,
+    },
     /// The memory of wasm does not take what was asked of it: the bytes of
     /// a file that is being given to popnei. A failed allocation aborts in
     /// wasm, and an abort is a trap that leaves the module unusable, so
@@ -135,8 +170,8 @@ impl From<JsPopneiError> for JsValue {
     /// crosses as it is.
     ///
     /// JavaScript has one exception for everything a library refuses, so
-    /// the eight cases that are an error of popnei are one `Error`, where
-    /// Python tells a `ValueError` from an `OSError`. The ninth,
+    /// the ten cases that are an error of popnei are one `Error`, where
+    /// Python tells a `ValueError` from an `OSError`. The eleventh,
     /// [`Stopped`], is not an error of popnei: what it holds is the value
     /// the application threw, and it goes back as it came.
     ///
@@ -184,6 +219,36 @@ impl From<JsPopneiError> for JsValue {
                 num_vars_of_one,
                 num_vars_of_other,
             } => a_pair_with_no_variant_called(&one, &other, num_vars_of_one, num_vars_of_other),
+            // The pairs of a principal coordinate analysis with no
+            // distance, which the core names by their positions in the order
+            // of the distances: what a user takes out is a name.
+            JsPopneiError::PairsWithNoDistance {
+                num_pairs_with_no_distance,
+                num_pairs,
+                first_of_the_first,
+                second_of_the_first,
+                most_often,
+                most_often_count,
+                from,
+            } => format!(
+                "{num_pairs_with_no_distance} of the {num_pairs} pairs of individuals {have} \
+                 no distance, the first of them `{first_of_the_first}` and \
+                 `{second_of_the_first}`, and `{most_often}` is in {most_often_count} of \
+                 them; {remedy}",
+                have = popnei::pca::pcoa::have_or_has(num_pairs_with_no_distance),
+                remedy = the_remedy_of_the_pairs_with_no_distance(from)
+            ),
+            // A distance that is negative or infinite, under the names of
+            // its pair, with the value as JavaScript writes it.
+            JsPopneiError::DistanceOutOfRange {
+                first,
+                second,
+                value,
+            } => format!(
+                "the distance of `{first}` and `{second}` is {value}, and {what_it_has_to_be}",
+                value = as_javascript_writes_it(value),
+                what_it_has_to_be = popnei::pca::pcoa::WHAT_A_DISTANCE_HAS_TO_BE
+            ),
             JsPopneiError::NotInJavaScript(message)
             | JsPopneiError::Refused(message)
             | JsPopneiError::NoMemory(message)
@@ -221,7 +286,14 @@ impl From<JsPopneiError> for JsValue {
 /// cannot fill is rewritten here too, and so are the `window_size` and the
 /// `chrom_lengths` of the density of the variants.
 ///
-/// Three of the fourteen names the core writes are left as they are.
+/// The `correct_dists_by_lingoes` and the `correct_by_lingoes` that a matrix
+/// that is not Euclidean is pointed to are rewritten here, and so are the
+/// `min_num_snps` and the `filter_individuals` that the pairs with no
+/// distance of the variants name, which
+/// [`JsPopneiError::PairsWithNoDistance`] writes in TypeScript whenever the
+/// names reach its positions.
+///
+/// Three of the eighteen names the core writes are left as they are.
 /// `num_prin_comps` is in the error of a second pass that was not made,
 /// which `pca.rs` of this crate opens a reader for whenever the weights are
 /// asked for, so no call of TypeScript reaches it. The `max_num_vars` of a
@@ -269,6 +341,21 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
             | popnei::Error::DiversityDrawLargerThanTheDataset { .. }
     ) {
         return message.replace("num_called_alleles", "numCalledAlleles");
+    }
+    // The correction a matrix that is not Euclidean is pointed to, which is
+    // a function of TypeScript for a `Distances` and an option of
+    // `doPcoaFromVariants` for the variants.
+    if matches!(error, popnei::Error::PcoaNotEuclidean { .. }) {
+        return message
+            .replace("correct_dists_by_lingoes", "correctDistsByLingoes")
+            .replace("correct_by_lingoes", "correctByLingoes");
+    }
+    // The pairs with no distance reach this only when a position is beyond
+    // the names, which [`JsPopneiError::PairsWithNoDistance`] otherwise
+    // writes; what the message tells a user of the variants to do names an
+    // option and a function.
+    if matches!(error, popnei::Error::PcoaPairsWithNoDistance { .. }) {
+        return with_the_names_of_the_pairs_in_camel_case(&message);
     }
     if matches!(error, popnei::Error::VarDensityWindowSizeZero) {
         return message.replace("window_size", "windowSize");
@@ -324,22 +411,51 @@ fn a_pair_with_no_variant_called(
     )
 }
 
+/// What the message of the pairs with no distance tells a TypeScript user to
+/// do: the core's text, which depends on whether the distances were given or
+/// came from the variants, with the names of the option and the function of
+/// TypeScript that it names in the place of those of Python.
+fn the_remedy_of_the_pairs_with_no_distance(from: popnei::pca::PcoaInput) -> String {
+    with_the_names_of_the_pairs_in_camel_case(
+        popnei::pca::pcoa::the_remedy_of_the_pairs_with_no_distance(from),
+    )
+}
+
+/// `text` with the option and the function that the message of the pairs
+/// with no distance of the variants names written as TypeScript names them.
+fn with_the_names_of_the_pairs_in_camel_case(text: &str) -> String {
+    text.replace("min_num_snps", "minNumSnps")
+        .replace("filter_individuals", "filterIndividuals")
+}
+
 /// `number` written as JavaScript writes it, which is how a user wrote it:
-/// `95` and not the `95.0` of Rust, `Infinity` and not its `inf`.
+/// `95` and not the `95.0` of Rust, `Infinity` and not its `inf`, `1e-300`
+/// and not its 300 digits.
 ///
 /// Rust and JavaScript both write a float64 as the shortest text that reads
 /// back as the same number, so the digits are the same, and they differ in
 /// the two infinities and in where they turn to an exponent: JavaScript
-/// writes 1e21 and larger, and anything below 1e-6, with one, and Rust
-/// writes every number in full. No threshold of a filter is in either range,
-/// and a number that is refused for being out of 0 to 1 can be: `1e30` is
-/// written here as its 31 digits.
+/// writes a number of 1e21 and larger, and one above 0 and below 1e-6, with
+/// one, `1e+21` and `1.5e-7`, and Rust writes every number in full. So a
+/// number in those two ranges is written here with the exponent of Rust,
+/// which has the digits of JavaScript and no `+` before an exponent above
+/// 0, and the `+` is put in.
 fn as_javascript_writes_it(number: f64) -> String {
     if number.is_infinite() {
         return if number.is_sign_negative() {
             "-Infinity".to_owned()
         } else {
             "Infinity".to_owned()
+        };
+    }
+    let size = number.abs();
+    if size >= 1e21 || (size > 0.0 && size < 1e-6) {
+        let written = format!("{number:e}");
+        return match written.split_once('e') {
+            Some((digits, exponent)) if !exponent.starts_with('-') => {
+                format!("{digits}e+{exponent}")
+            }
+            _ => written,
         };
     }
     number.to_string()

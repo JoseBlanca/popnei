@@ -63,6 +63,44 @@ create_exception!(
      one as well."
 );
 
+create_exception!(
+    popnei._core,
+    PcoaPairsWithNoDistance,
+    PyValueError,
+    "Pairs of individuals with no distance, a NaN, among the distances given \
+     to a principal coordinate analysis or to Lingoes' correction. `args[0]` \
+     is what the core says, which names the individuals by their position; \
+     `args[1]` is how many pairs have no distance and `args[2]` how many \
+     pairs there are; `args[3]` and `args[4]` are the positions of the two \
+     individuals of the first such pair in the order of the distances, from \
+     0; and `args[5]` is the position of the individual in the most of those \
+     pairs, the first of them when two are in as many, and `args[6]` how \
+     many it is in; `args[7]` is what the core tells the user to do, which \
+     depends on whether the distances were given or came from the variants.\n\n\
+     `popnei.do_pcoa`, `popnei.correct_dists_by_lingoes` and \
+     `popnei.do_pcoa_from_variants` catch it and raise the `ValueError` \
+     their user reads, whose message names the individuals as the \
+     `Distances` or the `Variants` names them, as it is for the traits and \
+     the pair of a kinship above. It derives from `ValueError`, so a user \
+     who catches that one catches this one as well."
+);
+
+create_exception!(
+    popnei._core,
+    PcoaDistanceOutOfRange,
+    PyValueError,
+    "A distance given to a principal coordinate analysis or to Lingoes' \
+     correction that is negative or infinite. `args[0]` is what the core \
+     says, which names the two individuals of the pair by their position; \
+     `args[1]` and `args[2]` are those positions in the order of the \
+     distances, from 0; `args[3]` is the distance; and `args[4]` is what the \
+     core says a distance has to be.\n\n\
+     `popnei.do_pcoa` and `popnei.correct_dists_by_lingoes` catch it and \
+     raise the `ValueError` their user reads, whose message names the two \
+     as the `Distances` names them, as it is for the pairs with no distance \
+     above. It derives from `ValueError` as well."
+);
+
 /// What a function of this crate fails with.
 pub(crate) enum PyPopneiError {
     /// Something the core crate refused: an argument it takes, or what it
@@ -598,7 +636,29 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // reaches either, and neither names a file, both being of the model
         // the trait and the kinship chose.
         | popnei::Error::GwasModelNotBuilt { .. }
-        | popnei::Error::GwasGrammarGammaOfAModelWithNoProjection { .. } => {
+        | popnei::Error::GwasGrammarGammaOfAModelWithNoProjection { .. }
+        // The two of the principal coordinate analysis that no argument of
+        // `do_pcoa` or `correct_dists_by_lingoes` gives, which "Errors and the
+        // cases pyNei asserts" of `docs/specs/pca.md` makes a `RuntimeError`:
+        // a distance vector whose length is not the pairs of the individuals
+        // it was said to be of, which the package counts from the names of a
+        // `Distances` that refused such a vector when it was built; and an
+        // operation of the linear algebra that did not run, which is left
+        // with a machine with too little memory for the workspace of the
+        // eigendecomposition or a routine that did not converge. And the
+        // one of `do_pcoa_from_variants` with `correct_by_lingoes` that no
+        // argument gives: no eigenvalue 0 for the centering, which every
+        // matrix of the analysis has, found by the correction that keeps it
+        // at 0. And the three more that no input has reached, which the core
+        // tests on decompositions built by hand: eigenvectors that are not of
+        // the individuals, a band of the eigenvalue 0 without the vector of
+        // ones, and a component along it.
+        | popnei::Error::PcoaDistVectorOfAnotherSize { .. }
+        | popnei::Error::PcoaNoEigenvalueOfTheCentering { .. }
+        | popnei::Error::PcoaEigenvectorsOfAnotherSize { .. }
+        | popnei::Error::PcoaBandWithoutTheVectorOfOnes { .. }
+        | popnei::Error::PcoaComponentAlongTheVectorOfOnes { .. }
+        | popnei::Error::PcoaLinalg { .. } => {
             PyRuntimeError::new_err(what_a_user_reads(&error, message, path))
         }
         // The two errors of a trait that the layer holding the frame names:
@@ -632,6 +692,45 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             other,
             num_vars_of_one,
             num_vars_of_other,
+        )),
+        // The pairs of individuals with no distance of a principal
+        // coordinate analysis, which the layer holding the names of the
+        // `Distances` or of the `Variants` names: the core has the positions
+        // of the individuals and the counts, and `popnei.do_pcoa` and
+        // `popnei.do_pcoa_from_variants` raise the `ValueError` a user
+        // reads. It carries what the core says as well, so that a caller of
+        // `popnei._core` reads a message and not six numbers.
+        popnei::Error::PcoaPairsWithNoDistance {
+            num_pairs_with_no_distance,
+            num_pairs,
+            first_of_the_first,
+            second_of_the_first,
+            most_often,
+            most_often_count,
+            from,
+        } => PcoaPairsWithNoDistance::new_err((
+            what_a_user_reads(&error, message, path),
+            num_pairs_with_no_distance,
+            num_pairs,
+            first_of_the_first,
+            second_of_the_first,
+            most_often,
+            most_often_count,
+            popnei::pca::pcoa::the_remedy_of_the_pairs_with_no_distance(from),
+        )),
+        // A distance of a principal coordinate analysis that is negative or
+        // infinite, whose pair the layer holding the names of the
+        // `Distances` names, as it names the pairs with no distance above.
+        popnei::Error::PcoaDistanceOutOfRange {
+            first,
+            second,
+            value,
+        } => PcoaDistanceOutOfRange::new_err((
+            what_a_user_reads(&error, message, path),
+            first,
+            second,
+            value,
+            popnei::pca::pcoa::WHAT_A_DISTANCE_HAS_TO_BE,
         )),
         // The wrong inputs of a function, which are a `ValueError`. Which
         // of them carries the file it happened in before its message is
@@ -869,7 +968,21 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasIndividualNotInTheDataset { .. }
         | popnei::Error::GwasIndividualTestedTwice { .. }
         | popnei::Error::GwasIndividualsOutOfOrder { .. }
-        | popnei::Error::GwasVariantsTooLarge => {
+        | popnei::Error::GwasVariantsTooLarge
+        // The six of the principal coordinate analysis and of Lingoes'
+        // correction that are of the distances a user gave, which
+        // "Errors and the cases pyNei asserts" of `docs/specs/pca.md` lists:
+        // fewer than 2 individuals, more than the linear algebra decomposes
+        // the matrix of or than this machine gives the memory of, distances that are all 0, distances that are not Euclidean, which the message
+        // tells the user to correct, and a constant of the correction beyond
+        // an f64, which the message tells the user to scale the distances
+        // for.
+        | popnei::Error::PcoaTooFewIndividuals { .. }
+        | popnei::Error::PcoaTooManyIndividuals { .. }
+        | popnei::Error::PcoaNoMemory { .. }
+        | popnei::Error::PcoaAllDistancesZero
+        | popnei::Error::PcoaNotEuclidean { .. }
+        | popnei::Error::PcoaLingoesConstantOutOfRange { .. } => {
             PyValueError::new_err(what_a_user_reads(&error, message, path))
         }
         // Everything else is a wrong input of a function, which a file

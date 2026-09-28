@@ -23,6 +23,7 @@ use crate::gwas::{ArgumentsOfTheStudy, GwasOfVariants, gwas_of_the_variants};
 use crate::kinship::{KinshipOfVariants, kinship_of_the_variants};
 use crate::ld::{ArgumentsOfTheBins, LdAndDistOfAPass, R2Matrix, ld_and_dist_of, r2_matrix_of};
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
+use crate::pcoa::{PcoaOfVariants, pcoa_of_the_variants};
 use crate::pop_dists::{ArgumentsOfTheDists, PopDistsOfAPass, pop_dists_of};
 use crate::source::{
     Blocks, Consumer, OpenSource, RunOfAConsumer, TheFileOfASource, WrittenFile, blocks_of,
@@ -373,6 +374,30 @@ impl VcfSource {
         steps: Steps,
     ) -> Result<KosmanDistances, JsPopneiError> {
         kosman_dists_of(self, min_num_vars, steps)
+    }
+
+    /// The principal coordinates of the Kosman distances of the individuals
+    /// of the VCF, over the variants that the steps of `steps` keep, with
+    /// no distance for a pair called together at fewer than `min_num_vars`
+    /// variants, and Lingoes' correction inside when `correct_by_lingoes` is
+    /// true.
+    ///
+    /// # Errors
+    ///
+    /// When the analysis of the individuals of the pass does not fit in the
+    /// memory of a page, when they are fewer than 2, when the pass gives no
+    /// variant, when the sums of a pair go above what a `u32` holds, when
+    /// the VCF cannot be read, when a pair has no distance, when every
+    /// distance is 0, when the distances are not Euclidean and the
+    /// correction was not asked for, when the linear algebra could not be
+    /// done, and when popnei has a defect.
+    pub fn pcoa_of_variants(
+        &self,
+        min_num_vars: u32,
+        correct_by_lingoes: bool,
+        steps: Steps,
+    ) -> Result<PcoaOfVariants, JsPopneiError> {
+        pcoa_of_the_variants(self, min_num_vars, correct_by_lingoes, steps)
     }
 
     /// The r² of every pair of the variants of the VCF that the steps of
