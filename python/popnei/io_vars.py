@@ -20,7 +20,8 @@ def open_vars(path: str | Path) -> Variants:
     """The variants of the vars file at `path`.
 
     A vars file is one arrow IPC file, also called feather v2, which
-    :func:`popnei.write_vars` writes from any source of variants. It is
+    :func:`popnei.write_vars` writes from any source of variants, and its
+    name ends in ``.nei`` by convention. Any name is read. It is
     where a user keeps their variants once the VCF has been read, so that
     the text is parsed once and every later pass reads a file of arrays.
 
@@ -71,6 +72,10 @@ def write_vars(
     R and polars open as a table with no popnei installed. It is where a
     user keeps their variants once the VCF has been read, so that the text
     is parsed once and every later pass reads a file of arrays.
+
+    Its name ends in ``.nei`` by convention, ``panel.nei``. The file is
+    written at `path` as it is given: no extension is added to it, and none
+    is asked for.
 
     The source is a VCF or a vars file, whichever :class:`Variants` holds,
     so a file read with :func:`popnei.open_vars` is written again with

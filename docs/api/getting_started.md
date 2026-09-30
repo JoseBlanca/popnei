@@ -250,9 +250,9 @@ variants when it is given `correct_by_lingoes=True`.
 
 ## What is not on this page
 
-The reference pages have the rest: the vars file, popnei's own format for a
-dataset that is read many times ({func}`popnei.write_vars` and
-{func}`popnei.open_vars`); writing the filtered variants back to a VCF
+The reference pages have the rest: the vars file, popnei's own format for
+a dataset that is read many times, whose name ends in `.nei` by convention
+({func}`popnei.write_vars` and {func}`popnei.open_vars`); writing the filtered variants back to a VCF
 ({func}`popnei.write_vcf`); the kinship; the decay of linkage
 disequilibrium with distance; and the association studies. Each docstring
 says how the function differs from its pyNei counterpart.

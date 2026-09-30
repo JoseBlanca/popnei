@@ -395,8 +395,10 @@ single variant that a reader filled.
 
 **vars file.** The arrow file in which popnei keeps variants, feather v2,
 which any program with an arrow library opens as a table. Its format is
-popnei's own, in `docs/specs/io_vars.md`. pyNei has a file of the same
-name and another format, and neither library reads the other's.
+popnei's own, in `docs/specs/io_vars.md`. Its name ends in `.nei` by
+convention, the one the owner chose on 30 September 2026, and popnei
+neither adds that extension to a path nor asks for it. pyNei has a file of
+the same name and another format, and neither library reads the other's.
 
 ## The layers
 
