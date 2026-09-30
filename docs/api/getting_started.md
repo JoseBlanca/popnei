@@ -7,7 +7,7 @@ This page goes through a basic analysis of a VCF file. It calculates:
 - a principal component analysis and a principal coordinate analysis.
 
 You can follow this tutorial with your own VCF file or with these two
-example files:
+example files, downloaded into the directory you run Python in:
 
 - [panel.vcf.gz](https://github.com/JoseBlanca/popnei/raw/eae29a2d8d1ec1d98cfa7b10d5b42b3e2a7ff083/tests/reference/stats/panel.vcf.gz), the variants, 87 KB
 - [panel_pops.txt](https://github.com/JoseBlanca/popnei/raw/eae29a2d8d1ec1d98cfa7b10d5b42b3e2a7ff083/tests/reference/stats/panel_pops.txt), the population of each individual
