@@ -1,48 +1,34 @@
 # Getting started
 
-This page takes a VCF through the analyses most studies start with: the
-statistics of each population, the F_ST between them, a principal component
-analysis and a principal coordinate analysis of the distances between the
-individuals. It also shows how to install popnei in a project of your own.
-Every block of code on it was run on the panel that popnei's tests use,
+This page installs popnei and takes a VCF through the analyses most
+studies start with: the statistics of each population, the F_ST between
+them, a principal component analysis and a principal coordinate analysis of
+the distances between the individuals. Every block of code on it was run on the panel that popnei's tests use,
 `tests/reference/stats/panel.vcf.gz`: 1200 variants of 200 diploid
 individuals in three populations, p0, p1 and p2, of 48, 68 and 84
 individuals. The paths are relative to the root of the repository.
 
-## Installing popnei in an analysis project
+## Installing popnei
 
-popnei is not on PyPI yet. It is installed from a wheel, the file that
-holds the compiled package, which you build in the repository. Building
-needs the Rust toolchain:
+popnei needs Python 3.14 or later. With pip:
 
 ```console
-$ cd ~/devel/popnei
-$ uv run maturin build --release
+$ pip install popnei
 ```
 
-The wheel is written to `target/wheels/`, and maturin prints its name,
-which says the Python and the platform it is built for. The name below is
-the one for a Mac with an Apple chip. In the directory of the analysis,
-make a project, pin Python 3.14.5 and add the wheel:
+With uv, in the directory of an existing project:
 
 ```console
-$ cd ~/analyses/my_study
-$ uv init --bare
-$ uv python pin 3.14.5
-$ uv add ~/devel/popnei/target/wheels/popnei-0.1.0-cp314-cp314-macosx_11_0_arm64.whl
+$ uv add popnei
 ```
 
-The pin to 3.14.5 is needed. With a bare `3.14`, uv takes the newest 3.14
-interpreter it has, which on a Mac can be the free-threaded build. The wheel
-is not built for that interpreter, and `uv add` then fails with "the binary
-distribution is incompatible with the current platform". Adding the
-repository by its path instead of by the wheel does not work either: uv
-installs numpy and pandas and leaves popnei out, because the repository's
-`pyproject.toml` tells uv not to install popnei into its own development
-environment.
+or in a new project for an analysis:
 
-After a change to popnei, build the wheel again and run
-`uv add --reinstall-package popnei <wheel>` in the analysis project.
+```console
+$ uv init my_study
+$ cd my_study
+$ uv add popnei
+```
 
 ## Opening a VCF
 
