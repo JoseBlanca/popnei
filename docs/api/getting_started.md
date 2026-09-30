@@ -3,10 +3,14 @@
 This page installs popnei and takes a VCF through the analyses most
 studies start with: the statistics of each population, the F_ST between
 them, a principal component analysis and a principal coordinate analysis of
-the distances between the individuals. Every block of code on it was run on the panel that popnei's tests use,
-`tests/reference/stats/panel.vcf.gz`: 1200 variants of 200 diploid
+the distances between the individuals. Every block of code on it was run
+on the panel that popnei's tests use: 1200 variants of 200 diploid
 individuals in three populations, p0, p1 and p2, of 48, 68 and 84
-individuals. The paths are relative to the root of the repository.
+individuals. To run the examples, download its two files into the directory
+you run Python in:
+
+- [panel.vcf.gz](https://github.com/JoseBlanca/popnei/raw/eae29a2d8d1ec1d98cfa7b10d5b42b3e2a7ff083/tests/reference/stats/panel.vcf.gz), the variants, 87 KB
+- [panel_pops.txt](https://github.com/JoseBlanca/popnei/raw/eae29a2d8d1ec1d98cfa7b10d5b42b3e2a7ff083/tests/reference/stats/panel_pops.txt), the population of each individual
 
 ## Installing popnei
 
@@ -42,7 +46,7 @@ is called a pass.
 import pandas
 import popnei
 
-variants = popnei.open_vcf("tests/reference/stats/panel.vcf.gz")
+variants = popnei.open_vcf("panel.vcf.gz")
 variants.num_individuals  # 200
 variants.ploidy           # 2
 ```
@@ -61,7 +65,7 @@ populations are in a table of two columns, the individual and its
 population:
 
 ```python
-table = pandas.read_csv("tests/reference/stats/panel_pops.txt", sep="\t")
+table = pandas.read_csv("panel_pops.txt", sep="\t")
 pops = table.groupby("popcat")["IID"].apply(list).to_dict()
 {pop: len(inds) for pop, inds in pops.items()}  # {'p0': 48, 'p1': 68, 'p2': 84}
 ```
@@ -96,7 +100,7 @@ error. To try a second threshold, call `open_vcf` again for a second
 variants.filter_by_missing_data(max_allowed_missing_rate=0.1)
 variants.filter_by_maf(max_allowed_maf=0.95)
 variants
-# <Variants of tests/reference/stats/panel.vcf.gz, ploidy=2, only_passed=True,
+# <Variants of panel.vcf.gz, ploidy=2, only_passed=True,
 #  missing_data(max_allowed_missing_rate=0.1), maf(max_allowed_maf=0.95)>
 ```
 
