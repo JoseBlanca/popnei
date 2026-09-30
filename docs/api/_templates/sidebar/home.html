@@ -1,0 +1,10 @@
+{#- A link to the index page above the menu: Furo leaves the page that holds
+    the table of contents out of the menu, and its only link to it is the
+    title of the site, which does not look like one. -#}
+<div class="sidebar-tree" style="margin-bottom: calc(-1 * var(--sidebar-item-spacing-vertical) - 1rem)">
+  <ul>
+    <li class="toctree-l1{% if pagename == root_doc %} current-page{% endif %}">
+      <a class="reference" href="{{ pathto(root_doc) }}">Introduction</a>
+    </li>
+  </ul>
+</div>

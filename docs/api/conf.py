@@ -45,6 +45,17 @@ intersphinx_mapping = {
 
 html_theme = "furo"
 html_title = f"popnei {release}"
+templates_path = ["_templates"]
+html_sidebars = {
+    "**": [
+        "sidebar/brand.html",
+        "sidebar/search.html",
+        "sidebar/scroll-start.html",
+        "sidebar/home.html",
+        "sidebar/navigation.html",
+        "sidebar/scroll-end.html",
+    ]
+}
 
 
 def _resolve_a_public_name(app, env, node, contnode):
