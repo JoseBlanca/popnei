@@ -85,7 +85,7 @@ def write_vcf(variants: Variants, path: str | Path) -> VcfWritten:
     The lines are written in the order the source gives them, so a source
     that is not sorted gives a file that tabix refuses to index. A VCF read
     with `only_passed` false and written with no step is the same file,
-    byte for byte, when its lines end in ``\n`` and none is empty. A
+    byte for byte, when its lines end in ``\\n`` and none is empty. A
     source with no variants gives the header alone.
 
     What it gives back is a :class:`VcfWritten` with the counts of the pass

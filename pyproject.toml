@@ -63,6 +63,13 @@ python-source = "python"
 # asks for 23 as the lowest version and runs the tests on the pyarrow of
 # uv.lock.
 dev = ["maturin>=1.9,<2.0", "pyNei", "pyarrow>=23", "pytest>=8", "ruff>=0.14"]
+# The website of the Python API, under docs/api/: Sphinx builds the reference
+# from the docstrings of the package, which link to each other with Sphinx's
+# own roles, `:func:` and `:class:`; Furo is the theme; and myst-parser lets
+# the pages written by hand be Markdown, as the rest of docs/ is. `uv run
+# sphinx-build docs/api docs/api/_build` builds it, after `uv run maturin
+# develop`, because autodoc imports popnei to read it.
+docs = ["furo", "myst-parser", "sphinx>=8"]
 
 [tool.uv.sources]
 # pyNei's own repository at one commit, which the owner chose on 20
