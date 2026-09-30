@@ -1,20 +1,20 @@
 # Getting started
 
-This page installs popnei and takes a VCF through the analyses most
-studies start with: the statistics of each population, the F_ST between
-them, a principal component analysis and a principal coordinate analysis of
-the distances between the individuals. Every block of code on it was run
-on the panel that popnei's tests use: 1200 variants of 200 diploid
-individuals in three populations, p0, p1 and p2, of 48, 68 and 84
-individuals. To run the examples, download its two files into the directory
-you run Python in:
+This page goes through a basic analysis of a VCF file. It calculates:
+
+- basic statistics of each population;
+- the F_ST between the populations;
+- a principal component analysis and a principal coordinate analysis.
+
+You can follow this tutorial with your own VCF file or with these two
+example files:
 
 - [panel.vcf.gz](https://github.com/JoseBlanca/popnei/raw/eae29a2d8d1ec1d98cfa7b10d5b42b3e2a7ff083/tests/reference/stats/panel.vcf.gz), the variants, 87 KB
 - [panel_pops.txt](https://github.com/JoseBlanca/popnei/raw/eae29a2d8d1ec1d98cfa7b10d5b42b3e2a7ff083/tests/reference/stats/panel_pops.txt), the population of each individual
 
 ## Installing popnei
 
-popnei needs Python 3.14 or later. With pip:
+With pip:
 
 ```console
 $ pip install popnei
