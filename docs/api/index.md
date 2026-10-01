@@ -14,14 +14,13 @@ With popnei you can:
 - analyze linkage disequilibrium; and
 - run GWAS.
 
-popnei does not load the whole variant file into memory, so it can run
-through an arbitrary number of variants.
+popnei does not load the whole variant file into memory, so it can
+process an arbitrary number of variants.
 
 This site documents popnei's Python package.
 
-[Getting started](getting_started.md) installs the package and goes from a
-VCF to the main analyses. The reference has one page per subject, generated
-from the docstrings of the package.
+The [getting started](getting_started.md) tutorial goes through the
+installation and a standard population genetics analysis.
 
 ```{toctree}
 :maxdepth: 1
