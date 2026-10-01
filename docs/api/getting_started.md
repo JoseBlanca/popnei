@@ -4,7 +4,7 @@ This page goes through a basic analysis of a VCF file. It calculates:
 
 - basic statistics of each population;
 - the F_ST between the populations;
-- a principal component analysis and a principal coordinate analysis.
+- a Principal Component Analysis and a Principal Coordinate Analysis.
 
 You can follow this tutorial with your own VCF file or with these two
 example files, downloaded into the directory you run Python in:
@@ -37,24 +37,22 @@ $ uv add popnei
 ## Opening a VCF
 
 {func}`popnei.open_vcf` reads the header of the file and gives back a
-{class}`popnei.Variants`: a handle over the file, with the options it is
-read with. It holds no genotypes. Each calculation you give it reads the
-file again, from its start, and one reading of the file from start to end
-is called a pass.
+{class}`popnei.Variants` object. The genotypes are not loaded into memory,
+because popnei is designed to work with big files. Each calculation you
+run on the object reads the file again, from its start.
 
 ```python
-import pandas
 import popnei
 
+# Open the VCF
 variants = popnei.open_vcf("panel.vcf.gz")
-variants.num_individuals  # 200
-variants.ploidy           # 2
+
+# Print some basic information from the file
+print(variants.individuals[:10])
+print(variants.num_individuals)
+print(variants.ploidy)
 ```
 
-A VCF may be plain or gzipped. `open_vcf` leaves out the variants whose
-FILTER column is neither `PASS` nor a dot, unless it is given
-`only_passed=False`. It reads a ploidy of 2 unless it is given another one,
-and a genotype of any other ploidy is an error.
 
 ## The populations
 
@@ -72,10 +70,10 @@ pops = table.groupby("popcat")["IID"].apply(list).to_dict()
 
 ## Filtering
 
-A filter is a method of the `Variants`. It returns nothing and reads
-nothing. It is added to the list of steps of the `Variants`, and every
-later pass runs it inside the Rust core as it reads the file. The variant
-filters are these five:
+A filter is a method of the `Variants`. It does not filter anything right
+away: it adds the filter to the `Variants` object, and every later pass
+runs it inside the Rust core as it reads the file. The variant filters are
+these five:
 
 - {meth}`~popnei.Variants.filter_by_missing_data`, over the rate of missing
   genotypes of each variant
