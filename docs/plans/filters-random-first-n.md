@@ -35,8 +35,9 @@ spec leaves unmeasured ("Speed" of that spec).
   `filters.py`, `js/popnei/src/variant.ts` and `filters.ts`.
 - The checks of the `coding` skill on d4a8699's code, which is eae29a2's,
   run on 5 October 2026: the six cargo commands pass, `cargo test
-  --workspace` and `cargo test -p popnei --no-default-features` with 2596
-  tests passed between them; `uv run maturin develop && uv run pytest`
+  --workspace` with 1373 tests passed and 2 ignored, summed over its `test
+  result` lines, and `cargo test -p popnei --no-default-features` with 1223
+  passed and 2 ignored; `uv run maturin develop && uv run pytest`
   gives `669 passed`; `npm ci && npm run build && npm test` in `js/popnei`
   gives `tests 496`, `pass 495`, `fail 1`. The one that fails is `a
   kinship that does not tell the two variances apart gives none of them`
@@ -102,13 +103,14 @@ Tasks:
   "The filter that keeps the first n variants" and "The Rust interface".
   Deliverable 1.
 - [ ] 1.2 The Python side. In `crates/popnei-python`, the step
-  `filter_first_n` in `steps.rs`, with `num_vars` read as `count_of_at_least`
-  of `source.rs` reads a count of variants, widened to `u64`, and not as
-  `distance_of`, whose message speaks of base pairs; the refusal of a step
-  after it in every method that adds a step; and the counts of a pass built
-  in one function of the crate, with `stopped_early` from the core and the
-  steps of the pass, which every consumer and `Blocks::pass_stats` call in
-  place of the copies of `filtering_of` each module has now. In
+  `filter_first_n` in `steps.rs`, with `num_vars` read the way
+  `count_of_at_least` of `source.rs` reads a count of variants, widened to
+  `u64`, and not with `distance_of`, whose message speaks of base pairs;
+  the refusal of a step after it in every method that adds a step; and one
+  function of the crate that builds the counts of a pass, with
+  `stopped_early` from the core and the steps of the pass. Every consumer of
+  the crate and `Blocks::pass_stats` call that function, and the copies of
+  `filtering_of` that each module has now go. In
   `python/popnei`, `Variants.filter_first_n`, `PassStats.stopped_early`
   and the kinds of `filters.py`. Deliverables 2 and 3. Needs 1.1.
 - [ ] 1.3 The TypeScript side, the same in `crates/popnei-js` and
@@ -121,7 +123,13 @@ What could go wrong: the filter is the first reader that stops asking its
 source before the source ends, so a reader that does work when it is
 dropped, or the thread of the reader one block ahead, could wait or read
 on; the tests of deliverable 1 over the source that never ends are the ones
-that find it, and 1.1 runs them before anything is built on it. A consumer
+that find it, and 1.1 runs them before anything is built on it. When one
+hangs, the subagent runs it under a timeout and finds which reader keeps
+reading. A fix to a reader that exists, the reader one block ahead of
+`crates/popnei/src/block.rs` among them, is part of 1.1, in a commit of its
+own before the filter, with a test that fails without it. When the fix
+would change what a reader does in a pass that is not ended early, the
+orchestrator stops and asks the owner. A consumer
 whose counts do not go through the one function of 1.2 or 1.3 gives no
 `stopped_early`; the tests that the field is in the counts of every
 consumer find it.
