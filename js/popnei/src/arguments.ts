@@ -150,6 +150,23 @@ export function varsOfTheMatrixOfEveryPair(
 }
 
 /**
+ * Whether `value` is a whole number of `smallest` or more that a number of
+ * JavaScript counts to one by one, up to 2^53 - 1: what the arguments that
+ * the core takes as 64 bit whole numbers are checked against, a distance in
+ * base pairs, a number of variants and a seed.
+ */
+function isAnExactWholeNumber(
+  value: unknown,
+  smallest: number,
+): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= smallest
+  );
+}
+
+/**
  * `value` when it is a whole number of base pairs of `smallest` or more
  * that a number of JavaScript counts to one by one, and an `Error` that
  * names `argument` and what was given otherwise.
@@ -178,11 +195,7 @@ export function distanceInBasePairs(
   value: unknown,
   smallest: 0 | 1 = 1,
 ): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isSafeInteger(value) ||
-    value < smallest
-  ) {
+  if (!isAnExactWholeNumber(value, smallest)) {
     throw new Error(
       `popnei: \`${argument}\` is a whole number of base pairs of ` +
         `${smallest} or more and at most ${LARGEST_EXACT_WHOLE_NUMBER}, the ` +
@@ -201,16 +214,14 @@ export function distanceInBasePairs(
  * The `numVars` of `filterFirstN` comes through here. The core takes it as
  * a 64 bit whole number and JavaScript cuts it at 2^53 - 1, for the reason
  * `distanceInBasePairs` gives. 0 is let through: the core refuses it, with
- * a message that says why a filter of no variants is refused.
+ * a message that says why a filter of no variants is refused. The message
+ * of this function asks for 1 or more all the same, since that is what
+ * `filterFirstN` takes, and a user who wrote -1 is not to be sent to 0.
  *
  * @throws {Error} When `value` is not such a number.
  */
 export function aNumberOfVariants(argument: string, value: unknown): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isSafeInteger(value) ||
-    value < 0
-  ) {
+  if (!isAnExactWholeNumber(value, 0)) {
     throw new Error(
       `popnei: \`${argument}\` is a whole number of variants of 1 or more and ` +
         `at most ${LARGEST_EXACT_WHOLE_NUMBER}, the largest whole number a ` +
@@ -235,11 +246,7 @@ export function aNumberOfVariants(argument: string, value: unknown): number {
  * @throws {Error} When `value` is not such a number.
  */
 export function aSeed(argument: string, value: unknown): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isSafeInteger(value) ||
-    value < 0
-  ) {
+  if (!isAnExactWholeNumber(value, 0)) {
     throw new Error(
       `popnei: \`${argument}\` is a whole number from 0 to ` +
         `${LARGEST_EXACT_WHOLE_NUMBER}, the largest whole number a number of ` +

@@ -102,29 +102,19 @@ const NUM_VARS: &str = "numVars";
 const KEEP_RATE: &str = "keepRate";
 const SEED: &str = "seed";
 
-/// The largest window that crosses, 2^53 - 1 base pairs, which is
-/// `Number.MAX_SAFE_INTEGER`, the largest whole number a number of
-/// JavaScript counts to one by one.
+/// The largest whole number that crosses as a window, a number of variants
+/// or a seed, 2^53 - 1, which is `Number.MAX_SAFE_INTEGER`, the largest
+/// whole number a number of JavaScript counts to one by one.
 ///
-/// The core takes a window of up to 2^64 - 1 base pairs, which is what a
-/// Python user can write; above this one a number of JavaScript counts in
-/// twos, so a window written there is not the window that would arrive.
+/// The core takes each of the three as a 64 bit whole number, up to
+/// 2^64 - 1, which is what a Python user can write; above this one a number
+/// of JavaScript counts in twos, so a number written there is not the
+/// number that would arrive.
 ///
 /// The position of a variant reaches one further, the 2^53 of
 /// `LARGEST_POSITION` of `source.rs`, which is held exactly and comes from
 /// a file instead of being written by a user.
-const LARGEST_WINDOW: f64 = 9_007_199_254_740_991.0;
-
-/// The largest number of variants the filter of the first n is given from
-/// TypeScript, 2^53 - 1, for the reason of [`LARGEST_WINDOW`]: above it a
-/// number of JavaScript counts in twos.
-const LARGEST_NUM_VARS: f64 = 9_007_199_254_740_991.0;
-
-/// The largest seed of the filter that keeps variants at random that is
-/// given from TypeScript, 2^53 - 1, for the reason of [`LARGEST_WINDOW`]:
-/// above it a number of JavaScript counts in twos. The core takes a seed up
-/// to 2^64 - 1, which is what a Python user can write.
-const LARGEST_SEED: f64 = 9_007_199_254_740_991.0;
+const LARGEST_EXACT_WHOLE_NUMBER: f64 = 9_007_199_254_740_991.0;
 
 // The default seed of the core crosses back as a float64 in the steps, so
 // it has to be one that a float64 holds exactly, as every seed given from
@@ -281,8 +271,8 @@ impl Steps {
     /// one than, so a user reads back the window they wrote.
     #[expect(
         clippy::cast_precision_loss,
-        reason = "a window is at most the 2^53 - 1 of LARGEST_WINDOW, which a float64 \
-                  holds exactly"
+        reason = "a window is at most the 2^53 - 1 of LARGEST_EXACT_WHOLE_NUMBER, which \
+                  a float64 holds exactly"
     )]
     #[must_use]
     pub fn arg_distances(&self) -> Vec<f64> {
@@ -309,14 +299,14 @@ impl Steps {
     /// bytes, which no machine this crate builds for addresses, in wasm,
     /// where a `usize` is 32 bits wide, or natively; the number of variants
     /// of the filter of the first n is at most the 2^53 - 1 of
-    /// [`LARGEST_NUM_VARS`], which [`Steps::filter_first_n`] takes no
-    /// larger one than. So a user reads the number the core counted or the
+    /// [`LARGEST_EXACT_WHOLE_NUMBER`], which [`Steps::filter_first_n`] takes
+    /// no larger one than. So a user reads the number the core counted or the
     /// one they wrote.
     #[expect(
         clippy::cast_precision_loss,
         reason = "a count of regions held in memory, 16 bytes each, is far below the 2^53 \
                   a float64 holds exactly, in wasm and natively, and a count of variants \
-                  is at most the 2^53 - 1 of LARGEST_NUM_VARS"
+                  is at most the 2^53 - 1 of LARGEST_EXACT_WHOLE_NUMBER"
     )]
     #[must_use]
     pub fn arg_counts(&self) -> Vec<f64> {
@@ -342,8 +332,8 @@ impl Steps {
     /// wrote or the default.
     #[expect(
         clippy::cast_precision_loss,
-        reason = "a seed is at most the 2^53 - 1 of LARGEST_SEED, which a float64 holds \
-                  exactly"
+        reason = "a seed is at most the 2^53 - 1 of LARGEST_EXACT_WHOLE_NUMBER, which a \
+                  float64 holds exactly"
     )]
     #[must_use]
     pub fn arg_seeds(&self) -> Vec<f64> {
@@ -695,6 +685,38 @@ impl Steps {
     }
 }
 
+/// `number` as the 64 bit whole number the core takes, when it is a whole
+/// number from `smallest` to 2^53 - 1, and nothing otherwise.
+///
+/// The window of the filter by linkage disequilibrium, the number of
+/// variants of the filter of the first n and the seed of the filter that
+/// keeps variants at random cross as a float64, and the package refuses one
+/// that is not such a number before the call, in
+/// `js/popnei/src/arguments.ts`. They are checked here and not cast as they
+/// come because a NaN would arrive as 0 and a fraction would lose its part
+/// in silence: a window of 0 takes out every variant that has another at
+/// its own position, and a seed of 0 is a sample the user did not ask for.
+fn exact_whole_number_of(number: f64, smallest: f64) -> Option<u64> {
+    let whole = number.trunc();
+    #[expect(
+        clippy::float_cmp,
+        reason = "a float64 is or is not the whole number it was truncated to"
+    )]
+    let is_whole = whole == number;
+    if !number.is_finite() || !is_whole || number < smallest || number > LARGEST_EXACT_WHOLE_NUMBER
+    {
+        return None;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked above to be a whole number between `smallest`, which is 0 or \
+                  more, and 2^53 - 1"
+    )]
+    let whole_number = number as u64;
+    Some(whole_number)
+}
+
 /// `max_dist` as the number of base pairs the core takes.
 ///
 /// # Errors
@@ -703,30 +725,14 @@ impl Steps {
 /// defect of the package and not something a user can write:
 /// `js/popnei/src/arguments.ts` refuses a window that is not a whole
 /// number of 1 or more before the call, 0 and the negatives among them.
-/// It is checked here and not cast as it comes because a NaN would arrive
-/// as a window of 0 and take out every variant that has another at its own
-/// position, saying nothing.
 fn base_pairs_of(max_dist: f64) -> Result<u64, JsPopneiError> {
-    let whole = max_dist.trunc();
-    #[expect(
-        clippy::float_cmp,
-        reason = "a float64 is or is not the whole number it was truncated to"
-    )]
-    let is_whole = whole == max_dist;
-    if !max_dist.is_finite() || !is_whole || max_dist < 1.0 || max_dist > LARGEST_WINDOW {
-        return Err(JsPopneiError::Broken(format!(
+    exact_whole_number_of(max_dist, 1.0).ok_or_else(|| {
+        JsPopneiError::Broken(format!(
             "the window of the filter by linkage disequilibrium arrived as {max_dist}, \
-             and it is a whole number of base pairs from 1 to {LARGEST_WINDOW}, which \
-             is a defect of popnei; please report it"
-        )));
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "checked above to be a whole number between 1 and 2^53 - 1"
-    )]
-    let base_pairs = max_dist as u64;
-    Ok(base_pairs)
+             and it is a whole number of base pairs from 1 to \
+             {LARGEST_EXACT_WHOLE_NUMBER}, which is a defect of popnei; please report it"
+        ))
+    })
 }
 
 /// `num_vars` of the filter of the first n as the number of variants the
@@ -736,30 +742,15 @@ fn base_pairs_of(max_dist: f64) -> Result<u64, JsPopneiError> {
 ///
 /// When `num_vars` is not a whole number from 0 to 2^53 - 1, which is a
 /// defect of the package: `js/popnei/src/arguments.ts` refuses one before
-/// the call. It is checked here and not cast as it comes because a NaN
-/// would arrive as 0 and a fraction would lose its part in silence. 0 is
-/// let through for the core to refuse, with its own message.
+/// the call. 0 is let through for the core to refuse, with its own message.
 fn num_vars_of(num_vars: f64) -> Result<u64, JsPopneiError> {
-    let whole = num_vars.trunc();
-    #[expect(
-        clippy::float_cmp,
-        reason = "a float64 is or is not the whole number it was truncated to"
-    )]
-    let is_whole = whole == num_vars;
-    if !num_vars.is_finite() || !is_whole || num_vars < 0.0 || num_vars > LARGEST_NUM_VARS {
-        return Err(JsPopneiError::Broken(format!(
+    exact_whole_number_of(num_vars, 0.0).ok_or_else(|| {
+        JsPopneiError::Broken(format!(
             "the number of variants of the filter of the first n arrived as {num_vars}, \
-             and it is a whole number from 0 to {LARGEST_NUM_VARS}, which is a defect \
-             of popnei; please report it"
-        )));
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "checked above to be a whole number between 0 and 2^53 - 1"
-    )]
-    let num_vars = num_vars as u64;
-    Ok(num_vars)
+             and it is a whole number from 0 to {LARGEST_EXACT_WHOLE_NUMBER}, which is a \
+             defect of popnei; please report it"
+        ))
+    })
 }
 
 /// `seed` of the filter that keeps variants at random as the 64 bit whole
@@ -769,30 +760,15 @@ fn num_vars_of(num_vars: f64) -> Result<u64, JsPopneiError> {
 ///
 /// When `seed` is not a whole number from 0 to 2^53 - 1, which is a defect
 /// of the package: `js/popnei/src/arguments.ts` refuses one before the
-/// call. It is checked here and not cast as it comes because a NaN would
-/// arrive as a seed of 0 and a fraction would lose its part in silence,
-/// each a sample the user did not ask for.
+/// call.
 fn seed_of(seed: f64) -> Result<u64, JsPopneiError> {
-    let whole = seed.trunc();
-    #[expect(
-        clippy::float_cmp,
-        reason = "a float64 is or is not the whole number it was truncated to"
-    )]
-    let is_whole = whole == seed;
-    if !seed.is_finite() || !is_whole || seed < 0.0 || seed > LARGEST_SEED {
-        return Err(JsPopneiError::Broken(format!(
+    exact_whole_number_of(seed, 0.0).ok_or_else(|| {
+        JsPopneiError::Broken(format!(
             "the seed of the filter that keeps variants at random arrived as {seed}, \
-             and it is a whole number from 0 to {LARGEST_SEED}, which is a defect of \
-             popnei; please report it"
-        )));
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "checked above to be a whole number between 0 and 2^53 - 1"
-    )]
-    let seed = seed as u64;
-    Ok(seed)
+             and it is a whole number from 0 to {LARGEST_EXACT_WHOLE_NUMBER}, which is a \
+             defect of popnei; please report it"
+        ))
+    })
 }
 
 /// `error`, and a threshold the core refused under `argument`, the name a

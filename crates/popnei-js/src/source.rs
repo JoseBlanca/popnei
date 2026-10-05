@@ -79,8 +79,8 @@ use crate::steps::{Step, Steps, chain_of, stopped_early};
 /// distances between populations are cut into, for the same reason.
 ///
 /// It is one above the largest window a user may write for the filter by
-/// linkage disequilibrium, the 2^53 - 1 of `LARGEST_WINDOW` of `steps.rs`,
-/// and the two are not the same kind of number. A position is read from a
+/// linkage disequilibrium, the 2^53 - 1 of `LARGEST_EXACT_WHOLE_NUMBER` of
+/// `steps.rs`, and the two are not the same kind of number. A position is read from a
 /// file, and 2^53 itself is held exactly, so it is handed out. A window is
 /// written by a user and read back to them, which is what
 /// `Number.isSafeInteger` stands for: above 2^53 - 1 the numbers a user
