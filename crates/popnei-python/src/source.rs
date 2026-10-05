@@ -579,6 +579,40 @@ pub(crate) fn distance_of(
     }
 }
 
+/// The `value` that was given for `num_vars`, how many variants the filter of
+/// the first n keeps: what [`distance_of`] does for a distance, with
+/// messages that say what this number is.
+///
+/// It is read as the `u64` the core takes and not as the `usize` of
+/// [`count_of`], so that what a user may write for it is the same number in
+/// WebAssembly, where a `usize` is 32 bits, as it is natively. A 0 is given
+/// on for the core to refuse, with its own message.
+///
+/// # Errors
+///
+/// When the object is a whole number below 0 or above 2^64 - 1, which is
+/// the `ValueError` that names `num_vars` and the value and not the
+/// `OverflowError` of pyo3. An object that is no whole number at all, `1.5`,
+/// `"10"` or a truth value, is the `TypeError` of a count that is no number,
+/// which names `num_vars` and what was given.
+pub(crate) fn num_vars_of(value: &Bound<'_, PyAny>) -> Result<u64, PyPopneiError> {
+    const NUM_VARS: &str = "num_vars";
+    // A truth value is a whole number in Python, so `True` would be the
+    // first variant with nothing said.
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_count(NUM_VARS, 1, value));
+    }
+    match value.extract::<u64>() {
+        Ok(num_vars) => Ok(num_vars),
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyPopneiError::NumVars {
+                value: value.to_string(),
+            })
+        }
+        Err(_) => Err(no_count(NUM_VARS, 1, value)),
+    }
+}
+
 /// The `value` that was given for `seed`, the number at which the generator
 /// of the filter that keeps variants at random starts: what
 /// [`distance_of`] does for a distance, with messages that say what a seed

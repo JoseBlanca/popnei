@@ -45,7 +45,7 @@ use popnei::filters::{
 };
 
 use crate::errors::PyPopneiError;
-use crate::source::{count_of_at_least, distance_of, keep_rate_of, seed_of, threshold_of};
+use crate::source::{distance_of, keep_rate_of, num_vars_of, seed_of, threshold_of};
 
 /// One step of a `Variants`: what the core does with it, and the arguments
 /// a Python user wrote it with.
@@ -87,7 +87,7 @@ enum Argument {
     Distance(u64),
     Individuals(Vec<String>),
     Path(String),
-    Count(usize),
+    Count(u64),
     KeepRate(f64),
     Seed(u64),
 }
@@ -295,7 +295,9 @@ impl Steps {
                 Regions::from_bed(BufReader::new(file))
             })
             .map_err(|error| PyPopneiError::of_the_file(error, &bed_path))?;
-        let num_regions = regions.num_regions();
+        // A `usize` is 32 bits in wasm and 64 natively, so it is always a
+        // `u64`, and the value it saturates at is never taken.
+        let num_regions = u64::try_from(regions.num_regions()).unwrap_or(u64::MAX);
         let step = Step {
             pass_step: PassStep::Regions(RegionSelection {
                 regions: Arc::new(regions),
@@ -314,22 +316,18 @@ impl Steps {
 
     // The first `num_vars` variants that the steps before this one keep,
     // after which every pass ends without reading the rest of the source.
-    // The number is taken as the object it is and converted here, as a
-    // count of variants, so that a negative one is the `ValueError` that
-    // names the argument and not the `OverflowError` of pyo3, and `True` or
-    // `1.5` the `TypeError` that names it.
+    // The number is taken as the object it is and converted here, as the
+    // 64 bit number the core takes, so that a negative one is the
+    // `ValueError` that names the argument and not the `OverflowError` of
+    // pyo3, `True` or `1.5` the `TypeError` that names it, and the largest
+    // is 2^64 - 1 in every build.
     fn filter_first_n(&self, num_vars: &Bound<'_, PyAny>) -> Result<(), PyPopneiError> {
-        let count = count_of_at_least(NUM_VARS, 1, num_vars)?;
-        let num_vars = u64::try_from(count).map_err(|_| PyPopneiError::Count {
-            name: NUM_VARS,
-            smallest: 1,
-            value: count.to_string(),
-        })?;
+        let num_vars = num_vars_of(num_vars)?;
         // The core's step refuses a `num_vars` of 0 here, where the user
         // wrote it, and not at the next pass.
         let step = Step {
             pass_step: first_n_step(num_vars)?,
-            args: vec![(NUM_VARS, Argument::Count(count))],
+            args: vec![(NUM_VARS, Argument::Count(num_vars))],
         };
         self.add(step)
     }

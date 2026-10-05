@@ -217,6 +217,30 @@ def test_filter_first_n_refuses_a_num_vars_below_1(
     assert variants.steps == ()
 
 
+def test_filter_first_n_refuses_a_num_vars_that_64_bits_do_not_hold(
+    reference_vcf_dir: Path,
+) -> None:
+    """The core holds the n in 64 bits on every platform, so the limit a user
+    is told is 2^64 - 1, and not what the machine counts, which in pyodide
+    is 2^32 - 1."""
+    variants = _many(reference_vcf_dir)
+
+    with pytest.raises(
+        ValueError, match=f"`num_vars` is {2**64}, .* 18446744073709551615"
+    ):
+        variants.filter_first_n(2**64)
+    assert variants.steps == ()
+
+
+def test_filter_first_n_takes_the_largest_num_vars_of_64_bits(
+    reference_vcf_dir: Path,
+) -> None:
+    variants = _many(reference_vcf_dir)
+    variants.filter_first_n(2**64 - 1)
+
+    assert variants.steps == (Step(kind="first_n", args={"num_vars": 2**64 - 1}),)
+
+
 @pytest.mark.parametrize("num_vars", [1.5, True, "10", None])
 def test_filter_first_n_refuses_what_is_no_whole_number_with_a_type_error(
     reference_vcf_dir: Path, num_vars: object

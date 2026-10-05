@@ -170,6 +170,18 @@ pub(crate) enum PyPopneiError {
         /// in one of Rust.
         value: String,
     },
+    /// The `num_vars` of the filter of the first n that counts no variants:
+    /// a negative whole number, or one above 2^64 - 1. The core holds that
+    /// number in 64 bits on every platform, so it is not
+    /// [`PyPopneiError::Count`], whose message gives the limit of what this
+    /// machine counts, which in WebAssembly is 4295 million. A 0 is refused
+    /// by the core, with its own message.
+    NumVars {
+        /// What was given for it, as Python prints it: an integer of Python
+        /// is of any size, so the number that was refused does not always
+        /// fit in one of Rust.
+        value: String,
+    },
     /// A threshold of a filter that is not a number from 0 to 1, under the
     /// name of the argument a user wrote it in: the core refuses it and
     /// names the filter by its kind, `maf`, and what a user has to look at
@@ -328,6 +340,11 @@ impl From<PyPopneiError> for PyErr {
             } => PyValueError::new_err(format!(
                 "`{name}` is {value}, and it says a distance along a chromosome in base \
                  pairs: a whole number of {smallest} or more that 64 bits hold"
+            )),
+            PyPopneiError::NumVars { value } => PyValueError::new_err(format!(
+                "`num_vars` is {value}, and it says how many variants the filter of the \
+                 first n keeps: a whole number from 1 to 18446744073709551615, 2^64 - 1, \
+                 which is what 64 bits hold"
             )),
             PyPopneiError::Seed { value } => PyValueError::new_err(format!(
                 "`seed` is {value}, and it is where the generator of the filter that keeps \
