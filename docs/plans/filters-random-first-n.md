@@ -171,7 +171,7 @@ followed by the first 10.
 
 Tasks:
 
-- [ ] 2.1 The core: the generator, private to the filter, `RandomFilter`,
+- [x] 2.1 The core: the generator, private to the filter, `RandomFilter`,
   `RandomlyFilteredReader`, `PassStep::Random`, its place in `chain_of`,
   in `refuse_a_second_filter_of_a_kind` and among the steps that
   `refuse_a_step_after_the_first_n` refuses, `DEFAULT_RANDOM_FILTER_SEED`

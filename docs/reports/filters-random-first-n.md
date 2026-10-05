@@ -99,3 +99,16 @@ After the fixes, at 2d4cc16 on 5 October 2026: the six cargo commands pass,
 --no-default-features` with 1245; `uv run pytest` 693 passed; `npm test`
 tests 521, pass 520, fail 1, the test of `test/gwas.test.ts` that fails on
 `main`; `npm run test:browser` 8 passed. Work package 1 is done.
+
+## 2. The filter that keeps variants at random
+
+Task 2.1, the core, is c5c842d, SplitMix64 alone with Java's five draws as
+its test, and ddbf458, the filter in `crates/popnei/src/filters/random.rs`:
+`DEFAULT_RANDOM_FILTER_SEED`, `RandomFilter`, `RandomlyFilteredReader`,
+`PassStep::Random`, and two cases of the error, a keep rate out of range and
+a second random filter, which names the keep rate and the seed set and asked
+for. A block the filter refuses draws no number: it draws on a copy of the
+generator and keeps the copy once the block is compacted. Checked on 5
+October 2026: `cargo test --workspace` 1415 passed, 20 more, the 20 of
+`cargo test -p popnei --lib random_filter`; clippy, fmt and both wasm
+checks pass.
