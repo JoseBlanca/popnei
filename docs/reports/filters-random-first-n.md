@@ -93,3 +93,9 @@ Not taken:
 - The Python test of every consumer lists them by hand, where TypeScript
   checks its list against the crate's: the Python crate keeps no list of its
   consumers to check against.
+
+After the fixes, at 2d4cc16 on 5 October 2026: the six cargo commands pass,
+`cargo test --workspace` with 1395 passed and `cargo test -p popnei
+--no-default-features` with 1245; `uv run pytest` 693 passed; `npm test`
+tests 521, pass 520, fail 1, the test of `test/gwas.test.ts` that fails on
+`main`; `npm run test:browser` 8 passed. Work package 1 is done.
