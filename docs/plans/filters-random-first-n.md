@@ -95,7 +95,7 @@ Stands on: nothing of this plan.
 
 Tasks:
 
-- [ ] 1.1 The core, in `crates/popnei/src/filters.rs` or a module
+- [x] 1.1 The core, in `crates/popnei/src/filters.rs` or a module
   `filters/first_n.rs` beside `filters/regions.rs`: `FirstNReader`,
   `PassStep::FirstN`, its place in `chain_of` and in
   `refuse_a_second_filter_of_a_kind`, `refuse_a_step_after_the_first_n`,
