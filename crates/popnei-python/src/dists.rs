@@ -20,7 +20,7 @@ use pyo3::prelude::*;
 use popnei::block::BlockReader;
 
 use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
-use crate::source::{OpenSource, PassCounts, read_only, source_of};
+use crate::source::{OpenSource, PassCounts, pass_counts_of, read_only, source_of};
 use crate::steps::{Step, Steps, chain_of};
 
 /// What one pass gives: the distance of every pair, NaN where there is
@@ -107,16 +107,6 @@ fn over_the_source(
     Ok((
         dists,
         individuals,
-        (sums.num_vars(), filtering_of(chain.as_ref())),
+        pass_counts_of(sums.num_vars(), chain.as_ref(), steps),
     ))
-}
-
-/// What each filter of a chain was given and kept, the outermost filter
-/// first, which is the order the package turns around for its user.
-fn filtering_of(chain: &dyn BlockReader) -> Vec<(&'static str, u64, u64)> {
-    chain
-        .filtering_stats()
-        .into_iter()
-        .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-        .collect()
 }

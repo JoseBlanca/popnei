@@ -16,10 +16,8 @@
 use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
 
-use popnei::block::BlockReader;
-
 use crate::errors::PyPopneiError;
-use crate::source::{PassCounts, distance_of, read_only, source_of};
+use crate::source::{PassCounts, distance_of, pass_counts_of, read_only, source_of};
 use crate::steps::{Steps, chain_of};
 
 /// The name of the argument of the width of a window, as a Python user
@@ -77,7 +75,7 @@ pub(crate) fn calc_var_density<'py>(
     py.check_signals()?;
     // The whole source is read inside this one call, so the interpreter is
     // released for all of it, as for every other pass.
-    let (density, filtering) = py
+    let (density, counts) = py
         .detach(|| -> Result<_, popnei::Error> {
             let reader = source.reader(None)?;
             // The chain of the pass stays here, lent to the core, so that
@@ -88,12 +86,8 @@ pub(crate) fn calc_var_density<'py>(
                 window_size,
                 chrom_lengths.as_deref(),
             )?;
-            let filtering = chain
-                .filtering_stats()
-                .into_iter()
-                .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-                .collect();
-            Ok((density, filtering))
+            let counts = pass_counts_of(density.num_vars(), chain.as_ref(), &steps);
+            Ok((density, counts))
         })
         .map_err(|error| PyPopneiError::of_the_file(error, path))?;
     // A Ctrl-C that arrived while the pass ran is raised before numpy is
@@ -127,6 +121,6 @@ pub(crate) fn calc_var_density<'py>(
         read_only(starts.into_pyarray(py))?,
         read_only(ends.into_pyarray(py))?,
         read_only(num_vars.into_pyarray(py))?,
-        (density.num_vars(), filtering),
+        counts,
     ))
 }

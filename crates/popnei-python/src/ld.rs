@@ -34,20 +34,15 @@ use popnei::ld::{LdAndDistOptions, LdBins, R2Matrix};
 
 use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
 use crate::source::{
-    ChromColumn, OpenSource, PassCounts, chrom_column, count_of, distance_of, read_only, source_of,
-    threshold_of,
+    ChromColumn, OpenSource, PassCounts, chrom_column, count_of, distance_of, pass_counts_of,
+    read_only, source_of, threshold_of,
 };
 use crate::stats::{of_a_result, the_pops};
 use crate::steps::{Step, Steps, chain_of};
 
-/// What each filter of a pass was given and kept, under the kind of the
-/// filter and in the order of the chain, which is the half of the counts of
-/// a pass that the chain of readers holds.
-type FilteringCounts = Vec<(&'static str, u64, u64)>;
-
-/// What one pass gives: the matrix of the r² of every pair, and what each
-/// filter of it counted.
-type TheMatrixOfThePass = (R2Matrix, FilteringCounts);
+/// What one pass gives: the matrix of the r² of every pair, and the counts
+/// of the pass.
+type TheMatrixOfThePass = (R2Matrix, PassCounts);
 
 /// The same on its way to Python: the r² as a square numpy array of float64
 /// of the variants of the pass, the name of the chromosome of each of them,
@@ -109,26 +104,7 @@ pub(crate) fn calc_rogers_huff_r2_matrix<'py>(
     // loop over the blocks is the core's, and a pass that is interrupted
     // loses only itself, since it writes no file and the `Variants` is as it
     // was.
-    let calculated = py.detach(|| over_the_source(source, &steps, max_num_vars));
-    // The file of the source goes into every error of the pass, and
-    // `errors.rs` is what leaves it out of the message of the two that are
-    // of the cap a user wrote, as it does for every argument that is refused
-    // while a file is being read.
-    let (matrix, filtering) =
-        calculated.map_err(|error| PyPopneiError::of_the_file(error, &path))?;
-    // The variants of the pass, which are the rows of the matrix, go to
-    // Python as the `u64` every count of popnei is there: a `usize` is 32
-    // bits in WebAssembly and 64 natively, and what a user reads does not
-    // depend on that.
-    let num_vars = u64::try_from(matrix.num_vars()).map_err(|_| {
-        PyPopneiError::broken_of_the_file(
-            format!(
-                "the pass gave {num_vars} variants, which is more than a count holds",
-                num_vars = matrix.num_vars()
-            ),
-            &path,
-        )
-    })?;
+    let (matrix, counts) = py.detach(|| over_the_source(source, &steps, max_num_vars))?;
     // The Ctrl-C that arrived while the interpreter was released is raised
     // before numpy is called: the first array of a process imports the C API
     // of numpy, that import fails with the exception that is pending, and
@@ -144,7 +120,7 @@ pub(crate) fn calc_rogers_huff_r2_matrix<'py>(
     let chroms = chrom_column(py, &chroms, &path)?;
     let poss = read_only(matrix.poss.into_pyarray(py))?;
     let r2 = read_only(the_square_of(py, matrix.num_vars, matrix.r2)?)?;
-    Ok((r2, chroms, poss, (num_vars, filtering)))
+    Ok((r2, chroms, poss, counts))
 }
 
 /// One pass over `source` through `steps`, and the r² of every pair of the
@@ -164,22 +140,42 @@ fn over_the_source(
     source: &dyn OpenSource,
     steps: &[Step],
     max_num_vars: usize,
-) -> popnei::Result<TheMatrixOfThePass> {
+) -> Result<TheMatrixOfThePass, PyPopneiError> {
+    // The file of the source goes into every error of the pass, and
+    // `errors.rs` is what leaves it out of the message of the two that are
+    // of the cap a user wrote, as it does for every argument that is refused
+    // while a file is being read.
+    let path = source.path();
+    let of_the_source = |error: popnei::Error| PyPopneiError::of_the_file(error, path);
     // The source is opened at the size of its own blocks: the six sums of a
     // pair run over the individuals, which no block cuts, so the same matrix
     // comes out whatever the size, and no `Reblock` is put over the chain.
-    let reader = source.reader(None)?;
+    let reader = source.reader(None).map_err(of_the_source)?;
     // The chain of the pass stays here, lent to the core, so that the counts
     // of its filters can be read when the call is over: the loop over the
     // blocks is the core's, and no block of it reaches this crate.
-    let mut chain = chain_of(reader, steps)?;
+    let mut chain = chain_of(reader, steps).map_err(of_the_source)?;
     // A pass that gave no variant is the core's `PassGaveNoVariant`, which
     // the core builds with the counts it reads from the chain it was lent:
     // they say whether the source had none or the steps kept none, and
     // nothing else would carry them out of a pass that could not be
     // finished.
-    let matrix = popnei::ld::calc_r2_matrix(&mut chain, max_num_vars)?;
-    Ok((matrix, filtering_of(chain.as_ref())))
+    let matrix = popnei::ld::calc_r2_matrix(&mut chain, max_num_vars).map_err(of_the_source)?;
+    // The variants of the pass, which are the rows of the matrix, go to
+    // Python as the `u64` every count of popnei is there: a `usize` is 32
+    // bits in WebAssembly and 64 natively, and what a user reads does not
+    // depend on that.
+    let num_vars = u64::try_from(matrix.num_vars()).map_err(|_| {
+        PyPopneiError::broken_of_the_file(
+            format!(
+                "the pass gave {num_vars} variants, which is more than a count holds",
+                num_vars = matrix.num_vars()
+            ),
+            path,
+        )
+    })?;
+    let counts = pass_counts_of(num_vars, chain.as_ref(), steps);
+    Ok((matrix, counts))
 }
 
 /// The r² of the matrix as a numpy array of its variants x its variants.
@@ -212,16 +208,6 @@ fn the_square_of<'py>(
         }
     })?;
     Ok(square.into_pyarray(py))
-}
-
-/// What each filter of a chain was given and kept, the outermost filter
-/// first, which is the order the package turns around for its user.
-fn filtering_of(chain: &dyn BlockReader) -> Vec<(&'static str, u64, u64)> {
-    chain
-        .filtering_stats()
-        .into_iter()
-        .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-        .collect()
 }
 
 /// The curve of one population on its way to Python: the fitted ρ per base
@@ -314,7 +300,7 @@ pub(crate) fn calc_ld_and_dist_per_pop<'py>(
     // `Blocks::__next__`: the loop over the blocks is the core's, and a pass
     // that is interrupted loses only itself, since it writes no file and the
     // `Variants` is as it was.
-    let (of_the_pass, pop_names, filtering) = py
+    let (of_the_pass, pop_names, counts) = py
         .detach(|| -> popnei::Result<_> {
             // The source is opened at the size of its own blocks: the bins
             // are added up in the order of the variants of the pass, which
@@ -339,15 +325,15 @@ pub(crate) fn calc_ld_and_dist_per_pop<'py>(
             let of_each_pop: Vec<&[usize]> =
                 (0..pops.len()).map(|pop| pops.individuals(pop)).collect();
             let of_the_pass = popnei::ld::calc_ld_and_dist(&mut *chain, &of_each_pop, &options)?;
-            let filtering = filtering_of(chain.as_ref());
-            Ok((of_the_pass, names, filtering))
+            // The variants the pass gave are the core's count and are not
+            // worked out again here: the calculation was given them and
+            // counted them with the arithmetic that says what happens on
+            // overflow, and a count of this crate beside it would be a
+            // second answer to one question.
+            let counts = pass_counts_of(of_the_pass.num_vars(), chain.as_ref(), &steps);
+            Ok((of_the_pass, names, counts))
         })
         .map_err(|error| PyPopneiError::of_the_file(error, &path))?;
-    // The variants the pass gave are the core's count and are not worked out
-    // again here: the calculation was given them and counted them with the
-    // arithmetic that says what happens on overflow, and a count of this
-    // crate beside it would be a second answer to one question.
-    let num_vars = of_the_pass.num_vars();
     // The Ctrl-C that arrived while the interpreter was released is raised
     // here, before numpy is called.
     raise_a_ctrl_c_before_numpy_is_called(py)?;
@@ -365,7 +351,7 @@ pub(crate) fn calc_ld_and_dist_per_pop<'py>(
         })?;
         per_pop.push(the_bins_for_python(py, bins, &path)?);
     }
-    Ok((pop_names, per_pop, (num_vars, filtering)))
+    Ok((pop_names, per_pop, counts))
 }
 
 /// The bins of one population as the five arrays and the count the package

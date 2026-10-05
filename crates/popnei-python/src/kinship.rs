@@ -35,7 +35,7 @@ use popnei::filters::resolve_individuals;
 use popnei::kinship::Kinship;
 
 use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
-use crate::source::{OpenSource, PassCounts, count_of_at_least, source_of};
+use crate::source::{OpenSource, PassCounts, count_of_at_least, pass_counts_of, source_of};
 use crate::steps::{Step, Steps, chain_of};
 
 /// What one pass gives: the kinship the core calculated, the names of the
@@ -153,7 +153,7 @@ fn over_the_source(
     Ok((
         kinship,
         names,
-        (num_vars_given, filtering_of(chain.as_ref())),
+        pass_counts_of(num_vars_given, chain.as_ref(), steps),
     ))
 }
 
@@ -266,14 +266,4 @@ fn the_projections_of(
         }
     })?;
     Ok(table.into_pyarray(py))
-}
-
-/// What each filter of a chain was given and kept, the outermost filter
-/// first, which is the order the package turns around for its user.
-fn filtering_of(chain: &dyn BlockReader) -> Vec<(&'static str, u64, u64)> {
-    chain
-        .filtering_stats()
-        .into_iter()
-        .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-        .collect()
 }

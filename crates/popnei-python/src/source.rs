@@ -34,21 +34,43 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyString, PyTuple};
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
+use popnei::filters::stopped_early;
 use popnei::variant::{ChromTable, Needs};
 
 use crate::errors::PyPopneiError;
-use crate::steps::{Steps, chain_of};
+use crate::steps::{Step, Steps, chain_of, pass_steps_of};
 use crate::vars::VarsSource;
 use crate::vcf::VcfSource;
 
 /// The counts of one pass on their way to Python: how many variants it has
-/// given, and, for each filter of its chain, its kind, how many variants it
-/// was given and how many it kept.
+/// given; for each filter of its chain, its kind, how many variants it was
+/// given and how many it kept; and whether the filter of the first n kept
+/// its n and ended the pass, so that the counts of the filters are of the
+/// part of the source that was read. [`pass_counts_of`] is what builds
+/// them, for every consumer of this crate.
 ///
 /// The filters come in the order of the chain, the outermost first, which is
 /// the reverse of the order of the steps: the package turns them around, as
 /// "How it runs" of the counts of `docs/specs/filters.md` says.
-pub(crate) type PassCounts = (u64, Vec<(&'static str, u64, u64)>);
+pub(crate) type PassCounts = (u64, Vec<(&'static str, u64, u64)>, bool);
+
+/// The counts of a pass that gave `num_vars` variants through `chain`, the
+/// chain of readers that was built from `steps`.
+///
+/// `steps` are those the pass was built from, which its consumer took when
+/// the pass started, and not those of the `Variants` when the counts are
+/// read: a step added while a pass runs is not in it, and whether the pass
+/// was ended by a filter of the first n is the core's to say from those
+/// steps and the counts, `popnei::filters::stopped_early`.
+pub(crate) fn pass_counts_of(num_vars: u64, chain: &dyn BlockReader, steps: &[Step]) -> PassCounts {
+    let filtering = chain.filtering_stats();
+    let stopped_early = stopped_early(&pass_steps_of(steps), &filtering);
+    let filtering = filtering
+        .into_iter()
+        .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
+        .collect();
+    (num_vars, filtering, stopped_early)
+}
 
 /// The columns of one block on their way to Python: the genotypes, and then
 /// the chromosomes, the positions, the ids, the alleles and the qualities,
@@ -173,6 +195,7 @@ pub(crate) fn blocks_of(
             finished: false,
             num_vars: 0,
         }),
+        steps,
         path: path.to_path_buf(),
     })
 }
@@ -196,6 +219,9 @@ struct Pass {
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct Blocks {
     pass: Mutex<Pass>,
+    /// The steps the chain of the pass was built from, which say with its
+    /// counts whether a filter of the first n ended it.
+    steps: Vec<Step>,
     /// The file the reader reads, for the errors of the file system, which
     /// carry it where Python keeps it, `OSError.filename`.
     path: PathBuf,
@@ -220,9 +246,10 @@ impl Blocks {
             .inspect_err(|_| self.finish(py))
     }
 
-    // How many variants the pass has given, and what each filter of it was
-    // given and kept, the outermost filter first. It is read while the pass
-    // runs too, and it then holds what has been read up to there.
+    // How many variants the pass has given, what each filter of it was given
+    // and kept, the outermost filter first, and whether the filter of the
+    // first n ended it. It is read while the pass runs too, and it then
+    // holds what has been read up to there.
     fn pass_stats(&self, py: Python<'_>) -> Result<PassCounts, PyPopneiError> {
         // The interpreter is released while the lock is waited for: the
         // thread that reads a block holds that lock for the whole read,
@@ -239,13 +266,11 @@ impl Blocks {
                     &self.path,
                 )
             })?;
-            let filtering = pass
-                .reader
-                .filtering_stats()
-                .into_iter()
-                .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-                .collect();
-            Ok((pass.num_vars, filtering))
+            Ok(pass_counts_of(
+                pass.num_vars,
+                pass.reader.as_ref(),
+                &self.steps,
+            ))
         })
     }
 }

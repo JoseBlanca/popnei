@@ -27,9 +27,19 @@ class PassStats:
 
     filtering: dict[str, FilteringStats]
     """How many variants each filter of the pass was given and kept, under
-    the kind of the filter, ``"missing_data"``, ``"maf"``, ``"obs_het"`` or
-    ``"ld"``,
-    in the order of the steps. It is empty for a pass with no filter."""
+    the kind of the filter, ``"missing_data"``, ``"maf"``, ``"obs_het"``,
+    ``"ld"``, ``"regions"``, ``"excluded_regions"`` or ``"first_n"``, in the
+    order of the steps. It is empty for a pass with no filter."""
+
+    stopped_early: bool
+    """Whether the filter of the first n variants,
+    :meth:`Variants.filter_first_n`, kept its n and ended the pass before
+    the source ended. When it is true, `num_vars` is that n and the counts
+    in `filtering` are of the part of the source that was read, and not of
+    the whole of it: a filter before it that kept 900 of 1000 variants was
+    given 1000 of a file that may hold millions. It is false for a pass
+    with no such filter, and for one whose filter was given fewer than n
+    variants, which read the whole source."""
 
 
 def _pass_stats_of(counts) -> PassStats:
@@ -39,13 +49,14 @@ def _pass_stats_of(counts) -> PassStats:
     and a user reads them in the order of the steps, which is the one the
     filters were put on the ``Variants`` in and the reverse of the chain's.
     """
-    num_vars, filtering = counts
+    num_vars, filtering, stopped_early = counts
     return PassStats(
         num_vars=num_vars,
         filtering={
             kind: FilteringStats(vars_processed=vars_processed, vars_kept=vars_kept)
             for kind, vars_processed, vars_kept in reversed(filtering)
         },
+        stopped_early=stopped_early,
     )
 
 
@@ -472,6 +483,51 @@ class Variants:
                 f"{type(exclude).__name__}, was given"
             )
         self._steps.filter_by_regions(bed_path, exclude)
+
+    def filter_first_n(self, num_vars: int) -> None:
+        """Keep the first `num_vars` variants that the steps before this one
+        keep, and end every pass there, without reading the rest of the
+        source.
+
+        It is for trying an analysis on a large file quickly before running
+        it on the whole: without it every pass reads the file to its end.
+        The first n are those of the start of the file, so on a VCF sorted
+        by position they are the start of the first chromosome and not a
+        sample of the genome. A filter that keeps variants at random, put
+        before this one, gives n variants spread over the part of the file
+        that was read. When fewer than `num_vars` variants reach it, it
+        keeps them all and the pass reads the whole source.
+
+        Every pass of the ``Variants`` ends at the same variant, so a
+        calculation that reads the source twice reads the same variants in
+        both passes. The step's kind is ``"first_n"`` and its ``args`` are
+        ``{"num_vars": 1000}``.
+
+        The counts of a pass it ended depend on the size of the blocks the
+        source is read in: the filter is given whole blocks, so its counts
+        are the variants of the blocks it took as given and `num_vars` as
+        kept, and the filters before it count those same blocks. They are of
+        the part of the source that was read and not of the whole file, and
+        the ``stopped_early`` of the :class:`PassStats` of the pass is true
+        to say so.
+
+        No step that takes variants out can be added after it: a threshold
+        filter, the filter by linkage disequilibrium, a filter that keeps
+        variants at random or a filter by regions added after it is a
+        ``ValueError`` that names the kind of the step, since it would leave
+        fewer than `num_vars` variants. A user who wants n variants that
+        pass the MAF filter puts :meth:`filter_by_maf` before this one.
+        :meth:`filter_individuals` takes out no variant and is accepted
+        after it.
+
+        The call adds a step and gives nothing back. A `num_vars` of 0 or
+        below is a ``ValueError``, and a float, ``True`` or anything that is
+        no whole number a ``TypeError`` that names the argument. A second
+        filter of this kind is a ``ValueError`` as well: two of them keep the
+        first of the smaller n. After any of them the steps are as they
+        were.
+        """
+        self._steps.filter_first_n(num_vars)
 
     def iter_blocks(
         self,

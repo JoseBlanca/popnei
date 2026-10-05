@@ -11,20 +11,22 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The six methods that add a filter are here as well, one for each of the
+//! The seven methods that add a filter are here as well, one for each of the
 //! three numbers of a variant a filter compares, one for the filter by
-//! linkage disequilibrium, one for the individuals to keep and one for the
-//! regions of a BED file, and each of them refuses at the call what a user
-//! cannot filter by: a threshold that is not a number from 0 to 1, under the
-//! name of the argument they wrote it in; a window of fewer than 1 base
-//! pairs; a name that is not an individual of the source, a name that is
-//! there twice and no name at all; a BED file that cannot be read or that
-//! holds a line that is not a region, or no region; and a second filter of a
-//! kind the list holds, with the threshold of the one that is set when both
-//! are threshold filters. No reader exists at that call, so
-//! none of those refusals can come from the chain, and the individuals of
-//! the source, which the names are resolved against, are held here from the
-//! moment the `Variants` is built.
+//! linkage disequilibrium, one for the individuals to keep, one for the
+//! regions of a BED file and one for the first n variants, and each of them
+//! refuses at the call what a user cannot filter by: a threshold that is not
+//! a number from 0 to 1, under the name of the argument they wrote it in; a
+//! window of fewer than 1 base pairs; a name that is not an individual of
+//! the source, a name that is there twice and no name at all; a BED file
+//! that cannot be read or that holds a line that is not a region, or no
+//! region; a first n of no variant; a second filter of a kind the list
+//! holds, with the threshold of the one that is set when both are threshold
+//! filters; and a filter that takes variants out added after the filter of
+//! the first n, which would leave fewer than the n it keeps. No reader
+//! exists at that call, so none of those refusals can come from the chain,
+//! and the individuals of the source, which the names are resolved against,
+//! are held here from the moment the `Variants` is built.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -37,11 +39,11 @@ use pyo3::types::{PyFloat, PyTuple};
 use popnei::block::BlockReader;
 use popnei::filters::{
     LdFilter, PassStep, RegionSelection, Regions, VarFilter, VarFilteringCriterion, individuals_of,
-    refuse_a_second_filter_of_a_kind, resolve_individuals,
+    refuse_a_second_filter_of_a_kind, refuse_a_step_after_the_first_n, resolve_individuals,
 };
 
 use crate::errors::PyPopneiError;
-use crate::source::{distance_of, threshold_of};
+use crate::source::{count_of_at_least, distance_of, threshold_of};
 
 /// One step of a `Variants`: what the core does with it, and the arguments
 /// a Python user wrote it with.
@@ -64,12 +66,13 @@ pub(crate) struct Step {
 /// What a user gave one argument of a step: the threshold of a filter, a
 /// number from 0 to 1, the window of the filter by linkage disequilibrium,
 /// a whole number of base pairs, the names of the individuals to keep, in
-/// the order they named them, or the path of a BED file; or what the step
-/// found in what it was given, the number of regions of that file once
-/// those that overlap or touch are joined.
+/// the order they named them, the path of a BED file, or the number of
+/// variants the filter of the first n keeps; or what the step found in what
+/// it was given, the number of regions of that file once those that overlap
+/// or touch are joined.
 ///
 /// It goes to Python as the value of that argument, a float for a
-/// threshold, an `int` for the window and for the number of regions, a
+/// threshold, an `int` for the window and for the two counts, a
 /// tuple of strings for the individuals and a string for the path, which is
 /// what "In Python and in TypeScript" of `docs/specs/filters.md` gives the
 /// `args` of each step. A window is a whole number of base pairs and is not
@@ -100,7 +103,7 @@ impl<'py> IntoPyObject<'py> for Argument {
 }
 
 /// The names a Python user writes the argument of each filter under, which
-/// are the arguments of the four methods that add one.
+/// are the arguments of the methods that add one.
 ///
 /// The core names a filter by its kind, `maf`, and knows nothing of the
 /// arguments of Python, so the two names meet here: a user who is told that
@@ -113,6 +116,7 @@ const MAX_DIST: &str = "max_dist";
 const INDIVIDUALS: &str = "individuals";
 const BED_PATH: &str = "bed_path";
 const NUM_REGIONS: &str = "num_regions";
+const NUM_VARS: &str = "num_vars";
 
 /// The kind of one step and its arguments on their way to Python, which the
 /// package puts in the `Step` of `docs/specs/filters.md`.
@@ -237,10 +241,7 @@ impl Steps {
                 (MAX_DIST, Argument::Distance(max_dist)),
             ],
         };
-        let mut steps = self.locked()?;
-        refuse_a_second_filter_of_a_kind(&pass_steps_of(&steps), &step.pass_step)?;
-        steps.push(step);
-        Ok(())
+        self.add(step)
     }
 
     // The genotypes of `individuals` kept at every variant, in the order
@@ -258,10 +259,7 @@ impl Steps {
             pass_step: PassStep::KeepIndividuals(individuals.clone()),
             args: vec![(INDIVIDUALS, Argument::Individuals(individuals))],
         };
-        let mut steps = self.locked()?;
-        refuse_a_second_filter_of_a_kind(&pass_steps_of(&steps), &step.pass_step)?;
-        steps.push(step);
-        Ok(())
+        self.add(step)
     }
 
     // The variants inside the regions of the BED file at `bed_path`, or,
@@ -301,10 +299,34 @@ impl Steps {
                 (NUM_REGIONS, Argument::Count(num_regions)),
             ],
         };
-        let mut steps = self.locked()?;
-        refuse_a_second_filter_of_a_kind(&pass_steps_of(&steps), &step.pass_step)?;
-        steps.push(step);
-        Ok(())
+        self.add(step)
+    }
+
+    // The first `num_vars` variants that the steps before this one keep,
+    // after which every pass ends without reading the rest of the source.
+    // The number is taken as the object it is and converted here, as a
+    // count of variants, so that a negative one is the `ValueError` that
+    // names the argument and not the `OverflowError` of pyo3, and `True` or
+    // `1.5` the `TypeError` that names it.
+    fn filter_first_n(&self, num_vars: &Bound<'_, PyAny>) -> Result<(), PyPopneiError> {
+        let count = count_of_at_least(NUM_VARS, 1, num_vars)?;
+        let num_vars = u64::try_from(count).map_err(|_| PyPopneiError::Count {
+            name: NUM_VARS,
+            smallest: 1,
+            value: count.to_string(),
+        })?;
+        // The core refuses a `num_vars` of 0 when a pass builds the filter,
+        // in `FirstNReader::new`, and no reader exists at this call: the
+        // same error of the core is given here, so that a user gets it
+        // where they wrote the 0 and not at the next pass.
+        if num_vars == 0 {
+            return Err(popnei::Error::FirstNOfNoVariants.into());
+        }
+        let step = Step {
+            pass_step: PassStep::FirstN(num_vars),
+            args: vec![(NUM_VARS, Argument::Count(count))],
+        };
+        self.add(step)
     }
 }
 
@@ -344,8 +366,23 @@ impl Steps {
             pass_step: PassStep::VarFilter(criterion),
             args: vec![(argument, Argument::Threshold(criterion.threshold()))],
         };
+        self.add(step)
+    }
+
+    /// `step` added at the end of the list, where the next pass takes it.
+    ///
+    /// # Errors
+    ///
+    /// When `step` takes variants out and the list holds a filter of the
+    /// first n, and when the list holds a step of the kind of `step`
+    /// already; the core says both, in the order in which its `chain_of`
+    /// asks them. After either, the list is as it was. And when a panic
+    /// left the lock broken, which is a defect of this crate.
+    fn add(&self, step: Step) -> Result<(), PyPopneiError> {
         let mut steps = self.locked()?;
-        refuse_a_second_filter_of_a_kind(&pass_steps_of(&steps), &step.pass_step)?;
+        let set = pass_steps_of(&steps);
+        refuse_a_step_after_the_first_n(&set, &step.pass_step)?;
+        refuse_a_second_filter_of_a_kind(&set, &step.pass_step)?;
         steps.push(step);
         Ok(())
     }
@@ -394,9 +431,11 @@ fn under_the_argument(error: popnei::Error, argument: &'static str) -> PyPopneiE
 ///
 /// # Errors
 ///
-/// When a threshold of the steps is not a number from 0 to 1, or when the
-/// steps hold two filters of one kind. A user reaches neither: the call
-/// that adds a filter refuses both, and the steps are read from there.
+/// When a threshold of the steps is not a number from 0 to 1, when the
+/// steps hold two filters of one kind, when the filter of the first n asks
+/// for 0 variants, and when a filter that takes variants out comes after
+/// it. A user reaches none of them: the call that adds a filter refuses
+/// each, and the steps are read from there.
 pub(crate) fn chain_of(
     reader: Box<dyn BlockReader>,
     steps: &[Step],
@@ -406,6 +445,6 @@ pub(crate) fn chain_of(
 
 /// What the pass does at each step, in the order of the steps: what the core
 /// is given, out of what the steps of this crate hold.
-fn pass_steps_of(steps: &[Step]) -> Vec<PassStep> {
+pub(crate) fn pass_steps_of(steps: &[Step]) -> Vec<PassStep> {
     steps.iter().map(|step| step.pass_step.clone()).collect()
 }

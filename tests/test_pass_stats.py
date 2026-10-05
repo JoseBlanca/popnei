@@ -78,7 +78,9 @@ def test_a_whole_iter_blocks_counts_every_variant_it_gave(many: Variants) -> Non
     blocks = many.iter_blocks()
 
     assert sum(block.num_vars for block in blocks) == MANY_NUM_VARS
-    assert blocks.pass_stats == PassStats(num_vars=MANY_NUM_VARS, filtering={})
+    assert blocks.pass_stats == PassStats(
+        num_vars=MANY_NUM_VARS, filtering={}, stopped_early=False
+    )
 
 
 def test_the_counts_of_a_pass_that_is_not_over_are_of_the_blocks_it_gave(
@@ -93,11 +95,11 @@ def test_the_counts_of_a_pass_that_is_not_over_are_of_the_blocks_it_gave(
     """
     blocks = many.iter_blocks(num_vars_per_block=NUM_VARS_PER_BLOCK)
 
-    assert blocks.pass_stats == PassStats(num_vars=0, filtering={})
+    assert blocks.pass_stats == PassStats(num_vars=0, filtering={}, stopped_early=False)
     for _ in range(BLOCKS_READ):
         next(blocks)
     assert blocks.pass_stats == PassStats(
-        num_vars=VARS_OF_THE_BLOCKS_READ, filtering={}
+        num_vars=VARS_OF_THE_BLOCKS_READ, filtering={}, stopped_early=False
     )
 
 
@@ -112,8 +114,12 @@ def test_every_pass_counts_its_own_variants(many: Variants) -> None:
 
     second = many.iter_blocks()
     assert sum(block.num_vars for block in second) == MANY_NUM_VARS
-    assert second.pass_stats == PassStats(num_vars=MANY_NUM_VARS, filtering={})
-    assert first.pass_stats == PassStats(num_vars=MANY_NUM_VARS, filtering={})
+    assert second.pass_stats == PassStats(
+        num_vars=MANY_NUM_VARS, filtering={}, stopped_early=False
+    )
+    assert first.pass_stats == PassStats(
+        num_vars=MANY_NUM_VARS, filtering={}, stopped_early=False
+    )
 
 
 def test_write_vars_gives_the_counts_of_the_pass_it_made(
@@ -129,7 +135,9 @@ def test_write_vars_gives_the_counts_of_the_pass_it_made(
     written = write_vars(many, path, VARS_NUM_VARS_PER_BLOCK)
 
     assert isinstance(written, VarsWritten)
-    assert written.pass_stats == PassStats(num_vars=MANY_NUM_VARS, filtering={})
+    assert written.pass_stats == PassStats(
+        num_vars=MANY_NUM_VARS, filtering={}, stopped_early=False
+    )
     assert sum(block.num_vars for block in open_vars(path).iter_blocks()) == (
         MANY_NUM_VARS
     )
@@ -145,10 +153,12 @@ def test_a_source_with_no_variants_counts_none(vcf_of_lines, tmp_path: Path) -> 
 
     blocks = variants.iter_blocks()
     assert list(blocks) == []
-    assert blocks.pass_stats == PassStats(num_vars=0, filtering={})
+    assert blocks.pass_stats == PassStats(num_vars=0, filtering={}, stopped_early=False)
 
     written = write_vars(variants, tmp_path / "empty.vars")
-    assert written.pass_stats == PassStats(num_vars=0, filtering={})
+    assert written.pass_stats == PassStats(
+        num_vars=0, filtering={}, stopped_early=False
+    )
 
 
 def test_the_block_a_pass_lost_with_an_error_is_not_among_its_variants(
@@ -177,7 +187,7 @@ def test_the_block_a_pass_lost_with_an_error_is_not_among_its_variants(
             given.append(block.num_vars)
 
     assert given == [1, 1, 1]
-    assert blocks.pass_stats == PassStats(num_vars=3, filtering={})
+    assert blocks.pass_stats == PassStats(num_vars=3, filtering={}, stopped_early=False)
 
 
 def test_the_counts_of_a_pass_are_frozen_dataclasses() -> None:
@@ -188,13 +198,17 @@ def test_the_counts_of_a_pass_are_frozen_dataclasses() -> None:
     numbers that nothing can write over, and two results of the same pass
     are equal.
     """
-    stats = PassStats(num_vars=3, filtering={"maf": FilteringStats(5, 3)})
+    stats = PassStats(
+        num_vars=3, filtering={"maf": FilteringStats(5, 3)}, stopped_early=False
+    )
     written = VarsWritten(pass_stats=stats)
 
     assert dataclasses.is_dataclass(PassStats)
     assert dataclasses.is_dataclass(FilteringStats)
     assert dataclasses.is_dataclass(VarsWritten)
-    assert stats == PassStats(num_vars=3, filtering={"maf": FilteringStats(5, 3)})
+    assert stats == PassStats(
+        num_vars=3, filtering={"maf": FilteringStats(5, 3)}, stopped_early=False
+    )
     assert FilteringStats(vars_processed=5, vars_kept=3) == FilteringStats(5, 3)
     assert written == VarsWritten(pass_stats=stats)
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -216,7 +230,9 @@ def test_the_counts_of_the_filters_come_in_the_order_of_the_steps() -> None:
     maf filter first, because it is the outermost, and `filtering` has the
     missing data one first.
     """
-    stats = _pass_stats_of((163, [("maf", 215, 163), ("missing_data", 500, 215)]))
+    stats = _pass_stats_of(
+        (163, [("maf", 215, 163), ("missing_data", 500, 215)], False)
+    )
 
     assert list(stats.filtering) == ["missing_data", "maf"]
     assert stats.filtering["missing_data"] == FilteringStats(

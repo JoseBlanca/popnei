@@ -40,7 +40,9 @@ use popnei::stats::{
 };
 
 use crate::errors::PyPopneiError;
-use crate::source::{PassCounts, count_of, read_only, source_of, threshold_of, written_as};
+use crate::source::{
+    PassCounts, count_of, pass_counts_of, read_only, source_of, threshold_of, written_as,
+};
 use crate::steps::{Steps, chain_of};
 
 /// The name of the argument that says how many called genotypes a
@@ -149,7 +151,7 @@ pub(crate) fn calc_per_var_distribs<'py>(
     // of it: the loop over the blocks is the core's, and it runs the rows of
     // each block on rayon, whose workers would deadlock on an interpreter
     // this thread held.
-    let (distribs, pop_names, filtering) = py
+    let (distribs, pop_names, counts) = py
         .detach(|| -> Result<_, popnei::Error> {
             let reader = source.reader(None)?;
             // The chain of the pass stays here, lent to the core, so that
@@ -169,12 +171,8 @@ pub(crate) fn calc_per_var_distribs<'py>(
                 poly_threshold,
             };
             let distribs = popnei::stats::calc_per_var_distribs(&mut *chain, &config)?;
-            let filtering = chain
-                .filtering_stats()
-                .into_iter()
-                .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-                .collect();
-            Ok((distribs, pop_names, filtering))
+            let counts = pass_counts_of(distribs.num_vars, chain.as_ref(), &steps);
+            Ok((distribs, pop_names, counts))
         })
         .map_err(|error| PyPopneiError::of_the_file(error, path))?;
     // A Ctrl-C that arrived while the pass ran is still pending: the
@@ -190,7 +188,8 @@ pub(crate) fn calc_per_var_distribs<'py>(
         unbiased_exp_het,
         poly_vars_ratio,
         missing_rate,
-        num_vars,
+        // The variants of the pass are in its counts.
+        num_vars: _,
     } = distribs;
     Ok((
         pop_names,
@@ -207,7 +206,7 @@ pub(crate) fn calc_per_var_distribs<'py>(
             .map(|poly| poly_counts_of(py, poly))
             .transpose()?,
         distrib_of(py, missing_rate.as_ref())?,
-        (num_vars, filtering),
+        counts,
     ))
 }
 
@@ -243,7 +242,7 @@ pub(crate) fn calc_per_individual_stats<'py>(
     // of it: the loop over the blocks is the core's, and it runs the rows of
     // each block on rayon, whose workers would deadlock on an interpreter
     // this thread held.
-    let (stats, individuals, filtering) = py
+    let (stats, individuals, counts) = py
         .detach(|| -> Result<_, popnei::Error> {
             let reader = source.reader(None)?;
             // The chain of the pass stays here, lent to the core, so that
@@ -254,12 +253,8 @@ pub(crate) fn calc_per_individual_stats<'py>(
             // gives them in the order the user named them.
             let individuals = chain.individuals().to_vec();
             let stats = popnei::stats::calc_per_individual_stats(&mut *chain)?;
-            let filtering = chain
-                .filtering_stats()
-                .into_iter()
-                .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-                .collect();
-            Ok((stats, individuals, filtering))
+            let counts = pass_counts_of(stats.num_vars(), chain.as_ref(), &steps);
+            Ok((stats, individuals, counts))
         })
         .map_err(|error| PyPopneiError::of_the_file(error, path))?;
     // A Ctrl-C that arrived while the pass ran is still pending: the
@@ -295,7 +290,7 @@ pub(crate) fn calc_per_individual_stats<'py>(
         individuals,
         missing_gt_rate.into_pyarray(py),
         obs_het_rate.into_pyarray(py),
-        (stats.num_vars(), filtering),
+        counts,
     ))
 }
 

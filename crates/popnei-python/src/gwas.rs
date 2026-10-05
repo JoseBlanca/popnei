@@ -39,11 +39,12 @@ use numpy::{
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
-use popnei::block::BlockReader;
 use popnei::gwas::{Gwas, GwasInput, TestType, TraitType};
 
 use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
-use crate::source::{ChromColumn, OpenSource, PassCounts, chrom_column, id_column, source_of};
+use crate::source::{
+    ChromColumn, OpenSource, PassCounts, chrom_column, id_column, pass_counts_of, source_of,
+};
 use crate::steps::{Step, Steps, chain_of};
 
 /// The null model on its way to Python: which of the four models was
@@ -86,11 +87,6 @@ type GwasForPython<'py> = (
     bool,
     PassCounts,
 );
-
-/// What each filter of a chain was given and kept, under the kind of the
-/// filter and in the order of the chain, which the package turns around for
-/// its user.
-type FilteringCounts = Vec<(&'static str, u64, u64)>;
 
 // The study of the variants of `source` that the steps of `steps` keep, over
 // the individuals at the positions `individuals` among the ones the pass
@@ -182,12 +178,7 @@ pub(crate) fn calc_gwas<'py>(
     // blocks, as it is in `Blocks::__next__`: the loop over the blocks is
     // the core's, and a study that is interrupted loses only itself, since
     // it writes no file and the `Variants` is as it was.
-    let calculated = py.detach(|| over_the_source(source, &steps, &input));
-    // The file of the source goes into every error of the pass, and
-    // `errors.rs` is what leaves it out of the message of the ones that are
-    // of an argument a user wrote.
-    let (result, filtering) =
-        calculated.map_err(|error| PyPopneiError::of_the_file(error, &path))?;
+    let (result, counts) = py.detach(|| over_the_source(source, &steps, &input))?;
     // The Ctrl-C that arrived while the interpreter was released is raised
     // before numpy is called: the first array of a process imports the C API
     // of numpy, that import fails with the exception that is pending, and
@@ -197,7 +188,9 @@ pub(crate) fn calc_gwas<'py>(
     // every column of it is given to numpy without a copy: the four of them
     // are 32 bytes for each variant, 32 MB for a million.
     let Gwas {
-        num_vars,
+        // The variants of the study are in the counts of the pass, which
+        // `over_the_source` took them into.
+        num_vars: _,
         null_model,
         allele_freq,
         beta,
@@ -209,15 +202,6 @@ pub(crate) fn calc_gwas<'py>(
         poss,
         ids,
     } = result;
-    // The variants of the study go to Python as the `u64` every count of
-    // popnei is there: a `usize` is 32 bits in WebAssembly and 64 natively,
-    // and what a user reads does not depend on that.
-    let num_vars = u64::try_from(num_vars).map_err(|_| {
-        PyPopneiError::broken_of_the_file(
-            format!("the study read {num_vars} variants, more than the count of a pass holds"),
-            &path,
-        )
-    })?;
     let chroms = match chroms.as_deref() {
         Some(numbers) => {
             let column = ChromColumn::of(numbers, &chrom_table, &path)?;
@@ -243,12 +227,7 @@ pub(crate) fn calc_gwas<'py>(
         null_model.heritability,
         null_model.num_individuals,
     );
-    Ok((
-        null_model,
-        stats,
-        used_grammar_gamma_approx,
-        (num_vars, filtering),
-    ))
+    Ok((null_model, stats, used_grammar_gamma_approx, counts))
 }
 
 /// One pass over `source` through `steps`, and the study of the variants it
@@ -275,14 +254,19 @@ fn over_the_source(
     source: &dyn OpenSource,
     steps: &[Step],
     input: &GwasInput<'_>,
-) -> popnei::Result<(Gwas, FilteringCounts)> {
+) -> Result<(Gwas, PassCounts), PyPopneiError> {
+    // The file of the source goes into every error of the pass, and
+    // `errors.rs` is what leaves it out of the message of the ones that are
+    // of an argument a user wrote.
+    let path = source.path();
+    let of_the_source = |error: popnei::Error| PyPopneiError::of_the_file(error, path);
     // The source is opened at the size of its own blocks, since the core
     // puts a `reblock` over whatever it is given.
-    let reader = source.reader(None)?;
+    let reader = source.reader(None).map_err(of_the_source)?;
     // The chain of the pass stays here, lent to the core, so that the counts
     // of its filters can be read when the call is over: the loop over the
     // blocks is the core's, and no block of it reaches this crate.
-    let mut chain = chain_of(reader, steps)?;
+    let mut chain = chain_of(reader, steps).map_err(of_the_source)?;
     // The factor of the GRAMMAR-Gamma approximation is estimated from the
     // first block of a second pass over the same variants, through the same
     // steps, which is opened here and only for a study that asked for the
@@ -291,15 +275,29 @@ fn over_the_source(
     // through the same steps and count the same, as `pca.rs` takes them.
     let mut gamma_pass = match input.use_grammar_gamma_approx {
         false => None,
-        true => Some(chain_of(source.reader(None)?, steps)?),
+        true => Some(
+            source
+                .reader(None)
+                .and_then(|reader| chain_of(reader, steps))
+                .map_err(of_the_source)?,
+        ),
     };
-    let result = popnei::gwas::calc_gwas(&mut chain, gamma_pass.as_mut(), input)?;
-    let filtering = chain
-        .filtering_stats()
-        .into_iter()
-        .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-        .collect();
-    Ok((result, filtering))
+    let result =
+        popnei::gwas::calc_gwas(&mut chain, gamma_pass.as_mut(), input).map_err(of_the_source)?;
+    // The variants of the study go to Python as the `u64` every count of
+    // popnei is there: a `usize` is 32 bits in WebAssembly and 64 natively,
+    // and what a user reads does not depend on that.
+    let num_vars = u64::try_from(result.num_vars).map_err(|_| {
+        PyPopneiError::broken_of_the_file(
+            format!(
+                "the study read {num_vars} variants, more than the count of a pass holds",
+                num_vars = result.num_vars
+            ),
+            path,
+        )
+    })?;
+    let counts = pass_counts_of(num_vars, chain.as_ref(), steps);
+    Ok((result, counts))
 }
 
 /// The positions of the tested individuals as the core counts them.

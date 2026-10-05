@@ -35,7 +35,7 @@ use popnei::diversity::{
 use popnei::stats::Pops;
 
 use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
-use crate::source::{OpenSource, PassCounts, source_of, written_as};
+use crate::source::{OpenSource, PassCounts, pass_counts_of, source_of, written_as};
 use crate::stats::{of_a_result, the_min_num_individuals};
 use crate::steps::{Step, Steps, chain_of};
 
@@ -241,11 +241,7 @@ fn over_the_source(
     let of_each_pop: Vec<&[usize]> = (0..pops.len()).map(|pop| pops.individuals(pop)).collect();
     let diversity = diversity_of_the_pops(&mut *chain, &of_each_pop, options)?;
     let num_pops = diversity.num_pops();
-    let filtering = chain
-        .filtering_stats()
-        .into_iter()
-        .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-        .collect();
+    let counts = pass_counts_of(diversity.num_vars_of_the_pass(), chain.as_ref(), steps);
     Ok(OfThePass {
         pop_names,
         num_vars: of_every_pop(num_pops, |pop| diversity.num_vars(pop)),
@@ -271,7 +267,7 @@ fn over_the_source(
             .as_deref()
             .map(SpectrumOfThePass::of_each_pop),
         fis: of_every_pop(num_pops, |pop| diversity.fis(pop)),
-        counts: (diversity.num_vars_of_the_pass(), filtering),
+        counts,
     })
 }
 
