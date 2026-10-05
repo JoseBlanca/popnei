@@ -4,9 +4,10 @@ Run from the root of the repository:
 
     uv run --no-project python tests/reference/filters/random_draws.py
 
-There is no reference program for a sample drawn with the rule of "The filter
-that keeps variants at random" of docs/specs/filters.md, so this script is a
-second version of that rule, written in Python for the spec: SplitMix64
+Java's SplittableRandom, the reference program of the spec, gives the draws of
+the generator, and this script applies them to the variants of a VCF. It is a
+second version of the rule of "The filter that keeps variants at random" of
+docs/specs/filters.md, written in Python for the spec: SplitMix64
 started at the seed, one draw for each variant in the order of the file, the
 top 53 bits of the draw divided by 2^53, and the variant kept when that number
 is below the keep rate. It first checks the generator against the five draws
