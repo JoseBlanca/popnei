@@ -10,9 +10,8 @@ second version of that rule, written in Python for the spec: SplitMix64
 started at the seed, one draw for each variant in the order of the file, the
 top 53 bits of the draw divided by 2^53, and the variant kept when that number
 is below the keep rate. It first checks the generator against the five draws
-from a seed of 1234567 that Sebastiano Vigna's splitmix64.c gives, as the task
-"Pseudo-random numbers/Splitmix64" of Rosetta Code lists them, and stops when
-they differ.
+from a seed of 1234567 that Java's java.util.SplittableRandom gives, printed by
+SplitMix.java beside this file, and stops when they differ.
 
 It prints the ten numbers of the worked example of the spec, from a seed of 42,
 and, for each row of the table of the spec, how many of the 500 variants of

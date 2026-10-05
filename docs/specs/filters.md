@@ -1290,7 +1290,10 @@ and draws the same numbers for them, so every pass keeps the same variants.
 That is what lets a calculation that reads the source twice, the PCA of
 variants and the GWAS with the GRAMMAR-Gamma approximation, see one sample
 in both passes, and what lets two calculations on one `Variants` be
-compared. The numbers are drawn on one thread, one after another, so the
+compared. The GRAMMAR-Gamma approximation of `docs/specs/gwas.md` reads the
+source a second time to estimate the factor that corrects its test
+statistics, and the PCA reads it a second time for the weights of each
+variant. The numbers are drawn on one thread, one after another, so the
 size of the blocks and the threads of the calculation do not change them.
 
 The owner decided on 5 October 2026 that the draw is made this way, from a
@@ -1302,17 +1305,18 @@ sample depends on which variants reach the filter, as "The cases" below
 says.
 
 The generator is SplitMix64, of Steele, Lea and Flood (2014), the one that
-`java.util.SplittableRandom` uses and that seeds the xoshiro generators. Its
-state is one integer of 64 bits, which starts as the seed. Each draw adds
-the constant 0x9E3779B97F4A7C15 to the state, wrapping at 2^64, and mixes
-the sum into the number it gives:
+`java.util.SplittableRandom` of Java uses. Its state is one integer of 64
+bits, which starts as the seed. Each draw adds a constant to the state and
+mixes the sum into the number it gives, all of it wrapping at 2^64:
 
+    state = state + 0x9E3779B97F4A7C15
     z = state
-    z = (z xor (z >> 30)) * 0xBF58476D1CE4E5B9, wrapping
-    z = (z xor (z >> 27)) * 0x94D049BB133111EB, wrapping
+    z = (z xor (z >> 30)) * 0xBF58476D1CE4E5B9
+    z = (z xor (z >> 27)) * 0x94D049BB133111EB
     draw = z xor (z >> 31)
 
-The number from 0 to 1 is the top 53 bits of the draw divided by 2^53,
+The number from 0 to 1 is the top 53 bits of the draw, `draw >> 11`,
+divided by 2^53,
 which is exact in an `f64` and always below 1, so at a keep rate of 1 every
 variant is kept and at 0 none is. It is a few lines of integer arithmetic,
 so it needs no new dependency and gives the same numbers natively and in
@@ -1345,12 +1349,11 @@ every filter of this spec.
 
 In TypeScript, `variants.filterRandomly(keepRate, {seed = 42})`, with
 `seed` a whole number from 0 to 2^53 - 1, the largest whole number a
-JavaScript number holds exactly. That is the one difference from Python a
-user sees: a seed above 2^53 - 1, which Python takes, cannot be given in
-TypeScript. The same seed gives the same variants in both.
+JavaScript number holds exactly; any other value is an `Error` at the call.
+That is the one difference from Python a user sees: a seed above 2^53 - 1,
+which Python takes, cannot be given in TypeScript. The same seed gives the same variants in both.
 
-pyNei has no such filter. Its nearest is `desired_num_chunks` of
-`Variants.from_vars`, which stops after that many chunks.
+pyNei has no such filter.
 
 ### The cases
 
@@ -1385,23 +1388,29 @@ not given, and after an error it gives `None` at every call.
 
 ### How it is verified
 
-The generator is checked against the values that its authors' reference
-code, `splitmix64.c` of Sebastiano Vigna, gives, as the task
-"Pseudo-random numbers/Splitmix64" of Rosetta Code lists them: from a seed
-of 1234567 the first five draws are 6457827717110365317,
-3203168211198807973, 9817491932198370423, 4593380528125082431 and
-16408922859458223821. A cargo test asserts them.
+The reference program is Java's `java.util.SplittableRandom`, whose
+`nextLong` is the draw above and whose `nextDouble` is the number from 0 to
+1 of the same rule, run with OpenJDK 26.0.2.1 on 5 October 2026 by
+`java tests/reference/filters/SplitMix.java`, with the `java` of Homebrew's
+`openjdk`, `/opt/homebrew/opt/openjdk/bin/java`, which is not on the PATH of
+the owner's machine; `/usr/bin/java` of macOS is a stub that asks for one.
+From a seed of 1234567 it
+gives the first five draws 6457827717110365317, 3203168211198807973,
+9817491932198370423, 4593380528125082431 and 16408922859458223821, the
+values that the reference code of SplitMix64, `splitmix64.c` of Sebastiano
+Vigna, gives too, as the task "Pseudo-random numbers/Splitmix64" of
+Rosetta Code lists them. A cargo test asserts them.
 
 The worked example, which becomes the first cargo test, made at
 `RandomFilter::filter_block` on a block of ten variants built by hand, at a
-keep rate of 0.5 and a seed of 42. The ten numbers from 0 to 1 are, to six
-decimals, 0.741565, 0.159910, 0.278601, 0.344191, 0.038030, 0.868228,
+keep rate of 0.5 and a seed of 42. The ten numbers from 0 to 1 that Java
+gives from 42 are, to six decimals, 0.741565, 0.159910, 0.278601, 0.344191, 0.038030, 0.868228,
 0.218405, 0.800632, 0.339931 and 0.618482, so the filter keeps variants 2,
 3, 4, 5, 7 and 9, and its counts are 10 given and 6 kept. The same ten
 variants given as a block of 3 and a block of 7 keep the same six.
 
-On `tests/reference/vcf/many.vcf`, read with every variant given, 500
-variants:
+On `tests/reference/vcf/many.vcf`, read with every variant given, those
+that failed their FILTER among them, 500 variants:
 
 | keep rate | seed | kept of 500 | the first five kept, by position on chr1 |
 |---|---|---|---|
@@ -1409,15 +1418,20 @@ variants:
 | 0.5 | 42 | 243 | 1037, 1074, 1111, 1148, 1222 |
 | 0.1 | 7 | 49 | 1037, 1962, 2147, 2332, 2591 |
 
-There is no reference program for a sample drawn with this rule. The
-numbers come from `tests/reference/filters/random_draws.py`, a Python
-version of the rule written for this spec, whose draws from 1234567 are the
-five above, run on 5 October 2026; it is kept beside the reference of the
-threshold filters so that the table can be made again. The cargo tests,
+The table comes from `tests/reference/filters/random_draws.py`, a Python
+version of the rule written for this spec, which checks its draws against
+the five of Java from 1234567 and applies them to the variants of
+`many.vcf`, run on 5 October 2026. The cargo tests,
 made at `next_block` of the reader of this filter over a `VcfReader` on
 `many.vcf`, in blocks of 7 variants and of the default size, assert each
 row's count and five positions, and the counts 500 given and 45 kept for
 the first row.
+
+Every pytest and TypeScript test of both filters opens `many.vcf` with
+every variant given, `only_passed=False` and `onlyPassed: false`, as the
+numbers of these tables are of the 500. With the default, which leaves out
+the 25 variants whose FILTER is `q10`, the numbers are others: 42 kept at
+0.1 and a seed of 42.
 
 The tests of the passes, made at the Python functions, over `many.vcf` with
 this filter at 0.1 and a seed of 42:
@@ -1467,8 +1481,10 @@ It is a step: it adds itself to the `Variants`, reads no variant and
 returns nothing. Its kind is `"first_n"`, and its `args` are `{"num_vars":
 1000}`. `num_vars` is a whole number of 1 or more: 0 or a negative number
 is a `ValueError`, and a float, a `True` or anything that is no number a
-`TypeError`, as for `max_dist` of the filter by linkage disequilibrium. A
-second filter of this kind is refused.
+`TypeError`, as for `max_dist` of the filter by linkage disequilibrium.
+Issue 7 asked for a `ValueError` for a float; the `TypeError` is what every
+argument of popnei that takes a whole number gives for one. A second filter
+of this kind is refused.
 
 No step that takes variants out can be added after it: the three threshold
 filters, the filter by linkage disequilibrium, the filter that keeps
@@ -1494,7 +1510,8 @@ variants.
 The filter is given whole blocks and keeps from the last one only the
 variants it needs, so its counts are of the blocks it took: the variants
 of those blocks as given, and n as kept. With blocks of 7 variants and n of
-10 it is given 14 and keeps 10. The filters before it count the same blocks,
+10 it is given 14 and keeps 10. The filters before it count the same
+blocks, the rows of the last block that this filter did not keep among them,
 so the counts of every filter of a pass that this filter ended depend on
 the size of the blocks, and are of the part of the source that was read
 and not of the whole of it. A user who reads that the MAF filter kept 900
@@ -1508,7 +1525,8 @@ otherwise, also when it was given fewer than n. It is true also when the
 source held nothing after the n-th variant, since the filter does not read
 on to find out. The owner decided on 5 October 2026 that the counts say
 it; the option not taken was to leave it to the counts of this filter.
-It is in the `repr` of the counts, where a user who prints them sees it.
+It is in the `repr` of `PassStats`, where a user who prints the counts sees
+it. When a pass ends there, the `num_vars` of its counts is n.
 Every pass of a `Variants` ends at the same variant, so a calculation that
 reads the source twice reads the same n variants in both passes.
 
@@ -1517,15 +1535,16 @@ reads the source twice reads the same n variants in both passes.
 The filter takes a block from its source. When the variants it has kept
 and the block together are at most n, it gives the block whole; otherwise
 it keeps the first rows of the block up to n, with `retain_vars`, and
-gives it. At the next call it gives `None` without asking its source, and
-it does so at every call after. It reads no field of a variant and asks its
+gives it. Once it has given n variants, whether the n-th ended a block or
+fell inside one, every later call gives `None` without asking its source. It reads no field of a variant and asks its
 source for what its consumer asked for.
 
 The readers below it are not asked again, so the source reads no further
 than the block in which the n-th variant fell. The VCF reader has read and
 parsed the lines of that block, and the vars file reader may have
-decompressed up to 8 batches past the one that held it, the batches it
-decompresses at once on the threads of the pool. The reader one block
+decompressed up to 7 batches past the one that held it: it decompresses 8
+batches at once, that one among them, or as many as the threads of the
+pool when there are fewer. The reader one block
 ahead of `docs/specs/block.md` reads the whole chain on its thread, this
 filter included, so when the filter gives `None` the thread sends that
 word and ends, having asked the source for nothing more.
@@ -1541,7 +1560,8 @@ Against bcftools 1.24 on `many.vcf`, read with every variant given:
 `next_block` of the reader of this filter over a `VcfReader` on `many.vcf`,
 in blocks of 7 variants and of the default size, assert the ten positions
 of each, and in blocks of 7 the counts 14 given and 10 kept and that the
-source was asked for two blocks. The filter that keeps variants at random,
+source was asked for two blocks. With n of 14 over blocks of 7, where the
+n-th variant ends a block, the source is asked for two blocks too. The filter that keeps variants at random,
 at 0.5 with a seed of 42, and then the first 10 gives 1037, 1074, 1111,
 1148, 1222, 1296, 1370, 1407, 1555 and 1592, the first ten of the 243 of
 its table.
@@ -1550,13 +1570,15 @@ That the pass ends and does not read the source to its end is tested on a
 source that never ends: a reader built for the test that gives blocks of 7
 variants for as long as it is asked, with the first 10 on it, returns with
 10 variants and having given two blocks, read on one thread and through the
-reader one block ahead. Over a VCF of 100000 variants read through a
-`Read` that counts its bytes, a pass with the first 100 reads less than a
-tenth of the file; over the vars file of the same variants in batches of
-100, the vars file reader decompresses at most 9 batches, counted by the
-count that reader keeps for the tests.
+reader one block ahead. Over a VCF of 100000 variants of 10 individuals,
+read in blocks of 100 variants through a `Read` that counts its bytes, a
+pass with the first 100 reads less than a tenth of the file. Over the vars
+file of the same variants in batches of 100, read in a pool of rayon of one
+thread, a pass with the first 100 decompresses one batch alone, by the list
+of the batches read that the vars file reader keeps for the tests.
 
-The pytest tests, made at `filter_first_n`, assert the ten positions on
+The pytest tests, made at `filter_first_n`, on `many.vcf` with every
+variant given, assert the ten positions on
 `many.vcf` and a `pass_stats` with 10 variants and `stopped_early` true; a
 `num_vars` of 1000 on the same file, which gives the 500 and
 `stopped_early` false; a `do_pca_from_variants` with the first 50, whose
@@ -1975,7 +1997,11 @@ impl<R: BlockReader> BlockReader for FirstNReader<R> { /* ... */ }
 /// Whether a filter of the first n among `steps` kept its n variants and
 /// so ended the pass whose counts are `filtering`, as
 /// `BlockReader::filtering_stats` of the outermost reader of the chain
-/// gives them.
+/// gives them: true when `steps` has a `FirstN(n)` and the counts under
+/// "first_n" have `vars_kept` equal to n. `steps` are those the pass was
+/// built from, which a binding crate keeps from the start of the pass, and
+/// not those of the `Variants` when the counts are read: a step added
+/// while an `iter_blocks` runs is not in its pass.
 pub fn stopped_early(steps: &[PassStep], filtering: &[(&'static str, FilteringStats)]) -> bool;
 ```
 
@@ -2003,6 +2029,10 @@ calls for each step as it builds the chain:
 /// individuals is not refused.
 pub fn refuse_a_step_after_the_first_n(set: &[PassStep], new: &PassStep) -> Result<()>;
 ```
+
+Every consumer of both binding crates gives the Python or the TypeScript
+package this field with the counts of its pass, and builds it with this
+function.
 
 The cases the two filters add to the error of the crate, each a
 `ValueError` in Python: a keep rate out of range, with the value; a
