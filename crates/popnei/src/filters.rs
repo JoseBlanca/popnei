@@ -40,6 +40,12 @@
 //! them and offers them to its source, so that a source that can pass over
 //! the variants outside does not build them.
 //!
+//! The filter of the first n keeps the first n variants that reach it and
+//! then ends the pass, so that the rest of the source is not read: it is
+//! [`FirstNReader`], and [`stopped_early`] tells from the counts of a pass
+//! whether it ended it. No step that takes variants out comes after it,
+//! which [`refuse_a_step_after_the_first_n`] refuses.
+//!
 //! `docs/specs/filters.md` has the design, and the row `filters` of section
 //! 9 of `docs/architecture.md` where the module sits.
 
@@ -53,7 +59,10 @@ use crate::variant::{
     AlleleCounts, ChromTable, Needs, count_alleles, count_gts, the_major_allele_frequency,
 };
 
+mod first_n;
 mod regions;
+use first_n::FIRST_N_KIND;
+pub use first_n::{FirstNReader, refuse_a_step_after_the_first_n, stopped_early};
 pub(crate) use regions::PlaceOfAChrom;
 pub use regions::{
     BedLineProblem, RegionFilter, RegionSelection, Regions, RegionsReader, SelectionOfAChrom,
@@ -1694,19 +1703,26 @@ pub enum PassStep {
     /// `exclude`, those outside all of them, and the others are left out of
     /// every block of the pass.
     Regions(RegionSelection),
+    /// The first `num_vars` variants that the steps before it keep, and
+    /// then the pass ends: the rest of the source is not read. No step that
+    /// takes variants out comes after it, which
+    /// [`refuse_a_step_after_the_first_n`] refuses.
+    FirstN(u64),
 }
 
 impl PassStep {
     /// `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`, `"individuals"`,
-    /// `"regions"` or `"excluded_regions"`: the name the step has for a
-    /// Python and a TypeScript user, under which the counts of a filter
-    /// reach them and by which a second step of the same kind is refused.
+    /// `"regions"`, `"excluded_regions"` or `"first_n"`: the name the step
+    /// has for a Python and a TypeScript user, under which the counts of a
+    /// filter reach them and by which a second step of the same kind is
+    /// refused.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
             PassStep::VarFilter(criterion) => criterion.kind(),
             PassStep::KeepIndividuals(_) => "individuals",
             PassStep::Regions(selection) => selection.kind(),
+            PassStep::FirstN(_) => FIRST_N_KIND,
         }
     }
 }
@@ -1730,7 +1746,7 @@ pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<Strin
         .rev()
         .find_map(|step| match step {
             PassStep::KeepIndividuals(names) => Some(names.clone()),
-            PassStep::VarFilter(_) | PassStep::Regions(_) => None,
+            PassStep::VarFilter(_) | PassStep::Regions(_) | PassStep::FirstN(_) => None,
         })
         .unwrap_or_else(|| of_the_source.to_vec())
 }
@@ -1740,9 +1756,10 @@ pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<Strin
 /// [`PassStep::VarFilter`] becomes a [`FilteredReader`], except for the
 /// criterion [`MaxLdR2`](VarFilteringCriterion::MaxLdR2), which becomes an
 /// [`LdFilteredReader`]; a [`PassStep::KeepIndividuals`] an
-/// [`IndividualsReader`]; and a [`PassStep::Regions`] a [`RegionsReader`],
-/// which offers its regions to what is below it as it is built. No step
-/// gives `reader` as it is.
+/// [`IndividualsReader`]; a [`PassStep::Regions`] a [`RegionsReader`],
+/// which offers its regions to what is below it as it is built; and a
+/// [`PassStep::FirstN`] a [`FirstNReader`]. No step gives `reader` as it
+/// is.
 ///
 /// Both binding crates build the chain of a pass with this, and neither
 /// writes the loop: in which order the steps go, and what comes out while
@@ -1768,10 +1785,19 @@ pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<Strin
 /// And a second [`PassStep::KeepIndividuals`] among `steps`, which the
 /// chain has to find itself: the filter of individuals takes no variant
 /// out, so it has no counts and a reader cannot be asked whether it holds
-/// one. No block was read when any of them comes.
+/// one. What [`FirstNReader::new`] refuses, a `num_vars` of 0 and a filter
+/// of the first n over a chain that holds one. And a step that takes
+/// variants out after a [`PassStep::FirstN`] among `steps`, which
+/// [`refuse_a_step_after_the_first_n`] refuses. No block was read when any
+/// of them comes.
 pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<dyn BlockReader>> {
     let mut chain = reader;
     for (index, step) in steps.iter().enumerate() {
+        // The steps before this one: `index` is the place of `step` in
+        // `steps`, so it is below their number and the split is the prefix
+        // that ends where this step begins.
+        let before = steps.split_at(index).0;
+        refuse_a_step_after_the_first_n(before, step)?;
         match step {
             // The three criteria that compare one number of a variant with
             // a threshold: the variant is kept or dropped on what it holds
@@ -1798,10 +1824,7 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
                 )?);
             }
             PassStep::KeepIndividuals(names) => {
-                // The steps before this one: `index` is the place of `step`
-                // in `steps`, so it is below their number and the split is
-                // the prefix that ends where this step begins.
-                refuse_a_second_filter_of_a_kind(steps.split_at(index).0, step)?;
+                refuse_a_second_filter_of_a_kind(before, step)?;
                 chain = Box::new(IndividualsReader::new(chain, names)?);
             }
             // The filter by regions has counts, so a second one of a kind
@@ -1811,6 +1834,11 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
                     chain,
                     RegionFilter::new(selection.clone()),
                 )?);
+            }
+            // The filter of the first n has counts too, so a second one is
+            // found in the chain below it.
+            PassStep::FirstN(num_vars) => {
+                chain = Box::new(FirstNReader::new(chain, *num_vars)?);
             }
         }
     }
@@ -1838,7 +1866,8 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
 /// lists keep the individuals that are in both, which is one list. For the
 /// filter by regions it carries the kind, `regions` or `excluded_regions`:
 /// two sets of regions on one side are one set, and a step of each kind can
-/// stand together.
+/// stand together. For the filter of the first n it carries the kind: two
+/// of them keep the first of the smaller n.
 pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Result<()> {
     let criterion = match new {
         PassStep::VarFilter(criterion) => criterion,
@@ -1855,9 +1884,17 @@ pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Res
             let kind = selection.kind();
             return match set.iter().any(|step| match step {
                 PassStep::Regions(of_the_step) => of_the_step.kind() == kind,
-                PassStep::VarFilter(_) | PassStep::KeepIndividuals(_) => false,
+                PassStep::VarFilter(_) | PassStep::KeepIndividuals(_) | PassStep::FirstN(_) => {
+                    false
+                }
             }) {
                 true => Err(Error::RegionFilterOfAKindThatIsSet { kind }),
+                false => Ok(()),
+            };
+        }
+        PassStep::FirstN(_) => {
+            return match set.iter().any(|step| matches!(step, PassStep::FirstN(_))) {
+                true => Err(Error::FilterOfAKindThatIsSet { kind: new.kind() }),
                 false => Ok(()),
             };
         }
@@ -1867,7 +1904,7 @@ pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Res
         .iter()
         .filter_map(|step| match step {
             PassStep::VarFilter(of_the_step) => Some(of_the_step),
-            PassStep::KeepIndividuals(_) | PassStep::Regions(_) => None,
+            PassStep::KeepIndividuals(_) | PassStep::Regions(_) | PassStep::FirstN(_) => None,
         })
         .find(|of_the_step| of_the_step.kind() == kind);
     if let Some(that_is_set) = that_is_set {

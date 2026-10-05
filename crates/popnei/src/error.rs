@@ -3262,6 +3262,43 @@ pub enum Error {
         /// What the linear algebra said.
         source: popnei_linalg::Error,
     },
+
+    /// A filter of the first n variants asked to keep none of them. A pass
+    /// that it ended would give no variant to its calculation, so a
+    /// `num_vars` is 1 or more.
+    #[error(
+        "the filter of the first n variants was asked for 0 variants, and a pass with it would give no variant; ask for 1 or more"
+    )]
+    FirstNOfNoVariants,
+
+    /// A step that takes variants out added after the filter of the first n
+    /// variants. With it there, n is the number of variants every
+    /// calculation gets, and a filter after it would leave fewer; a user who
+    /// wants n variants that pass a filter puts that filter before. The
+    /// owner decided on 5 October 2026 that it is refused. The filter of
+    /// individuals takes no variant out and is accepted after it.
+    #[error(
+        "the variants are filtered by first_n already, and a filter by {kind} after it would leave fewer than the n variants it keeps; put the filter by {kind} before the filter of the first n"
+    )]
+    StepAfterTheFirstN {
+        /// The kind of the step that was refused, the name a Python and a
+        /// TypeScript user reads for it: `maf`, `regions`.
+        kind: &'static str,
+    },
+
+    /// A second filter of a kind the variants are filtered by already, of
+    /// the kinds whose second filter does what one filter of the kind with
+    /// another argument does: two filters of the first n keep the first of
+    /// the smaller n. Neither case of a second filter above fits it: one
+    /// carries two thresholds, and the others say why two lists of
+    /// individuals or two sets of regions are one.
+    #[error(
+        "the variants are filtered by {kind} already, and a second filter of that kind does what one filter of it with another argument does"
+    )]
+    FilterOfAKindThatIsSet {
+        /// The kind that is filtered twice: `first_n`.
+        kind: &'static str,
+    },
 }
 
 impl Error {
@@ -3297,11 +3334,13 @@ impl Error {
             // The arguments a user writes at the call, which are wrong
             // whatever file is read although some of them are refused while
             // one is being opened: how many variants a block holds and how
-            // many alleles a genotype of the file has; the three of
+            // many alleles a genotype of the file has; the five of
             // `docs/specs/filters.md`, the threshold of a filter that is
             // not a number from 0 to 1, a second filter of a kind the
             // variants are filtered by already, and a window of the filter
             // by linkage disequilibrium that is no base pairs wide; the
+            // filter of the first n asked for 0 variants and a step that
+            // takes variants out after it; the
             // four of the filter of individuals and the four of the
             // populations a statistic is calculated for, a name that is of
             // nobody, a name that is there twice, a set that names nobody,
@@ -3316,6 +3355,9 @@ impl Error {
             | Self::VarFilterOfAKindThatIsSet { .. }
             | Self::RegionFilterOfAKindThatIsSet { .. }
             | Self::LdFilterMaxDistTooSmall { .. }
+            | Self::FirstNOfNoVariants
+            | Self::StepAfterTheFirstN { .. }
+            | Self::FilterOfAKindThatIsSet { .. }
             | Self::IndividualNotInTheSource { .. }
             | Self::IndividualNamedTwice { .. }
             | Self::NoIndividualNamed
