@@ -262,7 +262,7 @@ pub fn first_n_step(num_vars: u64) -> Result<PassStep> {
 /// out and is not refused; a second filter of the first n is the error of
 /// [`refuse_a_second_filter_of_a_kind`](crate::filters::refuse_a_second_filter_of_a_kind),
 /// which says what two of them do.
-pub fn refuse_a_step_after_the_first_n(set: &[PassStep], new: &PassStep) -> Result<()> {
+pub(crate) fn refuse_a_step_after_the_first_n(set: &[PassStep], new: &PassStep) -> Result<()> {
     let takes_variants_out = match new {
         PassStep::VarFilter(_) | PassStep::Regions(_) | PassStep::Random { .. } => true,
         PassStep::KeepIndividuals(_) | PassStep::FirstN(_) => false,

@@ -70,7 +70,8 @@ mod first_n;
 mod random;
 mod regions;
 use first_n::FIRST_N_KIND;
-pub use first_n::{FirstNReader, first_n_step, refuse_a_step_after_the_first_n, stopped_early};
+pub(crate) use first_n::refuse_a_step_after_the_first_n;
+pub use first_n::{FirstNReader, first_n_step, stopped_early};
 use random::RANDOM_KIND;
 pub use random::{DEFAULT_RANDOM_FILTER_SEED, RandomFilter, RandomlyFilteredReader};
 pub(crate) use regions::PlaceOfAChrom;
@@ -1715,8 +1716,7 @@ pub enum PassStep {
     Regions(RegionSelection),
     /// The first `num_vars` variants that the steps before it keep, and
     /// then the pass ends: the rest of the source is not read. No step that
-    /// takes variants out comes after it, which
-    /// [`refuse_a_step_after_the_first_n`] refuses.
+    /// takes variants out comes after it, which [`refuse_a_step`] refuses.
     FirstN(u64),
     /// Each variant kept when the number drawn for it is below `keep_rate`,
     /// from a generator that starts at `seed` in every pass and draws one
@@ -1905,7 +1905,11 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
 /// smaller n. For the filter that keeps variants at random it carries the
 /// keep rate and the seed of both: the second would keep a sample of the
 /// sample of the first.
-pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Result<()> {
+///
+/// Of the crate alone since 5 October 2026: the binding crates call
+/// [`refuse_a_step`], which calls this one, so that no binding can call one
+/// refusal and not the other.
+pub(crate) fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Result<()> {
     let criterion = match new {
         PassStep::VarFilter(criterion) => criterion,
         PassStep::KeepIndividuals(_) => {
@@ -1987,9 +1991,9 @@ pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Res
 
 /// Every refusal of `new`, a step a user adds or the next step of a chain,
 /// against `set`, the steps that are set already: a second filter of its
-/// kind, which [`refuse_a_second_filter_of_a_kind`] refuses, and then a step
+/// kind, which `refuse_a_second_filter_of_a_kind` refuses, and then a step
 /// that takes variants out after a filter of the first n, which
-/// [`refuse_a_step_after_the_first_n`] refuses.
+/// `refuse_a_step_after_the_first_n` refuses. Both are of the crate alone.
 ///
 /// A step that breaks both rules, a second MAF filter after a MAF filter
 /// and a filter of the first n, gets the first error: moving it before the
@@ -1999,8 +2003,10 @@ pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Res
 ///
 /// # Errors
 ///
-/// The error of [`refuse_a_second_filter_of_a_kind`] when there is one, and
-/// otherwise that of [`refuse_a_step_after_the_first_n`].
+/// The error of `refuse_a_second_filter_of_a_kind` when there is one, and
+/// otherwise that of `refuse_a_step_after_the_first_n`: a second filter of
+/// the kind of `new`, and a step that takes variants out after a filter of
+/// the first n.
 pub fn refuse_a_step(set: &[PassStep], new: &PassStep) -> Result<()> {
     refuse_a_second_filter_of_a_kind(set, new)?;
     refuse_a_step_after_the_first_n(set, new)
