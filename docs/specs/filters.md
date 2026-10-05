@@ -12,15 +12,15 @@ is not read. It also
 tells the user how many variants each filter was given and how many it
 kept. And it keeps, of every variant, the genotypes of the individuals a
 user names and drops those of the rest. There is code for every item but
-the last two. This spec
+the filter that keeps variants at random. This spec
 develops the row `filters` of the table in section 9
 of `docs/architecture.md`, and it covers the three filters that compare one
 number of a variant with a threshold, the counts, the filter of
 individuals, the filter that takes out the variants that repeat what a
 variant before them said, the filter by regions, the filter that keeps
 variants at random and the filter that keeps the first n. The last two
-were added on 5 October 2026, from issues 6 and 7 of the repository, and
-have no code. The filter by regions
+were added on 5 October 2026, from issues 6 and 7 of the repository. The
+filter by regions
 was added on 26 September 2026; the two before it were
 added on 22 September 2026: the
 filter of individuals with `docs/specs/stats.md`, whose statistics per

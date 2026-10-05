@@ -360,6 +360,15 @@ pass 1 at 117346 and pass 2 at 117346. What a page draws rises all the
 same, if it draws the share of the run that is done,
 `(pass - 1 + bytesRead / numBytes) / numPasses`: 0, 0.5, 0.5 and 1.
 
+A pass that the filter of the first n variants of `docs/specs/filters.md`
+ends reads no further, so its last call has a `bytesRead` below `numBytes`,
+the bytes it had read when the filter ended it, and no later call brings it
+to `numBytes`: what the page draws stops short of the end, and the
+`stoppedEarly` of the counts of the pass says why. Over `many.vcf` with the
+first 10, in blocks of 7, the last call has a `bytesRead` below 117346; a
+test asserts that, and that `bytesRead` never goes down. Added on 5 October
+2026.
+
 An `iterBlocks` that a user abandons without freeing it holds its run, and
 with it the entry of its source, until the `FinalizationRegistry` of the
 package frees the pass, at a moment nobody chooses. It is the rule the whole
