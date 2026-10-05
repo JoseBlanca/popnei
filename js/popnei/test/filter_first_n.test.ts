@@ -175,6 +175,17 @@ test("filterFirstN of 0 is an Error that names numVars and asks for 1 or more", 
   variants.free();
 });
 
+test("filterFirstN of 2 ** 53 - 1 is accepted and read back whole", () => {
+  // The largest whole number a number of JavaScript counts to one by one,
+  // which crosses as a float64 and comes back from the core unchanged.
+  const variants = many();
+  variants.filterFirstN(2 ** 53 - 1);
+  assert.deepEqual(variants.steps, [
+    { kind: "first_n", args: { numVars: 9007199254740991 } },
+  ]);
+  variants.free();
+});
+
 for (const [given, written] of [
   [-1, "-1"],
   [1.5, "1.5"],
