@@ -130,3 +130,59 @@ tests 541, pass 540, fail 1, the test of `test/gwas.test.ts` that fails on
 `main`; `npm run test:browser` 8 passed. The review of this work package is
 the review of the whole branch below, which has all seven categories and
 would have repeated it.
+
+## The review of the whole branch
+
+Seven reviewers, one for each category of the `code-review` skill, `spec`,
+`tests`, `numbers`, `errors`, `api`, `architecture` and `binding`, over
+eae29a2..bcc5b94, on 5 October 2026. It is the review of work package 2 as
+well. No reviewer found a wrong number. The generator was checked against
+Java to the bit over 1000 numbers from each of four seeds, the table of the
+spec twice, and the draws with blocks of 1, 7, 100 and the default size, on
+1 and 8 threads, kept the same variants. What held, the spec amended first
+in dba6672 and each fix of the code in a commit of its own:
+
+- `np.True_` and `np.False_` were taken as a keep rate of 1 and 0, and as a
+  threshold of 1 and 0 by the threshold filters before this branch: a
+  boolean from a numpy array filtered nothing, or everything, and said
+  nothing. (errors)
+- A TypeScript keep rate of 2 read back as 2.0 in its message. (errors)
+- Python read `num_vars` into a 32-bit word under pyodide, where TypeScript
+  takes up to 2^53 - 1 in the same browser. (binding; left at work package
+  1 and taken now that the fix was cheap and removed dead code)
+- The TypeScript binding checked a whole number three times over three
+  constants of one value, and a docstring disagreed with its message.
+  (binding, api)
+- The TypeScript default seed was an `Option` that the binding turned into
+  42, which the coding skill forbids, and its doc wrote 42 by hand. (api)
+- The keep rate crossed to TypeScript as a threshold. (api)
+- `refuse_a_second_filter_of_a_kind` and `refuse_a_step_after_the_first_n`
+  stayed public although no binding may call them apart. (api)
+- A field of the error of a second random filter was an unnamed pair; the
+  doc of `filtering_stats` listed three of its eight kinds. (api)
+- Read while an `iter_blocks` runs, `stopped_early` can be true before the
+  user has the n variants, which `docs/specs/variant.md` said could not
+  happen; the spec now says it of a finished pass. (architecture)
+- Section 1 of `docs/architecture.md` said every filter decides its rows on
+  the pool; the filter by linkage disequilibrium and the random filter do
+  it in order. (architecture)
+- Untested: Java's numbers were checked to six decimals and not to the bit,
+  and nothing told `<` from `<=` against the keep rate, so two changes that
+  would move a sample passed every test (numbers); no core test passed a
+  seed other than 42 through `chain_of`, none ran the draws on more than one
+  thread (tests); the filter by regions and the filter of individuals before
+  the random filter, and a keep rate of 0 over a pass, had no test (spec,
+  tests).
+
+Not taken:
+
+- Tests that the order of the steps, or `only_passed`, changes the sample:
+  both follow from drawing in order, which the owner chose, and the tests
+  would assert two different numbers.
+- Tests of the checks inside the TypeScript binding crate that turn a
+  non-whole number from the package into a defect: only a defect of the
+  package reaches them, and a test would have to call the crate past the
+  package.
+- The reviewer's example of the bits of the first number,
+  0x3fec4415072f63b9, is not what Java prints, 0x3fe7bae644c5fd6d, which
+  the spec and the tests use.
