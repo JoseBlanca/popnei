@@ -222,6 +222,21 @@ pub fn stopped_early(steps: &[PassStep], filtering: &[(&'static str, FilteringSt
         .any(|(kind, counts)| *kind == FIRST_N_KIND && counts.vars_kept == num_vars)
 }
 
+/// The step of the filter of the first `num_vars` variants, which both
+/// binding crates build when a user adds the filter, so that a `num_vars`
+/// of 0 is refused at that call and not at the next pass.
+///
+/// # Errors
+///
+/// When `num_vars` is 0, with a message that names `num_vars`: a pass the
+/// filter ended would give no variant, as [`FirstNReader::new`] says.
+pub fn first_n_step(num_vars: u64) -> Result<PassStep> {
+    if num_vars == 0 {
+        return Err(Error::FirstNOfNoVariants);
+    }
+    Ok(PassStep::FirstN(num_vars))
+}
+
 /// The error of a step that takes variants out, `new`, after a filter of
 /// the first n among `set`, the steps that are set already.
 ///

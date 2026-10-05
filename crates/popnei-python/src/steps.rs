@@ -38,8 +38,8 @@ use pyo3::types::{PyFloat, PyTuple};
 
 use popnei::block::BlockReader;
 use popnei::filters::{
-    LdFilter, PassStep, RegionSelection, Regions, VarFilter, VarFilteringCriterion, individuals_of,
-    refuse_a_step, resolve_individuals,
+    LdFilter, PassStep, RegionSelection, Regions, VarFilter, VarFilteringCriterion, first_n_step,
+    individuals_of, refuse_a_step, resolve_individuals,
 };
 
 use crate::errors::PyPopneiError;
@@ -315,15 +315,10 @@ impl Steps {
             smallest: 1,
             value: count.to_string(),
         })?;
-        // The core refuses a `num_vars` of 0 when a pass builds the filter,
-        // in `FirstNReader::new`, and no reader exists at this call: the
-        // same error of the core is given here, so that a user gets it
-        // where they wrote the 0 and not at the next pass.
-        if num_vars == 0 {
-            return Err(popnei::Error::FirstNOfNoVariants.into());
-        }
+        // The core's step refuses a `num_vars` of 0 here, where the user
+        // wrote it, and not at the next pass.
         let step = Step {
-            pass_step: PassStep::FirstN(num_vars),
+            pass_step: first_n_step(num_vars)?,
             args: vec![(NUM_VARS, Argument::Count(count))],
         };
         self.add(step)

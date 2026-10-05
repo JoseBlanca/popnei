@@ -62,7 +62,7 @@ use crate::variant::{
 mod first_n;
 mod regions;
 use first_n::FIRST_N_KIND;
-pub use first_n::{FirstNReader, refuse_a_step_after_the_first_n, stopped_early};
+pub use first_n::{FirstNReader, first_n_step, refuse_a_step_after_the_first_n, stopped_early};
 pub(crate) use regions::PlaceOfAChrom;
 pub use regions::{
     BedLineProblem, RegionFilter, RegionSelection, Regions, RegionsReader, SelectionOfAChrom,

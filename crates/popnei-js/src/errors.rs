@@ -357,6 +357,9 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
     if matches!(error, popnei::Error::PcoaPairsWithNoDistance { .. }) {
         return with_the_names_of_the_pairs_in_camel_case(&message);
     }
+    if matches!(error, popnei::Error::FirstNOfNoVariants) {
+        return message.replace("num_vars", "numVars");
+    }
     if matches!(error, popnei::Error::VarDensityWindowSizeZero) {
         return message.replace("window_size", "windowSize");
     }

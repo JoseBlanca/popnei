@@ -205,7 +205,7 @@ def test_filter_first_n_gives_a_pca_whose_second_pass_reads_the_same_variants(
 
 @pytest.mark.parametrize(
     ("num_vars", "in_the_message"),
-    [(0, "asked for 0 variants"), (-1, "`num_vars` is -1")],
+    [(0, "`num_vars` is 0, .* 1 or more"), (-1, "`num_vars` is -1")],
 )
 def test_filter_first_n_refuses_a_num_vars_below_1(
     reference_vcf_dir: Path, num_vars: int, in_the_message: str

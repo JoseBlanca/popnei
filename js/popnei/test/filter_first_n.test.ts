@@ -161,11 +161,15 @@ test("filterFirstN adds the step first_n with numVars", () => {
   variants.free();
 });
 
-test("filterFirstN of 0 is an Error that asks for 1 or more", () => {
+test("filterFirstN of 0 is an Error that names numVars and asks for 1 or more", () => {
+  // The core refuses the 0 and names the argument as Python writes it, which
+  // the binding writes as TypeScript does.
   const variants = many();
-  assert.throws(() => variants.filterFirstN(0), {
-    name: "Error",
-    message: /asked for 0 variants.*ask for 1 or more/,
+  assert.throws(() => variants.filterFirstN(0), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /`numVars` is 0, .* 1 or more/);
+    assert.doesNotMatch(error.message, /num_vars/);
+    return true;
   });
   assert.deepEqual(variants.steps, []);
   variants.free();

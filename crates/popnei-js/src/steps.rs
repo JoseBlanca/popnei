@@ -37,7 +37,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use popnei::block::BlockReader;
 use popnei::filters::{
     FilteringStats, LdFilter, PassStep, RegionSelection, Regions, VarFilter, VarFilteringCriterion,
-    individuals_of, refuse_a_step, resolve_individuals,
+    first_n_step, individuals_of, refuse_a_step, resolve_individuals,
 };
 
 use crate::errors::JsPopneiError;
@@ -479,7 +479,8 @@ impl Steps {
     /// whole number it takes, as the window of [`Steps::filter_by_ld`]
     /// does. What is not a whole number of 0 or more is refused by the
     /// package before the call, in `js/popnei/src/arguments.ts`, and 0 is
-    /// refused here by the core, whose message says why.
+    /// refused by the core's step, whose message says why and names
+    /// `numVars`.
     ///
     /// # Errors
     ///
@@ -489,11 +490,8 @@ impl Steps {
     /// here.
     pub fn filter_first_n(&mut self, num_vars: f64) -> Result<(), JsPopneiError> {
         let num_vars = num_vars_of(num_vars)?;
-        if num_vars == 0 {
-            return Err(JsPopneiError::Core(popnei::Error::FirstNOfNoVariants));
-        }
         self.add(Step {
-            pass_step: PassStep::FirstN(num_vars),
+            pass_step: first_n_step(num_vars)?,
             args: vec![(NUM_VARS, Argument::Count(num_vars))],
         })
     }

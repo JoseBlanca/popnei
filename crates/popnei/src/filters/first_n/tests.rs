@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use super::{FirstNReader, refuse_a_step_after_the_first_n, stopped_early};
+use super::{FirstNReader, first_n_step, refuse_a_step_after_the_first_n, stopped_early};
 use crate::block::{Block, BlockReader, SourceHeader};
 use crate::error::{Error, Result};
 use crate::filters::{
@@ -565,6 +565,18 @@ fn a_first_n_of_0_is_refused() {
         Err(Error::FirstNOfNoVariants)
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// The step of a `num_vars` of 1 or more is the filter of that many, and
+/// one of 0 is refused with a message that names `num_vars`, which is what
+/// a user wrote.
+#[test]
+fn first_n_step_of_0_is_refused_with_a_message_that_names_num_vars() {
+    assert_eq!(first_n_step(10).expect("the step"), PassStep::FirstN(10));
+    assert_eq!(first_n_step(1).expect("the step"), PassStep::FirstN(1));
+    let error = first_n_step(0).expect_err("a num_vars of 0");
+    assert!(matches!(error, Error::FirstNOfNoVariants), "{error}");
+    assert!(error.to_string().contains("`num_vars` is 0"), "{error}");
 }
 
 /// A second filter of the first n is refused with its kind: by

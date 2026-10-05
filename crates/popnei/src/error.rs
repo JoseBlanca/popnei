@@ -3265,9 +3265,10 @@ pub enum Error {
 
     /// A filter of the first n variants asked to keep none of them. A pass
     /// that it ended would give no variant to its calculation, so a
-    /// `num_vars` is 1 or more.
+    /// `num_vars` is 1 or more. The message names `num_vars`, the argument a
+    /// user wrote the 0 in, which the TypeScript binding writes `numVars`.
     #[error(
-        "the filter of the first n variants was asked for 0 variants, and a pass with it would give no variant; ask for 1 or more"
+        "`num_vars` is 0, and a pass with a filter of the first 0 variants would give no variant: it is a whole number of variants of 1 or more"
     )]
     FirstNOfNoVariants,
 
