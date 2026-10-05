@@ -123,9 +123,20 @@ impl<R: BlockReader> BlockReader for Asked<R> {
     }
 }
 
+/// The most blocks a test may ask of [`NeverEnds`]. A pass that the filter
+/// ends asks for 3 at most, and one that it does not end would read and keep
+/// blocks until the memory of the machine ran out, which is what the tests of
+/// the filter did on 5 October 2026 while it was still a stub that gave every
+/// block on: the bound makes such a pass fail at once.
+const MOST_BLOCKS_OF_A_SOURCE_THAT_NEVER_ENDS: u64 = 100;
+
 /// A source that never ends: a block of 7 variants of two diploid
-/// individuals at every call, on chr1, at positions that rise by 10.
+/// individuals at every call, on chr1, at positions that rise by 10. It
+/// panics when it is asked for more than
+/// [`MOST_BLOCKS_OF_A_SOURCE_THAT_NEVER_ENDS`] blocks, so that a pass that
+/// does not end fails its test and does not fill the memory.
 struct NeverEnds {
+    blocks_given: u64,
     next_pos: u64,
     chroms: ChromTable,
     individuals: Vec<String>,
@@ -138,6 +149,7 @@ impl NeverEnds {
         chroms.intern("chr1");
         let individuals = vec!["ind1".to_owned(), "ind2".to_owned()];
         NeverEnds {
+            blocks_given: 0,
             next_pos: 10,
             chroms,
             header: SourceHeader {
@@ -156,6 +168,12 @@ impl BlockReader for NeverEnds {
         reason = "a test reads a few blocks of it, at positions far below the largest u64"
     )]
     fn next_block(&mut self) -> Result<Option<Block>> {
+        assert!(
+            self.blocks_given < MOST_BLOCKS_OF_A_SOURCE_THAT_NEVER_ENDS,
+            "a source that never ends was asked for more than \
+             {MOST_BLOCKS_OF_A_SOURCE_THAT_NEVER_ENDS} blocks: the pass did not end"
+        );
+        self.blocks_given += 1;
         let pos: Vec<u64> = (0..7_u64).map(|row| self.next_pos + 10 * row).collect();
         self.next_pos += 70;
         Ok(Some(Block {
@@ -307,6 +325,19 @@ fn the_first_n_over_a_source_that_never_ends_returns_on_one_thread() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(chain.filtering_stats(), vec![("first_n", pair(14, 10))]);
     assert!(stopped_early(&first_n(10), &chain.filtering_stats()));
+}
+
+/// A pass over a source that never ends that no filter ends fails at the
+/// bound of the source, and does not read on until the memory runs out: the
+/// guard that keeps the three tests around this one from doing so when the
+/// filter is broken.
+#[test]
+#[should_panic(expected = "the pass did not end")]
+fn a_pass_over_a_source_that_never_ends_that_nothing_ends_fails_at_its_bound() {
+    let mut source = NeverEnds::new();
+    // The read panics at the bound of the source before it returns, so there
+    // is no result to look at.
+    let _ = blocks_of(&mut source);
 }
 
 /// The first 10 over a source that never ends, with the chain read on the
