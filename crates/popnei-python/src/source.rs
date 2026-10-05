@@ -29,7 +29,7 @@ use std::sync::Mutex;
 
 use numpy::ndarray::Array3;
 use numpy::{IntoPyArray, PyArray1, PyArray3};
-use pyo3::exceptions::{PyOverflowError, PyTypeError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyString, PyTuple};
 
@@ -576,6 +576,86 @@ pub(crate) fn distance_of(
         }
         Err(_) => Err(no_distance(name, smallest, value)),
     }
+}
+
+/// The `value` that was given for `seed`, the number at which the generator
+/// of the filter that keeps variants at random starts: what
+/// [`distance_of`] does for a distance, with messages that say what a seed
+/// is.
+///
+/// # Errors
+///
+/// When the object is a whole number below 0 or above 2^64 - 1, which is
+/// the `ValueError` that names `seed` and the value and not the
+/// `OverflowError` of pyo3. An object that is no whole number at all, `1.5`,
+/// `"42"` or a truth value, is a `TypeError` that names `seed` and what was
+/// given: `True` would be the seed 1 with nothing said.
+pub(crate) fn seed_of(value: &Bound<'_, PyAny>) -> Result<u64, PyPopneiError> {
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_seed(value));
+    }
+    match value.extract::<u64>() {
+        Ok(seed) => Ok(seed),
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyPopneiError::Seed {
+                value: value.to_string(),
+            })
+        }
+        Err(_) => Err(no_seed(value)),
+    }
+}
+
+/// What a user is told when they gave something that is no seed, which names
+/// `seed` and what was given.
+fn no_seed(value: &Bound<'_, PyAny>) -> PyPopneiError {
+    PyTypeError::new_err(format!(
+        "`seed` is where the generator of the filter that keeps variants at random \
+         starts, and {given} was given: a whole number from 0 to 18446744073709551615",
+        given = written_as(value)
+    ))
+    .into()
+}
+
+/// The `value` that was given for `keep_rate`, the probability with which
+/// the filter that keeps variants at random keeps each variant, as a float.
+///
+/// Whether the float is a keep rate, a number from 0 to 1, is the core's
+/// to say, which `RandomFilter::new` does at the call: this function only
+/// takes the number out of the object, and refuses what is no number before
+/// the conversion of pyo3, which takes `True` as 1 with no word.
+///
+/// # Errors
+///
+/// When the object is no number, a string, `None` and a truth value among
+/// them, which is a `TypeError` that names `keep_rate` and what was given.
+/// And when it is a whole number that no float holds, which is a
+/// `ValueError` that names it and the value: no keep rate is that large.
+pub(crate) fn keep_rate_of(value: &Bound<'_, PyAny>) -> Result<f64, PyPopneiError> {
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_keep_rate(value));
+    }
+    match value.extract::<f64>() {
+        Ok(keep_rate) => Ok(keep_rate),
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyValueError::new_err(format!(
+                "`keep_rate` is {value}, which no float holds, and the keep rate of the filter \
+                 that keeps variants at random is a number from 0 to 1, both included"
+            ))
+            .into())
+        }
+        Err(_) => Err(no_keep_rate(value)),
+    }
+}
+
+/// The `TypeError` of a `value` that is no keep rate, which names
+/// `keep_rate` and what was given.
+fn no_keep_rate(value: &Bound<'_, PyAny>) -> PyPopneiError {
+    PyTypeError::new_err(format!(
+        "`keep_rate` is the probability with which each variant is kept, and {given} was \
+         given: a number from 0 to 1, both included",
+        given = written_as(value)
+    ))
+    .into()
 }
 
 /// What a user is told when they gave something that is no distance along a

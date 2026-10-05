@@ -17,7 +17,9 @@ it takes out the variants that repeat what a variant kept near them on
 their chromosome already said. :meth:`popnei.Variants.filter_by_regions`
 keeps the variants inside the regions of a BED file, or those outside them.
 :meth:`popnei.Variants.filter_first_n` keeps the first n variants that the
-steps before it keep and ends the pass there.
+steps before it keep and ends the pass there, and
+:meth:`popnei.Variants.filter_randomly` keeps each variant with a
+probability the user gives, the same variants in every pass.
 
 What is here is what a user reads of them: the :class:`Step` that a filter
 is in the steps of a ``Variants``, and the :class:`FilteringStats` that the
@@ -41,7 +43,7 @@ class FilteringStats:
     before it in the steps kept, and all of them for the first filter."""
 
     vars_kept: int
-    """Those of them that passed its threshold, which are the ones the
+    """Those of them that it kept, which are the ones the
     filter after it was given."""
 
 
@@ -51,16 +53,17 @@ class Step:
 
     A filter is the only kind of step there is: one of the three over a
     number of a variant, the one by linkage disequilibrium, the one by the
-    regions of a BED file, the one that keeps the first n variants, or the
-    one that keeps the individuals a user names.
+    regions of a BED file, the one that keeps the first n variants, the one
+    that keeps variants at random, or the one that keeps the individuals a
+    user names.
     """
 
     kind: str
     """What the step does: ``"missing_data"``, ``"maf"``, ``"obs_het"``,
-    ``"ld"``, ``"individuals"``, ``"regions"``, ``"excluded_regions"`` or
-    ``"first_n"``. The kind of a filter of the variants is the name its
-    counts have in the counts of a pass, where the filter of individuals
-    has no entry, since it takes no variant away."""
+    ``"ld"``, ``"individuals"``, ``"regions"``, ``"excluded_regions"``,
+    ``"first_n"`` or ``"random"``. The kind of a filter of the variants is
+    the name its counts have in the counts of a pass, where the filter of
+    individuals has no entry, since it takes no variant away."""
 
     args: dict[str, object]
     """What the step was given, under the names of the arguments of the
@@ -71,5 +74,6 @@ class Step:
     tuple in the order they were given, and ``{"bed_path": "genes.bed",
     "num_regions": 412}`` for the filter by regions, whose second argument
     is what the BED held and not what the user wrote: the number of regions
-    once the ones that overlap or touch are joined, and ``{"num_vars":
-    1000}`` for the filter of the first n."""
+    once the ones that overlap or touch are joined, ``{"num_vars": 1000}``
+    for the filter of the first n, and ``{"keep_rate": 0.1, "seed": 42}``
+    for the filter that keeps variants at random."""

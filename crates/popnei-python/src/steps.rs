@@ -11,12 +11,14 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The seven methods that add a filter are here as well, one for each of the
+//! The eight methods that add a filter are here as well, one for each of the
 //! three numbers of a variant a filter compares, one for the filter by
 //! linkage disequilibrium, one for the individuals to keep, one for the
-//! regions of a BED file and one for the first n variants, and each of them
-//! refuses at the call what a user cannot filter by: a threshold that is not
-//! a number from 0 to 1, under the name of the argument they wrote it in; a
+//! regions of a BED file, one for the first n variants and one for the
+//! variants kept at random, and each of them refuses at the call what a
+//! user cannot filter by: a threshold that is not a number from 0 to 1,
+//! under the name of the argument they wrote it in; a keep rate that is not
+//! a number from 0 to 1, and a seed that is not a whole number of 64 bits; a
 //! window of fewer than 1 base pairs; a name that is not an individual of
 //! the source, a name that is there twice and no name at all; a BED file
 //! that cannot be read or that holds a line that is not a region, or no
@@ -38,12 +40,12 @@ use pyo3::types::{PyFloat, PyTuple};
 
 use popnei::block::BlockReader;
 use popnei::filters::{
-    LdFilter, PassStep, RegionSelection, Regions, VarFilter, VarFilteringCriterion, first_n_step,
-    individuals_of, refuse_a_step, resolve_individuals,
+    LdFilter, PassStep, RandomFilter, RegionSelection, Regions, VarFilter, VarFilteringCriterion,
+    first_n_step, individuals_of, refuse_a_step, resolve_individuals,
 };
 
 use crate::errors::PyPopneiError;
-use crate::source::{count_of_at_least, distance_of, threshold_of};
+use crate::source::{count_of_at_least, distance_of, keep_rate_of, seed_of, threshold_of};
 
 /// One step of a `Variants`: what the core does with it, and the arguments
 /// a Python user wrote it with.
@@ -69,11 +71,13 @@ pub(crate) struct Step {
 /// the order they named them, the path of a BED file, or the number of
 /// variants the filter of the first n keeps; or what the step found in what
 /// it was given, the number of regions of that file once those that overlap
-/// or touch are joined.
+/// or touch are joined; or the keep rate and the seed of the filter that
+/// keeps variants at random.
 ///
 /// It goes to Python as the value of that argument, a float for a
-/// threshold, an `int` for the window and for the two counts, a
-/// tuple of strings for the individuals and a string for the path, which is
+/// threshold and for a keep rate, an `int` for the window, for the two
+/// counts and for the seed, a tuple of strings for the individuals and a
+/// string for the path, which is
 /// what "In Python and in TypeScript" of `docs/specs/filters.md` gives the
 /// `args` of each step. A window is a whole number of base pairs and is not
 /// a rate, so a user who wrote 10000 reads 10000 back and not `10000.0`.
@@ -84,6 +88,8 @@ enum Argument {
     Individuals(Vec<String>),
     Path(String),
     Count(usize),
+    KeepRate(f64),
+    Seed(u64),
 }
 
 impl<'py> IntoPyObject<'py> for Argument {
@@ -98,6 +104,8 @@ impl<'py> IntoPyObject<'py> for Argument {
             Argument::Individuals(names) => Ok(PyTuple::new(py, names)?.into_any()),
             Argument::Path(path) => Ok(path.into_pyobject(py)?.into_any()),
             Argument::Count(count) => Ok(count.into_pyobject(py)?.into_any()),
+            Argument::KeepRate(keep_rate) => Ok(PyFloat::new(py, keep_rate).into_any()),
+            Argument::Seed(seed) => Ok(seed.into_pyobject(py)?.into_any()),
         }
     }
 }
@@ -117,6 +125,8 @@ const INDIVIDUALS: &str = "individuals";
 const BED_PATH: &str = "bed_path";
 const NUM_REGIONS: &str = "num_regions";
 const NUM_VARS: &str = "num_vars";
+const KEEP_RATE: &str = "keep_rate";
+const SEED: &str = "seed";
 
 /// The kind of one step and its arguments on their way to Python, which the
 /// package puts in the `Step` of `docs/specs/filters.md`.
@@ -323,6 +333,33 @@ impl Steps {
         };
         self.add(step)
     }
+
+    // Each variant kept with the probability `keep_rate`, drawn from a
+    // generator that starts at `seed` in every pass. Both are taken as the
+    // objects they are and converted here, so that a `True` or a `1.5` for
+    // the seed is the `TypeError` that names it and a negative seed the
+    // `ValueError` that names it, and not the `OverflowError` of pyo3.
+    fn filter_randomly(
+        &self,
+        keep_rate: &Bound<'_, PyAny>,
+        seed: &Bound<'_, PyAny>,
+    ) -> Result<(), PyPopneiError> {
+        let keep_rate = keep_rate_of(keep_rate)?;
+        let seed = seed_of(seed)?;
+        // The core's filter refuses a keep rate that is NaN, below 0 or
+        // above 1, with a message that names `keep_rate`. It is dropped and
+        // every pass builds its own, so the rule is written in the core
+        // alone.
+        RandomFilter::new(keep_rate, seed)?;
+        let step = Step {
+            pass_step: PassStep::Random { keep_rate, seed },
+            args: vec![
+                (KEEP_RATE, Argument::KeepRate(keep_rate)),
+                (SEED, Argument::Seed(seed)),
+            ],
+        };
+        self.add(step)
+    }
 }
 
 impl Steps {
@@ -426,8 +463,9 @@ fn under_the_argument(error: popnei::Error, argument: &'static str) -> PyPopneiE
 ///
 /// # Errors
 ///
-/// When a threshold of the steps is not a number from 0 to 1, when the
-/// steps hold two filters of one kind, when the filter of the first n asks
+/// When a threshold or a keep rate of the steps is not a number from 0 to
+/// 1, when the steps hold two filters of one kind, when the filter of the
+/// first n asks
 /// for 0 variants, and when a filter that takes variants out comes after
 /// it. A user reaches none of them: the call that adds a filter refuses
 /// each, and the steps are read from there.

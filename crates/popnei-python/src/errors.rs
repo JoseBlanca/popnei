@@ -159,6 +159,17 @@ pub(crate) enum PyPopneiError {
         /// fit in one of Rust.
         value: String,
     },
+    /// The seed of the filter that keeps variants at random that is no seed:
+    /// a negative whole number, or one above 2^64 - 1, since the generator
+    /// starts at a number of 64 bits. It is not [`PyPopneiError::Distance`],
+    /// whose message speaks of base pairs, and a user who wrote `seed=-1`
+    /// reads what a seed is.
+    Seed {
+        /// What was given for it, as Python prints it: an integer of Python
+        /// is of any size, so the seed that was refused does not always fit
+        /// in one of Rust.
+        value: String,
+    },
     /// A threshold of a filter that is not a number from 0 to 1, under the
     /// name of the argument a user wrote it in: the core refuses it and
     /// names the filter by its kind, `maf`, and what a user has to look at
@@ -317,6 +328,11 @@ impl From<PyPopneiError> for PyErr {
             } => PyValueError::new_err(format!(
                 "`{name}` is {value}, and it says a distance along a chromosome in base \
                  pairs: a whole number of {smallest} or more that 64 bits hold"
+            )),
+            PyPopneiError::Seed { value } => PyValueError::new_err(format!(
+                "`seed` is {value}, and it is where the generator of the filter that keeps \
+                 variants at random starts: a whole number from 0 to 18446744073709551615, \
+                 2^64 - 1, which is what 64 bits hold"
             )),
             // The threshold of a filter, which is the number a user wrote
             // in the call that adds it: the message names the argument, and

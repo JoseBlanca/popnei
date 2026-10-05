@@ -146,6 +146,12 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_USE_GRAMMAR_GAMMA_APPROX: bool = popnei::gwas::DEFAULT_USE_GRAMMAR_GAMMA_APPROX;
 
+    // The seed of `Variants.filter_randomly` when the user gives none, from
+    // the core as well, so that a call without one keeps the same variants
+    // every time.
+    #[pymodule_export]
+    const DEFAULT_RANDOM_FILTER_SEED: u64 = popnei::filters::DEFAULT_RANDOM_FILTER_SEED;
+
     #[pymodule_export]
     use super::density::calc_var_density;
     #[pymodule_export]
