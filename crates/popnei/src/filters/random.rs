@@ -216,7 +216,7 @@ impl<R: BlockReader> RandomlyFilteredReader<R> {
             return Err(Error::RandomFilterThatIsSet {
                 keep_rate: filter.keep_rate(),
                 seed: filter.seed(),
-                that_is_set: None,
+                keep_rate_and_seed_that_is_set: None,
             });
         }
         Ok(RandomlyFilteredReader {

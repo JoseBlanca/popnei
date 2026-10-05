@@ -3327,8 +3327,10 @@ pub enum Error {
     /// sample gives the one filter another seed.
     #[error(
         "the variants are filtered by random already{set}, and a second filter of that kind, with a keep rate of {keep_rate:?} and a seed of {seed}, would keep a sample of the variants the first one keeps",
-        set = that_is_set.map_or_else(String::new, |(keep_rate, seed)| format!(
-            ", with a keep rate of {keep_rate:?} and a seed of {seed}"
+        set = keep_rate_and_seed_that_is_set.map_or_else(String::new, |set| format!(
+            ", with a keep rate of {keep_rate:?} and a seed of {seed}",
+            keep_rate = set.keep_rate,
+            seed = set.seed
         ))
     )]
     RandomFilterThatIsSet {
@@ -3342,8 +3344,20 @@ pub enum Error {
         /// which keep rate and seed, so the error of
         /// [`RandomlyFilteredReader::new`](crate::filters::RandomlyFilteredReader::new)
         /// over one has none; the error of the steps a user adds has them.
-        that_is_set: Option<(f64, u64)>,
+        keep_rate_and_seed_that_is_set: Option<KeepRateAndSeed>,
     },
+}
+
+/// The two arguments of a filter that keeps variants at random, which
+/// [`Error::RandomFilterThatIsSet`] carries for the filter that is set: both
+/// are known or neither is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeepRateAndSeed {
+    /// The probability with which the filter keeps each variant, from 0 to
+    /// 1.
+    pub keep_rate: f64,
+    /// The number the generator of the filter starts at in every pass.
+    pub seed: u64,
 }
 
 impl Error {

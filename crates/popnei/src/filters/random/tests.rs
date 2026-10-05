@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use super::{DEFAULT_RANDOM_FILTER_SEED, RandomFilter, RandomlyFilteredReader, SplitMix64};
 use crate::block::{Block, BlockReader, SourceHeader};
-use crate::error::{Error, Result};
+use crate::error::{Error, KeepRateAndSeed, Result};
 use crate::filters::{
     FilteringStats, PassStep, RegionSelection, Regions, VarFilteringCriterion, chain_of,
     refuse_a_second_filter_of_a_kind, refuse_a_step, refuse_a_step_after_the_first_n,
@@ -364,7 +364,10 @@ fn random_filter_second_is_refused_with_the_keep_rates_and_the_seeds() {
     let expected = Error::RandomFilterThatIsSet {
         keep_rate: 0.25,
         seed: 7,
-        that_is_set: Some((0.1, 42)),
+        keep_rate_and_seed_that_is_set: Some(KeepRateAndSeed {
+            keep_rate: 0.1,
+            seed: 42,
+        }),
     };
     for error in [
         refuse_a_second_filter_of_a_kind(&set, &second).expect_err("a second one"),
@@ -396,7 +399,7 @@ fn random_filter_second_is_refused_with_the_keep_rates_and_the_seeds() {
         Error::RandomFilterThatIsSet {
             keep_rate: 0.25,
             seed: 7,
-            that_is_set: None,
+            keep_rate_and_seed_that_is_set: None,
         }
         .to_string()
     );

@@ -60,7 +60,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::block::{Block, BlockReader, SourceHeader};
-use crate::error::{Error, Result};
+use crate::error::{Error, KeepRateAndSeed, Result};
 use crate::ld::{LdDosages, r2_between};
 use crate::variant::{
     AlleleCounts, ChromTable, Needs, count_alleles, count_gts, the_major_allele_frequency,
@@ -1952,7 +1952,10 @@ pub(crate) fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep)
         }
         PassStep::Random { keep_rate, seed } => {
             let that_is_set = set.iter().find_map(|step| match step {
-                PassStep::Random { keep_rate, seed } => Some((*keep_rate, *seed)),
+                PassStep::Random { keep_rate, seed } => Some(KeepRateAndSeed {
+                    keep_rate: *keep_rate,
+                    seed: *seed,
+                }),
                 PassStep::VarFilter(_)
                 | PassStep::KeepIndividuals(_)
                 | PassStep::Regions(_)
@@ -1962,7 +1965,7 @@ pub(crate) fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep)
                 Some(that_is_set) => Err(Error::RandomFilterThatIsSet {
                     keep_rate: *keep_rate,
                     seed: *seed,
-                    that_is_set: Some(that_is_set),
+                    keep_rate_and_seed_that_is_set: Some(that_is_set),
                 }),
                 None => Ok(()),
             };
