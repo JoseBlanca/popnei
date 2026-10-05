@@ -8,8 +8,8 @@
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use super::{FirstNReader, first_n_step, refuse_a_step_after_the_first_n, stopped_early};
 use crate::block::{Block, BlockReader, SourceHeader};
@@ -782,4 +782,136 @@ fn the_first_n_gives_the_error_of_its_source_and_then_nothing() {
     assert!(reader.next_block().is_err());
     assert!(reader.next_block().expect("nothing").is_none());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+/// A source that gives `blocks` and then no more, and records what a
+/// reader over it asks of it: the calls to `next_block`, the fields set on
+/// it, and the offers of regions, which it takes, as a source that can pass
+/// over the variants outside does, saying it passed over 7.
+struct Recording {
+    blocks: std::vec::IntoIter<Block>,
+    calls: Arc<AtomicUsize>,
+    needs: Arc<Mutex<Option<Needs>>>,
+    offers: Arc<AtomicUsize>,
+    chroms: ChromTable,
+    header: SourceHeader,
+}
+
+impl Recording {
+    fn of(blocks: Vec<Block>) -> Recording {
+        let mut chroms = ChromTable::new();
+        chroms.intern("chr1");
+        Recording {
+            blocks: blocks.into_iter(),
+            calls: Arc::new(AtomicUsize::new(0)),
+            needs: Arc::new(Mutex::new(None)),
+            offers: Arc::new(AtomicUsize::new(0)),
+            chroms,
+            header: SourceHeader {
+                individuals: vec!["ind1".to_owned(), "ind2".to_owned()],
+                chrom_lengths: Vec::new(),
+                vcf_meta_lines: None,
+            },
+        }
+    }
+}
+
+impl BlockReader for Recording {
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.blocks.next())
+    }
+    fn individuals(&self) -> &[String] {
+        &self.header.individuals
+    }
+    fn ploidy(&self) -> usize {
+        2
+    }
+    fn chroms(&self) -> &ChromTable {
+        &self.chroms
+    }
+    fn set_needs(&mut self, needs: Needs) {
+        *self.needs.lock().expect("the needs") = Some(needs);
+    }
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        Vec::new()
+    }
+    fn header(&self) -> &SourceHeader {
+        &self.header
+    }
+    fn skip_outside(&mut self, _selection: RegionSelection) -> bool {
+        self.offers.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+    fn num_skipped(&self) -> u64 {
+        7
+    }
+}
+
+/// A block of two diploid individuals and no variant, which no reader of
+/// popnei gives.
+fn a_block_of_no_variants() -> Block {
+    Block {
+        num_vars: 0,
+        num_individuals: 2,
+        ploidy: 2,
+        gts: Vec::new(),
+        chrom: Some(Vec::new()),
+        pos: Some(Vec::new()),
+        id: None,
+        alleles: None,
+        qual: None,
+        vcf_text: None,
+    }
+}
+
+/// A source that gives a block of no variants has a defect: the filter
+/// gives the error of it, then nothing, and asks the source once.
+#[test]
+fn the_first_n_over_a_source_that_gives_a_block_of_no_variants_is_the_error_of_a_defect() {
+    let source = Recording::of(vec![a_block_of_no_variants(), a_block_of_no_variants()]);
+    let calls = Arc::clone(&source.calls);
+    let mut reader = FirstNReader::new(source, 10).expect("the filter");
+
+    let error = reader.next_block().expect_err("the block of no variants");
+    assert!(
+        matches!(error, Error::ReaderGaveABlockOfNoVariants),
+        "{error}"
+    );
+    assert!(reader.next_block().expect("nothing").is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// The filter reads no field of a variant and passes the fields a consumer
+/// asks for to its source as they are.
+#[test]
+fn the_first_n_passes_the_needs_to_its_source() {
+    let source = Recording::of(Vec::new());
+    let needs = Arc::clone(&source.needs);
+    let mut reader = FirstNReader::new(source, 10).expect("the filter");
+
+    reader.set_needs(Needs::GTS | Needs::CHROM_POS);
+
+    assert_eq!(
+        *needs.lock().expect("the needs"),
+        Some(Needs::GTS | Needs::CHROM_POS)
+    );
+}
+
+/// The filter answers false to the offer of the regions and does not hand
+/// it to its source, and says it skipped none although its source says 7:
+/// the variants the source passed over would not reach its counts.
+#[test]
+fn the_first_n_refuses_the_regions_and_skips_nothing() {
+    let source = Recording::of(Vec::new());
+    let offers = Arc::clone(&source.offers);
+    let mut reader = FirstNReader::new(source, 10).expect("the filter");
+    let regions = Arc::new(Regions::from_bed(&b"chr1\t0\t2000\n"[..]).expect("the regions"));
+
+    assert!(!reader.skip_outside(RegionSelection {
+        regions,
+        exclude: false,
+    }));
+    assert_eq!(reader.num_skipped(), 0);
+    assert_eq!(offers.load(Ordering::SeqCst), 0);
 }
