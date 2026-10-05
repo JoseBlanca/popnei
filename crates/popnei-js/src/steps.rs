@@ -62,9 +62,9 @@ pub(crate) struct Step {
     args: Vec<(&'static str, Argument)>,
 }
 
-/// What a user gave one argument of a step: the threshold of a filter, or
-/// the keep rate of the filter that keeps variants at random, a number from
-/// 0 to 1; the window of the filter by linkage disequilibrium, a whole
+/// What a user gave one argument of a step: the threshold of a filter, a
+/// number from 0 to 1; the keep rate of the filter that keeps variants at
+/// random, a number from 0 to 1 as well; the window of the filter by linkage disequilibrium, a whole
 /// number of base pairs; the names of the individuals to keep, in the order
 /// they named them; how many variants the filter of the first n keeps; or
 /// the seed of the filter that keeps variants at random; or what the step
@@ -72,12 +72,14 @@ pub(crate) struct Step {
 /// that overlap or touch are joined.
 ///
 /// It is the value that argument has in the `args` of the step a user
-/// reads, a number for a threshold, for a window, for the two counts and
-/// for a seed, and an array of strings for the individuals, which is what
+/// reads, a number for a threshold, for a keep rate, for a window, for the
+/// two counts and for a seed, and an array of strings for the individuals, which is what
 /// "In Python and in TypeScript" of `docs/specs/filters.md` gives them. A
 /// window is kept apart from a threshold because the two are not the same
 /// thing: a threshold is a rate and a window is a whole number of base
-/// pairs. A count, of regions or of variants, is apart from both, since it
+/// pairs. A keep rate is apart from a threshold as well, as it is in the
+/// Python crate: it is a probability and not a number a count of a variant
+/// is compared with. A count, of regions or of variants, is apart from both, since it
 /// is neither, and so is a seed, which is where a generator of random
 /// numbers starts and counts nothing.
 #[derive(Clone)]
@@ -86,6 +88,7 @@ enum Argument {
     Distance(u64),
     Individuals(Vec<String>),
     Count(u64),
+    KeepRate(f64),
     Seed(u64),
 }
 
@@ -141,14 +144,16 @@ pub fn default_random_filter_seed() -> f64 {
 /// of `ARG_KIND_INDIVIDUALS` from [`Steps::arg_individuals`], the value of
 /// one of `ARG_KIND_DISTANCE` from [`Steps::arg_distances`], the value of
 /// one of `ARG_KIND_COUNT` from [`Steps::arg_counts`], the value of one of
-/// `ARG_KIND_SEED` from [`Steps::arg_seeds`], and refuses a number that is
-/// none of them. A kind of its own for each is what keeps an
+/// `ARG_KIND_SEED` from [`Steps::arg_seeds`], the value of one of
+/// `ARG_KIND_KEEP_RATE` from [`Steps::arg_keep_rates`], and refuses a number
+/// that is none of them. A kind of its own for each is what keeps an
 /// argument that is added later from being read as a threshold.
 const ARG_KIND_THRESHOLD: u8 = 0;
 const ARG_KIND_INDIVIDUALS: u8 = 1;
 const ARG_KIND_DISTANCE: u8 = 2;
 const ARG_KIND_COUNT: u8 = 3;
 const ARG_KIND_SEED: u8 = 4;
+const ARG_KIND_KEEP_RATE: u8 = 5;
 
 /// The steps of one `Variants`, in the order in which they were put on it,
 /// or the copy of that list that one pass runs.
@@ -232,6 +237,25 @@ impl Steps {
                 Argument::Distance(_)
                 | Argument::Individuals(_)
                 | Argument::Count(_)
+                | Argument::KeepRate(_)
+                | Argument::Seed(_) => None,
+            })
+            .collect()
+    }
+
+    /// The keep rate of every argument that is one, in the order of
+    /// `arg_names`, and nothing for an argument that is not: the keep rate of
+    /// the filter that keeps variants at random.
+    #[must_use]
+    pub fn arg_keep_rates(&self) -> Vec<f64> {
+        self.args()
+            .into_iter()
+            .filter_map(|(_name, value)| match value {
+                Argument::KeepRate(keep_rate) => Some(keep_rate),
+                Argument::Threshold(_)
+                | Argument::Distance(_)
+                | Argument::Individuals(_)
+                | Argument::Count(_)
                 | Argument::Seed(_) => None,
             })
             .collect()
@@ -248,6 +272,7 @@ impl Steps {
                 Argument::Threshold(_)
                 | Argument::Distance(_)
                 | Argument::Count(_)
+                | Argument::KeepRate(_)
                 | Argument::Seed(_) => None,
                 Argument::Individuals(names) => Some(names),
             })
@@ -259,7 +284,9 @@ impl Steps {
     /// threshold of a filter, which is in `arg_thresholds`, 1 for the names
     /// of the individuals to keep, which are in `arg_individuals`, 2 for a
     /// window of base pairs, which is in `arg_distances`, 3 for a count,
-    /// which is in `arg_counts`, and 4 for a seed, which is in `arg_seeds`.
+    /// which is in `arg_counts`, 4 for a seed, which is in `arg_seeds`, and
+    /// 5 for the keep rate of the filter that keeps variants at random,
+    /// which is in `arg_keep_rates`.
     ///
     /// The package switches on it and throws for a number it does not know,
     /// so an argument of a kind added later is never read as a threshold.
@@ -273,6 +300,7 @@ impl Steps {
                 Argument::Distance(_) => ARG_KIND_DISTANCE,
                 Argument::Count(_) => ARG_KIND_COUNT,
                 Argument::Seed(_) => ARG_KIND_SEED,
+                Argument::KeepRate(_) => ARG_KIND_KEEP_RATE,
             })
             .collect()
     }
@@ -297,6 +325,7 @@ impl Steps {
                 Argument::Threshold(_)
                 | Argument::Individuals(_)
                 | Argument::Count(_)
+                | Argument::KeepRate(_)
                 | Argument::Seed(_) => None,
             })
             .collect()
@@ -331,6 +360,7 @@ impl Steps {
                 Argument::Threshold(_)
                 | Argument::Distance(_)
                 | Argument::Individuals(_)
+                | Argument::KeepRate(_)
                 | Argument::Seed(_) => None,
             })
             .collect()
@@ -358,15 +388,16 @@ impl Steps {
                 Argument::Threshold(_)
                 | Argument::Distance(_)
                 | Argument::Individuals(_)
-                | Argument::Count(_) => None,
+                | Argument::Count(_)
+                | Argument::KeepRate(_) => None,
             })
             .collect()
     }
 
     /// How many names of individuals each argument of `arg_names` holds,
     /// which cuts `arg_individuals` into the names of each of them, and 0
-    /// for an argument whose value is a threshold, whose one number is in
-    /// `arg_thresholds`.
+    /// for an argument whose value is one number, which is in the array of
+    /// its kind.
     ///
     /// # Errors
     ///
@@ -380,6 +411,7 @@ impl Steps {
                 Argument::Threshold(_)
                 | Argument::Distance(_)
                 | Argument::Count(_)
+                | Argument::KeepRate(_)
                 | Argument::Seed(_) => Ok(0),
                 Argument::Individuals(names) => {
                     let num_names = names.len();
@@ -592,7 +624,7 @@ impl Steps {
         self.add(Step {
             pass_step: PassStep::Random { keep_rate, seed },
             args: vec![
-                (KEEP_RATE, Argument::Threshold(keep_rate)),
+                (KEEP_RATE, Argument::KeepRate(keep_rate)),
                 (SEED, Argument::Seed(seed)),
             ],
         })

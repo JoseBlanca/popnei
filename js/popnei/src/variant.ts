@@ -185,15 +185,17 @@ export function passStatsOf(counts: PassCounts): PassStats {
  * value is a window of base pairs, which is in `arg_distances`, and of one
  * whose value is a count, the number of regions of a BED or the number of
  * variants of `filterFirstN`, which is in `arg_counts`, and of one whose
- * value is the seed of `filterRandomly`, which is in `arg_seeds`. They are
- * the five numbers `arg_kinds` of the binding crate gives. The keep rate of
- * `filterRandomly`, a number from 0 to 1, crosses as a threshold does.
+ * value is the seed of `filterRandomly`, which is in `arg_seeds`, and of one
+ * whose value is the keep rate of `filterRandomly`, which is in
+ * `arg_keep_rates`. They are the six numbers `arg_kinds` of the binding
+ * crate gives.
  */
 const A_THRESHOLD = 0;
 const THE_NAMES_OF_INDIVIDUALS = 1;
 const A_DISTANCE = 2;
 const A_COUNT = 3;
 const A_SEED = 4;
+const A_KEEP_RATE = 5;
 
 /** The steps of the core as the steps a user reads, in their order. */
 function stepsOf(steps: StepsOfTheCore): Step[] {
@@ -213,12 +215,14 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
   const distances = steps.arg_distances();
   const counts = steps.arg_counts();
   const seeds = steps.arg_seeds();
+  const keepRates = steps.arg_keep_rates();
   const ofEachStep: Step[] = [];
   let firstArg = 0;
   let nextThreshold = 0;
   let nextDistance = 0;
   let nextCount = 0;
   let nextSeed = 0;
+  let nextKeepRate = 0;
   let firstName = 0;
   for (const [step, kind] of kinds.entries()) {
     // The arguments of every step cross flat, the ones of the first step
@@ -281,6 +285,16 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
         }
         args[name] = seed;
         nextSeed += 1;
+      } else if (argKind === A_KEEP_RATE) {
+        const keepRate = keepRates[nextKeepRate];
+        if (keepRate === undefined) {
+          throw new Error(
+            `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+              "variants is a keep rate and has no number",
+          );
+        }
+        args[name] = keepRate;
+        nextKeepRate += 1;
       } else if (argKind === THE_NAMES_OF_INDIVIDUALS) {
         const kept = individuals.slice(firstName, firstName + numNames);
         if (kept.length !== numNames) {
