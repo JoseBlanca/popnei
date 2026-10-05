@@ -96,8 +96,11 @@ class PassStats:
 many it kept, as `docs/specs/filters.md` says. `stopped_early` is true when
 the filter of the first n variants of that spec kept its n and ended the
 pass before the source ended, so that the counts of the filters are of the
-part of the source that was read, and `num_vars` is then n; it was added on
-5 October 2026. A calculation that makes
+part of the source that was read, and when the pass is over `num_vars` is
+then n; it was added on 5 October 2026. Read while an `iter_blocks` runs,
+the counts are of what the filters have read, so `stopped_early` can be true
+before the user has the n variants, which `reblock` holds for the next
+block, as the counts of the filters run ahead of `num_vars` there. A calculation that makes
 several passes over the same steps gives the counts of one, `stopped_early`
 among them, since they are the same in all, and one whose passes differ, a pass for each population, says
 in its spec what it gives. In TypeScript it is `passStats`, with `numVars`,

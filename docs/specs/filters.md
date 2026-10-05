@@ -1407,7 +1407,14 @@ keep rate of 0.5 and a seed of 42. The ten numbers from 0 to 1 that Java
 gives from 42 are, to six decimals, 0.741565, 0.159910, 0.278601, 0.344191, 0.038030, 0.868228,
 0.218405, 0.800632, 0.339931 and 0.618482, so the filter keeps variants 2,
 3, 4, 5, 7 and 9, and its counts are 10 given and 6 kept. The same ten
-variants given as a block of 3 and a block of 7 keep the same six.
+variants given as a block of 3 and a block of 7 keep the same six. The
+tests assert the ten numbers to the bit, as `SplitMix.java` prints the bits
+of each, 0x3fe7bae644c5fd6d, 0x3fc477f199d93378, 0x3fd1d499d5c4c3e6,
+0x3fd607387fc392b8, 0x3fa378b0b4489040, 0x3febc8863f47901b,
+0x3fcbf4b38e229bb4, 0x3fe99ec6bdd3d3c5, 0x3fd5c16e1dc2cf5e and
+0x3fe3ca9ae7052fee, and that a filter whose keep rate is exactly the first
+of them, 0x3fe7bae644c5fd6d, drops the first variant: a variant is kept
+when its number is below the keep rate, not at it.
 
 On `tests/reference/vcf/many.vcf`, read with every variant given, those
 that failed their FILTER among them, 500 variants:
@@ -1449,6 +1456,21 @@ this filter at 0.1 and a seed of 42:
 - A keep rate of -0.1, 1.5 and NaN is a `ValueError`, a seed of -1 a
   `ValueError` and of 1.5 a `TypeError`, and a second filter of this kind
   a `ValueError`. `steps` has the kind and both arguments.
+- The filter of individuals before this filter keeps the same 45.
+- At a keep rate of 0, `calc_pairwise_kosman_dists` gives the error of a
+  pass that gave no variant, with this filter given 500 and keeping 0.
+- The filter by regions before this one, with the BED `chr1 3000 9000` and
+  `chr2 0 5000`, and this filter at 0.3 with a seed of 42, keeps 50
+  variants, the first eight at 3072, 3109, 3183, 3257, 3405, 3590, 3627 and
+  3701 of chr1, over `many.vcf` and over the vars file written from it,
+  whose reader skips what is outside the regions. The 50 are the draws of
+  Java from 42 over the 162 variants that `bcftools view -T` keeps in those
+  regions, worked out on 5 October 2026.
+
+The cargo tests also run the first row of the table over a vars file of
+`many.vcf` in batches of 7, in pools of rayon of one thread and of four and
+through the reader one block ahead, and get the 45 each time; and build the
+third row, a seed of 7, through `chain_of`, which gives 49.
 
 The TypeScript test asserts the 45 and their first five positions, the same
 variants from a second pass, and the `Error` of a keep rate of 1.5.
@@ -1865,8 +1887,10 @@ TypeScript.
 /// one of `set`, the steps that are set already. For a threshold filter
 /// the error carries both thresholds, the one of `new` and the one that
 /// is set, which a chain of readers cannot say and the steps can; for the
-/// filter of individuals it carries the kind.
-pub fn refuse_a_second_filter_of_a_kind(
+/// filter of individuals it carries the kind. Of the crate alone since 5
+/// October 2026: the binding crates call `refuse_a_step`, below, which
+/// calls this one.
+pub(crate) fn refuse_a_second_filter_of_a_kind(
     set: &[PassStep],
     new: &PassStep,
 ) -> Result<()>;
@@ -2032,15 +2056,16 @@ The two steps, two more members of `PassStep`, for which `chain_of` builds a
 
 `refuse_a_second_filter_of_a_kind` refuses a second step of either kind,
 with the kind, as it does for the filter by regions. A step that takes
-variants out after a `FirstN` is refused by a function of its own, which
-both binding crates call when a user adds a step, and which `chain_of`
-calls for each step as it builds the chain:
+variants out after a `FirstN` is refused by a function of its own. Both are
+of the crate alone, and `refuse_a_step` calls them in their order: both
+binding crates call it when a user adds a step, and `chain_of` for each step
+as it builds the chain, so that no binding can call one and not the other:
 
 ```rust
 /// The error of a step that takes variants out, `new`, after a filter of
 /// the first n among `set`, the steps that are set already. The filter of
 /// individuals is not refused.
-pub fn refuse_a_step_after_the_first_n(set: &[PassStep], new: &PassStep) -> Result<()>;
+pub(crate) fn refuse_a_step_after_the_first_n(set: &[PassStep], new: &PassStep) -> Result<()>;
 
 /// Every refusal of `new` against `set`: a second filter of its kind first,
 /// then a step after the filter of the first n. `chain_of` and both binding

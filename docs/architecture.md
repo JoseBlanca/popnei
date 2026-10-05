@@ -52,8 +52,11 @@ What this gives:
   over a block runs 5x to 10x faster than the same work variant by
   variant.
 - **Filters are readers over readers.** A variant filter takes a block
-  from its source, decides which rows stay, with rayon over the rows,
-  compacts every column in place and gives the block on. A filter of
+  from its source, decides which rows stay, with rayon over the rows when
+  each row is decided on its own, and in their order on one thread when a
+  row's answer turns on the rows before it, as for the filter by linkage
+  disequilibrium and the filter that keeps variants at random, compacts
+  every column in place and gives the block on. A filter of
   individuals compacts the genotypes of each row in place. Neither
   allocates a block. A block left with no variants is not given; the
   filter takes the next. A filter counts the variants it was given and
