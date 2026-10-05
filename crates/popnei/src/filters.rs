@@ -44,7 +44,7 @@
 //! then ends the pass, so that the rest of the source is not read: it is
 //! [`FirstNReader`], and [`stopped_early`] tells from the counts of a pass
 //! whether it ended it. No step that takes variants out comes after it,
-//! which [`refuse_a_step_after_the_first_n`] refuses.
+//! which [`refuse_a_step`] refuses with a second filter of a kind.
 //!
 //! `docs/specs/filters.md` has the design, and the row `filters` of section
 //! 9 of `docs/architecture.md` where the module sits.
@@ -1736,8 +1736,8 @@ impl PassStep {
 /// of `docs/specs/stats.md` name individuals among. Both binding crates read
 /// it, and neither walks the steps itself: which step says who the next pass
 /// holds is of the filters and not of Python or of TypeScript. A second
-/// filter of individuals is refused, by [`refuse_a_second_filter_of_a_kind`]
-/// at the call that adds it and by [`chain_of`] when the pass is built, so
+/// filter of individuals is refused, by [`refuse_a_step`] at the call that
+/// adds it and by [`chain_of`] when the pass is built, so
 /// the last one is the only one.
 #[must_use]
 pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<String> {
@@ -1774,22 +1774,22 @@ pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<Strin
 ///
 /// # Errors
 ///
-/// What [`VarFilter::new`] and [`LdFilter::new`] refuse, a threshold that
-/// is NaN, below 0 or above 1 and a `max_dist` below 1, and what
-/// [`FilteredReader::new`] and [`LdFilteredReader::new`] refuse, a filter of
-/// the kind of one before it in `steps` or of a filter that `reader` holds
-/// already, which a chain built over a chain has, and what
+/// What [`refuse_a_step`] refuses of each step against the steps before it
+/// in `steps`, before its reader is built: a second filter of a kind, and a
+/// step that takes variants out after a [`PassStep::FirstN`]. The second
+/// [`PassStep::KeepIndividuals`] is found there alone: the filter of
+/// individuals takes no variant out, so it has no counts and a reader
+/// cannot be asked whether it holds one. What [`VarFilter::new`] and
+/// [`LdFilter::new`] refuse, a threshold that is NaN, below 0 or above 1 and
+/// a `max_dist` below 1, and what [`FilteredReader::new`] and
+/// [`LdFilteredReader::new`] refuse, a filter of the kind of a filter that
+/// `reader` holds already, which a chain built over a chain has, and what
 /// [`RegionsReader::new`] refuses, the same for a filter by regions. What
 /// [`IndividualsReader::new`] refuses, a name that is not an individual of
 /// what the step is put on, a name that is there twice and no name at all.
-/// And a second [`PassStep::KeepIndividuals`] among `steps`, which the
-/// chain has to find itself: the filter of individuals takes no variant
-/// out, so it has no counts and a reader cannot be asked whether it holds
-/// one. What [`FirstNReader::new`] refuses, a `num_vars` of 0 and a filter
-/// of the first n over a chain that holds one. And a step that takes
-/// variants out after a [`PassStep::FirstN`] among `steps`, which
-/// [`refuse_a_step_after_the_first_n`] refuses. No block was read when any
-/// of them comes.
+/// What [`FirstNReader::new`] refuses, a `num_vars` of 0 and a filter of
+/// the first n over a chain that holds one. No block was read when any of
+/// them comes.
 pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<dyn BlockReader>> {
     let mut chain = reader;
     for (index, step) in steps.iter().enumerate() {
@@ -1797,7 +1797,7 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
         // `steps`, so it is below their number and the split is the prefix
         // that ends where this step begins.
         let before = steps.split_at(index).0;
-        refuse_a_step_after_the_first_n(before, step)?;
+        refuse_a_step(before, step)?;
         match step {
             // The three criteria that compare one number of a variant with
             // a threshold: the variant is kept or dropped on what it holds
@@ -1824,7 +1824,6 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
                 )?);
             }
             PassStep::KeepIndividuals(names) => {
-                refuse_a_second_filter_of_a_kind(before, step)?;
                 chain = Box::new(IndividualsReader::new(chain, names)?);
             }
             // The filter by regions has counts, so a second one of a kind
@@ -1852,8 +1851,9 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
 /// the two keeps alone, and a second filter by linkage disequilibrium works
 /// its r² out over the variants the first left, so either says that the
 /// user has lost track of what their variants carry. Both binding crates
-/// call this when a user adds a filter to a `Variants`, where no reader
-/// exists yet and the steps are what says which filters are set.
+/// call it, through [`refuse_a_step`], when a user adds a filter to a
+/// `Variants`, where no reader exists yet and the steps are what says which
+/// filters are set.
 ///
 /// # Errors
 ///
@@ -1915,6 +1915,27 @@ pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Res
         });
     }
     Ok(())
+}
+
+/// Every refusal of `new`, a step a user adds or the next step of a chain,
+/// against `set`, the steps that are set already: a second filter of its
+/// kind, which [`refuse_a_second_filter_of_a_kind`] refuses, and then a step
+/// that takes variants out after a filter of the first n, which
+/// [`refuse_a_step_after_the_first_n`] refuses.
+///
+/// A step that breaks both rules, a second MAF filter after a MAF filter
+/// and a filter of the first n, gets the first error: moving it before the
+/// filter of the first n would not make it acceptable. [`chain_of`] and both
+/// binding crates call this and neither of the two it calls, so that one
+/// step gets one error in every language.
+///
+/// # Errors
+///
+/// The error of [`refuse_a_second_filter_of_a_kind`] when there is one, and
+/// otherwise that of [`refuse_a_step_after_the_first_n`].
+pub fn refuse_a_step(set: &[PassStep], new: &PassStep) -> Result<()> {
+    refuse_a_second_filter_of_a_kind(set, new)?;
+    refuse_a_step_after_the_first_n(set, new)
 }
 
 /// The index of each of `names` among `individuals`, in the order of

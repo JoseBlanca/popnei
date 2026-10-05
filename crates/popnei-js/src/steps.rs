@@ -37,8 +37,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use popnei::block::BlockReader;
 use popnei::filters::{
     FilteringStats, LdFilter, PassStep, RegionSelection, Regions, VarFilter, VarFilteringCriterion,
-    individuals_of, refuse_a_second_filter_of_a_kind, refuse_a_step_after_the_first_n,
-    resolve_individuals,
+    individuals_of, refuse_a_step, resolve_individuals,
 };
 
 use crate::errors::JsPopneiError;
@@ -573,12 +572,12 @@ impl Steps {
     ///
     /// When the list holds a filter of the kind of `step` already, and when
     /// `step` takes variants out and the list holds a filter of the first n,
-    /// which the core says, so that the rules of which steps stand together
-    /// are written in one place. After either, the list is as it was.
+    /// which the core's `refuse_a_step` says, in that order, so that the
+    /// rules of which steps stand together, and which of two refusals a step
+    /// gets, are written in one place. After either, the list is as it was.
     fn add(&mut self, step: Step) -> Result<(), JsPopneiError> {
         let set = pass_steps_of(&self.steps);
-        refuse_a_second_filter_of_a_kind(&set, &step.pass_step)?;
-        refuse_a_step_after_the_first_n(&set, &step.pass_step)?;
+        refuse_a_step(&set, &step.pass_step)?;
         self.steps.push(step);
         Ok(())
     }

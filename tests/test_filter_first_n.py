@@ -273,6 +273,24 @@ def test_filter_first_n_refuses_a_step_that_takes_variants_out_after_it(
     assert [step.kind for step in variants.steps] == ["first_n"]
 
 
+def test_filter_first_n_refuses_a_second_maf_filter_after_it_as_a_second_of_its_kind(
+    reference_vcf_dir: Path,
+) -> None:
+    """A MAF filter after a MAF filter and the filter of the first n breaks
+    both rules, and is refused as a second filter of its kind, with both
+    thresholds, as in TypeScript."""
+    variants = _many(reference_vcf_dir)
+    variants.filter_by_maf(0.9)
+    variants.filter_first_n(10)
+
+    with pytest.raises(ValueError) as refusal:
+        variants.filter_by_maf(0.8)
+
+    assert "filtered by maf already, with a threshold of 0.9" in str(refusal.value)
+    assert "whose threshold is 0.8" in str(refusal.value)
+    assert [step.kind for step in variants.steps] == ["maf", "first_n"]
+
+
 def test_filter_first_n_accepts_the_filter_of_individuals_after_it(
     reference_vcf_dir: Path,
 ) -> None:

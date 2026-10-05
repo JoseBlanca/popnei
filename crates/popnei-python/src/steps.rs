@@ -39,7 +39,7 @@ use pyo3::types::{PyFloat, PyTuple};
 use popnei::block::BlockReader;
 use popnei::filters::{
     LdFilter, PassStep, RegionSelection, Regions, VarFilter, VarFilteringCriterion, individuals_of,
-    refuse_a_second_filter_of_a_kind, refuse_a_step_after_the_first_n, resolve_individuals,
+    refuse_a_step, resolve_individuals,
 };
 
 use crate::errors::PyPopneiError;
@@ -373,16 +373,16 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// When `step` takes variants out and the list holds a filter of the
-    /// first n, and when the list holds a step of the kind of `step`
-    /// already; the core says both, in the order in which its `chain_of`
-    /// asks them. After either, the list is as it was. And when a panic
-    /// left the lock broken, which is a defect of this crate.
+    /// When the list holds a step of the kind of `step` already, and when
+    /// `step` takes variants out and the list holds a filter of the first
+    /// n; the core's `refuse_a_step` says both, in the order in which its
+    /// `chain_of` asks them and in which TypeScript gets them. After
+    /// either, the list is as it was. And when a panic left the lock
+    /// broken, which is a defect of this crate.
     fn add(&self, step: Step) -> Result<(), PyPopneiError> {
         let mut steps = self.locked()?;
         let set = pass_steps_of(&steps);
-        refuse_a_step_after_the_first_n(&set, &step.pass_step)?;
-        refuse_a_second_filter_of_a_kind(&set, &step.pass_step)?;
+        refuse_a_step(&set, &step.pass_step)?;
         steps.push(step);
         Ok(())
     }

@@ -227,9 +227,10 @@ pub fn stopped_early(steps: &[PassStep], filtering: &[(&'static str, FilteringSt
 ///
 /// With the filter of the first n set, n is the number of variants every
 /// calculation gets, and a filter after it would leave fewer; the owner
-/// decided on 5 October 2026 that it is refused. Both binding crates call
-/// this when a user adds a step, and [`chain_of`](crate::filters::chain_of)
-/// calls it for each step as it builds the chain.
+/// decided on 5 October 2026 that it is refused. Both binding crates and
+/// [`chain_of`](crate::filters::chain_of) call it through
+/// [`refuse_a_step`](crate::filters::refuse_a_step), after the refusal of a
+/// second filter of a kind.
 ///
 /// # Errors
 ///

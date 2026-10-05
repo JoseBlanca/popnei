@@ -16,7 +16,7 @@ use crate::block::{Block, BlockReader, SourceHeader};
 use crate::error::{Error, Result};
 use crate::filters::{
     FilteringStats, PassStep, RegionSelection, Regions, VarFilteringCriterion, chain_of,
-    refuse_a_second_filter_of_a_kind,
+    refuse_a_second_filter_of_a_kind, refuse_a_step,
 };
 use crate::io::vcf::{VcfOptions, VcfReader};
 use crate::variant::{ChromTable, Needs};
@@ -653,6 +653,49 @@ fn each_step_that_takes_variants_out_after_the_first_n_is_refused() {
             "{kind}"
         );
     }
+}
+
+/// A MAF filter of 0.8 after a MAF filter of 0.9 and a filter of the first
+/// n breaks both rules, and is refused as a second filter of its kind, with
+/// both thresholds, by `refuse_a_step` and by `chain_of`; a MAF filter after
+/// the first n alone is refused as a step after it, and a filter of another
+/// kind before it is accepted.
+#[test]
+fn a_second_maf_filter_after_the_first_n_is_refused_as_a_second_of_its_kind() {
+    let set = vec![PassStep::VarFilter(MaxMaf(0.9)), PassStep::FirstN(10)];
+    let second = PassStep::VarFilter(MaxMaf(0.8));
+
+    let error = refuse_a_step(&set, &second).expect_err("a second maf filter");
+    assert!(
+        matches!(
+            error,
+            Error::VarFilterOfAKindThatIsSet {
+                kind: "maf",
+                threshold_that_is_set: Some(_),
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert!(error.to_string().contains("0.9"), "{error}");
+    assert!(error.to_string().contains("0.8"), "{error}");
+
+    let mut steps = set.clone();
+    steps.push(second.clone());
+    let error = chain_of(Box::new(many_vcf_reader(Some(7))), &steps)
+        .err()
+        .expect("a second maf filter");
+    assert!(
+        matches!(error, Error::VarFilterOfAKindThatIsSet { kind: "maf", .. }),
+        "{error}"
+    );
+
+    let error = refuse_a_step(&first_n(10), &second).expect_err("a maf filter after it");
+    assert_eq!(
+        error.to_string(),
+        Error::StepAfterTheFirstN { kind: "maf" }.to_string()
+    );
+    assert!(refuse_a_step(&[PassStep::VarFilter(MaxObsHet(0.5))], &second).is_ok());
 }
 
 /// The filter of individuals takes no variant out and is accepted after a

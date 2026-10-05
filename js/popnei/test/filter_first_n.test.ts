@@ -231,6 +231,24 @@ for (const [kind, filter] of FILTERS_OF_THE_VARIANTS) {
   });
 }
 
+test("filterFirstN then a second MAF filter is refused as a second of its kind", () => {
+  // The MAF filter of 0.8 breaks both rules, and gets the refusal of a second
+  // filter of its kind, with both thresholds, as in Python.
+  const variants = many();
+  variants.filterByMaf(0.9);
+  variants.filterFirstN(10);
+  assert.throws(() => variants.filterByMaf(0.8), {
+    name: "Error",
+    message:
+      /filtered by maf already, with a threshold of 0\.9, and a second filter of that kind, whose threshold is 0\.8/,
+  });
+  assert.deepEqual(
+    variants.steps.map((step) => step.kind),
+    ["maf", "first_n"],
+  );
+  variants.free();
+});
+
 test("filterFirstN accepts the filter of individuals after it", () => {
   const variants = many();
   variants.filterFirstN(10);
