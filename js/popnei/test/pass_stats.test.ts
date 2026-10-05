@@ -99,6 +99,7 @@ for (const [source, many] of MANY) {
     assert.deepEqual(blocks.passStats, {
       numVars: MANY_NUM_VARS,
       filtering: {},
+      stoppedEarly: false,
     });
     variants.free();
   });
@@ -114,7 +115,11 @@ for (const [source, many] of MANY) {
       numVarsPerBlock: NUM_VARS_PER_BLOCK,
     });
 
-    assert.deepEqual(blocks.passStats, { numVars: 0, filtering: {} });
+    assert.deepEqual(blocks.passStats, {
+      numVars: 0,
+      filtering: {},
+      stoppedEarly: false,
+    });
     for (let block = 0; block < BLOCKS_READ; block += 1) {
       assert.equal(blocks.next().value?.numVars, NUM_VARS_PER_BLOCK);
     }
@@ -122,6 +127,7 @@ for (const [source, many] of MANY) {
     assert.deepEqual(blocks.passStats, {
       numVars: VARS_OF_THE_BLOCKS_READ,
       filtering: {},
+      stoppedEarly: false,
     });
     blocks.return?.();
     variants.free();
@@ -139,10 +145,12 @@ for (const [source, many] of MANY) {
     assert.deepEqual(first.passStats, {
       numVars: MANY_NUM_VARS,
       filtering: {},
+      stoppedEarly: false,
     });
     assert.deepEqual(second.passStats, {
       numVars: MANY_NUM_VARS,
       filtering: {},
+      stoppedEarly: false,
     });
     variants.free();
   });
@@ -158,6 +166,7 @@ for (const [source, many] of MANY) {
     assert.deepEqual(written.passStats, {
       numVars: MANY_NUM_VARS,
       filtering: {},
+      stoppedEarly: false,
     });
     const read = openVars(written.bytes);
     assert.equal(numVarsOf(read.iterBlocks()), MANY_NUM_VARS);
@@ -185,11 +194,13 @@ test("the counts of a pass are read after it gave its memory back", () => {
   assert.deepEqual(blocks.passStats, {
     numVars: MANY_NUM_VARS,
     filtering: {},
+    stoppedEarly: false,
   });
   // Read again, they are the same: nothing of the pass is left to add.
   assert.deepEqual(blocks.passStats, {
     numVars: MANY_NUM_VARS,
     filtering: {},
+    stoppedEarly: false,
   });
   variants.free();
 });
@@ -202,10 +213,18 @@ test("a source with no variants counts none", () => {
 
   const blocks = variants.iterBlocks();
   assert.deepEqual([...blocks], []);
-  assert.deepEqual(blocks.passStats, { numVars: 0, filtering: {} });
+  assert.deepEqual(blocks.passStats, {
+    numVars: 0,
+    filtering: {},
+    stoppedEarly: false,
+  });
 
   const written = writeVars(variants);
-  assert.deepEqual(written.passStats, { numVars: 0, filtering: {} });
+  assert.deepEqual(written.passStats, {
+    numVars: 0,
+    filtering: {},
+    stoppedEarly: false,
+  });
   variants.free();
 });
 
@@ -235,7 +254,11 @@ test("the block a pass lost with an error is not among its variants", () => {
   );
 
   assert.deepEqual(given, [1, 1, 1]);
-  assert.deepEqual(blocks.passStats, { numVars: 3, filtering: {} });
+  assert.deepEqual(blocks.passStats, {
+    numVars: 3,
+    filtering: {},
+    stoppedEarly: false,
+  });
   variants.free();
 });
 
@@ -265,7 +288,11 @@ test("the block a pass lost with an error of its own is not among its variants",
   );
 
   assert.deepEqual(given, [1, 1, 1]);
-  assert.deepEqual(blocks.passStats, { numVars: 3, filtering: {} });
+  assert.deepEqual(blocks.passStats, {
+    numVars: 3,
+    filtering: {},
+    stoppedEarly: false,
+  });
   variants.free();
 });
 
@@ -288,6 +315,7 @@ test("the counts of a pass are read after a break left the iteration", () => {
   assert.deepEqual(blocks.passStats, {
     numVars: VARS_OF_THE_BLOCKS_READ,
     filtering: {},
+    stoppedEarly: false,
   });
   variants.free();
 });
@@ -304,6 +332,7 @@ test("the counts of the filters come in the order of the steps", () => {
     kinds: () => ["maf", "missing_data"],
     vars_processed: () => Float64Array.from([215, 500]),
     vars_kept: () => Float64Array.from([163, 215]),
+    stopped_early: () => false,
     free: () => undefined,
   } as unknown as PassCounts;
 
@@ -335,6 +364,7 @@ test("the counts of a pass and the steps of a Variants are objects of TypeScript
   assert.deepEqual(blocks.passStats, {
     numVars: MANY_NUM_VARS,
     filtering: {},
+    stoppedEarly: false,
   });
   assert.deepEqual(steps, []);
 });

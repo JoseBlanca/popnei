@@ -20,6 +20,7 @@ import { Steps } from "../wasm/popnei.js";
 import {
   aBoolean,
   aNumber,
+  aNumberOfVariants,
   anObjectOfOptions,
   bytesOfAFile,
   distanceInBasePairs,
@@ -78,10 +79,21 @@ export interface PassStats {
 
   /**
    * How many variants each filter of the pass was given and kept, under the
-   * kind of the filter, `"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`,
-   * in the order of the steps. It is empty for a pass with no filter.
+   * kind of the filter, `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`,
+   * `"regions"`, `"excluded_regions"` or `"first_n"`, in the order of the
+   * steps. It is empty for a pass with no filter.
    */
   filtering: Record<string, FilteringStats>;
+
+  /**
+   * Whether `filterFirstN` kept its n variants and ended the pass before
+   * the source ended. The counts of the filters are then of the part of the
+   * source that was read and not of the whole of it, and `numVars` is n. It
+   * is true also when the source held nothing after the n-th variant, since
+   * the filter does not read on to find out, and false for a pass that had
+   * no such filter or gave it fewer than n.
+   */
+  stoppedEarly: boolean;
 }
 
 /**
@@ -152,7 +164,11 @@ export function passStatsOf(counts: PassCounts): PassStats {
       }
       filtering[kind] = { varsProcessed: processed, varsKept: kept };
     }
-    return { numVars: counts.num_vars(), filtering };
+    return {
+      numVars: counts.num_vars(),
+      filtering,
+      stoppedEarly: counts.stopped_early(),
+    };
   } finally {
     counts.free();
   }
@@ -163,9 +179,9 @@ export function passStatsOf(counts: PassCounts): PassStats {
  * is in `arg_thresholds`, of one whose value is the names of the
  * individuals to keep, which are in `arg_individuals`, and of one whose
  * value is a window of base pairs, which is in `arg_distances`, and of one
- * whose value is a count, the number of regions of a BED, which is in
- * `arg_counts`. They are the four numbers `arg_kinds` of the binding crate
- * gives.
+ * whose value is a count, the number of regions of a BED or the number of
+ * variants of `filterFirstN`, which is in `arg_counts`. They are the four
+ * numbers `arg_kinds` of the binding crate gives.
  */
 const A_THRESHOLD = 0;
 const THE_NAMES_OF_INDIVIDUALS = 1;
@@ -452,8 +468,10 @@ export class Variants {
    * `Error` too, with the threshold that is set: two thresholds of one kind
    * keep what the stricter of them keeps alone, so the second says that the
    * steps are not what their user thinks, which running a cell of a
-   * notebook twice gives, and `steps` is what they hold. It also throws
-   * when the variants were freed and when `init` has not been awaited.
+   * notebook twice gives, and `steps` is what they hold. So is a call after
+   * `filterFirstN`, after which no filter takes variants out. It also
+   * throws when the variants were freed and when `init` has not been
+   * awaited.
    */
   filterByMissingData(maxAllowedMissingRate: number): void {
     theWasmHasToBeLoaded();
@@ -484,7 +502,8 @@ export class Variants {
    *
    * @throws {Error} What `filterByMissingData` throws: a threshold that is
    * not a number from 0 to 1 or is not given, a second filter of this kind,
-   * variants that were freed, and `init` that was not awaited.
+   * a call after `filterFirstN`, variants that were freed, and `init` that
+   * was not awaited.
    */
   filterByMaf(maxAllowedMaf: number): void {
     theWasmHasToBeLoaded();
@@ -513,7 +532,8 @@ export class Variants {
    *
    * @throws {Error} What `filterByMissingData` throws: a threshold that is
    * not a number from 0 to 1 or is not given, a second filter of this kind,
-   * variants that were freed, and `init` that was not awaited.
+   * a call after `filterFirstN`, variants that were freed, and `init` that
+   * was not awaited.
    */
   filterByObsHet(maxAllowedObsHet: number): void {
     theWasmHasToBeLoaded();
@@ -566,8 +586,8 @@ export class Variants {
    *
    * @throws {Error} When `maxAllowedR2` is not a number from 0 to 1 or is
    * not given, when `maxDist` is not a whole number of base pairs from 1 to
-   * 9007199254740991, and when
-   * a filter of this kind is set already. It also throws when the variants
+   * 9007199254740991, when a filter of this kind is set already, and after
+   * `filterFirstN`. It also throws when the variants
    * were freed and when `init` has not been awaited. The variants of each
    * chromosome have to come together and in order of position, which is
    * what this filter alone of popnei asks of a source: a position below
@@ -624,9 +644,10 @@ export class Variants {
    * has fewer than three columns separated by tabs, a start or an end that
    * is not a whole number of 0 or more or a start that is not below its
    * end, which the message names the line of, when the BED holds no region,
-   * and when a filter by regions of the same kind is set already. After any
-   * of them the steps are as they were. It also throws when the variants
-   * were freed and when `init` has not been awaited.
+   * when a filter by regions of the same kind is set already, and after
+   * `filterFirstN`. After any of them the steps are as they were. It also
+   * throws when the variants were freed and when `init` has not been
+   * awaited.
    */
   filterByRegions(bed: Uint8Array, options: { exclude?: boolean } = {}): void {
     theWasmHasToBeLoaded();
@@ -681,6 +702,46 @@ export class Variants {
     // The names the next pass gives, which the core is what says: they are
     // kept here as well so that `individuals` answers after `free`.
     this.#individuals = Object.freeze(steps.individuals());
+  }
+
+  /**
+   * Keeps the first `numVars` variants that the steps before it keep, and
+   * then ends the pass: the rest of the source is not read, and every
+   * calculation goes on to its result with the variants it got.
+   *
+   * It is for trying an analysis on a large file quickly before running it
+   * on the whole. The first n are those of the start of the file, which in
+   * a VCF sorted by position are the start of its first chromosome and not
+   * a sample of the genome. When fewer than `numVars` variants reach it, it
+   * keeps them all and the pass reads the whole source.
+   *
+   * Its kind is `"first_n"` and its `args` are `{numVars}`. Its counts are
+   * of the blocks it took, `{varsProcessed: 14, varsKept: 10}` for blocks
+   * of 7 variants and a `numVars` of 10, and those of the filters before it
+   * are of the same blocks, so they are of the part of the source that was
+   * read. `stoppedEarly` of the counts of a pass says whether this filter
+   * ended it.
+   *
+   * No step that takes variants out can be added after it, so `numVars` is
+   * the number of variants every calculation gets: a user who wants n
+   * variants that pass the MAF filter puts the MAF filter first.
+   * `filterIndividuals` takes no variant out and is accepted after it.
+   *
+   * The call adds a step and gives nothing back.
+   *
+   * @throws {Error} When `numVars` is not a whole number from 1 to
+   * 9007199254740991, 2^53 - 1, the largest whole number a number of
+   * JavaScript counts to one by one, and when a filter of this kind is set
+   * already. Every other method that adds a filter of the variants throws
+   * once this one is set, with the kind of that filter. After any of them
+   * the steps are as they were. It also throws when the variants were freed
+   * and when `init` has not been awaited.
+   */
+  filterFirstN(numVars: number): void {
+    theWasmHasToBeLoaded();
+    this.#stepsThatWereNotFreed().filter_first_n(
+      aNumberOfVariants("numVars", numVars),
+    );
   }
 
   /**

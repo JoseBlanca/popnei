@@ -156,7 +156,7 @@ pub(crate) fn per_var_distribs_of(
         };
         let distribs =
             popnei::stats::calc_per_var_distribs(&mut *chain, &config).map_err(under_its_name)?;
-        let counts = PassCounts::of(distribs.num_vars, &chain.filtering_stats());
+        let counts = PassCounts::of(distribs.num_vars, steps.steps(), &*chain);
         let popnei::stats::PerVarDistribs {
             obs_het,
             maf,
@@ -632,7 +632,7 @@ pub(crate) fn per_individual_stats_of(
         // order the user named them.
         let individuals = chain.individuals().to_vec();
         let stats = popnei::stats::calc_per_individual_stats(&mut *chain)?;
-        let counts = PassCounts::of(stats.num_vars(), &chain.filtering_stats());
+        let counts = PassCounts::of(stats.num_vars(), steps.steps(), &*chain);
         let num_individuals = stats.num_individuals();
         // The package reads the name of an individual and its two rates at the
         // same place of three arrays, and a name and a rate that are not of

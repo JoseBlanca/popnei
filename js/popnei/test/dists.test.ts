@@ -209,7 +209,11 @@ test("the five distances of the panel that the spec gives", () => {
 test("the counts of the pass over the panel are its 1200 variants", () => {
   const distances = distancesOfThePanel();
 
-  const expected: PassStats = { numVars: PANEL_NUM_VARS, filtering: {} };
+  const expected: PassStats = {
+    numVars: PANEL_NUM_VARS,
+    filtering: {},
+    stoppedEarly: false,
+  };
   assert.deepEqual(distances.passStats, expected);
 });
 
@@ -229,6 +233,7 @@ test("a filter that keeps every variant of the panel counts them and changes no 
         varsKept: PANEL_NUM_VARS,
       },
     },
+    stoppedEarly: false,
   };
   assert.deepEqual(distances.passStats, expected);
   for (const { first, second, dist } of PANEL_LITERALS) {
@@ -266,7 +271,11 @@ test("the three distances of the worked example", () => {
   // The core divides two integers once, so these are the bits of 1/4, 5/6
   // and 2/6 and not a number near them.
   assert.deepEqual(Array.from(distances.distVector), WORKED_EXAMPLE_DISTS);
-  const expected: PassStats = { numVars: 4, filtering: {} };
+  const expected: PassStats = {
+    numVars: 4,
+    filtering: {},
+    stoppedEarly: false,
+  };
   assert.deepEqual(distances.passStats, expected);
 });
 
@@ -343,6 +352,7 @@ test("the three tetraploid distances that the spec gives", () => {
   const expected: PassStats = {
     numVars: TETRAPLOID_NUM_VARS,
     filtering: {},
+    stoppedEarly: false,
   };
   assert.deepEqual(distances.passStats, expected);
   for (const { first, second, dist } of TETRAPLOID_LITERALS) {
@@ -439,6 +449,7 @@ test("distances of a vector that is not one value for each pair are refused", ()
       new Distances(Float64Array.from([0.1, 0.2, 0.3, 0.4]), ["a", "b", "c"], {
         numVars: 4,
         filtering: {},
+        stoppedEarly: false,
       }),
     { message: /3 pairs, and 4 values/ },
   );

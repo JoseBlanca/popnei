@@ -145,7 +145,7 @@ pub(crate) fn kinship_of_the_variants(
         let of_the_matrix = individuals.unwrap_or(of_the_pass);
         let kinship = calc_kinship(&mut chain, positions.as_deref(), transform_to_biallelic)
             .map_err(|error| under_the_names_of_the_individuals(error, &of_the_matrix))?;
-        let counts = PassCounts::of(kinship.num_vars_given, &chain.filtering_stats());
+        let counts = PassCounts::of(kinship.num_vars_given, steps.steps(), &*chain);
         Ok(KinshipOfVariants {
             num_vars: kinship.num_vars as f64,
             matrix: Some(kinship.matrix),

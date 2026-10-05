@@ -106,7 +106,7 @@ pub(crate) fn kosman_dists_of(
         // sources.
         let names = chain.individuals().to_vec();
         let sums = calc_kosman_sums(&mut chain)?;
-        let counts = PassCounts::of(sums.num_vars(), &chain.filtering_stats());
+        let counts = PassCounts::of(sums.num_vars(), steps.steps(), &*chain);
         let dist_vector = sums
             .dists(min_num_vars)
             .map(|dist| dist.unwrap_or(f64::NAN))

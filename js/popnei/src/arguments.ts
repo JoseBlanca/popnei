@@ -194,6 +194,34 @@ export function distanceInBasePairs(
 }
 
 /**
+ * `value` when it is a whole number of variants of 0 or more that a number
+ * of JavaScript counts to one by one, and an `Error` that names `argument`
+ * and what was given otherwise.
+ *
+ * The `numVars` of `filterFirstN` comes through here. The core takes it as
+ * a 64 bit whole number and JavaScript cuts it at 2^53 - 1, for the reason
+ * `distanceInBasePairs` gives. 0 is let through: the core refuses it, with
+ * a message that says why a filter of no variants is refused.
+ *
+ * @throws {Error} When `value` is not such a number.
+ */
+export function aNumberOfVariants(argument: string, value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0
+  ) {
+    throw new Error(
+      `popnei: \`${argument}\` is a whole number of variants of 1 or more and ` +
+        `at most ${LARGEST_EXACT_WHOLE_NUMBER}, the largest whole number a ` +
+        `number of JavaScript counts to one by one, and ` +
+        `${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
  * `value` when it is a string, and an `Error` that names `argument` and what
  * was given otherwise.
  *

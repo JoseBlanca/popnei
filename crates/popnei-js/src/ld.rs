@@ -187,7 +187,7 @@ pub(crate) fn r2_matrix_of(
                 "the pass gave {num_vars} variants, more than the count of a pass holds"
             ))
         })?;
-        let counts = PassCounts::of(counted, &chain.filtering_stats());
+        let counts = PassCounts::of(counted, steps.steps(), &*chain);
         // The matrix is taken out of the core's result and not read from it,
         // so that what crosses into JavaScript is the allocation the core
         // filled. `given_away` consumes that result, so the chromosomes and
@@ -498,7 +498,7 @@ pub(crate) fn ld_and_dist_of(
         // The variants the pass gave are the core's count and are not worked
         // out again here: the calculation was given them and counted them with
         // the arithmetic that says what happens on overflow.
-        let counts = PassCounts::of(of_the_pass.num_vars(), &chain.filtering_stats());
+        let counts = PassCounts::of(of_the_pass.num_vars(), steps.steps(), &*chain);
         let num_pops = of_the_pass.num_pops();
         let num_bins = options.num_bins;
         let of_every_bin = num_pops.saturating_mul(num_bins);

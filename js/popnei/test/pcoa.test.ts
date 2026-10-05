@@ -78,6 +78,7 @@ const TEN_DISTANCES = [0.2, 0.3, 0.9, 0.9, 0.1, 0.8, 0.7, 0.7, 0.8, 0.2];
 const PASS_STATS: PassStats = {
   numVars: 17,
   filtering: { maf: { varsProcessed: 20, varsKept: 17 } },
+  stoppedEarly: false,
 };
 
 /** The ten distances as the `Distances` a user builds. */
@@ -494,7 +495,11 @@ test("the principal coordinates of the panel with correctByLingoes are R's", () 
   assert.deepEqual(result.individuals, PANEL_PROJECTIONS.rows);
   assertClose(result.projections, PANEL_PROJECTIONS.values, "the projections");
   assertClose(result.explainedVariancePercent, PANEL_PERCENT, "the percentages");
-  const expected: PassStats = { numVars: PANEL_NUM_VARS, filtering: {} };
+  const expected: PassStats = {
+    numVars: PANEL_NUM_VARS,
+    filtering: {},
+    stoppedEarly: false,
+  };
   assert.deepEqual(result.passStats, expected);
   // What a user of the result of the PCA reads has the same names here, and
   // what a PCoA has not is not here.

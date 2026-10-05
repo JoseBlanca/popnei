@@ -346,6 +346,7 @@ test("a pass takes the steps at the call of iterBlocks and not at its first bloc
   assert.deepEqual(blocks.passStats, {
     numVars: MANY_NUM_VARS,
     filtering: {},
+    stoppedEarly: false,
   });
   variants.free();
 });
@@ -371,6 +372,7 @@ test("a filter added inside a loop of blocks takes no variant out of that pass",
   assert.deepEqual(blocks.passStats, {
     numVars: MANY_NUM_VARS,
     filtering: {},
+    stoppedEarly: false,
   });
 
   const after = keptBy(variants);
@@ -390,6 +392,7 @@ test("writeVars writes the variants the filter kept and counts them", () => {
   assert.deepEqual(written.passStats, {
     numVars: VARS_KEPT_AT_0_04,
     filtering: MISSING_DATA_AT_0_04,
+    stoppedEarly: false,
   });
   const readBack = openVars(written.bytes);
   assert.deepEqual(readBack.steps, []);

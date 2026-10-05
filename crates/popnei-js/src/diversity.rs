@@ -121,7 +121,7 @@ pub(crate) fn pop_diversity_of(
             .collect();
         let of_each_pop: Vec<&[usize]> = (0..pops.len()).map(|pop| pops.individuals(pop)).collect();
         let diversity = diversity_of_the_pops(&mut *chain, &of_each_pop, &options)?;
-        let counts = PassCounts::of(diversity.num_vars_of_the_pass(), &chain.filtering_stats());
+        let counts = PassCounts::of(diversity.num_vars_of_the_pass(), steps.steps(), &*chain);
         let num_pops = diversity.num_pops();
         // Every pass counts the variants of each of its populations, whatever
         // statistics it was asked for, so a result with no such count is a
