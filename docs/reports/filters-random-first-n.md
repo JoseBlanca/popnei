@@ -25,9 +25,9 @@ binding crates and both packages:
   give over a vars file of those 45 alone.
 
 The checks of the coding skill at 2c7b84c, on 5 October 2026: the six cargo
-commands pass, `cargo test --workspace` with 1419 passed, 46 more than on
-`main`, and `cargo test -p popnei --no-default-features` with 1269; ruff
-passes; `uv run pytest` 734 passed, 65 more; `npm test` tests 543, pass 542,
+commands pass, `cargo test --workspace` with 1419 passed against 1373 on
+`main`, and `cargo test -p popnei --no-default-features` with 1269 against
+1223; ruff passes; `uv run pytest` 734 passed against 669; `npm test` tests 543, pass 542,
 fail 1, the test `a kinship that does not tell the two variances apart gives
 none of them` of `test/gwas.test.ts`, which fails on `main` too and is not of
 this branch; `npm run test:browser` 8 passed.
@@ -37,7 +37,8 @@ reason below. Nothing is open in the spec. What is asked of the owner: the
 merge into `main`, and whether to push the branch. The branch changes files
 other branches may change, which the board has: the error enum, `PassStep`,
 every module of both binding crates that returns counts, `PassStats` in
-both packages, `docs/glossary.md` and `.claude/skills/coding/`.
+both packages, `docs/specs/filters.md`, `variant.md` and `js_sources.md`,
+`docs/architecture.md`, `docs/glossary.md` and `.claude/skills/coding/`.
 
 ## Before the first task
 
@@ -124,7 +125,9 @@ Not taken:
   the user has the n variants, which `reblock` holds back: the spec already
   says the counts read while a pass runs can be ahead of the blocks given.
 - In a pyodide build, whose `usize` is 32 bits, a `num_vars` above
-  4294967295 would be refused: no first sample is that large.
+  4294967295 would be refused: no first sample is that large. The review of
+  the whole branch found it again, with dead code beside it, and it was
+  fixed then (5b3dfe3).
 - The Python test of every consumer lists them by hand, where TypeScript
   checks its list against the crate's: the Python crate keeps no list of its
   consumers to check against.
@@ -178,9 +181,10 @@ spec twice, and the draws with blocks of 1, 7, 100 and the default size, on
 in dba6672 and each fix of the code in a commit of its own:
 
 - `np.True_` and `np.False_` were taken as a keep rate of 1 and 0, and as a
-  threshold of 1 and 0 by the threshold filters before this branch: a
-  boolean from a numpy array filtered nothing, or everything, and said
-  nothing. (errors)
+  threshold of 1 and 0 by the three threshold filters and the filter by
+  linkage disequilibrium, which had the gap before this branch: a boolean
+  from a numpy array filtered nothing, or everything, and said nothing.
+  Both are a `TypeError` now, the threshold filters' too. (errors)
 - A TypeScript keep rate of 2 read back as 2.0 in its message. (errors)
 - Python read `num_vars` into a 32-bit word under pyodide, where TypeScript
   takes up to 2^53 - 1 in the same browser. (binding; left at work package
