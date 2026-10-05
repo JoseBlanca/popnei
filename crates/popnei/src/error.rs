@@ -3306,6 +3306,44 @@ pub enum Error {
         /// one has none; the error of the steps a user adds has it.
         num_vars_that_is_set: Option<u64>,
     },
+
+    /// A keep rate of the filter that keeps variants at random that is NaN,
+    /// below 0 or above 1. The keep rate is the probability with which each
+    /// variant is kept, so a number from 0 to 1, both included. The message
+    /// names `keep_rate`, the argument a user wrote the value in, which the
+    /// TypeScript binding writes `keepRate`.
+    #[error(
+        "`keep_rate` is {keep_rate:?}, and the keep rate of the filter that keeps variants at random is the probability with which each variant is kept: a number from 0 to 1, both included"
+    )]
+    RandomFilterKeepRateOutOfRange {
+        /// The keep rate that was given.
+        keep_rate: f64,
+    },
+
+    /// A second filter that keeps variants at random. It would draw a
+    /// sample of the sample the first one keeps, so a second one says that
+    /// the user has lost track of the filters their variants carry, as a
+    /// second threshold filter of one kind does; a user who wants another
+    /// sample gives the one filter another seed.
+    #[error(
+        "the variants are filtered by random already{set}, and a second filter of that kind, with a keep rate of {keep_rate:?} and a seed of {seed}, would keep a sample of the variants the first one keeps",
+        set = that_is_set.map_or_else(String::new, |(keep_rate, seed)| format!(
+            ", with a keep rate of {keep_rate:?} and a seed of {seed}"
+        ))
+    )]
+    RandomFilterThatIsSet {
+        /// The keep rate of the filter that was refused, which is the one
+        /// the caller wrote.
+        keep_rate: f64,
+        /// The seed of the filter that was refused.
+        seed: u64,
+        /// The keep rate and the seed of the filter that is set. A chain of
+        /// readers says that it holds a filter of this kind and not with
+        /// which keep rate and seed, so the error of
+        /// [`RandomlyFilteredReader::new`](crate::filters::RandomlyFilteredReader::new)
+        /// over one has none; the error of the steps a user adds has them.
+        that_is_set: Option<(f64, u64)>,
+    },
 }
 
 impl Error {
@@ -3347,7 +3385,9 @@ impl Error {
             // variants are filtered by already, and a window of the filter
             // by linkage disequilibrium that is no base pairs wide; the
             // filter of the first n asked for 0 variants and a step that
-            // takes variants out after it; the
+            // takes variants out after it; the keep rate of the filter that
+            // keeps variants at random that is not a number from 0 to 1, and
+            // a second filter of that kind; the
             // four of the filter of individuals and the four of the
             // populations a statistic is calculated for, a name that is of
             // nobody, a name that is there twice, a set that names nobody,
@@ -3365,6 +3405,8 @@ impl Error {
             | Self::FirstNOfNoVariants
             | Self::StepAfterTheFirstN { .. }
             | Self::FirstNThatIsSet { .. }
+            | Self::RandomFilterKeepRateOutOfRange { .. }
+            | Self::RandomFilterThatIsSet { .. }
             | Self::IndividualNotInTheSource { .. }
             | Self::IndividualNamedTwice { .. }
             | Self::NoIndividualNamed

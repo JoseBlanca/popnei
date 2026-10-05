@@ -627,7 +627,7 @@ fn a_second_first_n_is_refused_with_both_n() {
     assert!(error.to_string().contains("of the first 20,"), "{error}");
 }
 
-/// The six steps that take variants out, one of each kind, which are what
+/// The seven steps that take variants out, one of each kind, which are what
 /// may not come after a filter of the first n.
 fn the_steps_that_take_variants_out() -> Vec<PassStep> {
     let regions = Arc::new(Regions::from_bed(&b"chr1\t0\t2000\n"[..]).expect("the regions"));
@@ -647,6 +647,10 @@ fn the_steps_that_take_variants_out() -> Vec<PassStep> {
             regions,
             exclude: true,
         }),
+        PassStep::Random {
+            keep_rate: 0.5,
+            seed: 42,
+        },
     ]
 }
 

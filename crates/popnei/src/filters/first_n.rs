@@ -217,7 +217,10 @@ impl<R: BlockReader> fmt::Debug for FirstNReader<R> {
 pub fn stopped_early(steps: &[PassStep], filtering: &[(&'static str, FilteringStats)]) -> bool {
     let Some(num_vars) = steps.iter().find_map(|step| match step {
         PassStep::FirstN(num_vars) => Some(*num_vars),
-        PassStep::VarFilter(_) | PassStep::KeepIndividuals(_) | PassStep::Regions(_) => None,
+        PassStep::VarFilter(_)
+        | PassStep::KeepIndividuals(_)
+        | PassStep::Regions(_)
+        | PassStep::Random { .. } => None,
     }) else {
         return false;
     };
@@ -254,14 +257,14 @@ pub fn first_n_step(num_vars: u64) -> Result<PassStep> {
 /// # Errors
 ///
 /// When `set` holds a [`PassStep::FirstN`] and `new` is a threshold filter,
-/// the filter by linkage disequilibrium or a filter by regions of either
-/// kind, with the kind of `new`. The filter of individuals takes no variant
+/// the filter by linkage disequilibrium, a filter by regions of either kind
+/// or the filter that keeps variants at random, with the kind of `new`. The filter of individuals takes no variant
 /// out and is not refused; a second filter of the first n is the error of
 /// [`refuse_a_second_filter_of_a_kind`](crate::filters::refuse_a_second_filter_of_a_kind),
 /// which says what two of them do.
 pub fn refuse_a_step_after_the_first_n(set: &[PassStep], new: &PassStep) -> Result<()> {
     let takes_variants_out = match new {
-        PassStep::VarFilter(_) | PassStep::Regions(_) => true,
+        PassStep::VarFilter(_) | PassStep::Regions(_) | PassStep::Random { .. } => true,
         PassStep::KeepIndividuals(_) | PassStep::FirstN(_) => false,
     };
     if takes_variants_out && set.iter().any(|step| matches!(step, PassStep::FirstN(_))) {
