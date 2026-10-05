@@ -222,6 +222,37 @@ test("a pass over a file of several ranges is told once per range", () => {
   assert.equal(calls.at(-1)?.bytesRead, vcf.length);
 });
 
+test("a pass the first n ended is last told below the bytes of the file", () => {
+  // 250000 variants of 3 individuals, more than twice the range of 4 MiB, of
+  // which the first 10 are in the first range: the pass reads no further,
+  // so no call brings it to the size of the file. The file is of a fixed
+  // size, so a filter that did not end the pass reads it to its end and the
+  // test fails, and does not grow.
+  const vcf = manyVariantsVcf(250000);
+  assert.ok(
+    vcf.length > 8 * 1024 * 1024,
+    `the VCF holds ${vcf.length} bytes`,
+  );
+  const variants = openVcf(vcf);
+  variants.filterFirstN(10);
+  const calls = theCallsOf(variants);
+  let stoppedEarly: boolean | undefined;
+  try {
+    stoppedEarly = calcPerIndividualStats(variants).passStats.stoppedEarly;
+  } finally {
+    variants.free();
+  }
+  assertTheyRise(calls, "the pass the first n ended");
+  assert.equal(stoppedEarly, true);
+  const last = calls.at(-1);
+  assert.ok(last !== undefined, "the pass made no call");
+  assert.equal(last.numBytes, vcf.length);
+  assert.ok(
+    last.bytesRead < last.numBytes,
+    `the last call says ${last.bytesRead} bytes read of ${last.numBytes}`,
+  );
+});
+
 test("a pass over a vars file smaller than a range is told twice", () => {
   const vcf = openVcf(MANY_VCF);
   const file = writeVars(vcf).bytes;
