@@ -1801,7 +1801,7 @@ impl PassCounts {
 
     /// The kind of each filter of the chain, the outermost first:
     /// `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`, `"regions"`,
-    /// `"excluded_regions"` or `"first_n"`.
+    /// `"excluded_regions"`, `"first_n"` or `"random"`.
     #[must_use]
     pub fn kinds(&self) -> Vec<String> {
         self.kinds.clone()

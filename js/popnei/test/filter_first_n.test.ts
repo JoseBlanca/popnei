@@ -227,6 +227,7 @@ const FILTERS_OF_THE_VARIANTS: [string, (variants: Variants) => void][] = [
         exclude: true,
       }),
   ],
+  ["random", (variants) => variants.filterRandomly(0.1)],
 ];
 
 for (const [kind, filter] of FILTERS_OF_THE_VARIANTS) {

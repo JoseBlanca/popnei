@@ -22,6 +22,7 @@ import {
   aNumber,
   aNumberOfVariants,
   anObjectOfOptions,
+  aSeed,
   bytesOfAFile,
   distanceInBasePairs,
   namesOf,
@@ -80,8 +81,8 @@ export interface PassStats {
   /**
    * How many variants each filter of the pass was given and kept, under the
    * kind of the filter, `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`,
-   * `"regions"`, `"excluded_regions"` or `"first_n"`, in the order of the
-   * steps. It is empty for a pass with no filter.
+   * `"regions"`, `"excluded_regions"`, `"first_n"` or `"random"`, in the
+   * order of the steps. It is empty for a pass with no filter.
    */
   filtering: Record<string, FilteringStats>;
 
@@ -180,13 +181,16 @@ export function passStatsOf(counts: PassCounts): PassStats {
  * individuals to keep, which are in `arg_individuals`, and of one whose
  * value is a window of base pairs, which is in `arg_distances`, and of one
  * whose value is a count, the number of regions of a BED or the number of
- * variants of `filterFirstN`, which is in `arg_counts`. They are the four
- * numbers `arg_kinds` of the binding crate gives.
+ * variants of `filterFirstN`, which is in `arg_counts`, and of one whose
+ * value is the seed of `filterRandomly`, which is in `arg_seeds`. They are
+ * the five numbers `arg_kinds` of the binding crate gives. The keep rate of
+ * `filterRandomly`, a number from 0 to 1, crosses as a threshold does.
  */
 const A_THRESHOLD = 0;
 const THE_NAMES_OF_INDIVIDUALS = 1;
 const A_DISTANCE = 2;
 const A_COUNT = 3;
+const A_SEED = 4;
 
 /** The steps of the core as the steps a user reads, in their order. */
 function stepsOf(steps: StepsOfTheCore): Step[] {
@@ -205,11 +209,13 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
   const individuals = steps.arg_individuals();
   const distances = steps.arg_distances();
   const counts = steps.arg_counts();
+  const seeds = steps.arg_seeds();
   const ofEachStep: Step[] = [];
   let firstArg = 0;
   let nextThreshold = 0;
   let nextDistance = 0;
   let nextCount = 0;
+  let nextSeed = 0;
   let firstName = 0;
   for (const [step, kind] of kinds.entries()) {
     // The arguments of every step cross flat, the ones of the first step
@@ -262,6 +268,16 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
         }
         args[name] = count;
         nextCount += 1;
+      } else if (argKind === A_SEED) {
+        const seed = seeds[nextSeed];
+        if (seed === undefined) {
+          throw new Error(
+            `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+              "variants is a seed and has no number",
+          );
+        }
+        args[name] = seed;
+        nextSeed += 1;
       } else if (argKind === THE_NAMES_OF_INDIVIDUALS) {
         const kept = individuals.slice(firstName, firstName + numNames);
         if (kept.length !== numNames) {
@@ -712,8 +728,11 @@ export class Variants {
    * It is for trying an analysis on a large file quickly before running it
    * on the whole. The first n are those of the start of the file, which in
    * a VCF sorted by position are the start of its first chromosome and not
-   * a sample of the genome. When fewer than `numVars` variants reach it, it
-   * keeps them all and the pass reads the whole source.
+   * a sample of the genome; `filterRandomly` is the one for a sample of
+   * the whole file, and the two can be put on together, `filterRandomly`
+   * first and then this one, to get `numVars` variants spread over the part
+   * of the file that was read. When fewer than `numVars` variants reach it,
+   * it keeps them all and the pass reads the whole source.
    *
    * Its kind is `"first_n"` and its `args` are `{numVars}`. Its counts are
    * of the blocks it took, `{varsProcessed: 14, varsKept: 10}` for blocks
@@ -732,8 +751,9 @@ export class Variants {
    * @throws {Error} When `numVars` is not a whole number from 1 to
    * 9007199254740991, 2^53 - 1, the largest whole number a number of
    * JavaScript counts to one by one, and when a filter of this kind is set
-   * already. Every other method that adds a filter of the variants throws
-   * once this one is set, with the kind of that filter. After any of them
+   * already. Every other method that adds a filter of the variants,
+   * `filterRandomly` among them, throws once this one is set, with the kind
+   * of that filter. After any of them
    * the steps are as they were. It also throws when the variants were freed
    * and when `init` has not been awaited.
    */
@@ -741,6 +761,60 @@ export class Variants {
     theWasmHasToBeLoaded();
     this.#stepsThatWereNotFreed().filter_first_n(
       aNumberOfVariants("numVars", numVars),
+    );
+  }
+
+  /**
+   * Keeps each variant with the probability `keepRate`, a number from 0 to
+   * 1: at 0.1 it keeps about one variant in ten, spread over the whole
+   * source, so that an analysis of a large dataset runs on a sample of it
+   * in a fraction of the time.
+   *
+   * Whether a variant is kept is drawn from a generator of random numbers,
+   * SplitMix64, that starts again at `seed` at the start of every pass and
+   * draws one number for each variant that reaches the filter, in their
+   * order; a variant is kept when its number is below `keepRate`. So the
+   * same seed, over the same source and the same steps, keeps the same
+   * variants, in every pass and every calculation, and in Python as well:
+   * the PCA and the GWAS that read the source twice see one sample in both
+   * passes. Another seed gives another sample. The seed is 42 when it is not
+   * given, so a call without one gives the same sample every time.
+   *
+   * The draws are of the variants that reach the filter, so a filter of the
+   * variants before it changes which variant gets which number: the MAF
+   * filter and then this one keep another sample than this one and then the
+   * MAF filter, and a VCF opened with `onlyPassed: false` another sample
+   * than the same VCF with the default. At a `keepRate` of 1 every variant
+   * is kept and at 0 none is.
+   *
+   * Its kind is `"random"`, under which its counts reach the counts of a
+   * pass, and its `args` are `{keepRate, seed}`. A filter by regions after
+   * it is not handed to the source, so a user who wants the source to skip
+   * what is outside the regions puts the filter by regions first.
+   *
+   * The call adds a step and gives nothing back.
+   *
+   * @throws {Error} When `keepRate` is not a number, or is NaN, below 0 or
+   * above 1; when `seed` is not a whole number from 0 to 9007199254740991,
+   * 2^53 - 1, the largest whole number a number of JavaScript counts to one
+   * by one, where Python takes a seed up to 2^64 - 1; when the options are
+   * not an object or hold a key other than `seed`; when a filter of this
+   * kind is set already, since a second one would keep a sample of the
+   * sample of the first, and a user who wants another sample gives the one
+   * filter another seed; and after `filterFirstN`. After any of them the
+   * steps are as they were. It also throws when the variants were freed and
+   * when `init` has not been awaited.
+   */
+  filterRandomly(keepRate: number, options: { seed?: number } = {}): void {
+    theWasmHasToBeLoaded();
+    anObjectOfOptions("filterRandomly", options, ["seed"]);
+    // No seed crosses as `undefined`, and the binding crate puts the
+    // default of the core in its place, so 42 is written in one place.
+    const seed =
+      options.seed === undefined ? undefined : aSeed("seed", options.seed);
+    this.#stepsThatWereNotFreed().filter_randomly(
+      aNumber("keepRate", keepRate),
+      seed,
     );
   }
 

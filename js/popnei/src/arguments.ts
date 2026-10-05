@@ -222,6 +222,34 @@ export function aNumberOfVariants(argument: string, value: unknown): number {
 }
 
 /**
+ * `value` when it is a whole number from 0 to 2^53 - 1, and an `Error` that
+ * names `argument` and what was given otherwise.
+ *
+ * The `seed` of `filterRandomly` comes through here. The core takes it as a
+ * 64 bit whole number and JavaScript cuts it at 2^53 - 1, for the reason
+ * `distanceInBasePairs` gives. The seed crosses as a float64, and the
+ * binding crate refuses one that is not such a number as a defect of
+ * popnei, so the message a user reads, with the argument and what was
+ * given, is written here.
+ *
+ * @throws {Error} When `value` is not such a number.
+ */
+export function aSeed(argument: string, value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0
+  ) {
+    throw new Error(
+      `popnei: \`${argument}\` is a whole number from 0 to ` +
+        `${LARGEST_EXACT_WHOLE_NUMBER}, the largest whole number a number of ` +
+        `JavaScript counts to one by one, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
  * `value` when it is a string, and an `Error` that names `argument` and what
  * was given otherwise.
  *
