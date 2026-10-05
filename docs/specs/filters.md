@@ -1561,7 +1561,11 @@ Against bcftools 1.24 on `many.vcf`, read with every variant given:
 in blocks of 7 variants and of the default size, assert the ten positions
 of each, and in blocks of 7 the counts 14 given and 10 kept and that the
 source was asked for two blocks. With n of 14 over blocks of 7, where the
-n-th variant ends a block, the source is asked for two blocks too. The filter that keeps variants at random,
+n-th variant ends a block, the source is asked for two blocks too. With the
+MAF filter of 0.8 before the first 10, in blocks of 7, the MAF filter is
+given 14 and keeps 12 and this filter is given 12 and keeps 10: the MAF
+filter keeps 12 of the first 14 variants of `many.vcf`, by `bcftools view -H
+-Q 0.8:major` over those 14 lines, run on 5 October 2026. The filter that keeps variants at random,
 at 0.5 with a seed of 42, and then the first 10 gives 1037, 1074, 1111,
 1148, 1222, 1296, 1370, 1407, 1555 and 1592, the first ten of the 243 of
 its table.
