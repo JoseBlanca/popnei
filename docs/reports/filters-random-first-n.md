@@ -250,8 +250,8 @@ The owner can stop here.
   branch, which the owner had asked for in all seven categories and which
   would have repeated it.
 - The subagents' tokens, from the results of the `Agent` tool: the three
-  tasks of work package 1, 180385, 205273 and 193236, against 520000 for
+  tasks of work package 1, 180385, 205273 and 193236, against 489960 for
   its five reviewers and 163835 for its fixes; the three of work package 2,
-  149049, 134383 and 141339, against about 790000 for the seven reviewers
+  149049, 134383 and 141339, against 786715 for the seven reviewers
   of the whole branch and 235109 for their fixes. A task cost about as much
   as its share of review, and the fixes a third of that.
