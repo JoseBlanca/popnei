@@ -1,6 +1,6 @@
 # Plan: the filter of the first n variants and the filter that keeps variants at random
 
-5 October 2026. State: **under way**, approved by the owner on 5 October 2026. It builds the two filters that
+5 October 2026. State: **done** on 5 October 2026, approved by the owner that day. It builds the two filters that
 `docs/specs/filters.md` gained on 5 October 2026 from issues 7 and 6 of the
 repository, "The filter that keeps the first n variants" and "The filter
 that keeps variants at random", with what they add to "The Rust

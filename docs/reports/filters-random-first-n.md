@@ -2,7 +2,42 @@
 
 5 October 2026. The report of `docs/plans/filters-random-first-n.md`, which
 builds issues 7 and 6 of the repository from `docs/specs/filters.md`, on the
-branch `filters-random-first-n` from `main` at eae29a2. State: under way.
+branch `filters-random-first-n` from `main` at eae29a2. State: done, at
+2c7b84c.
+
+## What the owner reads first
+
+The plan is done. A `Variants` has two more filters, in the core, both
+binding crates and both packages:
+
+- `filter_first_n(num_vars)`, `filterFirstN(numVars)`: the first n variants
+  that the steps before it keep, and then the pass ends and the rest of the
+  file is not read. A pass with the first 100 over a VCF of 100000 variants
+  of 10 individuals read 8192 of its 6989013 bytes. Every `pass_stats` has
+  `stopped_early`, true when this filter ended the pass, so that the counts
+  of the filters are of the part of the file that was read.
+- `filter_randomly(keep_rate, seed=42)`, `filterRandomly(keepRate, {seed})`:
+  each variant kept when its draw of SplitMix64, the generator of Java's
+  `SplittableRandom`, is below the keep rate, the same draws in every pass
+  and every calculation on the `Variants`. At 0.1 and seed 42 it keeps 45
+  of the 500 variants of `many.vcf`. The PCA with weights and the GWAS with
+  GRAMMAR-Gamma, which read the file twice, give exactly what the same calls
+  give over a vars file of those 45 alone.
+
+The checks of the coding skill at 2c7b84c, on 5 October 2026: the six cargo
+commands pass, `cargo test --workspace` with 1419 passed, 46 more than on
+`main`, and `cargo test -p popnei --no-default-features` with 1269; ruff
+passes; `uv run pytest` 734 passed, 65 more; `npm test` tests 543, pass 542,
+fail 1, the test `a kinship that does not tell the two variances apart gives
+none of them` of `test/gwas.test.ts`, which fails on `main` too and is not of
+this branch; `npm run test:browser` 8 passed.
+
+Every finding of the two reviews that was not taken is listed with its
+reason below. Nothing is open in the spec. What is asked of the owner: the
+merge into `main`, and whether to push the branch. The branch changes files
+other branches may change, which the board has: the error enum, `PassStep`,
+every module of both binding crates that returns counts, `PassStats` in
+both packages, `docs/glossary.md` and `.claude/skills/coding/`.
 
 ## Before the first task
 
@@ -186,3 +221,37 @@ Not taken:
 - The reviewer's example of the bits of the first number,
   0x3fec4415072f63b9, is not what Java prints, 0x3fe7bae644c5fd6d, which
   the spec and the tests use.
+
+After the fixes, at 2c7b84c: b65c09e, 02585fd, 5b3dfe3, 3be0108, 1eb400f,
+8c028b2, bfd5933, 87019f9, a9935b5, 7724c8d and 010a9e6, and 2c7b84c for the
+count of the cases of the Python binding's error in `pyo3.md`, which had
+been out of date since before this branch. The checks are those at the top
+of this report.
+
+## How the work went, for whoever next revises a skill or writes a plan
+
+The owner can stop here.
+
+- A test written first, as the coding skill asks, against a stub of a
+  filter that never ends a pass, read a source with no end and kept every
+  block; cargo ran three such tests at once and the owner's machine, 64 GB,
+  ran short of memory. The skill now asks every test written first to fail
+  without hanging or growing (50e4def). The prompts of the tasks that came
+  after told each subagent so and capped the jobs of cargo, and nothing grew
+  again.
+- The two binding crates were written side by side, twice, by two
+  subagents that could not see each other, and both times they diverged on
+  a rule that belonged in the core: the order of two refusals, the refusal
+  of n of 0, the default seed as an `Option`. Each was found by two or
+  three reviewers at once. A plan that sends the two bindings out together
+  does better to name, in the core task, every rule a binding would
+  otherwise write, as `first_n_step` and `refuse_a_step` came to be.
+- The review of work package 2 was folded into the review of the whole
+  branch, which the owner had asked for in all seven categories and which
+  would have repeated it.
+- The subagents' tokens, from the results of the `Agent` tool: the three
+  tasks of work package 1, 180385, 205273 and 193236, against 520000 for
+  its five reviewers and 163835 for its fixes; the three of work package 2,
+  149049, 134383 and 141339, against about 790000 for the seven reviewers
+  of the whole branch and 235109 for their fixes. A task cost about as much
+  as its share of review, and the fixes a third of that.
