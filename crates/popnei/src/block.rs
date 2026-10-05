@@ -1280,7 +1280,10 @@ pub trait BlockReader: Send {
     /// source, this one first when it is a filter.
     ///
     /// The kind is the name the counts have for a Python or a TypeScript
-    /// user, `"missing_data"`, `"maf"` or `"obs_het"`. A source gives none,
+    /// user, the kind of the step the filter was built from:
+    /// `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`, `"regions"`,
+    /// `"excluded_regions"`, `"first_n"` or `"random"`. The filter of
+    /// individuals takes no variant out and gives no counts. A source gives none,
     /// and a reader over another reader gives what its source gives, with
     /// its own before them when it is a filter. Whoever starts a pass keeps
     /// the chain of readers and reads the counts from it when the pass
