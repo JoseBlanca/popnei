@@ -1498,6 +1498,15 @@ decided it on 5 October 2026; the option not taken was to allow any step
 after it and to say in the docstring that n then counts the variants
 before the later filters.
 
+A step that breaks both rules, a second MAF filter after a MAF filter and
+the filter of the first n, is refused as a second filter of its kind, since
+moving it before the filter of the first n would not make it acceptable.
+The core checks both in that order, in one function that `chain_of` and
+both binding crates call. A `num_vars` of 0 is refused by the core too, at
+the call, with a message that names `num_vars`, `numVars` in TypeScript, as
+the other wrong values of it do. A second filter of the first n names the n
+that is set and the one that was asked for.
+
 In TypeScript, `variants.filterFirstN(numVars)`, with `numVars` a whole
 number from 1 to 2^53 - 1.
 
@@ -2032,6 +2041,15 @@ calls for each step as it builds the chain:
 /// the first n among `set`, the steps that are set already. The filter of
 /// individuals is not refused.
 pub fn refuse_a_step_after_the_first_n(set: &[PassStep], new: &PassStep) -> Result<()>;
+
+/// Every refusal of `new` against `set`: a second filter of its kind first,
+/// then a step after the filter of the first n. `chain_of` and both binding
+/// crates call it, so that one step gets one error in every language.
+pub fn refuse_a_step(set: &[PassStep], new: &PassStep) -> Result<()>;
+
+/// The step of the filter of the first n, or the error of a `num_vars` of
+/// 0, which names the argument; both binding crates build the step with it.
+pub fn first_n_step(num_vars: u64) -> Result<PassStep>;
 ```
 
 Every consumer of both binding crates gives the Python or the TypeScript
