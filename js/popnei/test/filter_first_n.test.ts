@@ -271,8 +271,12 @@ test("filterFirstN refuses a second filter of the first n", () => {
   variants.filterFirstN(10);
   assert.throws(() => variants.filterFirstN(20), {
     name: "Error",
-    message: /filtered by first_n already, and a second filter of that kind/,
+    message:
+      /filtered by first_n already, of the first 10 variants, and a second filter of that kind, of the first 20,/,
   });
+  assert.deepEqual(variants.steps, [
+    { kind: "first_n", args: { numVars: 10 } },
+  ]);
   variants.free();
 });
 

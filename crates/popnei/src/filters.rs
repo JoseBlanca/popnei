@@ -1866,8 +1866,9 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
 /// lists keep the individuals that are in both, which is one list. For the
 /// filter by regions it carries the kind, `regions` or `excluded_regions`:
 /// two sets of regions on one side are one set, and a step of each kind can
-/// stand together. For the filter of the first n it carries the kind: two
-/// of them keep the first of the smaller n.
+/// stand together. For the filter of the first n it carries both n, the one
+/// of `new` and the one that is set: two of them keep the first of the
+/// smaller n.
 pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Result<()> {
     let criterion = match new {
         PassStep::VarFilter(criterion) => criterion,
@@ -1892,10 +1893,19 @@ pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Res
                 false => Ok(()),
             };
         }
-        PassStep::FirstN(_) => {
-            return match set.iter().any(|step| matches!(step, PassStep::FirstN(_))) {
-                true => Err(Error::FilterOfAKindThatIsSet { kind: new.kind() }),
-                false => Ok(()),
+        PassStep::FirstN(num_vars) => {
+            let that_is_set = set.iter().find_map(|step| match step {
+                PassStep::FirstN(of_the_step) => Some(*of_the_step),
+                PassStep::VarFilter(_) | PassStep::KeepIndividuals(_) | PassStep::Regions(_) => {
+                    None
+                }
+            });
+            return match that_is_set {
+                Some(that_is_set) => Err(Error::FirstNThatIsSet {
+                    num_vars: *num_vars,
+                    num_vars_that_is_set: Some(that_is_set),
+                }),
+                None => Ok(()),
             };
         }
     };

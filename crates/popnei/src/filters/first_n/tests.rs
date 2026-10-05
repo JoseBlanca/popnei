@@ -579,20 +579,30 @@ fn first_n_step_of_0_is_refused_with_a_message_that_names_num_vars() {
     assert!(error.to_string().contains("`num_vars` is 0"), "{error}");
 }
 
-/// A second filter of the first n is refused with its kind: by
-/// `refuse_a_second_filter_of_a_kind` at the steps, by the reader over a
-/// chain that holds one, and by the chain.
+/// A second filter of the first n is refused with both n, the one that is
+/// set and the one that was asked for, by `refuse_a_second_filter_of_a_kind`
+/// and `refuse_a_step` at the steps and by the chain; the reader over a
+/// chain that holds one knows only the n it was asked for.
 #[test]
-fn a_second_first_n_is_refused_with_its_kind() {
-    let refused = Error::FilterOfAKindThatIsSet { kind: "first_n" };
+fn a_second_first_n_is_refused_with_both_n() {
+    let refused = Error::FirstNThatIsSet {
+        num_vars: 20,
+        num_vars_that_is_set: Some(10),
+    };
     let error = refuse_a_second_filter_of_a_kind(&first_n(10), &PassStep::FirstN(20))
         .expect_err("a second filter of the first n");
     assert_eq!(error.to_string(), refused.to_string());
-    assert!(refuse_a_second_filter_of_a_kind(&[], &PassStep::FirstN(20)).is_ok());
-
-    let under = FirstNReader::new(many_vcf_reader(Some(7)), 10).expect("the first filter");
-    let error = FirstNReader::new(under, 20).expect_err("a second filter of the first n");
+    assert!(
+        error
+            .to_string()
+            .contains("filtered by first_n already, of the first 10 variants"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("of the first 20,"), "{error}");
+    let error = refuse_a_step(&first_n(10), &PassStep::FirstN(20))
+        .expect_err("a second filter of the first n");
     assert_eq!(error.to_string(), refused.to_string());
+    assert!(refuse_a_second_filter_of_a_kind(&[], &PassStep::FirstN(20)).is_ok());
 
     let error = chain_of(
         Box::new(many_vcf_reader(Some(7))),
@@ -601,6 +611,20 @@ fn a_second_first_n_is_refused_with_its_kind() {
     .err()
     .expect("a second filter of the first n");
     assert_eq!(error.to_string(), refused.to_string());
+
+    let under = FirstNReader::new(many_vcf_reader(Some(7)), 10).expect("the first filter");
+    let error = FirstNReader::new(under, 20).expect_err("a second filter of the first n");
+    assert!(
+        matches!(
+            error,
+            Error::FirstNThatIsSet {
+                num_vars: 20,
+                num_vars_that_is_set: None
+            }
+        ),
+        "{error}"
+    );
+    assert!(error.to_string().contains("of the first 20,"), "{error}");
 }
 
 /// The six steps that take variants out, one of each kind, which are what

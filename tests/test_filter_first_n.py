@@ -236,7 +236,11 @@ def test_filter_first_n_refuses_a_second_filter_of_its_kind(
     variants = _many(reference_vcf_dir)
     variants.filter_first_n(10)
 
-    with pytest.raises(ValueError, match="first_n already"):
+    with pytest.raises(
+        ValueError,
+        match="first_n already, of the first 10 variants, and a second filter of "
+        "that kind, of the first 20,",
+    ):
         variants.filter_first_n(20)
     assert variants.steps == (Step(kind="first_n", args={"num_vars": 10}),)
 

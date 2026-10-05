@@ -59,7 +59,8 @@ impl<R: BlockReader> FirstNReader<R> {
     /// When `num_vars` is 0, since a pass it ended would give no variant;
     /// and when `reader` holds a filter of the first n already, which its
     /// [`BlockReader::filtering_stats`] says: two of them keep the first of
-    /// the smaller n.
+    /// the smaller n. That error carries `num_vars` and not the n of the one
+    /// that is set, which the counts of a chain do not say.
     pub fn new(reader: R, num_vars: u64) -> Result<FirstNReader<R>> {
         if num_vars == 0 {
             return Err(Error::FirstNOfNoVariants);
@@ -69,7 +70,10 @@ impl<R: BlockReader> FirstNReader<R> {
             .iter()
             .any(|(of_the_chain, _)| *of_the_chain == FIRST_N_KIND)
         {
-            return Err(Error::FilterOfAKindThatIsSet { kind: FIRST_N_KIND });
+            return Err(Error::FirstNThatIsSet {
+                num_vars,
+                num_vars_that_is_set: None,
+            });
         }
         Ok(FirstNReader {
             reader,

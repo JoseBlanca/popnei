@@ -3287,18 +3287,24 @@ pub enum Error {
         kind: &'static str,
     },
 
-    /// A second filter of a kind the variants are filtered by already, of
-    /// the kinds whose second filter does what one filter of the kind with
-    /// another argument does: two filters of the first n keep the first of
-    /// the smaller n. Neither case of a second filter above fits it: one
-    /// carries two thresholds, and the others say why two lists of
-    /// individuals or two sets of regions are one.
+    /// A second filter of the first n variants. Two of them keep the first
+    /// of the smaller n alone, so a second one says that the user has lost
+    /// track of the filters their variants carry, as a second threshold
+    /// filter of one kind does.
     #[error(
-        "the variants are filtered by {kind} already, and a second filter of that kind does what one filter of it with another argument does"
+        "the variants are filtered by first_n already{set}, and a second filter of that kind, of the first {num_vars}, keeps the first of the smaller n alone",
+        set = num_vars_that_is_set
+            .map_or_else(String::new, |set| format!(", of the first {set} variants"))
     )]
-    FilterOfAKindThatIsSet {
-        /// The kind that is filtered twice: `first_n`.
-        kind: &'static str,
+    FirstNThatIsSet {
+        /// The n of the filter that was refused, which is the one the
+        /// caller wrote.
+        num_vars: u64,
+        /// The n of the filter that is set. A chain of readers says that it
+        /// holds a filter of the first n and not of how many, so the error
+        /// of [`FirstNReader::new`](crate::filters::FirstNReader::new) over
+        /// one has none; the error of the steps a user adds has it.
+        num_vars_that_is_set: Option<u64>,
     },
 }
 
@@ -3358,7 +3364,7 @@ impl Error {
             | Self::LdFilterMaxDistTooSmall { .. }
             | Self::FirstNOfNoVariants
             | Self::StepAfterTheFirstN { .. }
-            | Self::FilterOfAKindThatIsSet { .. }
+            | Self::FirstNThatIsSet { .. }
             | Self::IndividualNotInTheSource { .. }
             | Self::IndividualNamedTwice { .. }
             | Self::NoIndividualNamed
