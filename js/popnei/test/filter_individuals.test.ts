@@ -133,6 +133,7 @@ test("the missing data filter after it keeps the 423 variants and counts them", 
         varsKept: KEPT_OF_THE_THREE,
       },
     },
+    stoppedEarly: false,
   });
   variants.free();
 });

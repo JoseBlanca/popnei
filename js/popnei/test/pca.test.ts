@@ -360,7 +360,11 @@ test("the worked example with no option gives its counts and 10 weights", () => 
   const result = theVariantsPca(WORKED_VCF);
   // The five variants of the file, the two with no variance included: the
   // pass gave them and the analysis left them out, and no filter ran.
-  assert.deepEqual(result.passStats, { numVars: 5, filtering: {} });
+  assert.deepEqual(result.passStats, {
+    numVars: 5,
+    filtering: {},
+    stoppedEarly: false,
+  });
   // The default of `numPrinComps` is 10, which is more components than this
   // dataset has, so the weights are of the 3 there are: with a default of 0
   // there would be none.

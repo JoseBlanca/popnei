@@ -5,18 +5,23 @@ a dataset that pass a threshold, before any calculation sees them: those
 with few missing genotypes, those whose commonest allele is not too
 frequent, those with few heterozygous individuals, those that do not
 repeat what a variant near them on the chromosome already said, and those
-inside, or outside, the regions of a BED file. It also
+inside, or outside, the regions of a BED file. It also gives a sample of
+them, each variant kept at random with a probability the user gives, and
+the first n of them, after which the pass ends and the rest of the source
+is not read. It also
 tells the user how many variants each filter was given and how many it
 kept. And it keeps, of every variant, the genotypes of the individuals a
-user names and drops those of the rest. There is code for the three thresholds, the counts, the
-individuals and the filter by linkage disequilibrium, and none for the
-filter by regions. This spec
+user names and drops those of the rest. There is code for every item but
+the filter that keeps variants at random. This spec
 develops the row `filters` of the table in section 9
 of `docs/architecture.md`, and it covers the three filters that compare one
 number of a variant with a threshold, the counts, the filter of
 individuals, the filter that takes out the variants that repeat what a
-variant before them said, and the filter by regions. The filter by regions
-was added on 26 September 2026 and has no code; the two before it were
+variant before them said, the filter by regions, the filter that keeps
+variants at random and the filter that keeps the first n. The last two
+were added on 5 October 2026, from issues 6 and 7 of the repository. The
+filter by regions
+was added on 26 September 2026; the two before it were
 added on 22 September 2026: the
 filter of individuals with `docs/specs/stats.md`, whose statistics per
 population are the first to need it. It depends on
@@ -159,7 +164,7 @@ holds in `variants.steps`, a tuple with a `Step` for each step, in order:
 @dataclass(frozen=True)
 class Step:
     kind: str                  # "missing_data", "maf", "obs_het", "individuals", "ld",
-                               # "regions" or "excluded_regions"
+                               # "regions", "excluded_regions", "random" or "first_n"
     args: dict[str, object]    # {"max_allowed_maf": 0.95}
 ```
 
@@ -365,9 +370,12 @@ The counts are in what a pass produces, and not in the `Variants`: every
 result of a consumer has a `pass_stats`, the `PassStats` of
 `docs/specs/variant.md`, and so has the iterator that `iter_blocks`
 returns. Its `filtering` is a dict of the kind of each filter,
-`"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`, `"regions"` or
-`"excluded_regions"`, to its
+`"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`, `"regions"`,
+`"excluded_regions"`, `"random"` or `"first_n"`, to its
 `FilteringStats`, in the order of the steps, and it is empty when the `Variants` had no filter.
+`PassStats` also says whether the filter of the first n ended the pass
+before its source ended, in `stopped_early`, which "The counts, and a pass
+that the filter ended" of that filter has.
 
 ```python
 variants.filter_by_missing_data(0.04)
@@ -1261,6 +1269,360 @@ refusal of a second step of one kind, each of the four refusals of a BED
 with the line it names, and the error of a pass over a source with no
 positions. The TypeScript test asserts the 45 and the 455.
 
+## The filter that keeps variants at random
+
+### What it gives
+
+It keeps each variant with a probability that the user gives, the keep
+rate, a number from 0 to 1: at 0.1 it keeps about one variant in ten. A
+user runs an analysis on a sample of a large dataset, in a fraction of the
+time, with the variants of the sample spread over the whole file.
+
+Whether a variant is kept is drawn from a generator of random numbers that
+starts again from the user's seed at the start of every pass. The
+generator gives one number from 0 to 1 for each variant that reaches the
+filter, in the order in which the variants reach it, and the variant is
+kept when its number is below the keep rate. So the variants kept are a
+function of the seed and of the place of each variant among the variants
+the filter is given. Every pass of a `Variants` goes through the same steps
+over the same source, gives the filter the same variants in the same order
+and draws the same numbers for them, so every pass keeps the same variants.
+That is what lets a calculation that reads the source twice, the PCA of
+variants and the GWAS with the GRAMMAR-Gamma approximation, see one sample
+in both passes, and what lets two calculations on one `Variants` be
+compared. The GRAMMAR-Gamma approximation of `docs/specs/gwas.md` reads the
+source a second time to estimate the factor that corrects its test
+statistics, and the PCA reads it a second time for the weights of each
+variant. The numbers are drawn on one thread, one after another, so the
+size of the blocks and the threads of the calculation do not change them.
+
+The owner decided on 5 October 2026 that the draw is made this way, from a
+generator, one number for each variant in its order. The option not taken
+was a hash of the seed with what identifies the variant, its chromosome and
+position or its number in the file, which would give a variant the same
+draw whatever came before it. What this way gives instead is that the
+sample depends on which variants reach the filter, as "The cases" below
+says.
+
+The generator is SplitMix64, of Steele, Lea and Flood (2014), the one that
+`java.util.SplittableRandom` of Java uses. Its state is one integer of 64
+bits, which starts as the seed. Each draw adds a constant to the state and
+mixes the sum into the number it gives, all of it wrapping at 2^64:
+
+    state = state + 0x9E3779B97F4A7C15
+    z = state
+    z = (z xor (z >> 30)) * 0xBF58476D1CE4E5B9
+    z = (z xor (z >> 27)) * 0x94D049BB133111EB
+    draw = z xor (z >> 31)
+
+The number from 0 to 1 is the top 53 bits of the draw, `draw >> 11`,
+divided by 2^53,
+which is exact in an `f64` and always below 1, so at a keep rate of 1 every
+variant is kept and at 0 none is. It is a few lines of integer arithmetic,
+so it needs no new dependency and gives the same numbers natively and in
+wasm.
+
+### In Python and in TypeScript
+
+```python
+Variants.filter_randomly(keep_rate: float, seed: int = 42) -> None
+```
+
+It is a step, as the other filters of this spec are: it adds itself to the
+`Variants`, reads no variant and returns nothing. Its kind is `"random"`,
+under which its counts reach the user, and its `args` are `{"keep_rate":
+0.1, "seed": 42}`. The owner decided on 5 October 2026 that the seed has a
+default and that it is 42: a call without a seed gives the same sample
+every time, so a result can be reproduced from the code alone, as every
+other result of popnei can, and a user who wants a second sample passes
+another seed. The option not taken was a seed the user must always give.
+The docstring says that the same seed, over the same source and steps,
+keeps the same variants, and the default is a `pub const` of the core.
+
+A keep rate that is NaN, below 0 or above 1 is a `ValueError` at the call,
+which names the argument and the value, and one that is no number a
+`TypeError`, as for the three threshold filters. A seed that is not a whole
+number, a `True` among them, is a `TypeError`, and a whole number below 0
+or above 2^64 - 1 a `ValueError`, as `max_dist` of the filter by linkage
+disequilibrium is refused. A second filter of this kind is refused, as for
+every filter of this spec.
+
+In TypeScript, `variants.filterRandomly(keepRate, {seed = 42})`, with
+`seed` a whole number from 0 to 2^53 - 1, the largest whole number a
+JavaScript number holds exactly; any other value is an `Error` at the call.
+That is the one difference from Python a user sees: a seed above 2^53 - 1,
+which Python takes, cannot be given in TypeScript. The same seed gives the same variants in both.
+
+pyNei has no such filter.
+
+### The cases
+
+- The draws are of the variants that reach the filter, so a filter before
+  it changes which variant gets which number. The MAF filter and then this
+  one keeps another sample than this one and then the MAF filter, and a
+  VCF read with `only_passed=False` another sample than the same VCF with
+  `only_passed=True`. A VCF and the vars file written from it with no step
+  give the same sample, since they hold the same variants in the same
+  order. The filter of individuals before it changes no draw, since it
+  takes out no variant, and neither does the skip of the filter by regions
+  before it, which gives the same variants as the filter does without it.
+- At a keep rate of 0 no variant is kept, and the consumer gives the error
+  of a pass that gave no variant, with these counts.
+- It reads no field of a variant. It asks its source for what its consumer
+  asked for and nothing more, so a `write_vars` that asks for the positions
+  alone gets them through it. It is a filter of variants, so a filter by
+  regions after it is not handed to the source, as "How it runs" of that
+  filter says: a user who wants the skip puts the filter by regions first.
+
+### How it runs
+
+The filter keeps the generator and its two counts from one block to the
+next. For each block it draws one number for each row, in order, on the
+thread that asked for the block, and compacts the block in place with
+`retain_vars` of `docs/specs/block.md`. It does not use rayon: one draw is a
+few integer operations and the draws have to be made in order. Every pass
+builds its own filter from the step, with the generator at the seed, as
+every pass builds its own threshold filters. It keeps the rules of a reader
+of "How it runs" of the threshold filters: a block left with no variant is
+not given, and after an error it gives `None` at every call.
+
+### How it is verified
+
+The reference program is Java's `java.util.SplittableRandom`, whose
+`nextLong` is the draw above and whose `nextDouble` is the number from 0 to
+1 of the same rule, run with OpenJDK 26.0.2.1 on 5 October 2026 by
+`java tests/reference/filters/SplitMix.java`, with the `java` of Homebrew's
+`openjdk`, `/opt/homebrew/opt/openjdk/bin/java`, which is not on the PATH of
+the owner's machine; `/usr/bin/java` of macOS is a stub that asks for one.
+From a seed of 1234567 it
+gives the first five draws 6457827717110365317, 3203168211198807973,
+9817491932198370423, 4593380528125082431 and 16408922859458223821, the
+values that the reference code of SplitMix64, `splitmix64.c` of Sebastiano
+Vigna, gives too, as the task "Pseudo-random numbers/Splitmix64" of
+Rosetta Code lists them. A cargo test asserts them.
+
+The worked example, which becomes the first cargo test, made at
+`RandomFilter::filter_block` on a block of ten variants built by hand, at a
+keep rate of 0.5 and a seed of 42. The ten numbers from 0 to 1 that Java
+gives from 42 are, to six decimals, 0.741565, 0.159910, 0.278601, 0.344191, 0.038030, 0.868228,
+0.218405, 0.800632, 0.339931 and 0.618482, so the filter keeps variants 2,
+3, 4, 5, 7 and 9, and its counts are 10 given and 6 kept. The same ten
+variants given as a block of 3 and a block of 7 keep the same six. The
+tests assert the ten numbers to the bit, as `SplitMix.java` prints the bits
+of each, 0x3fe7bae644c5fd6d, 0x3fc477f199d93378, 0x3fd1d499d5c4c3e6,
+0x3fd607387fc392b8, 0x3fa378b0b4489040, 0x3febc8863f47901b,
+0x3fcbf4b38e229bb4, 0x3fe99ec6bdd3d3c5, 0x3fd5c16e1dc2cf5e and
+0x3fe3ca9ae7052fee, and that a filter whose keep rate is exactly the first
+of them, 0x3fe7bae644c5fd6d, drops the first variant: a variant is kept
+when its number is below the keep rate, not at it.
+
+On `tests/reference/vcf/many.vcf`, read with every variant given, those
+that failed their FILTER among them, 500 variants:
+
+| keep rate | seed | kept of 500 | the first five kept, by position on chr1 |
+|---|---|---|---|
+| 0.1 | 42 | 45 | 1148, 1666, 1777, 1888, 2332 |
+| 0.5 | 42 | 243 | 1037, 1074, 1111, 1148, 1222 |
+| 0.1 | 7 | 49 | 1037, 1962, 2147, 2332, 2591 |
+
+The table comes from `tests/reference/filters/random_draws.py`, a Python
+version of the rule written for this spec, which checks its draws against
+the five of Java from 1234567 and applies them to the variants of
+`many.vcf`, run on 5 October 2026. The cargo tests,
+made at `next_block` of the reader of this filter over a `VcfReader` on
+`many.vcf`, in blocks of 7 variants and of the default size, assert each
+row's count and five positions, and the counts 500 given and 45 kept for
+the first row.
+
+Every pytest and TypeScript test of both filters opens `many.vcf` with
+every variant given, `only_passed=False` and `onlyPassed: false`, as the
+numbers of these tables are of the 500. With the default, which leaves out
+the 25 variants whose FILTER is `q10`, the numbers are others: 42 kept at
+0.1 and a seed of 42.
+
+The tests of the passes, made at the Python functions, over `many.vcf` with
+this filter at 0.1 and a seed of 42:
+
+- Two `iter_blocks` give the 45 variants of the table, and so do a
+  `calc_pairwise_kosman_dists` and a `do_pca_from_variants` on the same `Variants`,
+  whose `pass_stats` have 45 variants.
+- `do_pca_from_variants` with 10 components, which makes the second pass
+  for the weights, does not fail with the error of a second pass that gave
+  other variants, and its result is that of `do_pca_from_variants` over the
+  45 variants written to a vars file with no step. The same for `calc_gwas`
+  with a kinship and `use_grammar_gamma_approx=True`, which makes its
+  second pass with no check of its own: its result is that of the same call
+  over that vars file, so both of its passes saw the 45.
+- A keep rate of -0.1, 1.5 and NaN is a `ValueError`, a seed of -1 a
+  `ValueError` and of 1.5 a `TypeError`, and a second filter of this kind
+  a `ValueError`. `steps` has the kind and both arguments.
+- The filter of individuals before this filter keeps the same 45.
+- At a keep rate of 0, `calc_pairwise_kosman_dists` gives the error of a
+  pass that gave no variant, with this filter given 500 and keeping 0.
+- The filter by regions before this one, with the BED `chr1 3000 9000` and
+  `chr2 0 5000`, and this filter at 0.3 with a seed of 42, keeps 50
+  variants, the first eight at 3072, 3109, 3183, 3257, 3405, 3590, 3627 and
+  3701 of chr1, over `many.vcf` and over the vars file written from it,
+  whose reader skips what is outside the regions. The 50 are the draws of
+  Java from 42 over the 162 variants that `bcftools view -T` keeps in those
+  regions, worked out on 5 October 2026.
+
+The cargo tests also run the first row of the table over a vars file of
+`many.vcf` in batches of 7, in pools of rayon of one thread and of four and
+through the reader one block ahead, and get the 45 each time; and build the
+third row, a seed of 7, through `chain_of`, which gives 49.
+
+The TypeScript test asserts the 45 and their first five positions, the same
+variants from a second pass, and the `Error` of a keep rate of 1.5.
+
+## The filter that keeps the first n variants
+
+### What it gives
+
+It keeps the first n variants that reach it, those that the steps before it
+kept, and then ends the pass: the rest of the source is not read, and the
+calculation goes on to its result with the variants it got. A user tries an
+analysis on a large file quickly, before running it on the whole, where
+without this filter every pass reads the file to its end. When fewer than n
+variants reach it, it keeps them all and the pass reads the whole source.
+
+The first n are those of the start of the file. On a VCF sorted by position
+they are the start of the first chromosome and not a sample of the genome.
+The filter that keeps variants at random, above, is the one for a sample
+of the whole file, and the two can be put on together, at random first and
+then the first n, to get n variants spread over the part of the file that
+was read.
+
+### In Python and in TypeScript
+
+```python
+Variants.filter_first_n(num_vars: int) -> None
+```
+
+It is a step: it adds itself to the `Variants`, reads no variant and
+returns nothing. Its kind is `"first_n"`, and its `args` are `{"num_vars":
+1000}`. `num_vars` is a whole number of 1 or more: 0 or a negative number
+is a `ValueError`, and a float, a `True` or anything that is no number a
+`TypeError`, as for `max_dist` of the filter by linkage disequilibrium.
+Issue 7 asked for a `ValueError` for a float; the `TypeError` is what every
+argument of popnei that takes a whole number gives for one. A second filter
+of this kind is refused.
+
+No step that takes variants out can be added after it: the three threshold
+filters, the filter by linkage disequilibrium, the filter that keeps
+variants at random and both kinds of the filter by regions, added after a
+filter of the first n, are a `ValueError` at the call, which names the kind
+of the step and says that the filter of the first n is set. Then n is
+always the number of variants the calculation gets, and a user who wants n
+variants that pass the MAF filter puts the MAF filter first. The filter of
+individuals takes out no variant and is accepted after it. The owner
+decided it on 5 October 2026; the option not taken was to allow any step
+after it and to say in the docstring that n then counts the variants
+before the later filters.
+
+A step that breaks both rules, a second MAF filter after a MAF filter and
+the filter of the first n, is refused as a second filter of its kind, since
+moving it before the filter of the first n would not make it acceptable.
+The core checks both in that order, in one function that `chain_of` and
+both binding crates call. A `num_vars` of 0 is refused by the core too, at
+the call, with a message that names `num_vars`, `numVars` in TypeScript, as
+the other wrong values of it do. A second filter of the first n names the n
+that is set and the one that was asked for.
+
+In TypeScript, `variants.filterFirstN(numVars)`, with `numVars` a whole
+number from 1 to 2^53 - 1.
+
+pyNei has no such filter. `desired_num_chunks` of `Variants.from_vars`
+stops reading after that many chunks, which counts chunks and not
+variants.
+
+### The counts, and a pass that the filter ended
+
+The filter is given whole blocks and keeps from the last one only the
+variants it needs, so its counts are of the blocks it took: the variants
+of those blocks as given, and n as kept. With blocks of 7 variants and n of
+10 it is given 14 and keeps 10. The filters before it count the same
+blocks, the rows of the last block that this filter did not keep among them,
+so the counts of every filter of a pass that this filter ended depend on
+the size of the blocks, and are of the part of the source that was read
+and not of the whole of it. A user who reads that the MAF filter kept 900
+of 1000 variants would take it for the whole file, which may hold
+millions.
+
+So the counts of a pass say whether this filter ended it. `PassStats` of
+`docs/specs/variant.md` gets a field, `stopped_early`, true when the filter
+of the first n kept its n variants and ended the pass, and false
+otherwise, also when it was given fewer than n. It is true also when the
+source held nothing after the n-th variant, since the filter does not read
+on to find out. The owner decided on 5 October 2026 that the counts say
+it; the option not taken was to leave it to the counts of this filter.
+It is in the `repr` of `PassStats`, where a user who prints the counts sees
+it. When a pass ends there, the `num_vars` of its counts is n.
+Every pass of a `Variants` ends at the same variant, so a calculation that
+reads the source twice reads the same n variants in both passes.
+
+### How it runs
+
+The filter takes a block from its source. When the variants it has kept
+and the block together are at most n, it gives the block whole; otherwise
+it keeps the first rows of the block up to n, with `retain_vars`, and
+gives it. Once it has given n variants, whether the n-th ended a block or
+fell inside one, every later call gives `None` without asking its source. It reads no field of a variant and asks its
+source for what its consumer asked for.
+
+The readers below it are not asked again, so the source reads no further
+than the block in which the n-th variant fell. The VCF reader has read and
+parsed the lines of that block, and the vars file reader may have
+decompressed up to 7 batches past the one that held it: it decompresses 8
+batches at once, that one among them, or as many as the threads of the
+pool when there are fewer. The reader one block
+ahead of `docs/specs/block.md` reads the whole chain on its thread, this
+filter included, so when the filter gives `None` the thread sends that
+word and ends, having asked the source for nothing more.
+
+### How it is verified
+
+Against bcftools 1.24 on `many.vcf`, read with every variant given:
+`bcftools view -H many.vcf | head -n 10` gives the variants at 1000, 1037,
+1074, 1111, 1148, 1185, 1222, 1259, 1296 and 1333 of chr1, and
+`bcftools view -H -Q 0.8:major many.vcf | head -n 10`, the MAF filter of
+0.8 before the first 10, gives 1037, 1074, 1111, 1148, 1222, 1259, 1296,
+1333, 1370 and 1407, run on 5 October 2026. The cargo tests, made at
+`next_block` of the reader of this filter over a `VcfReader` on `many.vcf`,
+in blocks of 7 variants and of the default size, assert the ten positions
+of each, and in blocks of 7 the counts 14 given and 10 kept and that the
+source was asked for two blocks. With n of 14 over blocks of 7, where the
+n-th variant ends a block, the source is asked for two blocks too. With the
+MAF filter of 0.8 before the first 10, in blocks of 7, the MAF filter is
+given 14 and keeps 12 and this filter is given 12 and keeps 10: the MAF
+filter keeps 12 of the first 14 variants of `many.vcf`, by `bcftools view -H
+-Q 0.8:major` over those 14 lines, run on 5 October 2026. The filter that keeps variants at random,
+at 0.5 with a seed of 42, and then the first 10 gives 1037, 1074, 1111,
+1148, 1222, 1296, 1370, 1407, 1555 and 1592, the first ten of the 243 of
+its table.
+
+That the pass ends and does not read the source to its end is tested on a
+source that never ends: a reader built for the test that gives blocks of 7
+variants for as long as it is asked, with the first 10 on it, returns with
+10 variants and having given two blocks, read on one thread and through the
+reader one block ahead. Over a VCF of 100000 variants of 10 individuals,
+read in blocks of 100 variants through a `Read` that counts its bytes, a
+pass with the first 100 reads less than a tenth of the file. Over the vars
+file of the same variants in batches of 100, read in a pool of rayon of one
+thread, a pass with the first 100 decompresses one batch alone, by the list
+of the batches read that the vars file reader keeps for the tests.
+
+The pytest tests, made at `filter_first_n`, on `many.vcf` with every
+variant given, assert the ten positions on
+`many.vcf` and a `pass_stats` with 10 variants and `stopped_early` true; a
+`num_vars` of 1000 on the same file, which gives the 500 and
+`stopped_early` false; a `do_pca_from_variants` with the first 50, whose
+second pass gives the first; the `ValueError` of 0 and of -1 and the
+`TypeError` of 1.5 and of `True`; the `ValueError` of each step that takes
+variants out added after it, and the filter of individuals accepted after
+it. The TypeScript test asserts the ten positions, `stoppedEarly`, and the
+`Error` of 0 and of the MAF filter added after it.
+
 ## The Rust interface
 
 What a filter compares, with the largest value that keeps the variant.
@@ -1525,8 +1887,10 @@ TypeScript.
 /// one of `set`, the steps that are set already. For a threshold filter
 /// the error carries both thresholds, the one of `new` and the one that
 /// is set, which a chain of readers cannot say and the steps can; for the
-/// filter of individuals it carries the kind.
-pub fn refuse_a_second_filter_of_a_kind(
+/// filter of individuals it carries the kind. Of the crate alone since 5
+/// October 2026: the binding crates call `refuse_a_step`, below, which
+/// calls this one.
+pub(crate) fn refuse_a_second_filter_of_a_kind(
     set: &[PassStep],
     new: &PassStep,
 ) -> Result<()>;
@@ -1620,6 +1984,107 @@ individuals are one. The fourth is a defect, a `RuntimeError`: a block
 given to `RegionFilter` whose chromosome number the table of its reader
 has no name for, which the two writers refuse in the same words, since
 the regions are looked up by the name.
+
+The filter that keeps variants at random. The seed a step gets when the
+user gives none is a constant of the core, which both packages read, so
+that the default is written once.
+
+```rust
+/// 42, the seed of the filter that keeps variants at random when the
+/// user gives none, which the owner chose on 5 October 2026.
+pub const DEFAULT_RANDOM_FILTER_SEED: u64 = 42;
+
+pub struct RandomFilter { /* private */ }
+impl RandomFilter {
+    /// A `keep_rate` that is NaN, below 0 or above 1 is an error that
+    /// names the argument and the value. The generator starts at `seed`.
+    pub fn new(keep_rate: f64, seed: u64) -> Result<RandomFilter>;
+    pub fn keep_rate(&self) -> f64;
+    pub fn seed(&self) -> u64;
+    /// It draws one number for each variant of the block, in order, keeps
+    /// the variants whose number is below the keep rate, in place, and
+    /// adds to the counts. A block that does not pass `check` is an error,
+    /// the block is as it was, nothing is added and no number is drawn.
+    pub fn filter_block(&mut self, block: &mut Block) -> Result<()>;
+    /// Over every block it was given since it was built.
+    pub fn stats(&self) -> FilteringStats;
+}
+
+pub struct RandomlyFilteredReader<R: BlockReader> { /* private */ }
+impl<R: BlockReader> RandomlyFilteredReader<R> {
+    /// An error when `reader` already has a filter of this kind.
+    pub fn new(reader: R, filter: RandomFilter) -> Result<RandomlyFilteredReader<R>>;
+}
+impl<R: BlockReader> BlockReader for RandomlyFilteredReader<R> { /* ... */ }
+```
+
+The filter that keeps the first n variants, and the function that tells
+whether it ended a pass, which both binding crates call when they read the
+counts of a pass, so that the rule is written in the core alone.
+
+```rust
+pub struct FirstNReader<R: BlockReader> { /* private */ }
+impl<R: BlockReader> FirstNReader<R> {
+    /// An error when `num_vars` is 0 and when `reader` already has a
+    /// filter of this kind.
+    pub fn new(reader: R, num_vars: u64) -> Result<FirstNReader<R>>;
+}
+impl<R: BlockReader> BlockReader for FirstNReader<R> { /* ... */ }
+
+/// Whether a filter of the first n among `steps` kept its n variants and
+/// so ended the pass whose counts are `filtering`, as
+/// `BlockReader::filtering_stats` of the outermost reader of the chain
+/// gives them: true when `steps` has a `FirstN(n)` and the counts under
+/// "first_n" have `vars_kept` equal to n. `steps` are those the pass was
+/// built from, which a binding crate keeps from the start of the pass, and
+/// not those of the `Variants` when the counts are read: a step added
+/// while an `iter_blocks` runs is not in its pass.
+pub fn stopped_early(steps: &[PassStep], filtering: &[(&'static str, FilteringStats)]) -> bool;
+```
+
+The two steps, two more members of `PassStep`, for which `chain_of` builds a
+`RandomlyFilteredReader` and a `FirstNReader`:
+
+```rust
+    /// Each variant kept when the number drawn for it is below `keep_rate`;
+    /// of the kind "random".
+    Random { keep_rate: f64, seed: u64 },
+    /// The first `num_vars` variants, and then the pass ends; of the kind
+    /// "first_n".
+    FirstN(u64),
+```
+
+`refuse_a_second_filter_of_a_kind` refuses a second step of either kind,
+with the kind, as it does for the filter by regions. A step that takes
+variants out after a `FirstN` is refused by a function of its own. Both are
+of the crate alone, and `refuse_a_step` calls them in their order: both
+binding crates call it when a user adds a step, and `chain_of` for each step
+as it builds the chain, so that no binding can call one and not the other:
+
+```rust
+/// The error of a step that takes variants out, `new`, after a filter of
+/// the first n among `set`, the steps that are set already. The filter of
+/// individuals is not refused.
+pub(crate) fn refuse_a_step_after_the_first_n(set: &[PassStep], new: &PassStep) -> Result<()>;
+
+/// Every refusal of `new` against `set`: a second filter of its kind first,
+/// then a step after the filter of the first n. `chain_of` and both binding
+/// crates call it, so that one step gets one error in every language.
+pub fn refuse_a_step(set: &[PassStep], new: &PassStep) -> Result<()>;
+
+/// The step of the filter of the first n, or the error of a `num_vars` of
+/// 0, which names the argument; both binding crates build the step with it.
+pub fn first_n_step(num_vars: u64) -> Result<PassStep>;
+```
+
+Every consumer of both binding crates gives the Python or the TypeScript
+package this field with the counts of its pass, and builds it with this
+function.
+
+The cases the two filters add to the error of the crate, each a
+`ValueError` in Python: a keep rate out of range, with the value; a
+`num_vars` of 0; a step after the filter of the first n, with the kind of
+the step; and a second filter of either kind, with the kind.
 
 ## Speed
 
@@ -1833,9 +2298,22 @@ bgzipped, on one thread; `tabix` with the region `chr1:1-1000000` over the
 index of the bgzipped file, which seeks to the region and reads none of
 the rest, took 0.01 s or less in each of three runs.
 
+### The filter that keeps variants at random and the filter of the first n
+
+Neither has a number to reach. The filter that keeps variants at random
+draws one number for each variant, a few integer operations, and compacts
+the block as the threshold filters do; what it costs has not been measured.
+The filter of the first n does nothing to a variant, and what it changes is
+the time of a pass, which becomes the time of reading the source up to the
+block that holds the n-th variant.
+
 ## Open points
 
-None. The owner decided on 26 September 2026 the one the filter by regions
+None. The owner decided on 5 October 2026 the four points of the two filters
+added that day, the seed of 42 by default, the draw of one number for each
+variant in its order, the refusal of a step after the filter of the first
+n and `stopped_early` in the counts, each written where it applies with the
+option not taken. The owner decided on 26 September 2026 the one the filter by regions
 had, that a variant is in a region by its position alone, which is
 written under "What it gives" of that filter with the option not taken.
 What the owner decided on 21 September 2026 about the three
@@ -1851,6 +2329,12 @@ variant with half called genotypes is picked, which moves the r² this
 filter compares.
 
 ## Not in this spec
+
+- A sample of exactly n variants spread over the whole file, which has to
+  read the whole file before it knows which to keep: not built. A user puts
+  the filter that keeps variants at random before the filter of the first n.
+- A new sample at each call, with no seed given: a user passes another
+  seed.
 
 - Chromosome names matched with and without `chr`, `chr1` with `1`: not
   done, under the cases of the filter by regions.

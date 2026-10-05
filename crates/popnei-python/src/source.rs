@@ -29,26 +29,49 @@ use std::sync::Mutex;
 
 use numpy::ndarray::Array3;
 use numpy::{IntoPyArray, PyArray1, PyArray3};
-use pyo3::exceptions::{PyOverflowError, PyTypeError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyString, PyTuple};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{PyBool, PyString, PyTuple, PyType};
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
+use popnei::filters::stopped_early;
 use popnei::variant::{ChromTable, Needs};
 
 use crate::errors::PyPopneiError;
-use crate::steps::{Steps, chain_of};
+use crate::steps::{Step, Steps, chain_of, pass_steps_of};
 use crate::vars::VarsSource;
 use crate::vcf::VcfSource;
 
 /// The counts of one pass on their way to Python: how many variants it has
-/// given, and, for each filter of its chain, its kind, how many variants it
-/// was given and how many it kept.
+/// given; for each filter of its chain, its kind, how many variants it was
+/// given and how many it kept; and whether the filter of the first n kept
+/// its n and ended the pass, so that the counts of the filters are of the
+/// part of the source that was read. [`pass_counts_of`] is what builds
+/// them, for every consumer of this crate.
 ///
 /// The filters come in the order of the chain, the outermost first, which is
 /// the reverse of the order of the steps: the package turns them around, as
 /// "How it runs" of the counts of `docs/specs/filters.md` says.
-pub(crate) type PassCounts = (u64, Vec<(&'static str, u64, u64)>);
+pub(crate) type PassCounts = (u64, Vec<(&'static str, u64, u64)>, bool);
+
+/// The counts of a pass that gave `num_vars` variants through `chain`, the
+/// chain of readers that was built from `steps`.
+///
+/// `steps` are those the pass was built from, which its consumer took when
+/// the pass started, and not those of the `Variants` when the counts are
+/// read: a step added while a pass runs is not in it, and whether the pass
+/// was ended by a filter of the first n is the core's to say from those
+/// steps and the counts, `popnei::filters::stopped_early`.
+pub(crate) fn pass_counts_of(num_vars: u64, chain: &dyn BlockReader, steps: &[Step]) -> PassCounts {
+    let filtering = chain.filtering_stats();
+    let stopped_early = stopped_early(&pass_steps_of(steps), &filtering);
+    let filtering = filtering
+        .into_iter()
+        .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
+        .collect();
+    (num_vars, filtering, stopped_early)
+}
 
 /// The columns of one block on their way to Python: the genotypes, and then
 /// the chromosomes, the positions, the ids, the alleles and the qualities,
@@ -173,6 +196,7 @@ pub(crate) fn blocks_of(
             finished: false,
             num_vars: 0,
         }),
+        steps,
         path: path.to_path_buf(),
     })
 }
@@ -196,6 +220,9 @@ struct Pass {
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct Blocks {
     pass: Mutex<Pass>,
+    /// The steps the chain of the pass was built from, which say with its
+    /// counts whether a filter of the first n ended it.
+    steps: Vec<Step>,
     /// The file the reader reads, for the errors of the file system, which
     /// carry it where Python keeps it, `OSError.filename`.
     path: PathBuf,
@@ -220,9 +247,10 @@ impl Blocks {
             .inspect_err(|_| self.finish(py))
     }
 
-    // How many variants the pass has given, and what each filter of it was
-    // given and kept, the outermost filter first. It is read while the pass
-    // runs too, and it then holds what has been read up to there.
+    // How many variants the pass has given, what each filter of it was given
+    // and kept, the outermost filter first, and whether the filter of the
+    // first n ended it. It is read while the pass runs too, and it then
+    // holds what has been read up to there.
     fn pass_stats(&self, py: Python<'_>) -> Result<PassCounts, PyPopneiError> {
         // The interpreter is released while the lock is waited for: the
         // thread that reads a block holds that lock for the whole read,
@@ -239,13 +267,11 @@ impl Blocks {
                     &self.path,
                 )
             })?;
-            let filtering = pass
-                .reader
-                .filtering_stats()
-                .into_iter()
-                .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-                .collect();
-            Ok((pass.num_vars, filtering))
+            Ok(pass_counts_of(
+                pass.num_vars,
+                pass.reader.as_ref(),
+                &self.steps,
+            ))
         })
     }
 }
@@ -553,6 +579,121 @@ pub(crate) fn distance_of(
     }
 }
 
+/// The `value` that was given for `num_vars`, how many variants the filter of
+/// the first n keeps: what [`distance_of`] does for a distance, with
+/// messages that say what this number is.
+///
+/// It is read as the `u64` the core takes and not as the `usize` of
+/// [`count_of`], so that what a user may write for it is the same number in
+/// WebAssembly, where a `usize` is 32 bits, as it is natively. A 0 is given
+/// on for the core to refuse, with its own message.
+///
+/// # Errors
+///
+/// When the object is a whole number below 0 or above 2^64 - 1, which is
+/// the `ValueError` that names `num_vars` and the value and not the
+/// `OverflowError` of pyo3. An object that is no whole number at all, `1.5`,
+/// `"10"` or a truth value, is the `TypeError` of a count that is no number,
+/// which names `num_vars` and what was given.
+pub(crate) fn num_vars_of(value: &Bound<'_, PyAny>) -> Result<u64, PyPopneiError> {
+    const NUM_VARS: &str = "num_vars";
+    // A truth value is a whole number in Python, so `True` would be the
+    // first variant with nothing said.
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_count(NUM_VARS, 1, value));
+    }
+    match value.extract::<u64>() {
+        Ok(num_vars) => Ok(num_vars),
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyPopneiError::NumVars {
+                value: value.to_string(),
+            })
+        }
+        Err(_) => Err(no_count(NUM_VARS, 1, value)),
+    }
+}
+
+/// The `value` that was given for `seed`, the number at which the generator
+/// of the filter that keeps variants at random starts: what
+/// [`distance_of`] does for a distance, with messages that say what a seed
+/// is.
+///
+/// # Errors
+///
+/// When the object is a whole number below 0 or above 2^64 - 1, which is
+/// the `ValueError` that names `seed` and the value and not the
+/// `OverflowError` of pyo3. An object that is no whole number at all, `1.5`,
+/// `"42"` or a truth value, is a `TypeError` that names `seed` and what was
+/// given: `True` would be the seed 1 with nothing said.
+pub(crate) fn seed_of(value: &Bound<'_, PyAny>) -> Result<u64, PyPopneiError> {
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_seed(value));
+    }
+    match value.extract::<u64>() {
+        Ok(seed) => Ok(seed),
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyPopneiError::Seed {
+                value: value.to_string(),
+            })
+        }
+        Err(_) => Err(no_seed(value)),
+    }
+}
+
+/// What a user is told when they gave something that is no seed, which names
+/// `seed` and what was given.
+fn no_seed(value: &Bound<'_, PyAny>) -> PyPopneiError {
+    PyTypeError::new_err(format!(
+        "`seed` is where the generator of the filter that keeps variants at random \
+         starts, and {given} was given: a whole number from 0 to 18446744073709551615",
+        given = written_as(value)
+    ))
+    .into()
+}
+
+/// The `value` that was given for `keep_rate`, the probability with which
+/// the filter that keeps variants at random keeps each variant, as a float.
+///
+/// Whether the float is a keep rate, a number from 0 to 1, is the core's
+/// to say, which `RandomFilter::new` does at the call: this function only
+/// takes the number out of the object, and refuses what is no number before
+/// the conversion of pyo3, which takes `True` as 1 with no word.
+///
+/// # Errors
+///
+/// When the object is no number, a string, `None` and a truth value of
+/// Python or of numpy among them, which is a `TypeError` that names
+/// `keep_rate` and what was given. And when it is a whole number that no
+/// float holds, which is a `ValueError` that names it and the value: no keep
+/// rate is that large.
+pub(crate) fn keep_rate_of(value: &Bound<'_, PyAny>) -> Result<f64, PyPopneiError> {
+    if is_a_truth_value(value)? {
+        return Err(no_keep_rate(value));
+    }
+    match value.extract::<f64>() {
+        Ok(keep_rate) => Ok(keep_rate),
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyValueError::new_err(format!(
+                "`keep_rate` is {value}, which no float holds, and the keep rate of the filter \
+                 that keeps variants at random is a number from 0 to 1, both included"
+            ))
+            .into())
+        }
+        Err(_) => Err(no_keep_rate(value)),
+    }
+}
+
+/// The `TypeError` of a `value` that is no keep rate, which names
+/// `keep_rate` and what was given.
+fn no_keep_rate(value: &Bound<'_, PyAny>) -> PyPopneiError {
+    PyTypeError::new_err(format!(
+        "`keep_rate` is the probability with which each variant is kept, and {given} was \
+         given: a number from 0 to 1, both included",
+        given = written_as(value)
+    ))
+    .into()
+}
+
 /// What a user is told when they gave something that is no distance along a
 /// chromosome for `name`, which names the argument and what was given, as
 /// the refusal of a count that is no number does.
@@ -589,19 +730,18 @@ fn no_count(name: &'static str, smallest: usize, value: &Bound<'_, PyAny>) -> Py
 ///
 /// # Errors
 ///
-/// When the object is no number, a string, `None` and a truth value among
-/// them, which is a `TypeError` that names the argument and what was given:
-/// `True` and `False` say nothing about the rate a user wants, and a
-/// threshold of 1 is not what whoever wrote one meant. And when it is a
-/// whole number that no float holds, which is the error of a threshold out
-/// of range, since a threshold is a number from 0 to 1.
+/// When the object is no number, a string, `None` and a truth value of
+/// Python or of numpy among them, which is a `TypeError` that names the
+/// argument and what was given: `True` and `False` say nothing about the
+/// rate a user wants, and a threshold of 1 is not what whoever wrote one
+/// meant. And when it is a whole number that no float holds, which is the
+/// error of a threshold out of range, since a threshold is a number from 0
+/// to 1.
 pub(crate) fn threshold_of(
     name: &'static str,
     value: &Bound<'_, PyAny>,
 ) -> Result<f64, PyPopneiError> {
-    // A truth value is a whole number in Python, so it converts to 1 or 0
-    // and has to be refused before the conversion is asked for.
-    if value.is_instance_of::<PyBool>() {
+    if is_a_truth_value(value)? {
         return Err(no_number(name, value));
     }
     match value.extract::<f64>() {
@@ -628,6 +768,29 @@ fn no_number(name: &'static str, value: &Bound<'_, PyAny>) -> PyPopneiError {
         given = written_as(value)
     ))
     .into()
+}
+
+/// Whether `value` is a truth value, `True` or `False` of Python or
+/// `numpy.True_` or `numpy.False_`, which an argument that takes a float
+/// refuses before it asks for the conversion.
+///
+/// The conversion of pyo3 to a float takes both kinds with no word, as 1.0
+/// and 0.0: a truth value of Python is a whole number, and one of numpy is
+/// no whole number but has a float. The arguments that take a whole number
+/// need to refuse only the first kind themselves, since the conversion to
+/// an integer refuses a truth value of numpy.
+///
+/// # Errors
+///
+/// When numpy cannot be imported, which the package depends on, or when
+/// `isinstance` raises.
+fn is_a_truth_value(value: &Bound<'_, PyAny>) -> Result<bool, PyPopneiError> {
+    static NUMPY_BOOL: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+    if value.is_instance_of::<PyBool>() {
+        return Ok(true);
+    }
+    let numpy_bool = NUMPY_BOOL.import(value.py(), "numpy", "bool_")?;
+    Ok(value.is_instance(numpy_bool)?)
 }
 
 /// What `value` is, as a user reads it: what Python prints for it, `'0.5'`

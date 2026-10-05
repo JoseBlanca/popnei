@@ -18,11 +18,10 @@ use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods as _};
 use pyo3::prelude::*;
 
-use popnei::block::BlockReader;
 use popnei::pca::{Pca, PcaOptions, VariantPcaOptions};
 
 use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
-use crate::source::{PassCounts, count_of_at_least, source_of};
+use crate::source::{PassCounts, count_of_at_least, pass_counts_of, source_of};
 use crate::steps::{Steps, chain_of};
 
 /// The three tables of a principal component analysis as they go to Python:
@@ -80,11 +79,6 @@ pub(crate) fn pca<'py>(
     Ok((projections, explained_variance_percent, princomps))
 }
 
-/// What each filter of a pass was given and kept, under the kind of the
-/// filter and in the order of the chain, which is the half of the counts of
-/// a pass that the chain of readers holds.
-type FilteringCounts = Vec<(&'static str, u64, u64)>;
-
 /// The tables of a principal component analysis of the variants as they go
 /// to Python: the projections, individuals x components; the percentage of
 /// the variance each component holds; the weights, `num_prin_comps` x the
@@ -139,39 +133,42 @@ pub(crate) fn pca_of_variants<'py>(
     // not the reading of a file that a disc paces, and a user who wants it
     // stopped waits for it to end. Whether the core takes a callback for
     // that is the owner's to decide and is not in the plan of this module.
-    let (result, filtering) = py
-        .detach(|| -> Result<(Pca, FilteringCounts), popnei::Error> {
-            // The chain of each pass stays here, lent to the core, so that
-            // the counts of the filters of the first can be read when the
-            // call is over: the loop over the blocks is the core's. The
-            // source is opened at the size of its own blocks, since the
-            // core puts a `reblock` over whatever it is given.
-            let mut first_pass = chain_of(source.reader(None)?, &steps)?;
-            // The weight of a variant needs the eigenvectors, which are
-            // known when the first pass ends, so it comes from a second
-            // pass over the same variants. With no weights asked for there
-            // is no second pass and no second reader, which means no second
-            // reading of the file.
-            let mut second_pass = match num_prin_comps {
-                0 => None,
-                _ => Some(chain_of(source.reader(None)?, &steps)?),
-            };
-            let result =
-                popnei::pca::pca_of_variants(&mut first_pass, second_pass.as_mut(), &options)?;
-            // The two passes go through the same steps and count the same,
-            // so the counts are those of the first.
-            let filtering = first_pass
-                .filtering_stats()
-                .into_iter()
-                .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-                .collect();
-            Ok((result, filtering))
-        })
-        .map_err(|error| PyPopneiError::of_the_file(error, path))?;
+    let (result, counts) = py.detach(|| -> Result<(Pca, PassCounts), PyPopneiError> {
+        let of_the_source = |error: popnei::Error| PyPopneiError::of_the_file(error, path);
+        // The chain of each pass stays here, lent to the core, so that
+        // the counts of the filters of the first can be read when the
+        // call is over: the loop over the blocks is the core's. The
+        // source is opened at the size of its own blocks, since the
+        // core puts a `reblock` over whatever it is given.
+        let mut first_pass = source
+            .reader(None)
+            .and_then(|reader| chain_of(reader, &steps))
+            .map_err(of_the_source)?;
+        // The weight of a variant needs the eigenvectors, which are
+        // known when the first pass ends, so it comes from a second
+        // pass over the same variants. With no weights asked for there
+        // is no second pass and no second reader, which means no second
+        // reading of the file.
+        let mut second_pass = match num_prin_comps {
+            0 => None,
+            _ => Some(
+                source
+                    .reader(None)
+                    .and_then(|reader| chain_of(reader, &steps))
+                    .map_err(of_the_source)?,
+            ),
+        };
+        let result = popnei::pca::pca_of_variants(&mut first_pass, second_pass.as_mut(), &options)
+            .map_err(of_the_source)?;
+        // The variants the pass gave, used or not, which is the
+        // `num_vars` of its counts. The two passes go through the same
+        // steps and count the same, so the counts are those of the
+        // first.
+        let num_vars: u64 = counted_for_python(result.num_cols, path)?;
+        let counts = pass_counts_of(num_vars, first_pass.as_ref(), &steps);
+        Ok((result, counts))
+    })?;
     raise_a_ctrl_c_before_numpy_is_called(py)?;
-    // The variants the pass gave, used or not, which is the `num_vars` of
-    // its counts.
-    let num_vars: u64 = counted_for_python(result.num_cols, path)?;
     // The positions of the variants that were used go as signed numbers:
     // they become the columns of a frame, where pandas and pyNei hold them
     // as int64, and a user who takes one number of them from another gets
@@ -194,7 +191,7 @@ pub(crate) fn pca_of_variants<'py>(
         explained_variance_percent,
         princomps,
         used_vars.into_pyarray(py),
-        (num_vars, filtering),
+        counts,
     ))
 }
 

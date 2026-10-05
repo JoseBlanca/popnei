@@ -219,19 +219,21 @@ def test_a_threshold_that_is_not_a_number_from_0_to_1_is_refused_at_the_call(
 
 
 @pytest.mark.parametrize("kind", list(FILTERS))
-@pytest.mark.parametrize("given", ["0.5", None, True, False])
+@pytest.mark.parametrize("given", ["0.5", None, True, False, numpy.True_, numpy.False_])
 def test_a_threshold_that_is_no_number_names_the_argument_and_what_was_given(
     kind: str, given: object, reference_vcf_dir: Path
 ) -> None:
-    """A string, nothing and the two truth values, in each of the three
-    methods.
+    """A string, nothing and the two truth values, of Python and of numpy, in
+    each of the three methods.
 
     A threshold is one number, and what is not one is refused with the name
     of the argument as the user writes it and the value they gave, and not
     with the words of the conversion of pyo3, which name neither. `True` is
     a whole number in Python and would be taken as a threshold of 1, which
     keeps every variant that has a number: a truth value says nothing about
-    the rate a user wants, so it is refused as the string is.
+    the rate a user wants, so it is refused as the string is. numpy's
+    `True_` is no whole number of Python and converts to a float, 1.0, so it
+    is refused for itself.
     """
     method, _, argument = FILTERS[kind]
     variants = _many(reference_vcf_dir)

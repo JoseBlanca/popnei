@@ -251,7 +251,7 @@ pub(crate) fn pop_dists_of(
             .map(|pop| pops.name(pop).to_owned())
             .collect();
         let sums = calc_pop_dist_sums(&mut *chain, &pops, &options)?;
-        let counts = PassCounts::of(sums.num_vars(), &chain.filtering_stats());
+        let counts = PassCounts::of(sums.num_vars(), steps.steps(), &*chain);
         // Every array below is one of the core's iterators over the pairs, in
         // the order of the distance vector, (0, 1), (0, 2), ..., (1, 2), ...:
         // the order of the pairs is the core's alone, so the values of a

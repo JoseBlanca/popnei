@@ -328,7 +328,7 @@ pub(crate) fn gwas_of_the_variants(
                 num_vars = result.num_vars
             ))
         })?;
-        let counts = PassCounts::of(counted, &chain.filtering_stats());
+        let counts = PassCounts::of(counted, steps.steps(), &*chain);
         let chroms = the_names_of_the_chromosomes(&result)?;
         let poss = result.poss.as_deref().map(positions_of).transpose()?;
         Ok(GwasOfVariants {

@@ -27,7 +27,7 @@ use pyo3::prelude::*;
 use popnei::pca::{PcoaOfVariants, VariantPcoaOptions};
 
 use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
-use crate::source::{PassCounts, source_of};
+use crate::source::{PassCounts, pass_counts_of, source_of};
 use crate::steps::{Steps, chain_of};
 
 /// A principal coordinate analysis as it goes to Python: the projections,
@@ -142,23 +142,17 @@ pub(crate) fn pcoa_of_variants<'py>(
     // which also lets the core spread the pairs of a block over the threads
     // of rayon. A Ctrl-C that arrives meanwhile is raised when the call is
     // over, for the reason `calc_pairwise_kosman_dists` gives.
-    let (result, filtering) = py
-        .detach(
-            || -> Result<(PcoaOfVariants, FilteringCounts), popnei::Error> {
-                // The source is opened at the size of its own blocks: the sums
-                // of the pass are whole numbers, the same whatever the size.
-                // The chain stays here, lent to the core, so that the counts of
-                // its filters can be read when the call is over.
-                let mut chain = chain_of(source.reader(None)?, &steps)?;
-                let result = popnei::pca::pcoa_of_variants(&mut chain, &options)?;
-                let filtering = chain
-                    .filtering_stats()
-                    .into_iter()
-                    .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-                    .collect();
-                Ok((result, filtering))
-            },
-        )
+    let (result, counts) = py
+        .detach(|| -> Result<(PcoaOfVariants, PassCounts), popnei::Error> {
+            // The source is opened at the size of its own blocks: the sums
+            // of the pass are whole numbers, the same whatever the size.
+            // The chain stays here, lent to the core, so that the counts of
+            // its filters can be read when the call is over.
+            let mut chain = chain_of(source.reader(None)?, &steps)?;
+            let result = popnei::pca::pcoa_of_variants(&mut chain, &options)?;
+            let counts = pass_counts_of(result.num_vars, chain.as_ref(), &steps);
+            Ok((result, counts))
+        })
         .map_err(|error| PyPopneiError::of_the_file(error, path))?;
     raise_a_ctrl_c_before_numpy_is_called(py)?;
     let pcoa = result.pcoa;
@@ -168,13 +162,9 @@ pub(crate) fn pcoa_of_variants<'py>(
         pcoa.explained_variance_percent.into_pyarray(py),
         pcoa.lingoes_constant,
         pcoa.negative_eigenvalues_percent,
-        (result.num_vars, filtering),
+        counts,
     ))
 }
-
-/// What each filter of the pass was given and kept, the outermost filter
-/// first, which is the order the package turns around for its user.
-type FilteringCounts = Vec<(&'static str, u64, u64)>;
 
 /// The projections of the result as a numpy array of `rows` x `cols`, which
 /// takes the allocation of the core without copying it.

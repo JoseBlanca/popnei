@@ -52,8 +52,11 @@ What this gives:
   over a block runs 5x to 10x faster than the same work variant by
   variant.
 - **Filters are readers over readers.** A variant filter takes a block
-  from its source, decides which rows stay, with rayon over the rows,
-  compacts every column in place and gives the block on. A filter of
+  from its source, decides which rows stay, with rayon over the rows when
+  each row is decided on its own, and in their order on one thread when a
+  row's answer turns on the rows before it, as for the filter by linkage
+  disequilibrium and the filter that keeps variants at random, compacts
+  every column in place and gives the block on. A filter of
   individuals compacts the genotypes of each row in place. Neither
   allocates a block. A block left with no variants is not given; the
   filter takes the next. A filter counts the variants it was given and
@@ -277,7 +280,7 @@ inputs where they overlap.
 | `io::vcf` | the reader, which parses the lines of a block in parallel, gzip, and keeps the header and, for the writer, the text of the lines; the writer, plain or bgzip, which writes a line of a VCF as it was read | `vars_from_vcf`, and a writer pyNei does not have |
 | `io::bgzf` | the reader of the members of a file that bgzip wrote, which `io::vcf` reads such a source through: it cuts each member by the size the member states and checks it | none; pyNei reads a bgzipped VCF with Python's `gzip` |
 | `io::vars` | the arrow file reader, projection by `Needs`, a batch of the file as a block; the writer; a format of popnei's own | `load_vars`, `write_vars` |
-| `filters` | readers over readers, which compact the blocks in place: missing data, maf, observed het, individuals; the LD filter; the regions of a BED file, kept or excluded, which the source skips | `filter_by_missing_data`, `filter_by_maf`, `filter_by_obs_het`, `filter_samples`, `filter_by_ld_and_maf`, `gather_filtering_stats` |
+| `filters` | readers over readers, which compact the blocks in place: missing data, maf, observed het, individuals; the LD filter; the regions of a BED file, kept or excluded, which the source skips; each variant kept at random with a probability; the first n variants, after which the pass ends | `filter_by_missing_data`, `filter_by_maf`, `filter_by_obs_het`, `filter_samples`, `filter_by_ld_and_maf`, `gather_filtering_stats` |
 | `block` | `Block`, the `BlockReader` trait, `AllelesColumn`, `reblock` | the chunks and `_resize_chunks` |
 | `stats` | allele counts and frequencies per pop, per variant distributions with histograms, per individual stats, expected het, the polymorphism ratio, the missing rate per variant, the count of variants in windows along each chromosome | `calc_per_var_distribs`, `calc_per_sample_stats`, `diversity` |
 | `diversity` | out of one pass, per population: the alleles it called and the private ones among them, as a total and a mean, the variants that vary in it, each of the three also taken down to a common number of called alleles, the folded site frequency spectrum projected to that number, and F_IS | none; pyNei has none of them |

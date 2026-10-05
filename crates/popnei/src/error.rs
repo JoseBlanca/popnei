@@ -3262,6 +3262,102 @@ pub enum Error {
         /// What the linear algebra said.
         source: popnei_linalg::Error,
     },
+
+    /// A filter of the first n variants asked to keep none of them. A pass
+    /// that it ended would give no variant to its calculation, so a
+    /// `num_vars` is 1 or more. The message names `num_vars`, the argument a
+    /// user wrote the 0 in, which the TypeScript binding writes `numVars`.
+    #[error(
+        "`num_vars` is 0, and a pass with a filter of the first 0 variants would give no variant: it is a whole number of variants of 1 or more"
+    )]
+    FirstNOfNoVariants,
+
+    /// A step that takes variants out added after the filter of the first n
+    /// variants. With it there, n is the number of variants every
+    /// calculation gets, and a filter after it would leave fewer; a user who
+    /// wants n variants that pass a filter puts that filter before. The
+    /// owner decided on 5 October 2026 that it is refused. The filter of
+    /// individuals takes no variant out and is accepted after it.
+    #[error(
+        "the variants are filtered by first_n already, and a filter by {kind} after it would leave fewer than the n variants it keeps; put the filter by {kind} before the filter of the first n"
+    )]
+    StepAfterTheFirstN {
+        /// The kind of the step that was refused, the name a Python and a
+        /// TypeScript user reads for it: `maf`, `regions`.
+        kind: &'static str,
+    },
+
+    /// A second filter of the first n variants. Two of them keep the first
+    /// of the smaller n alone, so a second one says that the user has lost
+    /// track of the filters their variants carry, as a second threshold
+    /// filter of one kind does.
+    #[error(
+        "the variants are filtered by first_n already{set}, and a second filter of that kind, of the first {num_vars}, keeps the first of the smaller n alone",
+        set = num_vars_that_is_set
+            .map_or_else(String::new, |set| format!(", of the first {set} variants"))
+    )]
+    FirstNThatIsSet {
+        /// The n of the filter that was refused, which is the one the
+        /// caller wrote.
+        num_vars: u64,
+        /// The n of the filter that is set. A chain of readers says that it
+        /// holds a filter of the first n and not of how many, so the error
+        /// of [`FirstNReader::new`](crate::filters::FirstNReader::new) over
+        /// one has none; the error of the steps a user adds has it.
+        num_vars_that_is_set: Option<u64>,
+    },
+
+    /// A keep rate of the filter that keeps variants at random that is NaN,
+    /// below 0 or above 1. The keep rate is the probability with which each
+    /// variant is kept, so a number from 0 to 1, both included. The message
+    /// names `keep_rate`, the argument a user wrote the value in, which the
+    /// TypeScript binding writes `keepRate`.
+    #[error(
+        "`keep_rate` is {keep_rate:?}, and the keep rate of the filter that keeps variants at random is the probability with which each variant is kept: a number from 0 to 1, both included"
+    )]
+    RandomFilterKeepRateOutOfRange {
+        /// The keep rate that was given.
+        keep_rate: f64,
+    },
+
+    /// A second filter that keeps variants at random. It would draw a
+    /// sample of the sample the first one keeps, so a second one says that
+    /// the user has lost track of the filters their variants carry, as a
+    /// second threshold filter of one kind does; a user who wants another
+    /// sample gives the one filter another seed.
+    #[error(
+        "the variants are filtered by random already{set}, and a second filter of that kind, with a keep rate of {keep_rate:?} and a seed of {seed}, would keep a sample of the variants the first one keeps",
+        set = keep_rate_and_seed_that_is_set.map_or_else(String::new, |set| format!(
+            ", with a keep rate of {keep_rate:?} and a seed of {seed}",
+            keep_rate = set.keep_rate,
+            seed = set.seed
+        ))
+    )]
+    RandomFilterThatIsSet {
+        /// The keep rate of the filter that was refused, which is the one
+        /// the caller wrote.
+        keep_rate: f64,
+        /// The seed of the filter that was refused.
+        seed: u64,
+        /// The keep rate and the seed of the filter that is set. A chain of
+        /// readers says that it holds a filter of this kind and not with
+        /// which keep rate and seed, so the error of
+        /// [`RandomlyFilteredReader::new`](crate::filters::RandomlyFilteredReader::new)
+        /// over one has none; the error of the steps a user adds has them.
+        keep_rate_and_seed_that_is_set: Option<KeepRateAndSeed>,
+    },
+}
+
+/// The two arguments of a filter that keeps variants at random, which
+/// [`Error::RandomFilterThatIsSet`] carries for the filter that is set: both
+/// are known or neither is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeepRateAndSeed {
+    /// The probability with which the filter keeps each variant, from 0 to
+    /// 1.
+    pub keep_rate: f64,
+    /// The number the generator of the filter starts at in every pass.
+    pub seed: u64,
 }
 
 impl Error {
@@ -3297,11 +3393,15 @@ impl Error {
             // The arguments a user writes at the call, which are wrong
             // whatever file is read although some of them are refused while
             // one is being opened: how many variants a block holds and how
-            // many alleles a genotype of the file has; the three of
+            // many alleles a genotype of the file has; the five of
             // `docs/specs/filters.md`, the threshold of a filter that is
             // not a number from 0 to 1, a second filter of a kind the
             // variants are filtered by already, and a window of the filter
             // by linkage disequilibrium that is no base pairs wide; the
+            // filter of the first n asked for 0 variants and a step that
+            // takes variants out after it; the keep rate of the filter that
+            // keeps variants at random that is not a number from 0 to 1, and
+            // a second filter of that kind; the
             // four of the filter of individuals and the four of the
             // populations a statistic is calculated for, a name that is of
             // nobody, a name that is there twice, a set that names nobody,
@@ -3316,6 +3416,11 @@ impl Error {
             | Self::VarFilterOfAKindThatIsSet { .. }
             | Self::RegionFilterOfAKindThatIsSet { .. }
             | Self::LdFilterMaxDistTooSmall { .. }
+            | Self::FirstNOfNoVariants
+            | Self::StepAfterTheFirstN { .. }
+            | Self::FirstNThatIsSet { .. }
+            | Self::RandomFilterKeepRateOutOfRange { .. }
+            | Self::RandomFilterThatIsSet { .. }
             | Self::IndividualNotInTheSource { .. }
             | Self::IndividualNamedTwice { .. }
             | Self::NoIndividualNamed

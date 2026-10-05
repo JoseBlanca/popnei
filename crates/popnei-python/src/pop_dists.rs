@@ -36,7 +36,7 @@ use popnei::pop_dists::{
 use popnei::stats::Pops;
 
 use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
-use crate::source::{OpenSource, PassCounts, read_only, source_of, written_as};
+use crate::source::{OpenSource, PassCounts, pass_counts_of, read_only, source_of, written_as};
 use crate::stats::{of_a_result, the_min_num_individuals};
 use crate::steps::{Step, Steps, chain_of};
 
@@ -217,18 +217,14 @@ fn over_the_source(
         .iter()
         .map(|group| named_group(chain.chroms(), *group))
         .collect();
-    let filtering = chain
-        .filtering_stats()
-        .into_iter()
-        .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-        .collect();
+    let counts = pass_counts_of(sums.num_vars(), chain.as_ref(), steps);
     Ok(OfThePass {
         pop_names,
         of_each_measure,
         num_vars_of_each_pair,
         f2_groups,
         group_ids,
-        counts: (sums.num_vars(), filtering),
+        counts,
     })
 }
 

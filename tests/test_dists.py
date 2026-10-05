@@ -447,6 +447,7 @@ def test_a_filter_that_takes_nothing_out_leaves_the_distances_and_counts_all(
                     vars_kept=FILTERED_VARS_NUM_VARS,
                 )
             },
+            stopped_early=False,
         )
 
 
@@ -481,6 +482,7 @@ def test_the_distances_are_over_the_variants_the_steps_kept(vcf_of_lines) -> Non
     assert dists.pass_stats == PassStats(
         num_vars=3,
         filtering={"missing_data": FilteringStats(vars_processed=5, vars_kept=3)},
+        stopped_early=False,
     )
 
 
@@ -541,7 +543,9 @@ def test_the_counts_of_the_pass_hold_the_variants_of_the_dataset() -> None:
 
     dists = calc_pairwise_kosman_dists(open_vcf(_reference(name), ploidy=ploidy))
 
-    assert dists.pass_stats == PassStats(num_vars=num_vars, filtering={})
+    assert dists.pass_stats == PassStats(
+        num_vars=num_vars, filtering={}, stopped_early=False
+    )
 
 
 def test_the_variants_are_as_they_were_after_the_calculation(
@@ -872,7 +876,7 @@ def test_a_distances_holds_the_names_as_a_tuple_and_the_counts_of_its_pass(
 
     assert isinstance(dists.names, tuple)
     assert dists.names == ("ind1", "ind2", "ind3")
-    assert dists.pass_stats == PassStats(num_vars=4, filtering={})
+    assert dists.pass_stats == PassStats(num_vars=4, filtering={}, stopped_early=False)
     assert Distances(ODD_VECTOR).pass_stats is None
 
 

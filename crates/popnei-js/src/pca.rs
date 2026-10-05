@@ -280,7 +280,7 @@ pub(crate) fn pca_of_the_variants(
                 num_vars = result.num_cols
             ))
         })?;
-        let pass_stats = PassCounts::of(num_vars, &first_pass.filtering_stats());
+        let pass_stats = PassCounts::of(num_vars, steps.steps(), &*first_pass);
         Ok(PcaOfVariants {
             num_comps: result.num_comps,
             projections: Some(result.projections),

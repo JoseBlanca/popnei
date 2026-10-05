@@ -448,7 +448,9 @@ def test_the_panel_corrected_gives_the_numbers_of_ape(panel_corrected):
 
 
 def test_the_panel_counts_the_1200_variants_of_its_pass(panel_corrected):
-    assert panel_corrected.pass_stats == PassStats(num_vars=1200, filtering={})
+    assert panel_corrected.pass_stats == PassStats(
+        num_vars=1200, filtering={}, stopped_early=False
+    )
 
 
 def test_the_panel_counts_the_variants_the_maf_filter_kept():
@@ -460,6 +462,7 @@ def test_the_panel_counts_the_variants_the_maf_filter_kept():
     assert result.pass_stats == PassStats(
         num_vars=566,
         filtering={"maf": FilteringStats(vars_processed=1200, vars_kept=566)},
+        stopped_early=False,
     )
 
 

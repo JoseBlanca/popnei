@@ -65,11 +65,10 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{Blob, FileReaderSync};
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
-use popnei::filters::FilteringStats;
 use popnei::variant::Needs;
 
 use crate::errors::JsPopneiError;
-use crate::steps::{Steps, chain_of};
+use crate::steps::{Step, Steps, chain_of, stopped_early};
 
 /// The largest position a block hands to JavaScript, 2^53, which
 /// `docs/specs/block.md` sets.
@@ -80,8 +79,8 @@ use crate::steps::{Steps, chain_of};
 /// distances between populations are cut into, for the same reason.
 ///
 /// It is one above the largest window a user may write for the filter by
-/// linkage disequilibrium, the 2^53 - 1 of `LARGEST_WINDOW` of `steps.rs`,
-/// and the two are not the same kind of number. A position is read from a
+/// linkage disequilibrium, the 2^53 - 1 of `LARGEST_EXACT_WHOLE_NUMBER` of
+/// `steps.rs`, and the two are not the same kind of number. A position is read from a
 /// file, and 2^53 itself is held exactly, so it is handed out. A window is
 /// written by a user and read back to them, which is what
 /// `Number.isSafeInteger` stands for: above 2^53 - 1 the numbers a user
@@ -1551,6 +1550,7 @@ pub(crate) fn blocks_of(
         reader: run.what_the_consumer_gives(opened)?,
         run,
         finished: false,
+        steps,
         num_vars: 0,
     })
 }
@@ -1730,7 +1730,7 @@ pub(crate) fn bytes_of_a_vars_file(
             pieces: written.pieces,
             num_bytes: written.num_bytes,
             next: 0,
-            counts: PassCounts::of(num_vars, &chain.filtering_stats()),
+            counts: PassCounts::of(num_vars, steps.steps(), &*chain),
         })
     })
 }
@@ -1764,14 +1764,15 @@ pub(crate) fn bytes_of_a_vcf(
             pieces: written.pieces,
             num_bytes: written.num_bytes,
             next: 0,
-            counts: PassCounts::of(num_vars, &chain.filtering_stats()),
+            counts: PassCounts::of(num_vars, steps.steps(), &*chain),
         })
     })
 }
 
 /// The counts of one pass on their way to JavaScript: how many variants it
-/// gave, and, for each filter of its chain, its kind, how many variants it
-/// was given and how many it kept.
+/// gave, for each filter of its chain its kind, how many variants it was
+/// given and how many it kept, and whether the filter of the first n ended
+/// the pass.
 ///
 /// The filters come in the order of the chain, the outermost first, which is
 /// the reverse of the order of the steps: the package turns them around, as
@@ -1787,6 +1788,7 @@ pub struct PassCounts {
     kinds: Vec<String>,
     vars_processed: Vec<f64>,
     vars_kept: Vec<f64>,
+    stopped_early: bool,
 }
 
 #[wasm_bindgen]
@@ -1798,7 +1800,8 @@ impl PassCounts {
     }
 
     /// The kind of each filter of the chain, the outermost first:
-    /// `"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`.
+    /// `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`, `"regions"`,
+    /// `"excluded_regions"`, `"first_n"` or `"random"`.
     #[must_use]
     pub fn kinds(&self) -> Vec<String> {
         self.kinds.clone()
@@ -1815,13 +1818,31 @@ impl PassCounts {
     pub fn vars_kept(&self) -> Vec<f64> {
         self.vars_kept.clone()
     }
+
+    /// Whether the filter of the first n kept its n variants and ended the
+    /// pass, so that the counts of the filters are of the part of the
+    /// source that was read and not of the whole of it.
+    #[must_use]
+    pub fn stopped_early(&self) -> bool {
+        self.stopped_early
+    }
 }
 
 impl PassCounts {
-    /// The `num_vars` variants of a pass and the `filtering` its chain gave,
-    /// as the numbers of JavaScript.
-    pub(crate) fn of(num_vars: u64, filtering: &[(&'static str, FilteringStats)]) -> PassCounts {
+    /// The counts of a pass that gave `num_vars` variants, read from
+    /// `chain`, its chain of readers, which was built from `steps`, as the
+    /// numbers of JavaScript.
+    ///
+    /// Every consumer of this crate, and the counts of `iterBlocks`, are
+    /// built here, so that every one of them says whether the filter of the
+    /// first n ended its pass, which the core decides from `steps` and the
+    /// counts of the chain. `steps` are those the chain was built from and
+    /// not those of the `Variants` when the counts are read: a step added
+    /// while a pass runs is not in it.
+    pub(crate) fn of(num_vars: u64, steps: &[Step], chain: &dyn BlockReader) -> PassCounts {
+        let filtering = chain.filtering_stats();
         PassCounts {
+            stopped_early: stopped_early(steps, &filtering),
             num_vars: num_vars as f64,
             kinds: filtering
                 .iter()
@@ -1853,6 +1874,10 @@ pub struct Blocks {
     /// Whether the pass is over: the reader has no more blocks, or a block
     /// was lost with an error. After either there is no block.
     finished: bool,
+    /// The steps the chain of the pass was built from, which its counts are
+    /// read with: a step added to the `Variants` while the pass runs is not
+    /// among them.
+    steps: Steps,
     /// The variants of the blocks the pass has given, which is the
     /// `num_vars` a user reads in its counts. A block that was lost with an
     /// error is not among them: it never reached the user.
@@ -1904,7 +1929,7 @@ impl Blocks {
     /// read up to there.
     #[must_use]
     pub fn pass_stats(&self) -> PassCounts {
-        PassCounts::of(self.num_vars, &self.reader.filtering_stats())
+        PassCounts::of(self.num_vars, self.steps.steps(), &*self.reader)
     }
 }
 

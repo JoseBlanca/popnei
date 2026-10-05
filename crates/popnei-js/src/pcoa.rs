@@ -296,7 +296,7 @@ pub(crate) fn pcoa_of_the_variants(
         let names = chain.individuals().to_vec();
         let result = popnei::pca::pcoa_of_variants(&mut chain, &options)
             .map_err(|error| under_the_names_of_the_individuals(error, &names))?;
-        let pass_stats = PassCounts::of(result.num_vars, &chain.filtering_stats());
+        let pass_stats = PassCounts::of(result.num_vars, steps.steps(), &*chain);
         Ok(PcoaOfVariants {
             num_comps: result.pcoa.num_comps,
             projections: Some(result.pcoa.projections),

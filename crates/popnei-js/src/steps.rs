@@ -11,16 +11,19 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The six methods that add a filter are here as well, one for each of the
+//! The eight methods that add a filter are here as well, one for each of the
 //! three numbers of a variant a filter compares, one for the filter by
-//! linkage disequilibrium, one for the individuals to keep and one for the
-//! regions of a BED file, and each of them refuses at the call what a user
+//! linkage disequilibrium, one for the individuals to keep, one for the
+//! regions of a BED file, one for the first n variants and one for the
+//! variants kept at random, and each of them refuses at the call what a user
 //! cannot filter by: a threshold that is not a number from 0 to 1, under the
 //! name of the argument they wrote it in; a window of fewer than 1 base
 //! pairs; a name that is not an individual of the source, a name that is
 //! there twice and no name at all; a BED that holds a line that is not a
-//! region, or no region; and a second filter of a kind the list holds, with
-//! the threshold of the one that is set when both are threshold filters. No reader exists at that call, so
+//! region, or no region; a filter of the first 0 variants; a keep rate that
+//! is not a number from 0 to 1; a second filter of a kind the list holds, with the threshold of
+//! the one that is set when both are threshold filters; and a filter that
+//! takes variants out after the filter of the first n. No reader exists at that call, so
 //! none of those refusals can come from the chain, and the individuals of
 //! the source, which the names are resolved against, are held here from the
 //! moment the `Variants` is built. What is not a number at all, the
@@ -34,8 +37,9 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
 use popnei::filters::{
-    LdFilter, PassStep, RegionSelection, Regions, VarFilter, VarFilteringCriterion, individuals_of,
-    refuse_a_second_filter_of_a_kind, resolve_individuals,
+    DEFAULT_RANDOM_FILTER_SEED, FilteringStats, LdFilter, PassStep, RandomFilter, RegionSelection,
+    Regions, VarFilter, VarFilteringCriterion, first_n_step, individuals_of, refuse_a_step,
+    resolve_individuals,
 };
 
 use crate::errors::JsPopneiError;
@@ -59,25 +63,33 @@ pub(crate) struct Step {
 }
 
 /// What a user gave one argument of a step: the threshold of a filter, a
-/// number from 0 to 1, the window of the filter by linkage disequilibrium,
-/// a whole number of base pairs, or the names of the individuals to keep,
-/// in the order they named them; or what the step found in what it was
-/// given, the number of regions of a BED once those that overlap or touch
-/// are joined.
+/// number from 0 to 1; the keep rate of the filter that keeps variants at
+/// random, a number from 0 to 1 as well; the window of the filter by linkage disequilibrium, a whole
+/// number of base pairs; the names of the individuals to keep, in the order
+/// they named them; how many variants the filter of the first n keeps; or
+/// the seed of the filter that keeps variants at random; or what the step
+/// found in what it was given, the number of regions of a BED once those
+/// that overlap or touch are joined.
 ///
 /// It is the value that argument has in the `args` of the step a user
-/// reads, a number for a threshold, for a window and for the number of
-/// regions, and an array of strings for the individuals, which is what "In
-/// Python and in TypeScript" of `docs/specs/filters.md` gives them. A
+/// reads, a number for a threshold, for a keep rate, for a window, for the
+/// two counts and for a seed, and an array of strings for the individuals, which is what
+/// "In Python and in TypeScript" of `docs/specs/filters.md` gives them. A
 /// window is kept apart from a threshold because the two are not the same
 /// thing: a threshold is a rate and a window is a whole number of base
-/// pairs. The number of regions is apart from both, since it is neither.
+/// pairs. A keep rate is apart from a threshold as well, as it is in the
+/// Python crate: it is a probability and not a number a count of a variant
+/// is compared with. A count, of regions or of variants, is apart from both, since it
+/// is neither, and so is a seed, which is where a generator of random
+/// numbers starts and counts nothing.
 #[derive(Clone)]
 enum Argument {
     Threshold(f64),
     Distance(u64),
     Individuals(Vec<String>),
-    Count(usize),
+    Count(u64),
+    KeepRate(f64),
+    Seed(u64),
 }
 
 /// The names a TypeScript user writes the argument of each filter under,
@@ -89,32 +101,59 @@ const MAX_ALLOWED_R2: &str = "maxAllowedR2";
 const MAX_DIST: &str = "maxDist";
 const INDIVIDUALS: &str = "individuals";
 const NUM_REGIONS: &str = "numRegions";
+const NUM_VARS: &str = "numVars";
+const KEEP_RATE: &str = "keepRate";
+const SEED: &str = "seed";
 
-/// The largest window that crosses, 2^53 - 1 base pairs, which is
-/// `Number.MAX_SAFE_INTEGER`, the largest whole number a number of
-/// JavaScript counts to one by one.
+/// The largest whole number that crosses as a window, a number of variants
+/// or a seed, 2^53 - 1, which is `Number.MAX_SAFE_INTEGER`, the largest
+/// whole number a number of JavaScript counts to one by one.
 ///
-/// The core takes a window of up to 2^64 - 1 base pairs, which is what a
-/// Python user can write; above this one a number of JavaScript counts in
-/// twos, so a window written there is not the window that would arrive.
+/// The core takes each of the three as a 64 bit whole number, up to
+/// 2^64 - 1, which is what a Python user can write; above this one a number
+/// of JavaScript counts in twos, so a number written there is not the
+/// number that would arrive.
 ///
 /// The position of a variant reaches one further, the 2^53 of
 /// `LARGEST_POSITION` of `source.rs`, which is held exactly and comes from
 /// a file instead of being written by a user.
-const LARGEST_WINDOW: f64 = 9_007_199_254_740_991.0;
+const LARGEST_EXACT_WHOLE_NUMBER: f64 = 9_007_199_254_740_991.0;
+
+// The default seed of the core crosses as a float64, to the package and
+// back in the steps, so it has to be one that a float64 holds exactly, as
+// every seed given from TypeScript is.
+const _: () = assert!(DEFAULT_RANDOM_FILTER_SEED <= 9_007_199_254_740_991);
+
+/// The seed the generator of the filter that keeps variants at random starts
+/// at when the caller gives none, the core's `DEFAULT_RANDOM_FILTER_SEED`,
+/// which the package reads so that the default is written in one place.
+#[wasm_bindgen]
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the default seed is checked above, when this crate is compiled, to be at \
+              most 2^53 - 1, which a float64 holds exactly"
+)]
+pub fn default_random_filter_seed() -> f64 {
+    DEFAULT_RANDOM_FILTER_SEED as f64
+}
 
 /// What the value of one argument is, which crosses beside every argument in
 /// [`Steps::arg_kinds`]: the package reads the value of an argument of
 /// `ARG_KIND_THRESHOLD` from [`Steps::arg_thresholds`] and the value of one
 /// of `ARG_KIND_INDIVIDUALS` from [`Steps::arg_individuals`], the value of
 /// one of `ARG_KIND_DISTANCE` from [`Steps::arg_distances`], the value of
-/// one of `ARG_KIND_COUNT` from [`Steps::arg_counts`], and refuses a number
+/// one of `ARG_KIND_COUNT` from [`Steps::arg_counts`], the value of one of
+/// `ARG_KIND_SEED` from [`Steps::arg_seeds`], the value of one of
+/// `ARG_KIND_KEEP_RATE` from [`Steps::arg_keep_rates`], and refuses a number
 /// that is none of them. A kind of its own for each is what keeps an
 /// argument that is added later from being read as a threshold.
 const ARG_KIND_THRESHOLD: u8 = 0;
 const ARG_KIND_INDIVIDUALS: u8 = 1;
 const ARG_KIND_DISTANCE: u8 = 2;
 const ARG_KIND_COUNT: u8 = 3;
+const ARG_KIND_SEED: u8 = 4;
+const ARG_KIND_KEEP_RATE: u8 = 5;
 
 /// The steps of one `Variants`, in the order in which they were put on it,
 /// or the copy of that list that one pass runs.
@@ -195,7 +234,29 @@ impl Steps {
             .into_iter()
             .filter_map(|(_name, value)| match value {
                 Argument::Threshold(threshold) => Some(threshold),
-                Argument::Distance(_) | Argument::Individuals(_) | Argument::Count(_) => None,
+                Argument::Distance(_)
+                | Argument::Individuals(_)
+                | Argument::Count(_)
+                | Argument::KeepRate(_)
+                | Argument::Seed(_) => None,
+            })
+            .collect()
+    }
+
+    /// The keep rate of every argument that is one, in the order of
+    /// `arg_names`, and nothing for an argument that is not: the keep rate of
+    /// the filter that keeps variants at random.
+    #[must_use]
+    pub fn arg_keep_rates(&self) -> Vec<f64> {
+        self.args()
+            .into_iter()
+            .filter_map(|(_name, value)| match value {
+                Argument::KeepRate(keep_rate) => Some(keep_rate),
+                Argument::Threshold(_)
+                | Argument::Distance(_)
+                | Argument::Individuals(_)
+                | Argument::Count(_)
+                | Argument::Seed(_) => None,
             })
             .collect()
     }
@@ -208,7 +269,11 @@ impl Steps {
         self.args()
             .into_iter()
             .filter_map(|(_name, value)| match value {
-                Argument::Threshold(_) | Argument::Distance(_) | Argument::Count(_) => None,
+                Argument::Threshold(_)
+                | Argument::Distance(_)
+                | Argument::Count(_)
+                | Argument::KeepRate(_)
+                | Argument::Seed(_) => None,
                 Argument::Individuals(names) => Some(names),
             })
             .flatten()
@@ -218,8 +283,10 @@ impl Steps {
     /// What the value of each argument of `arg_names` is: 0 for the
     /// threshold of a filter, which is in `arg_thresholds`, 1 for the names
     /// of the individuals to keep, which are in `arg_individuals`, 2 for a
-    /// window of base pairs, which is in `arg_distances`, and 3 for a count,
-    /// which is in `arg_counts`.
+    /// window of base pairs, which is in `arg_distances`, 3 for a count,
+    /// which is in `arg_counts`, 4 for a seed, which is in `arg_seeds`, and
+    /// 5 for the keep rate of the filter that keeps variants at random,
+    /// which is in `arg_keep_rates`.
     ///
     /// The package switches on it and throws for a number it does not know,
     /// so an argument of a kind added later is never read as a threshold.
@@ -232,6 +299,8 @@ impl Steps {
                 Argument::Individuals(_) => ARG_KIND_INDIVIDUALS,
                 Argument::Distance(_) => ARG_KIND_DISTANCE,
                 Argument::Count(_) => ARG_KIND_COUNT,
+                Argument::Seed(_) => ARG_KIND_SEED,
+                Argument::KeepRate(_) => ARG_KIND_KEEP_RATE,
             })
             .collect()
     }
@@ -244,8 +313,8 @@ impl Steps {
     /// one than, so a user reads back the window they wrote.
     #[expect(
         clippy::cast_precision_loss,
-        reason = "a window is at most the 2^53 - 1 of LARGEST_WINDOW, which a float64 \
-                  holds exactly"
+        reason = "a window is at most the 2^53 - 1 of LARGEST_EXACT_WHOLE_NUMBER, which \
+                  a float64 holds exactly"
     )]
     #[must_use]
     pub fn arg_distances(&self) -> Vec<f64> {
@@ -253,25 +322,34 @@ impl Steps {
             .into_iter()
             .filter_map(|(_name, value)| match value {
                 Argument::Distance(distance) => Some(distance as f64),
-                Argument::Threshold(_) | Argument::Individuals(_) | Argument::Count(_) => None,
+                Argument::Threshold(_)
+                | Argument::Individuals(_)
+                | Argument::Count(_)
+                | Argument::KeepRate(_)
+                | Argument::Seed(_) => None,
             })
             .collect()
     }
 
     /// The number of every argument that is a count, in the order of
     /// `arg_names`, and nothing for an argument that is not: the number of
-    /// regions of a filter by regions.
+    /// regions of a filter by regions and the number of variants of the
+    /// filter of the first n.
     ///
     /// A count crosses as a float64, which holds every whole number up to
-    /// 2^53 exactly. The one count there is, the number of regions of a
-    /// BED, is of regions the core holds in memory, 16 bytes each, and
-    /// 2^53 of them would be 2^57 bytes, which no machine this crate builds
-    /// for addresses, in wasm, where a `usize` is 32 bits wide, or
-    /// natively: so a user reads the number the core counted.
+    /// 2^53 exactly. The number of regions of a BED is of regions the core
+    /// holds in memory, 16 bytes each, and 2^53 of them would be 2^57
+    /// bytes, which no machine this crate builds for addresses, in wasm,
+    /// where a `usize` is 32 bits wide, or natively; the number of variants
+    /// of the filter of the first n is at most the 2^53 - 1 of
+    /// [`LARGEST_EXACT_WHOLE_NUMBER`], which [`Steps::filter_first_n`] takes
+    /// no larger one than. So a user reads the number the core counted or the
+    /// one they wrote.
     #[expect(
         clippy::cast_precision_loss,
         reason = "a count of regions held in memory, 16 bytes each, is far below the 2^53 \
-                  a float64 holds exactly, in wasm and natively"
+                  a float64 holds exactly, in wasm and natively, and a count of variants \
+                  is at most the 2^53 - 1 of LARGEST_EXACT_WHOLE_NUMBER"
     )]
     #[must_use]
     pub fn arg_counts(&self) -> Vec<f64> {
@@ -279,15 +357,47 @@ impl Steps {
             .into_iter()
             .filter_map(|(_name, value)| match value {
                 Argument::Count(count) => Some(count as f64),
-                Argument::Threshold(_) | Argument::Distance(_) | Argument::Individuals(_) => None,
+                Argument::Threshold(_)
+                | Argument::Distance(_)
+                | Argument::Individuals(_)
+                | Argument::KeepRate(_)
+                | Argument::Seed(_) => None,
+            })
+            .collect()
+    }
+
+    /// The seed of every argument that is one, in the order of `arg_names`,
+    /// and nothing for an argument that is not: the seed of the filter that
+    /// keeps variants at random.
+    ///
+    /// A seed crosses as a float64, which holds every whole number up to
+    /// 2^53 - 1 exactly, and neither [`Steps::filter_randomly`] nor the
+    /// core's default gives a larger one, so a user reads back the seed they
+    /// wrote or the default.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a seed is at most the 2^53 - 1 of LARGEST_EXACT_WHOLE_NUMBER, which a \
+                  float64 holds exactly"
+    )]
+    #[must_use]
+    pub fn arg_seeds(&self) -> Vec<f64> {
+        self.args()
+            .into_iter()
+            .filter_map(|(_name, value)| match value {
+                Argument::Seed(seed) => Some(seed as f64),
+                Argument::Threshold(_)
+                | Argument::Distance(_)
+                | Argument::Individuals(_)
+                | Argument::Count(_)
+                | Argument::KeepRate(_) => None,
             })
             .collect()
     }
 
     /// How many names of individuals each argument of `arg_names` holds,
     /// which cuts `arg_individuals` into the names of each of them, and 0
-    /// for an argument whose value is a threshold, whose one number is in
-    /// `arg_thresholds`.
+    /// for an argument whose value is one number, which is in the array of
+    /// its kind.
     ///
     /// # Errors
     ///
@@ -298,7 +408,11 @@ impl Steps {
         self.args()
             .into_iter()
             .map(|(name, value)| match value {
-                Argument::Threshold(_) | Argument::Distance(_) | Argument::Count(_) => Ok(0),
+                Argument::Threshold(_)
+                | Argument::Distance(_)
+                | Argument::Count(_)
+                | Argument::KeepRate(_)
+                | Argument::Seed(_) => Ok(0),
                 Argument::Individuals(names) => {
                     let num_names = names.len();
                     u32::try_from(num_names).map_err(|_| {
@@ -318,8 +432,9 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// When the threshold is not a number from 0 to 1, and when a filter of
-    /// this kind is set already.
+    /// When the threshold is not a number from 0 to 1, when a filter of
+    /// this kind is set already, and when the filter of the first n is set,
+    /// after which no filter takes variants out.
     pub fn filter_by_missing_data(
         &mut self,
         max_allowed_missing_rate: f64,
@@ -335,7 +450,7 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// The two of [`Steps::filter_by_missing_data`].
+    /// The three of [`Steps::filter_by_missing_data`].
     pub fn filter_by_maf(&mut self, max_allowed_maf: f64) -> Result<(), JsPopneiError> {
         self.add_a_threshold_filter(
             MAX_ALLOWED_MAF,
@@ -348,7 +463,7 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// The two of [`Steps::filter_by_missing_data`].
+    /// The three of [`Steps::filter_by_missing_data`].
     pub fn filter_by_obs_het(&mut self, max_allowed_obs_het: f64) -> Result<(), JsPopneiError> {
         self.add_a_threshold_filter(
             MAX_ALLOWED_OBS_HET,
@@ -369,7 +484,7 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// The two of [`Steps::filter_by_missing_data`], and a `max_dist` that
+    /// The three of [`Steps::filter_by_missing_data`], and a `max_dist` that
     /// is not a whole number of base pairs from 1 to 2^53 - 1, which the
     /// package refuses before the call and which is a defect here.
     pub fn filter_by_ld(
@@ -396,9 +511,7 @@ impl Steps {
                 (MAX_DIST, Argument::Distance(max_dist)),
             ],
         };
-        refuse_a_second_filter_of_a_kind(&pass_steps_of(&self.steps), &step.pass_step)?;
-        self.steps.push(step);
-        Ok(())
+        self.add(step)
     }
 
     /// The genotypes of `individuals` kept at every variant, in the order
@@ -421,9 +534,7 @@ impl Steps {
             pass_step: PassStep::KeepIndividuals(individuals.clone()),
             args: vec![(INDIVIDUALS, Argument::Individuals(individuals))],
         };
-        refuse_a_second_filter_of_a_kind(&pass_steps_of(&self.steps), &step.pass_step)?;
-        self.steps.push(step);
-        Ok(())
+        self.add(step)
     }
 
     /// The variants inside the regions of the BED file whose bytes are
@@ -433,8 +544,9 @@ impl Steps {
     /// # Errors
     ///
     /// A line of the BED that is not a region, with its number, a BED with
-    /// no region, a gzipped BED that ends in the middle or is damaged, and
-    /// a filter by regions of this kind that is set already.
+    /// no region, a gzipped BED that ends in the middle or is damaged, a
+    /// filter by regions of this kind that is set already, and a filter of
+    /// the first n that is set.
     /// The BED is read first, since it is wrong whatever the list holds.
     pub fn filter_by_regions(&mut self, bed: &[u8], exclude: bool) -> Result<(), JsPopneiError> {
         let regions = Regions::from_bed_bytes(bed).map_err(|error| {
@@ -447,7 +559,9 @@ impl Steps {
                 JsPopneiError::Core(error)
             }
         })?;
-        let num_regions = regions.num_regions();
+        // A `usize` is 32 bits in wasm and 64 natively, so it is always a
+        // `u64`, and the value it saturates at is never taken.
+        let num_regions = u64::try_from(regions.num_regions()).unwrap_or(u64::MAX);
         let step = Step {
             pass_step: PassStep::Regions(RegionSelection {
                 regions: Arc::new(regions),
@@ -455,9 +569,65 @@ impl Steps {
             }),
             args: vec![(NUM_REGIONS, Argument::Count(num_regions))],
         };
-        refuse_a_second_filter_of_a_kind(&pass_steps_of(&self.steps), &step.pass_step)?;
-        self.steps.push(step);
-        Ok(())
+        self.add(step)
+    }
+
+    /// The first `num_vars` variants that the steps before this one keep,
+    /// after which every pass ends without reading the rest of the source.
+    ///
+    /// `num_vars` crosses as a float64 and reaches the core as the 64 bit
+    /// whole number it takes, as the window of [`Steps::filter_by_ld`]
+    /// does. What is not a whole number of 0 or more is refused by the
+    /// package before the call, in `js/popnei/src/arguments.ts`, and 0 is
+    /// refused by the core's step, whose message says why and names
+    /// `numVars`.
+    ///
+    /// # Errors
+    ///
+    /// When `num_vars` is 0, when a filter of the first n is set already,
+    /// and a `num_vars` that is not a whole number from 0 to 2^53 - 1,
+    /// which the package refuses before the call and which is a defect
+    /// here.
+    pub fn filter_first_n(&mut self, num_vars: f64) -> Result<(), JsPopneiError> {
+        let num_vars = num_vars_of(num_vars)?;
+        self.add(Step {
+            pass_step: first_n_step(num_vars)?,
+            args: vec![(NUM_VARS, Argument::Count(num_vars))],
+        })
+    }
+
+    /// Each variant kept with the probability `keep_rate`, drawn from a
+    /// generator of random numbers that starts at `seed` in every pass, so
+    /// that every pass keeps the same variants. The package gives the
+    /// core's default, [`default_random_filter_seed`], when the user gives
+    /// no seed.
+    ///
+    /// `seed` crosses as a float64 and reaches the core as the 64 bit whole
+    /// number it takes, as the window of [`Steps::filter_by_ld`] does. What
+    /// is not a whole number from 0 to 2^53 - 1 is refused by the package
+    /// before the call, in `js/popnei/src/arguments.ts`. The keep rate is refused by the core's
+    /// `RandomFilter::new`, whose message names `keep_rate`, which
+    /// `errors.rs` writes `keepRate`.
+    ///
+    /// # Errors
+    ///
+    /// When `keep_rate` is NaN, below 0 or above 1, the two of
+    /// [`Steps::add`], and a `seed` that is not a whole number from 0 to
+    /// 2^53 - 1, which the package refuses before the call and which is a
+    /// defect here.
+    pub fn filter_randomly(&mut self, keep_rate: f64, seed: f64) -> Result<(), JsPopneiError> {
+        let seed = seed_of(seed)?;
+        // The filter built here is dropped and every pass builds its own,
+        // so the rule a keep rate has to keep is written in the core alone.
+        // It is refused first, since it is wrong whatever the list holds.
+        RandomFilter::new(keep_rate, seed)?;
+        self.add(Step {
+            pass_step: PassStep::Random { keep_rate, seed },
+            args: vec![
+                (KEEP_RATE, Argument::KeepRate(keep_rate)),
+                (SEED, Argument::Seed(seed)),
+            ],
+        })
     }
 
     /// The names of the individuals the next pass gives, in its order: the
@@ -478,7 +648,8 @@ impl Steps {
     ///
     /// When a step has more arguments than a JavaScript array of counts
     /// holds, which no step of this crate has: a filter takes one threshold,
-    /// and the one by linkage disequilibrium a window with it.
+    /// the one by linkage disequilibrium a window with it, and the one that
+    /// keeps variants at random a keep rate and a seed.
     pub fn num_args_per_step(&self) -> Result<Vec<u32>, JsPopneiError> {
         self.steps
             .iter()
@@ -509,13 +680,12 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// When the threshold is not a number from 0 to 1, and when the list
-    /// holds a filter of the kind of `criterion` already. The core is what
-    /// says both: the filter built here is dropped, and every pass builds
+    /// When the threshold is not a number from 0 to 1, and the two of
+    /// [`Steps::add`]. The core is what says all three: the filter built here is dropped, and every pass builds
     /// its own from the criterion, so the rule that a threshold has to keep
     /// and which filters can stand together are written in one place. The
     /// threshold is refused first, since it is wrong whatever the list
-    /// holds. After either, the list is as it was.
+    /// holds. After any of them, the list is as it was.
     fn add_a_threshold_filter(
         &mut self,
         argument: &'static str,
@@ -526,7 +696,21 @@ impl Steps {
             pass_step: PassStep::VarFilter(criterion),
             args: vec![(argument, Argument::Threshold(criterion.threshold()))],
         };
-        refuse_a_second_filter_of_a_kind(&pass_steps_of(&self.steps), &step.pass_step)?;
+        self.add(step)
+    }
+
+    /// `step` added at the end of the list, where the next pass takes it.
+    ///
+    /// # Errors
+    ///
+    /// When the list holds a filter of the kind of `step` already, and when
+    /// `step` takes variants out and the list holds a filter of the first n,
+    /// which the core's `refuse_a_step` says, in that order, so that the
+    /// rules of which steps stand together, and which of two refusals a step
+    /// gets, are written in one place. After either, the list is as it was.
+    fn add(&mut self, step: Step) -> Result<(), JsPopneiError> {
+        let set = pass_steps_of(&self.steps);
+        refuse_a_step(&set, &step.pass_step)?;
         self.steps.push(step);
         Ok(())
     }
@@ -540,6 +724,38 @@ impl Steps {
     }
 }
 
+/// `number` as the 64 bit whole number the core takes, when it is a whole
+/// number from `smallest` to 2^53 - 1, and nothing otherwise.
+///
+/// The window of the filter by linkage disequilibrium, the number of
+/// variants of the filter of the first n and the seed of the filter that
+/// keeps variants at random cross as a float64, and the package refuses one
+/// that is not such a number before the call, in
+/// `js/popnei/src/arguments.ts`. They are checked here and not cast as they
+/// come because a NaN would arrive as 0 and a fraction would lose its part
+/// in silence: a window of 0 takes out every variant that has another at
+/// its own position, and a seed of 0 is a sample the user did not ask for.
+fn exact_whole_number_of(number: f64, smallest: f64) -> Option<u64> {
+    let whole = number.trunc();
+    #[expect(
+        clippy::float_cmp,
+        reason = "a float64 is or is not the whole number it was truncated to"
+    )]
+    let is_whole = whole == number;
+    if !number.is_finite() || !is_whole || number < smallest || number > LARGEST_EXACT_WHOLE_NUMBER
+    {
+        return None;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked above to be a whole number between `smallest`, which is 0 or \
+                  more, and 2^53 - 1"
+    )]
+    let whole_number = number as u64;
+    Some(whole_number)
+}
+
 /// `max_dist` as the number of base pairs the core takes.
 ///
 /// # Errors
@@ -548,30 +764,50 @@ impl Steps {
 /// defect of the package and not something a user can write:
 /// `js/popnei/src/arguments.ts` refuses a window that is not a whole
 /// number of 1 or more before the call, 0 and the negatives among them.
-/// It is checked here and not cast as it comes because a NaN would arrive
-/// as a window of 0 and take out every variant that has another at its own
-/// position, saying nothing.
 fn base_pairs_of(max_dist: f64) -> Result<u64, JsPopneiError> {
-    let whole = max_dist.trunc();
-    #[expect(
-        clippy::float_cmp,
-        reason = "a float64 is or is not the whole number it was truncated to"
-    )]
-    let is_whole = whole == max_dist;
-    if !max_dist.is_finite() || !is_whole || max_dist < 1.0 || max_dist > LARGEST_WINDOW {
-        return Err(JsPopneiError::Broken(format!(
+    exact_whole_number_of(max_dist, 1.0).ok_or_else(|| {
+        JsPopneiError::Broken(format!(
             "the window of the filter by linkage disequilibrium arrived as {max_dist}, \
-             and it is a whole number of base pairs from 1 to {LARGEST_WINDOW}, which \
-             is a defect of popnei; please report it"
-        )));
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "checked above to be a whole number between 1 and 2^53 - 1"
-    )]
-    let base_pairs = max_dist as u64;
-    Ok(base_pairs)
+             and it is a whole number of base pairs from 1 to \
+             {LARGEST_EXACT_WHOLE_NUMBER}, which is a defect of popnei; please report it"
+        ))
+    })
+}
+
+/// `num_vars` of the filter of the first n as the number of variants the
+/// core takes.
+///
+/// # Errors
+///
+/// When `num_vars` is not a whole number from 0 to 2^53 - 1, which is a
+/// defect of the package: `js/popnei/src/arguments.ts` refuses one before
+/// the call. 0 is let through for the core to refuse, with its own message.
+fn num_vars_of(num_vars: f64) -> Result<u64, JsPopneiError> {
+    exact_whole_number_of(num_vars, 0.0).ok_or_else(|| {
+        JsPopneiError::Broken(format!(
+            "the number of variants of the filter of the first n arrived as {num_vars}, \
+             and it is a whole number from 0 to {LARGEST_EXACT_WHOLE_NUMBER}, which is a \
+             defect of popnei; please report it"
+        ))
+    })
+}
+
+/// `seed` of the filter that keeps variants at random as the 64 bit whole
+/// number the core takes.
+///
+/// # Errors
+///
+/// When `seed` is not a whole number from 0 to 2^53 - 1, which is a defect
+/// of the package: `js/popnei/src/arguments.ts` refuses one before the
+/// call.
+fn seed_of(seed: f64) -> Result<u64, JsPopneiError> {
+    exact_whole_number_of(seed, 0.0).ok_or_else(|| {
+        JsPopneiError::Broken(format!(
+            "the seed of the filter that keeps variants at random arrived as {seed}, \
+             and it is a whole number from 0 to {LARGEST_EXACT_WHOLE_NUMBER}, which is a \
+             defect of popnei; please report it"
+        ))
+    })
 }
 
 /// `error`, and a threshold the core refused under `argument`, the name a
@@ -603,14 +839,24 @@ fn under_the_argument(error: popnei::Error, argument: &'static str) -> JsPopneiE
 ///
 /// # Errors
 ///
-/// When a threshold of the steps is not a number from 0 to 1, or when the
-/// steps hold two filters of one kind. A user reaches neither: the call
-/// that adds a filter refuses both, and the steps are read from there.
+/// When a threshold or a keep rate of the steps is not a number from 0 to
+/// 1, when the steps hold two filters of one kind, when the filter of the
+/// first n is of 0 variants, and when a step that takes variants out comes
+/// after it.
+/// A user reaches none of them: the call that adds a filter refuses each,
+/// and the steps are read from there.
 pub(crate) fn chain_of(
     reader: Box<dyn BlockReader>,
     steps: &[Step],
 ) -> Result<Box<dyn BlockReader>, popnei::Error> {
     popnei::filters::chain_of(reader, &pass_steps_of(steps))
+}
+
+/// Whether the filter of the first n among `steps` ended the pass whose
+/// counts are `filtering`, which the core says, `popnei::filters::stopped_early`.
+/// `steps` are the ones the chain of the pass was built from.
+pub(crate) fn stopped_early(steps: &[Step], filtering: &[(&'static str, FilteringStats)]) -> bool {
+    popnei::filters::stopped_early(&pass_steps_of(steps), filtering)
 }
 
 /// What the pass does at each step, in the order of the steps: what the core

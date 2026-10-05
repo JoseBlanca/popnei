@@ -44,6 +44,14 @@ it is named in the commit message of the code.
    it fails before the change. To make it compile, the new function gets a
    body that returns a wrong value, `None`, `Ok(0)`, and never `todo!()`,
    which the lints deny. Run the test and see it fail on the assertion.
+   A test has to fail against that body without hanging and without
+   growing: one that reads until something ends, a source with no end, a
+   loop that stops when the code under test says so, has a bound of its
+   own that makes it fail, a source that panics past a number of blocks.
+   On 5 October 2026 three tests of the filter of the first n read a source
+   that never ends and kept every block, the stub of the filter gave them
+   all on, and cargo ran them at once until the owner's machine, 64 GB,
+   ran short of memory and other programs had to be quit.
    When a change cannot have such a test, a rename, a move, say so in the
    commit message.
 2. The code, as small as the step asks for.

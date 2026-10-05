@@ -333,7 +333,11 @@ test("the statistics of var0000 in p0 are the literals of plink2", () => {
     OF_A_PRINTED_VALUE,
     "the unbiased expected heterozygosity of var0000 in p1",
   );
-  assert.deepEqual(distribs.passStats, { numVars: 1, filtering: {} });
+  assert.deepEqual(distribs.passStats, {
+    numVars: 1,
+    filtering: {},
+    stoppedEarly: false,
+  });
   variants.free();
 });
 
@@ -918,6 +922,7 @@ test("the two rates of s000 and s001 of the panel are the literals of plink2", (
   assert.deepEqual(stats.passStats, {
     numVars: PANEL_NUM_VARS,
     filtering: {},
+    stoppedEarly: false,
   });
   variants.free();
 });

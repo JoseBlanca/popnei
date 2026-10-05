@@ -19,8 +19,6 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::block::BlockReader;
-
 use crate::errors::JsPopneiError;
 use crate::source::{Consumer, LARGEST_POSITION, OpenSource, PassCounts, the_run_of};
 use crate::steps::{Steps, chain_of};
@@ -81,7 +79,7 @@ pub(crate) fn var_density_of(
         let mut chain = chain_of(reader, steps.steps())?;
         let density =
             popnei::stats::calc_var_density(&mut *chain, window_size, chrom_lengths.as_deref())?;
-        let counts = PassCounts::of(density.num_vars(), &chain.filtering_stats());
+        let counts = PassCounts::of(density.num_vars(), steps.steps(), &*chain);
         let mut chroms = Vec::with_capacity(density.chroms().len());
         let mut windows_per_chrom = Vec::with_capacity(density.chroms().len());
         for chrom in density.chroms() {

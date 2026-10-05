@@ -240,6 +240,7 @@ test("the counts of the pass are those of the steps of the variants", async () =
       filtering: {
         missing_data: { varsProcessed: NUM_VARS, varsKept: NUM_VARS },
       },
+      stoppedEarly: false,
     });
   } finally {
     variants.free();

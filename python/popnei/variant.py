@@ -27,9 +27,19 @@ class PassStats:
 
     filtering: dict[str, FilteringStats]
     """How many variants each filter of the pass was given and kept, under
-    the kind of the filter, ``"missing_data"``, ``"maf"``, ``"obs_het"`` or
-    ``"ld"``,
-    in the order of the steps. It is empty for a pass with no filter."""
+    the kind of the filter, ``"missing_data"``, ``"maf"``, ``"obs_het"``,
+    ``"ld"``, ``"regions"``, ``"excluded_regions"``, ``"first_n"`` or
+    ``"random"``, in the order of the steps. It is empty for a pass with no filter."""
+
+    stopped_early: bool
+    """Whether the filter of the first n variants,
+    :meth:`Variants.filter_first_n`, kept its n and ended the pass before
+    the source ended. When it is true, `num_vars` is that n and the counts
+    in `filtering` are of the part of the source that was read, and not of
+    the whole of it: a filter before it that kept 900 of 1000 variants was
+    given 1000 of a file that may hold millions. It is false for a pass
+    with no such filter, and for one whose filter was given fewer than n
+    variants, which read the whole source."""
 
 
 def _pass_stats_of(counts) -> PassStats:
@@ -39,13 +49,14 @@ def _pass_stats_of(counts) -> PassStats:
     and a user reads them in the order of the steps, which is the one the
     filters were put on the ``Variants`` in and the reverse of the chain's.
     """
-    num_vars, filtering = counts
+    num_vars, filtering, stopped_early = counts
     return PassStats(
         num_vars=num_vars,
         filtering={
             kind: FilteringStats(vars_processed=vars_processed, vars_kept=vars_kept)
             for kind, vars_processed, vars_kept in reversed(filtering)
         },
+        stopped_early=stopped_early,
     )
 
 
@@ -472,6 +483,102 @@ class Variants:
                 f"{type(exclude).__name__}, was given"
             )
         self._steps.filter_by_regions(bed_path, exclude)
+
+    def filter_first_n(self, num_vars: int) -> None:
+        """Keep the first `num_vars` variants that the steps before this one
+        keep, and end every pass there, without reading the rest of the
+        source.
+
+        It is for trying an analysis on a large file quickly before running
+        it on the whole: without it every pass reads the file to its end.
+        The first n are those of the start of the file, so on a VCF sorted
+        by position they are the start of the first chromosome and not a
+        sample of the genome. :meth:`filter_randomly`, put before this one,
+        gives n variants spread over the part of the file that was read. When fewer than `num_vars` variants reach it, it
+        keeps them all and the pass reads the whole source.
+
+        Every pass of the ``Variants`` ends at the same variant, so a
+        calculation that reads the source twice reads the same variants in
+        both passes. The step's kind is ``"first_n"`` and its ``args`` are
+        ``{"num_vars": 1000}``.
+
+        The counts of a pass it ended depend on the size of the blocks the
+        source is read in: the filter is given whole blocks, so its counts
+        are the variants of the blocks it took as given and `num_vars` as
+        kept, and the filters before it count those same blocks. They are of
+        the part of the source that was read and not of the whole file, and
+        the ``stopped_early`` of the :class:`PassStats` of the pass is true
+        to say so.
+
+        No step that takes variants out can be added after it: a threshold
+        filter, the filter by linkage disequilibrium, a filter that keeps
+        variants at random, :meth:`filter_randomly`, or a filter by regions
+        added after it is a
+        ``ValueError`` that names the kind of the step, since it would leave
+        fewer than `num_vars` variants. A user who wants n variants that
+        pass the MAF filter puts :meth:`filter_by_maf` before this one.
+        :meth:`filter_individuals` takes out no variant and is accepted
+        after it.
+
+        The call adds a step and gives nothing back. A `num_vars` of 0 or
+        below is a ``ValueError``, and a float, ``True`` or anything that is
+        no whole number a ``TypeError`` that names the argument. A second
+        filter of this kind is a ``ValueError`` as well: two of them keep the
+        first of the smaller n. After any of them the steps are as they
+        were.
+        """
+        self._steps.filter_first_n(num_vars)
+
+    def filter_randomly(
+        self, keep_rate: float, seed: int = _core.DEFAULT_RANDOM_FILTER_SEED
+    ) -> None:
+        """Keep each variant with the probability `keep_rate`, so that an
+        analysis runs on a sample spread over the whole source.
+
+        At a `keep_rate` of 0.1 about one variant in ten is kept, at 1 every
+        one and at 0 none. One number from 0 to 1 is drawn for each variant
+        that reaches the filter, in the order the variants reach it, from a
+        generator of random numbers that starts at `seed` at the start of
+        every pass, and the variant is kept when its number is below
+        `keep_rate`. The generator is SplitMix64, the one of Java's
+        ``java.util.SplittableRandom``.
+
+        So the same seed over the same source and the same steps keeps the
+        same variants, every time and in every pass: every calculation on
+        this ``Variants`` sees one sample, also one that reads the source
+        twice, as :func:`popnei.do_pca_from_variants` with the weights of
+        the variants and :func:`popnei.calc_gwas` with the GRAMMAR-Gamma
+        approximation do. A call without a seed keeps the same sample every
+        time; another seed gives another sample.
+
+        The numbers are drawn for the variants that reach the filter, so a
+        filter before it changes which variant gets which number, and with
+        it the sample: :meth:`filter_by_maf` and then this one keep another
+        sample than this one and then :meth:`filter_by_maf`, and a VCF read
+        with ``only_passed=False`` another sample than with
+        ``only_passed=True``. A VCF and the vars file written from it with no
+        step give the same sample. :meth:`filter_individuals` before it takes
+        out no variant and changes nothing. A :meth:`filter_by_regions` after
+        it is not handed to the source, which then reads every variant: a
+        user who wants the source to skip what is outside the regions puts
+        the filter by regions first.
+
+        The step's kind is ``"random"`` and its ``args`` are
+        ``{"keep_rate": 0.1, "seed": 42}``. At a `keep_rate` of 0 a
+        calculation fails with the error of a pass that gave no variant.
+
+        The call adds a step and gives nothing back. A `keep_rate` that is
+        NaN, below 0 or above 1 is a ``ValueError``, and one that is no
+        number, ``True`` among them, a ``TypeError``. A `seed` that is not a
+        whole number, ``True`` and ``1.5`` among them, is a ``TypeError``,
+        and one below 0 or above 2^64 - 1 a ``ValueError``. A second filter
+        of this kind is a ``ValueError`` as well, since it would draw a
+        sample of the sample; another sample is this filter with another
+        seed. So is this filter after :meth:`filter_first_n`, which would
+        leave fewer than its n. After any of them the steps are as they
+        were.
+        """
+        self._steps.filter_randomly(keep_rate, seed)
 
     def iter_blocks(
         self,

@@ -26,7 +26,9 @@ use popnei::block::BlockReader;
 use popnei::io::vars::VarsReader;
 
 use crate::errors::PyPopneiError;
-use crate::source::{Blocks, OpenSource, PassCounts, blocks_of, count_of, source_of};
+use crate::source::{
+    Blocks, OpenSource, PassCounts, blocks_of, count_of, pass_counts_of, source_of,
+};
 use crate::steps::{Step, Steps, chain_of};
 
 // A vars file that was opened: its path, and the individuals and the ploidy
@@ -271,12 +273,7 @@ fn the_pass(
     // then says that it is full would leave a file that is not whole
     // after a call that returned and said nothing.
     file.sync_all().map_err(not_written)?;
-    let filtering = chain
-        .filtering_stats()
-        .into_iter()
-        .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-        .collect();
-    Ok((num_vars, filtering))
+    Ok(pass_counts_of(num_vars, chain.as_ref(), steps))
 }
 
 /// `error` with the file it is about, since a user reads which of the two
