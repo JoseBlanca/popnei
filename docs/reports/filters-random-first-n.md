@@ -112,3 +112,21 @@ generator and keeps the copy once the block is compacted. Checked on 5
 October 2026: `cargo test --workspace` 1415 passed, 20 more, the 20 of
 `cargo test -p popnei --lib random_filter`; clippy, fmt and both wasm
 checks pass.
+
+Task 2.2, Python, is 63941c6: `filter_randomly`, the keep rate refused by
+building the core's `RandomFilter`, the seed read by a function of its own.
+`do_pca_from_variants` with 10 components and `calc_gwas` with a kinship and
+GRAMMAR-Gamma over the random filter at 0.1 and a seed of 42 give, exactly,
+with no tolerance, the results of the same calls over a vars file that holds
+the 45 variants alone, so the two passes of each saw the same variants. Task
+2.3, TypeScript, is 9bc1163: `filterRandomly(keepRate, {seed})`, the default
+seed from the core's constant. They ran side by side.
+
+The deliverables, checked on 5 October 2026 at 63941c6: the six cargo
+commands pass, `cargo test --workspace` 1415 passed and `cargo test -p popnei
+--no-default-features` 1265; `cargo test -p popnei --lib random_filter`
+lists 20; `uv run pytest` 719 passed, 26 of `-k filter_randomly`; `npm test`
+tests 541, pass 540, fail 1, the test of `test/gwas.test.ts` that fails on
+`main`; `npm run test:browser` 8 passed. The review of this work package is
+the review of the whole branch below, which has all seven categories and
+would have repeated it.

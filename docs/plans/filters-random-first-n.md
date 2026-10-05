@@ -179,12 +179,12 @@ Tasks:
   variants at random" and "The Rust interface". Deliverable 1. The
   generator is a wrong number and not a crash when it is wrong, so it is
   the first commit of the task, with the test of Java's five draws.
-- [ ] 2.2 The Python side: `filter_randomly` in `steps.rs` of
+- [x] 2.2 The Python side: `filter_randomly` in `steps.rs` of
   `crates/popnei-python`, with the seed read as a whole number of 64 bits,
   the default from the core's constant through `_core`;
   `Variants.filter_randomly` and the kinds of `filters.py`. Deliverable 2.
   Needs 2.1.
-- [ ] 2.3 The TypeScript side: `filterRandomly(keepRate, {seed})` in
+- [x] 2.3 The TypeScript side: `filterRandomly(keepRate, {seed})` in
   `crates/popnei-js` and `js/popnei`, with the seed a whole number up to
   2^53 - 1 and an options object that refuses a key it does not know, as
   every options object of the package does. Deliverables 3 and 4. Needs
