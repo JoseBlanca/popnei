@@ -14,6 +14,7 @@ FILTER among them, and run on 5 October 2026.
 import math
 from pathlib import Path
 
+import numpy
 import pandas
 import pytest
 from popnei import (
@@ -238,10 +239,12 @@ def test_filter_randomly_refuses_a_keep_rate_out_of_0_to_1(
     assert variants.steps == ()
 
 
-@pytest.mark.parametrize("keep_rate", [True, "0.1", None])
+@pytest.mark.parametrize("keep_rate", [True, numpy.True_, numpy.False_, "0.1", None])
 def test_filter_randomly_refuses_a_keep_rate_that_is_no_number_with_a_type_error(
     reference_vcf_dir: Path, keep_rate: object
 ) -> None:
+    """A truth value of Python or of numpy would be a keep rate of 1 or 0
+    with nothing said: numpy's converts to a float."""
     variants = _many(reference_vcf_dir)
 
     with pytest.raises(TypeError, match="`keep_rate`"):

@@ -31,7 +31,8 @@ use numpy::ndarray::Array3;
 use numpy::{IntoPyArray, PyArray1, PyArray3};
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyString, PyTuple};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{PyBool, PyString, PyTuple, PyType};
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
 use popnei::filters::stopped_early;
@@ -626,12 +627,13 @@ fn no_seed(value: &Bound<'_, PyAny>) -> PyPopneiError {
 ///
 /// # Errors
 ///
-/// When the object is no number, a string, `None` and a truth value among
-/// them, which is a `TypeError` that names `keep_rate` and what was given.
-/// And when it is a whole number that no float holds, which is a
-/// `ValueError` that names it and the value: no keep rate is that large.
+/// When the object is no number, a string, `None` and a truth value of
+/// Python or of numpy among them, which is a `TypeError` that names
+/// `keep_rate` and what was given. And when it is a whole number that no
+/// float holds, which is a `ValueError` that names it and the value: no keep
+/// rate is that large.
 pub(crate) fn keep_rate_of(value: &Bound<'_, PyAny>) -> Result<f64, PyPopneiError> {
-    if value.is_instance_of::<PyBool>() {
+    if is_a_truth_value(value)? {
         return Err(no_keep_rate(value));
     }
     match value.extract::<f64>() {
@@ -694,19 +696,18 @@ fn no_count(name: &'static str, smallest: usize, value: &Bound<'_, PyAny>) -> Py
 ///
 /// # Errors
 ///
-/// When the object is no number, a string, `None` and a truth value among
-/// them, which is a `TypeError` that names the argument and what was given:
-/// `True` and `False` say nothing about the rate a user wants, and a
-/// threshold of 1 is not what whoever wrote one meant. And when it is a
-/// whole number that no float holds, which is the error of a threshold out
-/// of range, since a threshold is a number from 0 to 1.
+/// When the object is no number, a string, `None` and a truth value of
+/// Python or of numpy among them, which is a `TypeError` that names the
+/// argument and what was given: `True` and `False` say nothing about the
+/// rate a user wants, and a threshold of 1 is not what whoever wrote one
+/// meant. And when it is a whole number that no float holds, which is the
+/// error of a threshold out of range, since a threshold is a number from 0
+/// to 1.
 pub(crate) fn threshold_of(
     name: &'static str,
     value: &Bound<'_, PyAny>,
 ) -> Result<f64, PyPopneiError> {
-    // A truth value is a whole number in Python, so it converts to 1 or 0
-    // and has to be refused before the conversion is asked for.
-    if value.is_instance_of::<PyBool>() {
+    if is_a_truth_value(value)? {
         return Err(no_number(name, value));
     }
     match value.extract::<f64>() {
@@ -733,6 +734,29 @@ fn no_number(name: &'static str, value: &Bound<'_, PyAny>) -> PyPopneiError {
         given = written_as(value)
     ))
     .into()
+}
+
+/// Whether `value` is a truth value, `True` or `False` of Python or
+/// `numpy.True_` or `numpy.False_`, which an argument that takes a float
+/// refuses before it asks for the conversion.
+///
+/// The conversion of pyo3 to a float takes both kinds with no word, as 1.0
+/// and 0.0: a truth value of Python is a whole number, and one of numpy is
+/// no whole number but has a float. The arguments that take a whole number
+/// need to refuse only the first kind themselves, since the conversion to
+/// an integer refuses a truth value of numpy.
+///
+/// # Errors
+///
+/// When numpy cannot be imported, which the package depends on, or when
+/// `isinstance` raises.
+fn is_a_truth_value(value: &Bound<'_, PyAny>) -> Result<bool, PyPopneiError> {
+    static NUMPY_BOOL: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+    if value.is_instance_of::<PyBool>() {
+        return Ok(true);
+    }
+    let numpy_bool = NUMPY_BOOL.import(value.py(), "numpy", "bool_")?;
+    Ok(value.is_instance(numpy_bool)?)
 }
 
 /// What `value` is, as a user reads it: what Python prints for it, `'0.5'`
