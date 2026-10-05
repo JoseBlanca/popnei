@@ -364,9 +364,10 @@ A pass that the filter of the first n variants of `docs/specs/filters.md`
 ends reads no further, so its last call has a `bytesRead` below `numBytes`,
 the bytes it had read when the filter ended it, and no later call brings it
 to `numBytes`: what the page draws stops short of the end, and the
-`stoppedEarly` of the counts of the pass says why. Over `many.vcf` with the
-first 10, in blocks of 7, the last call has a `bytesRead` below 117346; a
-test asserts that, and that `bytesRead` never goes down. Added on 5 October
+`stoppedEarly` of the counts of the pass says why. A file is read 4 MiB at a
+time, so the test is over a VCF of more than twice that, which the test
+writes: with the first 10 the last call has a `bytesRead` below its
+`numBytes`, and `bytesRead` never goes down. Added on 5 October
 2026.
 
 An `iterBlocks` that a user abandons without freeing it holds its run, and
