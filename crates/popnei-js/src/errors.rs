@@ -286,7 +286,8 @@ impl From<JsPopneiError> for JsValue {
 /// cannot fill is rewritten here too, and so are the `window_size` and the
 /// `chrom_lengths` of the density of the variants, the `num_vars` of a
 /// filter of the first n of no variants and the `keep_rate` of the filter
-/// that keeps variants at random.
+/// that keeps variants at random, whose value is written as JavaScript
+/// writes it as well.
 ///
 /// The `correct_dists_by_lingoes` and the `correct_by_lingoes` that a matrix
 /// that is not Euclidean is pointed to are rewritten here, and so are the
@@ -362,8 +363,15 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
     if matches!(error, popnei::Error::FirstNOfNoVariants) {
         return message.replace("num_vars", "numVars");
     }
-    if matches!(error, popnei::Error::RandomFilterKeepRateOutOfRange { .. }) {
-        return message.replace("keep_rate", "keepRate");
+    // The keep rate as JavaScript writes it, `2` and `Infinity`, where the
+    // core writes `2.0` and `inf`: what a user looks for is the number in
+    // the call they wrote, as the threshold of a filter is.
+    if let popnei::Error::RandomFilterKeepRateOutOfRange { keep_rate } = error {
+        return message.replacen(
+            &format!("`keep_rate` is {keep_rate:?},"),
+            &format!("`keepRate` is {},", as_javascript_writes_it(*keep_rate)),
+            1,
+        );
     }
     if matches!(error, popnei::Error::VarDensityWindowSizeZero) {
         return message.replace("window_size", "windowSize");

@@ -151,10 +151,13 @@ for (const [given, written] of [
   [1.5, "1.5"],
   [-0.1, "-0.1"],
   [Number.NaN, "NaN"],
+  [2, "2"],
+  [Number.POSITIVE_INFINITY, "Infinity"],
 ] as [number, string][]) {
   test(`filterRandomly with a keep rate of ${written} is an Error that names keepRate`, () => {
     // The core refuses it and names the argument as Python writes it, which
-    // the binding writes as TypeScript does.
+    // the binding writes as TypeScript does, and the number as JavaScript
+    // writes it: 2 and not the 2.0 of Rust, Infinity and not inf.
     const variants = many();
     assert.throws(() => variants.filterRandomly(given), (error: unknown) => {
       assert.ok(error instanceof Error);
