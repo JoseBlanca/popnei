@@ -15,7 +15,10 @@ import type {
   VarsSource,
   VcfSource,
 } from "../wasm/popnei.js";
-import { Steps } from "../wasm/popnei.js";
+import {
+  default_random_filter_seed as defaultRandomFilterSeed,
+  Steps,
+} from "../wasm/popnei.js";
 
 import {
   aBoolean,
@@ -808,10 +811,13 @@ export class Variants {
   filterRandomly(keepRate: number, options: { seed?: number } = {}): void {
     theWasmHasToBeLoaded();
     anObjectOfOptions("filterRandomly", options, ["seed"]);
-    // No seed crosses as `undefined`, and the binding crate puts the
-    // default of the core in its place, so 42 is written in one place.
+    // The default is the core's, as the defaults of `calcLdAndDistPerPop`
+    // are, so that Python and TypeScript draw the same sample from a call
+    // that gives no seed.
     const seed =
-      options.seed === undefined ? undefined : aSeed("seed", options.seed);
+      options.seed === undefined
+        ? defaultRandomFilterSeed()
+        : aSeed("seed", options.seed);
     this.#stepsThatWereNotFreed().filter_randomly(
       aNumber("keepRate", keepRate),
       seed,

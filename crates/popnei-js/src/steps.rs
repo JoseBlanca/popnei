@@ -116,10 +116,24 @@ const SEED: &str = "seed";
 /// a file instead of being written by a user.
 const LARGEST_EXACT_WHOLE_NUMBER: f64 = 9_007_199_254_740_991.0;
 
-// The default seed of the core crosses back as a float64 in the steps, so
-// it has to be one that a float64 holds exactly, as every seed given from
-// TypeScript is.
+// The default seed of the core crosses as a float64, to the package and
+// back in the steps, so it has to be one that a float64 holds exactly, as
+// every seed given from TypeScript is.
 const _: () = assert!(DEFAULT_RANDOM_FILTER_SEED <= 9_007_199_254_740_991);
+
+/// The seed the generator of the filter that keeps variants at random starts
+/// at when the caller gives none, the core's `DEFAULT_RANDOM_FILTER_SEED`,
+/// which the package reads so that the default is written in one place.
+#[wasm_bindgen]
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the default seed is checked above, when this crate is compiled, to be at \
+              most 2^53 - 1, which a float64 holds exactly"
+)]
+pub fn default_random_filter_seed() -> f64 {
+    DEFAULT_RANDOM_FILTER_SEED as f64
+}
 
 /// What the value of one argument is, which crosses beside every argument in
 /// [`Steps::arg_kinds`]: the package reads the value of an argument of
@@ -552,14 +566,14 @@ impl Steps {
 
     /// Each variant kept with the probability `keep_rate`, drawn from a
     /// generator of random numbers that starts at `seed` in every pass, so
-    /// that every pass keeps the same variants; with no `seed`, at the
-    /// core's `DEFAULT_RANDOM_FILTER_SEED`, 42.
+    /// that every pass keeps the same variants. The package gives the
+    /// core's default, [`default_random_filter_seed`], when the user gives
+    /// no seed.
     ///
     /// `seed` crosses as a float64 and reaches the core as the 64 bit whole
-    /// number it takes, as the window of [`Steps::filter_by_ld`] does, and
-    /// `undefined` crosses as no seed. What is not a whole number from 0 to
-    /// 2^53 - 1 is refused by the package before the call, in
-    /// `js/popnei/src/arguments.ts`. The keep rate is refused by the core's
+    /// number it takes, as the window of [`Steps::filter_by_ld`] does. What
+    /// is not a whole number from 0 to 2^53 - 1 is refused by the package
+    /// before the call, in `js/popnei/src/arguments.ts`. The keep rate is refused by the core's
     /// `RandomFilter::new`, whose message names `keep_rate`, which
     /// `errors.rs` writes `keepRate`.
     ///
@@ -569,15 +583,8 @@ impl Steps {
     /// [`Steps::add`], and a `seed` that is not a whole number from 0 to
     /// 2^53 - 1, which the package refuses before the call and which is a
     /// defect here.
-    pub fn filter_randomly(
-        &mut self,
-        keep_rate: f64,
-        seed: Option<f64>,
-    ) -> Result<(), JsPopneiError> {
-        let seed = match seed {
-            Some(seed) => seed_of(seed)?,
-            None => DEFAULT_RANDOM_FILTER_SEED,
-        };
+    pub fn filter_randomly(&mut self, keep_rate: f64, seed: f64) -> Result<(), JsPopneiError> {
+        let seed = seed_of(seed)?;
         // The filter built here is dropped and every pass builds its own,
         // so the rule a keep rate has to keep is written in the core alone.
         // It is refused first, since it is wrong whatever the list holds.
