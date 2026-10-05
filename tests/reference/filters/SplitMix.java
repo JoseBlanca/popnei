@@ -5,9 +5,11 @@
 //
 //     java tests/reference/filters/SplitMix.java
 //
-// It prints the first five draws from a seed of 1234567, nextLong, and the
+// It prints the first five draws from a seed of 1234567, nextLong; the
 // first ten numbers from 0 to 1 from a seed of 42, nextDouble, which is the
-// top 53 bits of a draw divided by 2^53, to six decimals.
+// top 53 bits of a draw divided by 2^53, to six decimals; and then the bits
+// of each of those ten numbers, one to a line, 0x and the 64 bits of the
+// double in hexadecimal, which the tests assert exactly.
 import java.util.Locale;
 import java.util.SplittableRandom;
 
@@ -23,5 +25,10 @@ public class SplitMix {
             numbers.append(String.format(Locale.ROOT, "%.6f ", from42.nextDouble()));
         }
         System.out.println(numbers.toString().trim());
+        SplittableRandom again = new SplittableRandom(42L);
+        for (int number = 0; number < 10; number++) {
+            long bits = Double.doubleToLongBits(again.nextDouble());
+            System.out.println("0x" + Long.toHexString(bits));
+        }
     }
 }

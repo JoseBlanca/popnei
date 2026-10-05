@@ -130,6 +130,54 @@ fn random_filter_generator_gives_the_ten_numbers_of_java_from_42() {
     }
 }
 
+/// The bits of the ten numbers from 0 to 1 that `nextDouble` of
+/// `java.util.SplittableRandom` gives from a seed of 42, as `java
+/// tests/reference/filters/SplitMix.java` printed them with OpenJDK
+/// 26.0.2.1 on 5 October 2026, `Double.doubleToLongBits` in hexadecimal.
+const THE_BITS_OF_THE_TEN_NUMBERS_FROM_42: [u64; 10] = [
+    0x3fe7_bae6_44c5_fd6d,
+    0x3fc4_77f1_99d9_3378,
+    0x3fd1_d499_d5c4_c3e6,
+    0x3fd6_0738_7fc3_92b8,
+    0x3fa3_78b0_b448_9040,
+    0x3feb_c886_3f47_901b,
+    0x3fcb_f4b3_8e22_9bb4,
+    0x3fe9_9ec6_bdd3_d3c5,
+    0x3fd5_c16e_1dc2_cf5e,
+    0x3fe3_ca9a_e705_2fee,
+];
+
+/// The numbers from 0 to 1 from a seed of 42 are those of `nextDouble` of
+/// Java to the bit: the top 53 bits of a draw times 2^-53 is exact, so any
+/// other bit is another rule.
+#[test]
+fn random_filter_generator_gives_the_ten_numbers_of_java_from_42_to_the_bit() {
+    let mut generator = SplitMix64::new(42);
+    for (place, expected) in THE_BITS_OF_THE_TEN_NUMBERS_FROM_42.iter().enumerate() {
+        let bits = generator.next_number().to_bits();
+        assert_eq!(
+            bits, *expected,
+            "number {place}: {bits:#x} and not {expected:#x}"
+        );
+    }
+}
+
+/// A filter whose keep rate is exactly the first number from 42 drops the
+/// first variant of the worked example, whose number that is: a variant is
+/// kept when its number is below the keep rate, not at it. The other
+/// numbers below 0.741565 are those of variants 2, 3, 4, 5, 7, 9 and 10.
+#[test]
+fn random_filter_drops_a_variant_whose_number_is_exactly_the_keep_rate() {
+    let keep_rate = f64::from_bits(0x3fe7_bae6_44c5_fd6d);
+    let mut filter = RandomFilter::new(keep_rate, 42).expect("the filter");
+    let mut block = block_at(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+    filter.filter_block(&mut block).expect("the block");
+
+    assert_eq!(block.pos.as_deref(), Some(&[2, 3, 4, 5, 7, 9, 10][..]));
+    assert_eq!(filter.stats(), pair(10, 7));
+}
+
 /// The worked example of the spec: ten variants at a keep rate of 0.5 and a
 /// seed of 42 keep 2, 3, 4, 5, 7 and 9, and the counts are 10 given and 6
 /// kept; the block is compacted in place, its genotypes with its positions.
@@ -260,6 +308,80 @@ fn random_filter_over_many_vcf_keeps_the_variants_of_the_table() {
         }
     }
     assert_eq!(THE_TABLE[0].2, 45);
+}
+
+/// The vars file written from `many.vcf`, read with every variant given, in
+/// batches of 7 variants.
+#[cfg(not(target_family = "wasm"))]
+fn vars_file_of_many_vcf_in_batches_of_7() -> Vec<u8> {
+    let (bytes, num_vars) = crate::io::vars::write_vars(many_vcf_reader(None), Vec::new(), Some(7))
+        .expect("the vars file");
+    assert_eq!(num_vars, 500);
+    bytes
+}
+
+/// The first row of the table, 0.1 and a seed of 42, over the vars file of
+/// `many.vcf` in batches of 7, in a pool of rayon of one thread and in one
+/// of four, each read directly and through the reader one block ahead: the
+/// 45 variants and their first five every time, since the draws are made in
+/// the order of the variants on one thread whatever the pool. Each pool is
+/// built here, and the global one of rayon is not touched.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn random_filter_over_a_vars_file_keeps_the_45_in_pools_of_1_and_4_and_one_block_ahead() {
+    use crate::block::with_one_block_ahead;
+    use crate::io::vars::VarsReader;
+
+    let (keep_rate, seed, num_kept, first_five) = THE_TABLE[0];
+    let bytes = vars_file_of_many_vcf_in_batches_of_7();
+    let steps = vec![PassStep::Random { keep_rate, seed }];
+    for num_threads in [1, 4] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .expect("the pool");
+        pool.install(|| {
+            let source = VarsReader::new(std::io::Cursor::new(bytes.clone())).expect("the reader");
+            let mut chain = chain_of(Box::new(source), &steps).expect("the chain");
+            let directly = positions_of(&blocks_of(&mut *chain).expect("the blocks"));
+            assert_eq!(
+                chain.filtering_stats(),
+                vec![("random", pair(500, num_kept))]
+            );
+
+            let source = VarsReader::new(std::io::Cursor::new(bytes.clone())).expect("the reader");
+            let mut chain = chain_of(Box::new(source), &steps).expect("the chain");
+            let ahead =
+                with_one_block_ahead(&mut chain, |ahead| Ok(positions_of(&blocks_of(ahead)?)))
+                    .expect("the pass");
+
+            for (positions, how) in [(directly, "directly"), (ahead, "one block ahead")] {
+                let case = format!("{num_threads} threads, {how}");
+                assert_eq!(
+                    u64::try_from(positions.len()).ok(),
+                    Some(num_kept),
+                    "{case}"
+                );
+                assert_eq!(positions.get(..5), Some(&first_five[..]), "{case}");
+            }
+        });
+    }
+}
+
+/// The third row of the table, 0.1 and a seed of 7, built by `chain_of`
+/// from its step, as a pass of a binding crate is: 49 variants and the
+/// first five of the table, so the chain hands the seed of the step to the
+/// filter.
+#[test]
+fn random_filter_with_a_seed_of_7_built_by_chain_of_keeps_the_49_of_the_table() {
+    let (keep_rate, seed, num_kept, first_five) = THE_TABLE[2];
+    let steps = vec![PassStep::Random { keep_rate, seed }];
+    let mut chain = chain_of(Box::new(many_vcf_reader(Some(7))), &steps).expect("the chain");
+    let positions = positions_of(&blocks_of(&mut *chain).expect("the blocks"));
+    assert_eq!(u64::try_from(positions.len()).ok(), Some(num_kept));
+    assert_eq!(num_kept, 49);
+    assert_eq!(positions.get(..5), Some(&first_five[..]));
+    assert_eq!(chain.filtering_stats(), vec![("random", pair(500, 49))]);
 }
 
 /// Two chains built from the same step, as two passes of one `Variants`
