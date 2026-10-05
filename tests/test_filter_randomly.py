@@ -226,6 +226,85 @@ def test_filter_randomly_gives_a_gwas_whose_grammar_gamma_pass_reads_the_same_45
     assert of_the_filter.stats["p_value"].notna().all()
 
 
+def test_filter_randomly_after_the_filter_of_individuals_keeps_the_same_45(
+    reference_vcf_dir: Path,
+) -> None:
+    """The filter of individuals takes no variant out, so the filter after it
+    is given the 500 and draws the numbers it draws without it."""
+    variants = _many(reference_vcf_dir)
+    variants.filter_individuals(list(variants.individuals[:10]))
+    variants.filter_randomly(0.1, 42)
+
+    kept, pass_stats = _kept(variants, 7)
+
+    assert len(kept) == KEPT_AT_0_1_AND_42
+    assert kept[:5] == [("chr1", pos) for pos in FIRST_FIVE_AT_0_1_AND_42]
+    assert pass_stats == _counts_of_the_45()
+
+
+def test_filter_randomly_at_0_gives_the_error_of_a_pass_that_gave_no_variant(
+    reference_vcf_dir: Path,
+) -> None:
+    """A keep rate of 0 keeps no variant, and a calculation says so with
+    the counts of the filter, given 500 and keeping 0."""
+    variants = _many(reference_vcf_dir)
+    variants.filter_randomly(0)
+
+    with pytest.raises(ValueError) as refusal:
+        calc_pairwise_kosman_dists(variants)
+
+    message = str(refusal.value)
+    assert "the pass gave no variant: its source gave 500" in message, message
+    assert "the `random` filter was given 500 and kept 0" in message, message
+
+
+# The regions case of the spec: the BED `chr1 3000 9000` and `chr2 0 5000`,
+# and then the filter at 0.3 with a seed of 42, keep 50 of the 162 variants
+# of `many.vcf` in those regions; the first eight, all of chr1.
+KEPT_IN_THE_REGIONS = 50
+FIRST_EIGHT_IN_THE_REGIONS = [3072, 3109, 3183, 3257, 3405, 3590, 3627, 3701]
+
+
+@pytest.mark.parametrize("source", ["vcf", "vars"])
+def test_filter_randomly_after_the_filter_by_regions_keeps_the_50_of_the_spec(
+    reference_vcf_dir: Path, tmp_path: Path, source: str
+) -> None:
+    """Over `many.vcf` and over the vars file written from it, whose reader
+    skips what is outside the regions: the filter is given the same 162
+    variants either way, so it keeps the same 50."""
+    bed = tmp_path / "regions.bed"
+    bed.write_text("chr1\t3000\t9000\nchr2\t0\t5000\n")
+    if source == "vcf":
+        variants = _many(reference_vcf_dir)
+    else:
+        path = tmp_path / "many.vars"
+        write_vars(_many(reference_vcf_dir), path)
+        variants = open_vars(path)
+    variants.filter_by_regions(bed)
+    variants.filter_randomly(0.3, 42)
+
+    kept, pass_stats = _kept(variants)
+
+    assert len(kept) == KEPT_IN_THE_REGIONS
+    assert kept[:8] == [("chr1", pos) for pos in FIRST_EIGHT_IN_THE_REGIONS]
+    assert pass_stats.filtering["random"] == FilteringStats(
+        vars_processed=162, vars_kept=KEPT_IN_THE_REGIONS
+    )
+
+
+def test_filter_randomly_refuses_a_keep_rate_that_no_float_holds(
+    reference_vcf_dir: Path,
+) -> None:
+    """A whole number of Python is of any size, and one of 401 digits is no
+    keep rate: the `ValueError` names `keep_rate` and the number, and not the
+    `OverflowError` of the conversion to a float."""
+    variants = _many(reference_vcf_dir)
+
+    with pytest.raises(ValueError, match=f"`keep_rate` is {10**400}, .* from 0 to 1"):
+        variants.filter_randomly(10**400)
+    assert variants.steps == ()
+
+
 @pytest.mark.parametrize(
     ("keep_rate", "written"), [(-0.1, "-0.1"), (1.5, "1.5"), (math.nan, "NaN")]
 )
