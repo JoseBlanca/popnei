@@ -88,15 +88,19 @@ Every consumer returns a result, and every result has a `pass_stats`:
 class PassStats:
     num_vars: int
     filtering: dict[str, FilteringStats]
+    stopped_early: bool
 ```
 
 `num_vars` is how many variants the consumer took, after the steps, and
 `filtering` has, for each filter, how many variants it was given and how
-many it kept, as `docs/specs/filters.md` says. A calculation that makes
+many it kept, as `docs/specs/filters.md` says. `stopped_early` is true when
+the filter of the first n variants of that spec kept its n and ended the
+pass before the source ended, so that the counts of the filters are of the
+part of the source that was read; it was added on 5 October 2026. A calculation that makes
 several passes over the same steps gives those of one, since they are the
 same in all, and one whose passes differ, a pass for each population, says
-in its spec what it gives. In TypeScript it is `passStats`, with `numVars`
-and `filtering`.
+in its spec what it gives. In TypeScript it is `passStats`, with `numVars`,
+`filtering` and `stoppedEarly`.
 
 A `Variants` has `individuals`, a tuple of names,
 `num_individuals` and `ploidy`; the first two are pyNei's `samples` and

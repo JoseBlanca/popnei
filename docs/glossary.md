@@ -410,8 +410,8 @@ JavaScript in it, where every calculation is.
 **binding crate.** A crate that translates between another language and
 the core crate and holds no calculation. There are two, and a text that
 **step.** One entry of the list that a `Variants` holds besides its
-source, a filter with its threshold or the filter of individuals with
-its names. A step is added with a method of the
+source, a filter with its threshold or its arguments, or the filter of
+individuals with its names. A step is added with a method of the
 `Variants`, which returns nothing, it is run in every pass that starts
 after it was added, and `variants.steps` lists them.
 
@@ -422,12 +422,16 @@ and what it returns has the pass stats.
 **pass stats** and **filtering stats.** What a pass counted, `PassStats`,
 which every result of a consumer has as `pass_stats`: how many variants
 the consumer took, and the filtering stats, `FilteringStats`, how many
-variants each filter was given and how many it kept. pyNei keeps the
+variants each filter was given and how many it kept, and whether the
+filter of the first n variants ended the pass before the end of its
+source, `stopped_early`. pyNei keeps the
 filtering stats in its `Variants` and gives them with
 `gather_filtering_stats`.
 
 **pass.** One reading of a source of variants from its start to its end,
-through the steps that its `Variants` had when it started. A consumer
+through the steps that its `Variants` had when it started. The filter of
+the first n variants of `docs/specs/filters.md` ends a pass before the end
+of its source, and the counts of that pass say so. A consumer
 makes as many as its algorithm needs, each with readers and filters of its
 own.
 
