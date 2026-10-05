@@ -27,3 +27,28 @@ with 1239, 16 more than before in each, the 16 of `cargo test -p popnei --lib
 first_n`. One test asserts counts the spec did not give, the MAF filter at 0.8
 before the first 10 in blocks of 7, 14 given and 12 kept, which bcftools
 confirmed and which went into the spec in e2f253d.
+
+Three of the 17 tests of 1.1 read a source that never ends and kept every
+block. Written first, against the stub of the filter, they grew without bound,
+and cargo ran them at once until the owner's machine, 64 GB, ran short of
+memory and the owner had to quit other programs. The source now panics past
+100 blocks, with a test that a pass nothing ends fails there (a159231), and
+the coding skill asks a test written first to fail without hanging or
+growing (50e4def).
+
+Task 1.2, Python, is 07ae287: `filter_first_n`, `PassStats.stopped_early`,
+every method that adds a step through one `Steps::add`, and the counts of a
+pass built by one function, `pass_counts_of`, which the 13 modules of the
+crate that return counts call. Task 1.3, TypeScript, is d5b869d: the same
+with `filterFirstN`, `Steps::add` and `PassCounts::of`, called by the 15
+consumers. The two ran side by side. Both refuse a `num_vars` of 0 with the
+core's case, whose message does not name the argument, since the core refuses
+it in `FirstNReader::new` and no reader exists when the step is added.
+
+The deliverables, checked on 5 October 2026 at 07ae287: the six cargo
+commands pass, `cargo test --workspace` with 1390 passed and `cargo test -p
+popnei --no-default-features` with 1240; `cargo test -p popnei --lib first_n
+-- --list` lists 17; `uv run pytest` gives 692 passed, 23 of them of `-k
+first_n`; `npm test` gives tests 518, pass 517, fail 1, the test of
+`test/gwas.test.ts` that fails on `main`; the tests named `filterFirstN` pass;
+`npm run test:browser` gives 8 passed.

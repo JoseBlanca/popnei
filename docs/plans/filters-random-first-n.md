@@ -102,7 +102,7 @@ Tasks:
   `stopped_early` and the new cases of `crates/popnei/src/error.rs`, from
   "The filter that keeps the first n variants" and "The Rust interface".
   Deliverable 1.
-- [ ] 1.2 The Python side. In `crates/popnei-python`, the step
+- [x] 1.2 The Python side. In `crates/popnei-python`, the step
   `filter_first_n` in `steps.rs`, with `num_vars` read the way
   `count_of_at_least` of `source.rs` reads a count of variants, widened to
   `u64`, and not with `distance_of`, whose message speaks of base pairs;
@@ -113,7 +113,7 @@ Tasks:
   `filtering_of` that each module has now go. In
   `python/popnei`, `Variants.filter_first_n`, `PassStats.stopped_early`
   and the kinds of `filters.py`. Deliverables 2 and 3. Needs 1.1.
-- [ ] 1.3 The TypeScript side, the same in `crates/popnei-js` and
+- [x] 1.3 The TypeScript side, the same in `crates/popnei-js` and
   `js/popnei`: `filterFirstN`, `stoppedEarly` in `PassStats` and in
   `passStatsOf`, the counts built in one function of the crate, and the
   kinds of `filters.ts` and of the lists of the tests. Deliverables 2, 4
