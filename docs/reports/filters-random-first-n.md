@@ -52,3 +52,44 @@ popnei --no-default-features` with 1240; `cargo test -p popnei --lib first_n
 first_n`; `npm test` gives tests 518, pass 517, fail 1, the test of
 `test/gwas.test.ts` that fails on `main`; the tests named `filterFirstN` pass;
 `npm run test:browser` gives 8 passed.
+
+### The review of work package 1
+
+Five reviewers, `spec`, `tests`, `errors`, `binding` and `architecture`,
+over a19b3e6..61b0841; `api` and `numbers` are left to the review of the
+whole branch, which has all seven. No finding was of a wrong number. What
+held, each fixed in a commit of its own, test first, with the spec amended
+before the code in 61ffe48, be4877e and 2d4cc16:
+
+- The two binding crates checked the two refusals of a step in opposite
+  orders, so MAF, the first n and MAF again gave Python's message in one
+  language and the second filter's in the other, and Python's told the user
+  to move a filter that was already first. Found by three reviewers. One
+  function of the core, `refuse_a_step`, now checks a second filter of its
+  kind first, and `chain_of` and both bindings call it (f4f6b99).
+- Both bindings refused a `num_vars` of 0 themselves, with a message that
+  did not name the argument. The core builds the step with
+  `first_n_step`, whose message names `num_vars`, `numVars` in TypeScript
+  (59e1bc1). Found by three reviewers.
+- The refusal of a second filter of the first n named neither n. It has a
+  case of its own, `FirstNThatIsSet`, which names both (a352c6c); work
+  package 2 needs its own case for a second random filter.
+- Untested: a block of no variants from the source, `set_needs` passed on,
+  the offer of regions refused (b6e985a); `filterFirstN(2 ** 53 - 1)`
+  accepted (fe4e7ee). Each core test failed with the code broken on purpose.
+- The progress bar of a page stops short of the end when the filter ends a
+  pass, which no spec said. `docs/specs/js_sources.md` says it, and a test
+  over a VCF of 10388977 bytes asserts that the last call is at 398976
+  (3145a9f).
+- The opening of `docs/specs/filters.md` still said the filter had no code.
+
+Not taken:
+
+- `stopped_early` read in the middle of an `iter_blocks` can be true before
+  the user has the n variants, which `reblock` holds back: the spec already
+  says the counts read while a pass runs can be ahead of the blocks given.
+- In a pyodide build, whose `usize` is 32 bits, a `num_vars` above
+  4294967295 would be refused: no first sample is that large.
+- The Python test of every consumer lists them by hand, where TypeScript
+  checks its list against the crate's: the Python crate keeps no list of its
+  consumers to check against.
