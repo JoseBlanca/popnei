@@ -223,6 +223,41 @@ for (const calculation of THE_CALCULATIONS) {
   });
 }
 
+for (const calculation of THE_CALCULATIONS) {
+  test(`${calculation.name} gives onSoFar the counts of the filters after each block`, () => {
+    const variants = openVars(IN_FIVE_BLOCKS);
+    try {
+      variants.filterByMaf(0.95);
+      const calls: WithPassStats[] = [];
+      const result = calculation.run(variants, {
+        onSoFar: (soFar: WithPassStats) => {
+          calls.push(soFar);
+        },
+        soFarEvery: 0,
+      });
+      // The filter of the maf, at 0.95, drops 3, 4, 2, 5 and 6 of the 100
+      // variants of each block of the file.
+      assert.deepEqual(
+        calls.map((call) => call.passStats),
+        [
+          [100, 97],
+          [200, 193],
+          [300, 291],
+          [400, 386],
+          [500, 480],
+        ].map(([varsProcessed, varsKept]) => ({
+          numVars: varsKept,
+          filtering: { maf: { varsProcessed, varsKept } },
+          stoppedEarly: false,
+        })),
+      );
+      assert.deepEqual(calls.at(-1), result);
+    } finally {
+      variants.free();
+    }
+  });
+}
+
 test("calcVarDensity with chromLengths gives every window at the first onSoFar call", () => {
   const variants = openVars(IN_FIVE_BLOCKS);
   try {
