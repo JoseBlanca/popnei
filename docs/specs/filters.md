@@ -1677,7 +1677,7 @@ first n, since it takes variants out. It reads no genotype and no other
 filter depends on it, so it can come anywhere among the steps. Like every
 filter of variants it answers no to `skip_outside`, so a filter by regions
 after it no longer has the source skip what is outside the regions: on
-`big.vcf`, plain, that skip makes a pass 0.039 s against about 0.58 s for
+`big.vcf`, plain, on one thread, that skip makes a pass 0.039 s against 0.54 s for
 the whole read, by "Speed" of the filter by regions. So the docstring says
 to add it first, after the filter by regions when there is one, so that
 the counts of the filters after it are of the variants that passed. In TypeScript, `variants.filterPassed()`.
