@@ -86,7 +86,7 @@ Stands on: nothing of this plan.
 
 Tasks:
 
-- [ ] 1.1 The column in the core: `Needs::PASSED` in `ALL`, `Block.passed`
+- [x] 1.1 The column in the core: `Needs::PASSED` in `ALL`, `Block.passed`
   and every place that destructures a `Block`, `fields`, `check`,
   `retain_vars` and `reblock`, and the VCF reader filling it from FILTER
   with the function of `only_passed`. The binding crates are made to
