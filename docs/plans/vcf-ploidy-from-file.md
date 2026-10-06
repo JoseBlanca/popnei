@@ -1,6 +1,6 @@
 # Plan: the ploidy of a VCF read from the file when the caller gives none
 
-6 October 2026. State: **approved** by the owner on 6 October 2026. It builds what `docs/specs/io_vcf.md`
+6 October 2026. State: **under way**, approved by the owner on 6 October 2026. It builds what `docs/specs/io_vcf.md`
 gained on 6 October 2026 from issue 8 of the repository: with no ploidy
 given, `open_vcf` and `openVcf` read the ploidy from the first genotype
 of the file that has alleles. The parts of the spec are the paragraphs on
