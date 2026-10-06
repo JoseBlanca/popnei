@@ -115,7 +115,8 @@ beside the parse of the genotypes, 92% of a read, without timing it. 1.1
 times one read of the plain 403 MB `big.vcf`, 100000 variants of 1000
 individuals in `/Users/jose/devel/popnei-bench/`, with the genotypes alone
 and with `ALL`, on one thread, before and after, the median of 7 runs; the
-median was 0.616 s for the genotypes alone on 6 October 2026. When either
+median was 0.597 s for the genotypes alone on 6 October 2026, after the
+fixes of the plan of the ploidy. When either
 is slower by more than 3%, the orchestrator stops and asks the owner
 whether to keep the column in `ALL` or to have the VCF reader fill it only
 when a filter asks for it, with the two timings.
