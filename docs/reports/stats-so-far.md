@@ -10,7 +10,9 @@ In the TypeScript package, `calcPerVarDistribs`, `calcPerIndividualStats`,
 `soFarEvery` seconds, 2 by default, with the result over the variants read
 so far, which is to the bit what the call would return over those variants,
 and with its counts; a page draws it as it fills, and keeps the last one if
-its user stops the pass. `calcVariantsSummary` gives the three results from
+its user stops the pass; a value `onSoFar` throws ends the pass, and the
+call throws that same value to the page, as with `onProgress`.
+`calcVariantsSummary` gives the three results from
 one reading of the file, each to the bit what its own call gives. On
 `big.vcf`, 403 MB, one pass took 1.247 s against 2.240 s for the three,
 44% less; on `big.vars` the saving is small, 2% to 10% by the load of the
@@ -18,8 +20,10 @@ machine, because a vars file is read in under a hundredth of a second and
 the counting of each statistic is not shared. Python is untouched, as you
 decided. Every check of the `coding` skill passes, and each runs more tests
 than before the plan; one node test fails, `a kinship that does not tell
-the two variances apart gives none of them`, which failed in the same way
-on `main` before. No decision is left open. What is asked of you is the
+the two variances apart gives none of them` of `test/gwas.test.ts`, which
+misses its tolerance by 1.1e-14 against 7e-15 in the association study, a
+part of popnei this plan does not touch, and failed in the same way on
+`main` before. No decision is left open. What is asked of you is the
 order to merge the branch into `main`; with it issue 10 can be closed, and
 popnei_web gets it from a release of the wasm package.
 
