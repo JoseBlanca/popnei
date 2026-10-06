@@ -22,7 +22,7 @@ use crate::error::{Error, Result};
 use crate::filters::{FilteringStats, PassStep, RegionSelection, VarFilteringCriterion, chain_of};
 use crate::io::vcf::VcfReader;
 use crate::stats::{
-    ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops, SoFar,
+    ExpHet, HistBins, LengthsFrom, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pop, Pops, SoFar,
     calc_per_individual_stats, calc_per_var_distribs, calc_var_density,
 };
 use crate::variant::{ChromTable, Needs};
@@ -238,18 +238,35 @@ enum AnAsk {
 }
 
 /// A reader over `many.vcf` in blocks of 100 that records what it is asked
-/// for, which the pass moves to the thread that reads one block ahead.
+/// for, which the pass moves to the thread that reads one block ahead, and
+/// gives each block as `alter` leaves it.
 struct Recording {
     reader: VcfReader<BufReader<File>>,
     asked: Arc<Mutex<Vec<AnAsk>>>,
+    alter: fn(&mut Block),
 }
 
 impl Recording {
     fn of_many_vcf() -> Recording {
+        Recording::of_many_vcf_altered(|_| ())
+    }
+
+    fn of_many_vcf_altered(alter: fn(&mut Block)) -> Recording {
         Recording {
             reader: vcf_reader_of("vcf/many.vcf", Some(100)),
             asked: Arc::new(Mutex::new(Vec::new())),
+            alter,
         }
+    }
+
+    /// How many blocks it has given.
+    fn num_blocks_given(&self) -> usize {
+        self.asked
+            .lock()
+            .expect("what was asked")
+            .iter()
+            .filter(|ask| **ask == AnAsk::Block)
+            .count()
     }
 
     fn record(&self, ask: AnAsk) {
@@ -259,9 +276,10 @@ impl Recording {
 
 impl BlockReader for Recording {
     fn next_block(&mut self) -> Result<Option<Block>> {
-        let block = self.reader.next_block()?;
-        if block.is_some() {
+        let mut block = self.reader.next_block()?;
+        if let Some(block) = &mut block {
             self.record(AnAsk::Block);
+            (self.alter)(block);
         }
         Ok(block)
     }
@@ -458,5 +476,202 @@ fn variants_summary_of_a_pass_with_no_variant_is_the_error_the_three_give() {
     ];
     for of_one in of_each {
         assert_eq!(of_the_summary, of_one);
+    }
+}
+
+/// The three statistics.
+const ALL_THREE: Asked = Asked {
+    per_var: true,
+    per_individual: true,
+    density: true,
+};
+
+/// A variant of chr1 past its length in the second block of 100 ends the
+/// pass of the three with the error the density gives over the same
+/// reader, after one call of the function, for the first block: with chr1
+/// 5000 base pairs long, the 110th variant of `many.vcf`, at 5033, is past
+/// it.
+#[test]
+fn variants_summary_of_a_variant_the_density_refuses_ends_the_pass_with_its_error() {
+    let lengths = vec![("chr1".to_owned(), 5000), ("chr2".to_owned(), 25_000)];
+    let mut reader = many_vcf_through(Some(100), &[]);
+    let config = summary_config_of(&*reader, ALL_THREE, Some(&lengths));
+    let mut num_calls = 0_u32;
+    let mut count = |_: &dyn SoFar<VariantsSummary>| {
+        num_calls = num_calls.saturating_add(1);
+        Ok(())
+    };
+    let error = calc_variants_summary(&mut *reader, &config, &mut count)
+        .expect_err("a variant past its length");
+
+    let mut reader = many_vcf_through(Some(100), &[]);
+    let of_the_density = calc_var_density(&mut *reader, WINDOW_SIZE, Some(&lengths))
+        .expect_err("the density of a variant past its length");
+    assert!(
+        matches!(&error, Error::VarDensityVarPastTheLength { pos: 5033, .. }),
+        "{error:?}"
+    );
+    assert_eq!(format!("{error:?}"), format!("{of_the_density:?}"));
+    assert_eq!(num_calls, 1, "a call after the first block alone");
+}
+
+/// An error of the function at its second call ends the pass with that
+/// error: no third call, and no block asked of the reader past the one the
+/// pass reads ahead natively, the third.
+#[test]
+fn variants_summary_error_of_the_function_ends_the_pass() {
+    let mut reader = Recording::of_many_vcf();
+    let config = summary_config_of(&reader, ALL_THREE, None);
+    let mut num_calls = 0_u32;
+    let mut stop_at_the_second = |_: &dyn SoFar<VariantsSummary>| {
+        num_calls = num_calls.saturating_add(1);
+        if num_calls == 2 {
+            return Err(Error::VarDensityChromLengthZero {
+                chrom: "the error of the function".to_owned(),
+                from: LengthsFrom::ChromLengths,
+            });
+        }
+        Ok(())
+    };
+    let error = calc_variants_summary(&mut reader, &config, &mut stop_at_the_second)
+        .expect_err("the pass is stopped");
+
+    assert!(
+        matches!(&error, Error::VarDensityChromLengthZero { chrom, .. }
+            if chrom == "the error of the function"),
+        "the error of the function, and not {error}"
+    );
+    assert_eq!(num_calls, 2, "no call after the one that failed");
+    let num_blocks = reader.num_blocks_given();
+    assert!(
+        (2..=3).contains(&num_blocks),
+        "the two blocks added and at most the one read ahead, not {num_blocks}"
+    );
+}
+
+/// A `poly_threshold` of NaN and a window of 0 base pairs, both refused
+/// before the pass, give the error of the threshold, the first of the
+/// order the doc of `calc_variants_summary` gives, before the reader is
+/// asked for anything.
+#[test]
+fn variants_summary_of_a_threshold_and_a_window_both_refused_gives_the_threshold_error() {
+    let mut reader = Recording::of_many_vcf();
+    let mut per_var = per_var_config_of(&reader);
+    per_var.poly_threshold = f64::NAN;
+    let config = VariantsSummaryConfig {
+        per_var: Some(per_var),
+        per_individual: true,
+        density: Some((0, None)),
+    };
+    let error = calc_variants_summary(&mut reader, &config, &mut nothing)
+        .expect_err("a threshold and a window refused");
+
+    assert!(
+        matches!(&error, Error::PolyThresholdOutOfRange { value } if value.is_nan()),
+        "{error:?}"
+    );
+    assert_eq!(*reader.asked.lock().expect("what was asked"), Vec::new());
+}
+
+/// The first genotype of a block made an allele below the missing one,
+/// which the rates refuse.
+fn with_an_allele_below_the_missing_one(block: &mut Block) {
+    if let Some(allele) = block.gts.first_mut() {
+        *allele = -2;
+    }
+}
+
+/// The distributions of `many.vcf` over one population of the individual
+/// 999, which no row of `many.vcf`, of 50 individuals, holds and which the
+/// distributions refuse in every block; `Pops::from_names` builds no such
+/// population, so it is built here as it is held.
+fn per_var_config_beyond_the_row(reader: &dyn BlockReader) -> PerVarDistribsConfig {
+    let mut config = per_var_config_of(reader);
+    config.pops = Pops {
+        pops: vec![Pop {
+            name: "beyond".to_owned(),
+            individuals: vec![999],
+            is_all: false,
+        }],
+    };
+    config
+}
+
+/// The error of a summary of `asked` over `many.vcf` whose first block the
+/// three refuse, each with an error of its own: the distributions an
+/// individual beyond the row, the rates an allele below the missing one and
+/// the density a variant past the length of chr1, 500 base pairs.
+fn the_error_of_a_block_refused_by_the_three(asked: Asked) -> Error {
+    let lengths = vec![("chr1".to_owned(), 500), ("chr2".to_owned(), 25_000)];
+    let mut reader = Recording::of_many_vcf_altered(with_an_allele_below_the_missing_one);
+    let config = VariantsSummaryConfig {
+        per_var: asked
+            .per_var
+            .then(|| per_var_config_beyond_the_row(&reader)),
+        per_individual: asked.per_individual,
+        density: asked.density.then_some((WINDOW_SIZE, Some(lengths))),
+    };
+    calc_variants_summary(&mut reader, &config, &mut nothing).expect_err("a block refused")
+}
+
+/// A block that more than one statistic refuses ends the pass with the
+/// error of the distributions, then of the rates, then of the density, each
+/// the error its own function gives over the same reader.
+#[test]
+fn variants_summary_of_a_block_refused_by_several_gives_the_error_of_the_first_in_order() {
+    let of = |per_var, per_individual, density| Asked {
+        per_var,
+        per_individual,
+        density,
+    };
+    let lengths = vec![("chr1".to_owned(), 500), ("chr2".to_owned(), 25_000)];
+    let mut reader = Recording::of_many_vcf_altered(with_an_allele_below_the_missing_one);
+    let config = per_var_config_beyond_the_row(&reader);
+    let of_the_distribs =
+        calc_per_var_distribs(&mut reader, &config).expect_err("the distributions");
+    let mut reader = Recording::of_many_vcf_altered(with_an_allele_below_the_missing_one);
+    let of_the_rates = calc_per_individual_stats(&mut reader).expect_err("the rates");
+    let mut reader = Recording::of_many_vcf_altered(with_an_allele_below_the_missing_one);
+    let of_the_density =
+        calc_var_density(&mut reader, WINDOW_SIZE, Some(&lengths)).expect_err("the density");
+    assert!(
+        matches!(
+            &of_the_distribs,
+            Error::IndividualBeyondTheVariant {
+                individual: 999,
+                ..
+            }
+        ),
+        "{of_the_distribs:?}"
+    );
+    assert!(
+        matches!(
+            &of_the_rates,
+            Error::AlleleBelowTheMissingOne { allele: -2 }
+        ),
+        "{of_the_rates:?}"
+    );
+    assert!(
+        matches!(
+            &of_the_density,
+            Error::VarDensityVarPastTheLength { pos: 1000, .. }
+        ),
+        "{of_the_density:?}"
+    );
+
+    for (asked, expected) in [
+        (of(true, true, true), &of_the_distribs),
+        (of(true, true, false), &of_the_distribs),
+        (of(true, false, true), &of_the_distribs),
+        (of(true, false, false), &of_the_distribs),
+        (of(false, true, true), &of_the_rates),
+        (of(false, true, false), &of_the_rates),
+        (of(false, false, true), &of_the_density),
+    ] {
+        assert_eq!(
+            format!("{:?}", the_error_of_a_block_refused_by_the_three(asked)),
+            format!("{expected:?}"),
+            "{asked:?}"
+        );
     }
 }
