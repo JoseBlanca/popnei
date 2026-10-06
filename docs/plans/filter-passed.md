@@ -99,7 +99,7 @@ Tasks:
   the column written when the source has it and read when the file has it,
   from "What it holds" of `docs/specs/io_vars.md`. The pytest test of
   `write_vars`. Deliverables 1, 2, 3. Needs 1.1.
-- [ ] 1.3 The VCF writer of a vars file, in
+- [x] 1.3 The VCF writer of a vars file, in
   `crates/popnei/src/io/vcf/writer.rs`: `FAIL` and the `##FILTER` line, as
   the owner decided, with its check run with bcftools as the spec gives
   it. Deliverables 1, 2. Needs 1.2, for a vars reader that says
