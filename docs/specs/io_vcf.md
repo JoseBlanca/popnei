@@ -123,8 +123,8 @@ the pyNei repository.
 The caller may give the ploidy, and when they do not, popnei reads it from
 the file when the file is opened. The search for it, `ploidy_of_vcf` of
 "The Rust interface", reads the header as the reader does, with the same
-errors, so a source that is not a VCF is refused with the words it has
-today. Then it takes the genotypes in the order of the data lines and, in a
+errors, so a source that is not a VCF is refused with the words
+`VcfReader::new` gives it. Then it takes the genotypes in the order of the data lines and, in a
 line, of the individuals, and the ploidy is the number of alleles of the
 first genotype that is not a single `.`. A single `.` is a missing genotype
 of any ploidy and says nothing of it, while `./.` holds two missing alleles
@@ -143,26 +143,27 @@ in it, `0/x/1`. It reports none of them: each is refused by the pass that
 reads it, as for a ploidy that was given, and so are an allele number that
 REF and ALT do not declare and a column of individuals too few. A
 genotype the search counted wrongly would give a wrong ploidy that no error
-follows in a pass that reads the positions alone, which is what issue 8
-is about, so the search counts only what the reader would read as a
-genotype. A genotype it can read of more than `MAX_PLOIDY` alleles gives a
-ploidy out of range, the error of a ploidy given out of range, whose words
-say "the ploidy of the VCF" and no longer "the ploidy asked of the
-reader".
+follows in a pass that reads the positions alone, the failure this change
+is there to end, so the search counts only what the reader would read as a
+genotype. A genotype it can read of more than `MAX_PLOIDY` alleles gives
+the error of a ploidy out of range, whose words become "the ploidy of the
+VCF is {ploidy}, and a genotype holds one allele at least and {largest} at
+most", which hold for a ploidy that was read and for one that was given.
 
 The search stops at the first genotype with alleles, so in nearly every
 file it reads the header and the first data line. The file is then opened
 again for the reader that reads the individuals, and once more for each
 pass, as it is today. It looks at 4096 data lines at most,
-`NUM_LINES_FOR_THE_PLOIDY`, and when none of them holds a genotype with
-alleles the opening fails with a `ValueError` that says to give the
-ploidy: "none of the first 4096 data lines of the VCF holds a genotype
-with alleles, so its ploidy cannot be read from the file; give the
-ploidy". A file whose data lines end before 4096 and hold none gives the
-same error, with the number of lines it had, since the ploidy 2 would reach
-a result: the missing alleles of a missing genotype, which a filter by
-missing data and the counts of a statistic count, are one for each allele
-of the ploidy. A file with a header and no data line is **Open 1**, below.
+`NUM_LINES_FOR_THE_PLOIDY`, a line it skipped among them, and when none
+of them holds a genotype with alleles the opening fails with a
+`ValueError` that says to give the ploidy: "none of the first {n} data
+lines of the VCF holds a genotype with alleles, so its ploidy cannot be
+read from the file; give the ploidy", with n 4096. A file whose data lines
+end before 4096 and hold none gives the same words, with n the number of
+lines it had. It is refused and not opened with the ploidy 2 because that
+2 would reach a result: a filter by missing data and the counts of a
+statistic count the missing alleles of a missing genotype, one for each
+allele of the ploidy. A file with a header and no data line is **Open 1**, below.
 
 The bound keeps the opening of a file of missing genotypes from reading it
 to its end. 4096 lines was chosen here, as a number that a file of calls
@@ -174,10 +175,11 @@ and line, 82 MB of text for 10000 individuals; a FORMAT with more keys
 makes a line longer.
 
 An error of the source that the search meets is an error of the opening:
-a bgzipped file whose second member is corrupted fails at `open_vcf` and
-`openVcf` when no ploidy is given, where it failed at the first pass,
-because the first member of such a file can hold the header and no whole
-data line.
+a bgzipped file whose corrupted member holds the first genotype with
+alleles, or comes before it, fails at `open_vcf` and `openVcf` when no
+ploidy is given, where it failed at the first pass. `many.vcf.gz` is such
+a file when its second member is corrupted, since its first member holds
+the header and no whole data line.
 
 The ploidy that was read is the one the variants are read with, as if the
 caller had given it, and it is the `ploidy` that the `Variants` of
