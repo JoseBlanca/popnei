@@ -28,8 +28,9 @@ class PassStats:
     filtering: dict[str, FilteringStats]
     """How many variants each filter of the pass was given and kept, under
     the kind of the filter, ``"missing_data"``, ``"maf"``, ``"obs_het"``,
-    ``"ld"``, ``"regions"``, ``"excluded_regions"``, ``"first_n"`` or
-    ``"random"``, in the order of the steps. It is empty for a pass with no filter."""
+    ``"ld"``, ``"regions"``, ``"excluded_regions"``, ``"first_n"``,
+    ``"random"`` or ``"passed"``, in the order of the steps. It is empty for
+    a pass with no filter."""
 
     stopped_early: bool
     """Whether the filter of the first n variants,
@@ -512,7 +513,8 @@ class Variants:
 
         No step that takes variants out can be added after it: a threshold
         filter, the filter by linkage disequilibrium, a filter that keeps
-        variants at random, :meth:`filter_randomly`, or a filter by regions
+        variants at random, :meth:`filter_randomly`, a filter by regions or
+        the filter of the variants that passed, :meth:`filter_passed`,
         added after it is a
         ``ValueError`` that names the kind of the step, since it would leave
         fewer than `num_vars` variants. A user who wants n variants that
@@ -579,6 +581,54 @@ class Variants:
         were.
         """
         self._steps.filter_randomly(keep_rate, seed)
+
+    def filter_passed(self) -> None:
+        """Keep the variants that passed their FILTER, those whose FILTER
+        column, in the VCF they were read from, is ``PASS`` or a dot, and
+        take out the rest.
+
+        A dot in FILTER says that no filter was applied, so it counts as
+        passed. Anything else is a failure, ``q10`` and also ``PASS;q10``:
+        popnei reads the whole column, where ``bcftools view -f .,PASS``
+        keeps a variant when any filter the column names is one of the two.
+        The rule is the one of `only_passed` of :func:`popnei.open_vcf`.
+
+        It is for a VCF opened with ``only_passed=False``, every variant
+        given, when the variants that failed are to be taken out with the
+        other filters and their number is to be in the counts of a pass,
+        under ``"passed"``, beside what each other filter took out. A user
+        who never wants the variants that failed and has no use for their
+        number opens the VCF with `only_passed`, the default, which drops a
+        line that failed before it is read and is the faster of the two;
+        this filter then keeps every variant it is given.
+
+        Add it first, or after :meth:`filter_by_regions` when there is one,
+        so that the counts of the filters after it are of the variants that
+        passed. Before a filter by regions it would make the source read
+        every variant: the source skips what is outside the regions only
+        when the filter by regions is the first filter of the variants. On a
+        plain VCF of 100000 variants and 1000 individuals, with regions that
+        keep 1000 of them, that skip made a pass 0.039 s against 0.54 s for
+        the whole read, on one thread of an Apple M5 Pro on 27 September
+        2026.
+
+        Over a vars file it reads whether each variant passed, which the
+        file holds from its format 1.2 when it was written from a VCF. A
+        vars file written before that, or from a source with no such
+        record, may hold variants that failed, and the first calculation
+        over it, or the first block of :meth:`iter_blocks`, is a
+        ``ValueError`` whose message starts with the path of the file,
+        rather than a result that takes every variant as passed.
+
+        The step's kind is ``"passed"`` and its ``args`` are ``{}``.
+
+        The call adds a step and gives nothing back. A second filter of
+        this kind is a ``ValueError``, since it would keep what the first
+        kept, and so is this filter after :meth:`filter_first_n`, which
+        would leave fewer than its n. After either the steps are as they
+        were.
+        """
+        self._steps.filter_passed()
 
     def iter_blocks(
         self,

@@ -1,0 +1,199 @@
+# Report: the filter of the variants that passed their FILTER
+
+6 October 2026. The work report of `docs/plans/filter-passed.md`, on the
+branch `spec/filter-passed`. State: done.
+
+The plan is done, on the branch `spec/filter-passed`, not merged.
+`variants.filter_passed()` in Python and `variants.filterPassed()` in
+TypeScript keep the variants whose FILTER column was `PASS` or a dot, as a
+step of every pass, and every `pass_stats` gives their count under
+`"passed"`: on `many.vcf` opened with every variant, 500 given and 475
+kept, the 475 that `bcftools view -f .,PASS` gives. To make that possible a
+block carries, for each variant, whether it passed; the vars file keeps
+it, from format 1.2; and a VCF written back from a vars file marks a
+variant that failed with `FAIL`, as you decided. A vars file without that
+record is refused at the first block, with its path, as you decided, and
+`only_passed` stays true by default. Every check of the `coding` skill
+passes, and each runs more tests than before the plan; one node test fails,
+`a kinship that does not tell the two variances apart gives none of them`,
+which failed in the same way on `main` before the plan. No decision is
+left open. What is asked of you is the order to merge the branch into
+`main`, and with it issue 9 can be closed.
+
+What a user gets. A VCF opened with `only_passed=False` gives every
+variant, and `filter_passed()` takes out those whose FILTER is neither
+`PASS` nor a dot, with their count beside those of the other filters; a VCF
+opened with the default has none to take out, and the filter keeps all. A
+vars file written before this branch, format 1.0 or 1.1, has no record of
+which variants passed, and a calculation with the filter on it stops at its
+first block with a `ValueError` that starts with the path of the file and
+says "the variants hold no record of whether they passed their FILTER, so
+the filter of the variants that passed cannot run on them: a vars file
+holds it from format 1.2, written from a VCF".
+
+What it costs. Every read of a VCF now records, for each variant, whether
+it passed. The architecture reviewer read the plain 403 MB `big.vcf` on one
+thread with every field, with and without that record, 15 runs of each on a
+busy machine: medians of 1.029 s and 1.032 s, no difference that can be
+measured. A vars file grows by a bit for each variant before compression,
+232 bytes for the 500 variants of `many.vcf`.
+
+## 1. The column of whether each variant passed
+
+Task 1.1, the column in the core, is 53e8b64: `Needs::PASSED` in `ALL`,
+`Block.passed`, carried by `check`, `retain_vars` and `reblock`, and filled
+by the VCF reader through `is_a_pass`, the one test of FILTER that
+`only_passed` and the column share. `cargo test -p popnei --lib
+passed_column` runs 8 tests, which pass. A read of the plain 403 MB
+`big.vcf` on one thread, median of 7 runs, took 0.634 s before and 0.578 s
+after with the genotypes alone, and 0.641 s and 0.581 s with every field;
+the bound of the plan was 3% slower. Besides the seven tests that compare a
+set of fields with `ALL`, one test changed: a test of `check` that clears
+every column but the text of the lines now clears `passed` too.
+
+Task 1.2, the vars file of format 1.2, is 80394e8, with e0a3c72 after it.
+The writer adds `passed` when its source's blocks have it, and the reader
+reads it when the file has it; a null in it is an error that names the
+column and the variant, which the spec did not say and now does (3ecff37).
+`passed_column` runs 17 tests. Two node tests of `progress.test.ts` held the
+bytes of a vars file, which the column makes larger, and the plan did not
+name them (fb76b9c): written with and without the column, the large file of
+that test grows by 18024 bytes and the one of `many.vcf` by 232, all of it
+the column and 64 bytes of each its schema, which a pass does not read.
+
+Seen on the way and not of this plan: a vars file written from node is
+larger than the same file written from Rust, 43962 bytes against 39802 for
+`many.vcf` and 12249642 against 10164842 for the large file of
+`progress.test.ts`. Nobody has looked at why.
+
+Task 1.3, the VCF writer of a vars file, is 5a53969 and df5ff93. It writes
+`FAIL` for a variant whose `passed` is false and the `##FILTER` line when
+the source keeps the column, which the writer learns from a field the
+task added to the header of a source, `keeps_passed`; the spec had no such
+field and now has it (2e2eb10). A block with a failed variant from a source
+whose header says it keeps no `passed` is a defect, a `RuntimeError`, which
+the spec did not say either. `many.vcf` read with every variant, written to
+a vars file and that to a VCF, gives 25 lines with `FAIL` and 475 variants
+from `bcftools view -H -f .,PASS`.
+
+### The deliverables
+
+Run on b0e10f3, before the fixes of the review, and again after them on
+0abb855.
+
+| deliverable | command | result |
+|---|---|---|
+| 1, the cargo tests of the column | `cargo test -p popnei --lib passed_column -- --list` | 20, then 21 after the fixes; 0 on 6abacd1 |
+| 2, every test passes | the six cargo commands, `uv run pytest`, `npm test`, `npm run test:browser` | 1473 then 1474 passed; 1323; 741; node 551 tests, 550 pass, 1 fails, the kinship test that fails on `main`; browser 9 |
+| 3, `write_vars` | `uv run pytest tests/test_io_vars.py -k write` | 17 passed, among them the seven columns, `"1.2"` and the 25 false |
+
+### What the review found
+
+Six reviewers, spec, tests, errors, api, binding and architecture, read
+02cdae0..b0e10f3. None found a variant marked passed when it failed, or the
+reverse. These held and are fixed, after the specs were corrected in 0fa5af6:
+
+- The docstrings of `write_vcf` and `writeVcf` said that FILTER is a dot
+  for a vars source, and those of `write_vars` and `writeVars` listed six
+  columns (054105a).
+- The defect of a failed variant from a source that keeps no `passed`
+  named nothing; it names the chromosome and the position (b684b8d).
+- The test of that defect held a block with variants that passed and
+  failed, so a check broken to refuse every block with the column, or none,
+  passed it; it has a block of each now (0e92f7a).
+- Two tests of the reader left the column out: the one of a window into a
+  batch, which a reader that ignored the offset of the bits would have
+  passed, and those of the threads of the VCF reader (409357f).
+- A VCF written from a vars file through the filter of individuals is
+  tested to keep the `##FILTER` line, and three comments count as the code
+  does now (0abb855).
+- The specs said that there was no code, counted five flags of `Needs`, left
+  `passed` out of the columns written with no nulls, and did not say that a
+  vars file written from a source of no variant has no `passed` column,
+  which nothing then reads (0fa5af6).
+
+The timing of 1.1 above is weaker than it reads: with the genotypes alone
+the column is not filled, so that pair measured the noise between runs, and
+the pair with every field is the one that sees it. The architecture
+reviewer timed every field with and without `PASSED` on the same `big.vcf`,
+15 interleaved runs on one thread on a machine with a load of 24: medians
+of 1.029 s and 1.032 s, no difference that can be measured at that noise.
+
+### How the work went
+
+This part is for whoever next revises a skill or writes a plan, and the
+owner can stop here.
+
+- Two reviewers sent to read only, architecture and binding, changed files
+  of the shared worktree to try mutations, and each saw the other's change
+  for a while; both restored theirs. The `code-review` skill says that the
+  categories other than spec and tests only read and share the checkout,
+  and a reviewer that wants to run a mutant does not keep to it. Every
+  reviewer that may build should get a worktree of its own.
+- The specs missed four things the code needed: the field of the header,
+  `keeps_passed`; the rule for a null in `passed`; the defect of a failed
+  variant under a header without the column; and two node tests holding
+  the bytes of a vars file. Each was found by the task and put in the spec
+  before or with the code.
+
+## 2. The filter
+
+Task 2.1, the core, is 8201068: `PassStep::Passed`, `PassedReader` in
+`crates/popnei/src/filters/passed.rs`, and the error cases `PassedNotRecorded`,
+a block with no `passed`, which names the file, and `PassedFilterThatIsSet`.
+`cargo test -p popnei --lib filters::passed` runs 15 tests, which pass; 12
+of them failed against a stub that gave every block on, and the other 3
+test the refusals of a step. The words of a second filter of this kind are
+the task's, since the spec gives none.
+
+Tasks 2.2, the Python side, is fe95abd, and 2.3, the TypeScript side, is
+10a1980; they ran side by side. The TypeScript task rewrote the list of
+filters of `js/popnei/README.md`, which named five of what are now nine.
+
+### The deliverables
+
+Run on 8db578b, after the fixes of the review.
+
+| deliverable | command | result |
+|---|---|---|
+| 1, the cargo tests of the filter | `cargo test -p popnei --lib filters::passed -- --list` | 15; 0 on 6abacd1 |
+| 2, every test passes | the six cargo commands, `uv run pytest`, `npm test` | 1489 and 1339 passed; 751; node 557 tests, 556 pass, 1 fails, the kinship test that fails on `main` |
+| 3, the pytest tests | `uv run pytest -k filter_passed` | 9 passed; exit 5 on 6abacd1 |
+| 4, the node tests | the spec reporter with `--test-name-pattern=filterPassed` | 4 by name; 0 on 6abacd1 |
+| 5, the browser | `npm run test:browser` | 9 passed |
+| 6, the docstrings | read | `open_vcf`, `openVcf`, `filter_passed` and `filterPassed` say when to use `only_passed` and when the filter, and to add the filter first, after the filter by regions |
+
+### What the review found
+
+Five reviewers, spec, tests, errors, api and binding, each in a worktree
+of its own, read b92c5eb..ffa4970. None found a wrong result. The binding
+reviewer ran the fifteen calculations of each package with the filter on
+`many.vcf`: each gave 500 and 475 under `"passed"`, and each refused a vars
+file without the column, in Python with its path first. These held and are
+fixed:
+
+- The spec and both docstrings gave 0.58 s for a whole read of `big.vcf`,
+  the first of five runs whose median is 0.54 s (141bd52, 192fdd3).
+- The docstring of `filter_first_n` left `filter_passed` out of the steps it
+  refuses after it; the doc of the TypeScript crate counted eight filters;
+  a test comment gave a wrong place (192fdd3).
+- The order of the counts was not tested, so a reader that put its counts
+  after those of its source passed; the test runs the MAF filter before it
+  too and asserts the list in order (c789952).
+- No node test refused a source without the column; `of_1_1.vars`, the
+  four variants of `cases.vcf` in format 1.1 without it, written by a
+  script beside it, is the fixture of that test and of a pytest test of
+  `iter_blocks` (f96ce93, 8db578b).
+
+Not taken: the words of the refusals of a step say "filtered by passed
+already", built from the kind as for every filter; they read awkwardly and
+say what happened.
+
+### What the owner should know
+
+- A vars file marked 1.1 that has a `passed` column, which only another
+  program could write, is read with it and filtered: the reader of the vars
+  file reads a column it knows whatever the minor version of the file
+  says.
+- Issues 6 and 7 are closed, with their merge, df92324, and the release
+  js-v0.2.0. This plan is not in a release yet.

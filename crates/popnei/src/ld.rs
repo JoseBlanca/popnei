@@ -1371,6 +1371,7 @@ impl TheTilesOfThePass {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let tile = LdDosages::of_block(&block, &[])?;
@@ -1947,6 +1948,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }
     }

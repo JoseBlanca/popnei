@@ -156,6 +156,7 @@ impl NeverEnds {
                 individuals: individuals.clone(),
                 chrom_lengths: Vec::new(),
                 vcf_meta_lines: None,
+                keeps_passed: false,
             },
             individuals,
         }
@@ -186,6 +187,7 @@ impl BlockReader for NeverEnds {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }))
     }
@@ -815,6 +817,7 @@ impl Recording {
                 individuals: vec!["ind1".to_owned(), "ind2".to_owned()],
                 chrom_lengths: Vec::new(),
                 vcf_meta_lines: None,
+                keeps_passed: false,
             },
         }
     }
@@ -865,6 +868,7 @@ fn a_block_of_no_variants() -> Block {
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     }
 }

@@ -37,8 +37,9 @@ export interface OpenVcfOptions {
    */
   ploidy?: number;
   /**
-   * Whether the variants that failed a filter are left out. True when it is
-   * not given.
+   * Whether the variants that failed their FILTER are left out. True when
+   * it is not given. False gives every variant, and `filterPassed` then
+   * takes out the failed ones as a step, with counts.
    */
   onlyPassed?: boolean;
 }
@@ -82,9 +83,17 @@ export interface OpenVcfOptions {
  *
  * `onlyPassed` leaves out the variants that failed a filter, those whose
  * FILTER column is neither `PASS` nor a dot; a dot says that no filter was
- * applied. With it false every variant of the file is given, and nothing
- * then says which ones had failed. Only the variants that passed are given
- * when it is not.
+ * applied. Only the variants that passed are given when it is not given.
+ * With it false every variant of the file is given, and each of them keeps
+ * whether it passed, which `filterPassed` of the `Variants` reads.
+ *
+ * `onlyPassed` and `filterPassed` keep the same variants and are for two
+ * uses. The default of `onlyPassed` is for a user who never wants the
+ * variants that failed: the reader drops a failed line before it parses
+ * it, which is the faster. `onlyPassed: false` with `filterPassed` is for a
+ * user who wants the failed variants taken out as a step among the other
+ * filters, with how many failed in the counts of every pass beside what
+ * each other filter took out.
  *
  * What it returns holds memory of wasm until its `free()` is called.
  *
@@ -166,9 +175,11 @@ export interface WriteVcfOptions {
  * individual, in any order, leaves them.
  *
  * When the source is a vars file, the lines hold what the file holds, with
- * FILTER and INFO a dot, FORMAT `GT` and the alleles of each genotype
- * joined by `/`, since a vars file keeps no phase, under a header with one
- * `##contig` line for each chromosome whose length the vars file keeps.
+ * INFO a dot, FORMAT `GT` and the alleles of each genotype joined by `/`,
+ * since a vars file keeps no phase, under a header with one `##contig` line
+ * for each chromosome whose length the vars file keeps. FILTER is a dot, or
+ * `FAIL` for a variant that failed its FILTER in the VCF the vars file was
+ * written from, and then the header has a `##FILTER` line for `FAIL`.
  *
  * The lines are written in the order the source gives them. A VCF opened
  * with `onlyPassed` false and written with no step and `{bgzip: false}` is

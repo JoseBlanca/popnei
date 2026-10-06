@@ -734,6 +734,7 @@ impl ThePopOverTheWindow {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         // The genotypes held are those of the individuals of this
@@ -2243,6 +2244,7 @@ pub(super) mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }
     }
@@ -2674,6 +2676,7 @@ pub(super) mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }
     }

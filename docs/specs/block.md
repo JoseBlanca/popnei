@@ -19,7 +19,11 @@ collector built blocks by copying the variants that a reader gave one at a
 time. The owner dropped the single variant and its collector on 20
 September 2026, for the reasons at the end of section 1 of the
 architecture. `Block`, `AllelesColumn`, the default size, the names of the
-fields and `iter_blocks` stay as they were built.
+fields and `iter_blocks` stay as they were built. The column `passed` was added
+on 6 October 2026, from issue 9, for the filter of the variants that
+passed of `docs/specs/filters.md`, and built on 6 October 2026, in work package 1 of `docs/plans/filter-passed.md`. It is a
+column of the core alone: it is not among the fields that `iter_blocks`
+names, and a Python or TypeScript user sees it only through that filter.
 
 ## The block, its readers and reblock
 
@@ -478,6 +482,10 @@ pub struct Block {
     pub id: Option<Vec<String>>,
     pub alleles: Option<AllelesColumn>,
     pub qual: Option<Vec<f32>>,
+    /// Whether the FILTER of each variant, in the VCF it was read from,
+    /// was `PASS` or a dot, when `PASSED` was asked for and the source
+    /// keeps it: a VCF, and a vars file of format 1.2 written from one.
+    pub passed: Option<Vec<bool>>,
     /// The text of the lines of a VCF, when `VCF_TEXT` was asked for and
     /// the source is a VCF.
     pub vcf_text: Option<VcfText>,
@@ -551,6 +559,11 @@ pub struct SourceHeader {
     /// The lines of the header of a VCF before `#CHROM`, as the file has
     /// them. None for any other source.
     pub vcf_meta_lines: Option<Vec<String>>,
+    /// Whether the blocks of the source can carry `passed`: true for a
+    /// VCF and for a vars file with that column, false for any other
+    /// source. The VCF writer writes the `##FILTER` line of `FAIL` from it,
+    /// before the first block. Added on 6 October 2026.
+    pub keeps_passed: bool,
 }
 ```
 

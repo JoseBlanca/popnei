@@ -84,11 +84,11 @@ const BYTES_OF_MANY_VCF_GZ = 21904;
  * the size of the file. It was measured on the file this test writes, with
  * the blocks of the size popnei chooses for 50 individuals.
  */
-const BYTES_READ_OF_THE_VARS_FILE = 42576;
+const BYTES_READ_OF_THE_VARS_FILE = 42744;
 
 /**
  * How many bytes a pass over the vars file of more than one range reads,
- * measured on the file `vcfOfDrawnGenotypes(14000, 600)` writes, 12231618
+ * measured on the file `vcfOfDrawnGenotypes(14000, 600)` writes, 12249642
  * bytes, of which the pass reads all but its schema message.
  *
  * The call that says it is the one the end of the run makes. The reads of
@@ -96,7 +96,7 @@ const BYTES_READ_OF_THE_VARS_FILE = 42576;
  * call the page was last told at 8476400 bytes, two thirds of the way, and
  * a bar drawn from the calls stopped there.
  */
-const BYTES_READ_OF_THE_LARGE_VARS_FILE = 12225600;
+const BYTES_READ_OF_THE_LARGE_VARS_FILE = 12243560;
 
 /**
  * The kinship of the 50 individuals of `many.vcf`, for the study that asks
@@ -288,7 +288,7 @@ test("a pass over a vars file smaller than a range is told twice", () => {
 
 test("a pass over a vars file of several ranges is told at the end of the run", () => {
   // The vars file of `vars_memory.test.ts`, 14000 variants of 600
-  // individuals written in batches of 100, 12231618 bytes, which is more
+  // individuals written in batches of 100, 12249642 bytes, which is more
   // than one range of 4 MiB. A pass over it reads its batches and stops
   // after the last one, with up to a range read since the call before it.
   const vcf = openVcf(vcfOfDrawnGenotypes(14000, 600), { onlyPassed: false });
@@ -302,7 +302,7 @@ test("a pass over a vars file of several ranges is told at the end of the run", 
     variants.free();
   }
   assertTheyRise(calls, "the pass over a vars file of several ranges");
-  assert.equal(file.length, 12231618, "the vars file changed size");
+  assert.equal(file.length, 12249642, "the vars file changed size");
   assert.equal(calls.at(0)?.bytesRead, 0);
   assert.equal(calls.at(-1)?.bytesRead, BYTES_READ_OF_THE_LARGE_VARS_FILE);
   assert.ok(

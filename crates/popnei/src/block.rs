@@ -604,6 +604,10 @@ pub struct Block {
     /// The quality of each variant, phred scaled as the QUAL of a VCF, and
     /// NaN for a variant that has none.
     pub qual: Option<Vec<f32>>,
+    /// Whether the FILTER of each variant, in the VCF it was read from, was
+    /// `PASS` or a dot, when [`Needs::PASSED`] was asked for and the source
+    /// keeps it: a VCF, and a vars file of format 1.2 written from one.
+    pub passed: Option<Vec<bool>>,
     /// The text of the line of each variant, when
     /// [`Needs::VCF_TEXT`] was asked for and the source is a VCF, which the
     /// VCF writer writes the lines from.
@@ -632,6 +636,7 @@ impl Block {
             id,
             alleles,
             qual,
+            passed,
             vcf_text,
         } = self;
         let mut fields = Needs::empty();
@@ -653,6 +658,9 @@ impl Block {
         if qual.is_some() {
             fields |= Needs::QUAL;
         }
+        if passed.is_some() {
+            fields |= Needs::PASSED;
+        }
         if vcf_text.is_some() {
             fields |= Needs::VCF_TEXT;
         }
@@ -660,12 +668,12 @@ impl Block {
     }
 
     /// Which columns the block has, one flag for the genotypes and one for
-    /// each of the six others, so that two blocks are joined only when every
+    /// each of the seven others, so that two blocks are joined only when every
     /// column of the one is a column of the other.
     ///
     /// It is not [`Block::fields`]: that one answers what a consumer can
     /// read, and puts the chromosome and the position together.
-    fn columns(&self) -> [bool; 7] {
+    fn columns(&self) -> [bool; 8] {
         let Block {
             num_vars: _,
             num_individuals: _,
@@ -676,6 +684,7 @@ impl Block {
             id,
             alleles,
             qual,
+            passed,
             vcf_text,
         } = self;
         [
@@ -685,6 +694,7 @@ impl Block {
             id.is_some(),
             alleles.is_some(),
             qual.is_some(),
+            passed.is_some(),
             vcf_text.is_some(),
         ]
     }
@@ -743,6 +753,7 @@ impl Block {
             id,
             alleles,
             qual,
+            passed: _,
             vcf_text: _,
         } = self;
         if var >= *num_vars {
@@ -804,6 +815,7 @@ impl Block {
             id,
             alleles,
             qual,
+            passed,
             vcf_text,
         } = self;
         if !gts.is_empty() {
@@ -827,6 +839,7 @@ impl Block {
         retain_in_column(pos.as_mut(), keep);
         retain_in_column(id.as_mut(), keep);
         retain_in_column(qual.as_mut(), keep);
+        retain_in_column(passed.as_mut(), keep);
         if let Some(alleles) = alleles.as_mut() {
             alleles.retain_vars(keep);
         }
@@ -946,6 +959,7 @@ impl Block {
             id,
             alleles,
             qual,
+            passed,
             vcf_text,
         } = self;
         let alleles_of_the_block =
@@ -969,6 +983,7 @@ impl Block {
             ("pos", pos.as_ref().map(Vec::len)),
             ("id", id.as_ref().map(Vec::len)),
             ("qual", qual.as_ref().map(Vec::len)),
+            ("passed", passed.as_ref().map(Vec::len)),
             ("alleles", alleles.as_ref().map(AllelesColumn::num_vars)),
             ("vcf_text", vcf_text.as_ref().map(VcfText::num_vars)),
         ];
@@ -1201,6 +1216,13 @@ pub struct SourceHeader {
     /// The lines of the header of a VCF before `#CHROM`, as the file has
     /// them. `None` for any other source.
     pub vcf_meta_lines: Option<Vec<String>>,
+    /// Whether the blocks of the source hold `passed`, whether the FILTER
+    /// of each variant was `PASS` or `.`, when they are asked for it: true
+    /// for a VCF and for a vars file with a `passed` column, false for a
+    /// vars file without one and for a source that says nothing of itself.
+    /// The VCF writer writes the `##FILTER` line of `FAIL` from it, before
+    /// the first block.
+    pub keeps_passed: bool,
 }
 
 /// The header of a source of the tests that says nothing of itself.
@@ -1209,6 +1231,7 @@ pub(crate) static AN_EMPTY_HEADER: SourceHeader = SourceHeader {
     individuals: Vec::new(),
     chrom_lengths: Vec::new(),
     vcf_meta_lines: None,
+    keeps_passed: false,
 };
 
 /// Anything that gives blocks: the VCF reader, the vars file reader, a
@@ -1520,6 +1543,7 @@ impl<R: BlockReader> Reblock<R> {
             id,
             alleles,
             qual,
+            passed,
             vcf_text,
         } = block;
         let num_vars = waiting
@@ -1531,6 +1555,7 @@ impl<R: BlockReader> Reblock<R> {
         try_extend_column(waiting.pos.as_mut(), pos).map_err(|_| self.too_large())?;
         try_extend_column(waiting.id.as_mut(), id).map_err(|_| self.too_large())?;
         try_extend_column(waiting.qual.as_mut(), qual).map_err(|_| self.too_large())?;
+        try_extend_column(waiting.passed.as_mut(), passed).map_err(|_| self.too_large())?;
         if let (Some(waiting), Some(arrived)) = (waiting.alleles.as_mut(), alleles.as_ref()) {
             waiting.try_append(arrived).map_err(|_| self.too_large())?;
         }
@@ -2237,6 +2262,7 @@ fn take_rows(
     let chrom = copied_rows(block.chrom.as_ref(), from, count)?;
     let pos = copied_rows(block.pos.as_ref(), from, count)?;
     let qual = copied_rows(block.qual.as_ref(), from, count)?;
+    let passed = copied_rows(block.passed.as_ref(), from, count)?;
     let alleles = match block.alleles.as_ref() {
         Some(column) => Some(column.try_rows(from, count)?),
         None => None,
@@ -2256,6 +2282,7 @@ fn take_rows(
         id,
         alleles,
         qual,
+        passed,
         vcf_text,
     })
 }
@@ -2873,9 +2900,11 @@ mod tests {
             needs_of_the_fields(["pos"]).expect("the positions"),
             Needs::GTS | Needs::CHROM_POS
         );
+        // Whether each variant passed its FILTER is in `ALL` and has no
+        // name: `iter_blocks` does not give it.
         assert_eq!(
             needs_of_the_fields(["qual", "id", "alleles", "chrom"]).expect("the four"),
-            Needs::ALL
+            Needs::ALL.difference(Needs::PASSED)
         );
         assert_eq!(
             needs_of_the_fields(["id", "id"]).expect("the ids twice"),
@@ -3014,6 +3043,7 @@ mod tests {
             id: Some(id),
             alleles: Some(alleles),
             qual: Some(qual),
+            passed: None,
             vcf_text: None,
         }
     }
@@ -3065,7 +3095,7 @@ mod tests {
     #[test]
     fn the_views_of_a_block_give_the_fields_of_each_of_its_variants() {
         let block = cases_block(&[0, 1, 2, 3]);
-        assert_eq!(block.fields(), Needs::ALL);
+        assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
         block.check().expect("the block is of its size");
 
         let views: Vec<VariantRef<'_>> = block.variants().collect();
@@ -3100,7 +3130,7 @@ mod tests {
         assert_eq!(block.fields(), Needs::GTS | Needs::CHROM_POS);
         assert_eq!(
             Needs::ALL.difference(block.fields()),
-            Needs::ID | Needs::ALLELES | Needs::QUAL
+            Needs::ID | Needs::ALLELES | Needs::QUAL | Needs::PASSED
         );
 
         let first = block.variant(0).expect("the first variant");
@@ -3197,6 +3227,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
 
@@ -3290,7 +3321,7 @@ mod tests {
         block.check().expect("the block is of its size");
         // A block of no variants holds every field it was built with, the
         // genotypes among them, although its `gts` is empty.
-        assert_eq!(block.fields(), Needs::ALL);
+        assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
         assert!(block.gts.is_empty());
         assert_eq!(block.chrom.as_deref(), Some([].as_slice()));
         assert_eq!(block.pos.as_deref(), Some([].as_slice()));
@@ -3374,6 +3405,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }
     }
@@ -3454,6 +3486,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
 
@@ -3653,6 +3686,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let kept = |threads| {
@@ -4148,6 +4182,133 @@ mod tests {
         assert!(reblock.next_block().expect("no block").is_none());
     }
 
+    /// The rows of `cases.vcf` with whether each one passed its FILTER, one
+    /// value for each row.
+    fn cases_block_with_passed(rows: &[usize], passed: &[bool]) -> Block {
+        let mut block = cases_block(rows);
+        block.passed = Some(passed.to_vec());
+        block
+    }
+
+    #[test]
+    fn passed_column_keeps_the_values_of_the_variants_retain_vars_keeps() {
+        let mut block = cases_block_with_passed(&[0, 1, 2, 3], &[true, false, false, true]);
+        assert_eq!(block.fields(), Needs::ALL);
+        block
+            .retain_vars(&[false, true, true, true])
+            .expect("the variants to keep");
+        assert_eq!(
+            block.passed.as_deref(),
+            Some([false, false, true].as_slice())
+        );
+        block.check().expect("the block is of its size");
+
+        block
+            .retain_vars(&[false, false, false])
+            .expect("the variants to keep");
+        assert_eq!(block.passed.as_deref(), Some([].as_slice()));
+        assert_eq!(block.fields(), Needs::ALL);
+    }
+
+    #[test]
+    fn passed_column_of_another_size_than_the_block_is_refused_by_check() {
+        let block = cases_block_with_passed(&[0, 1, 2, 3], &[true, false, true]);
+        let Err(Error::BlockArrayOfAnotherSize {
+            array,
+            found,
+            expected,
+        }) = block.check()
+        else {
+            panic!("the column of 3 values of a block of 4 was taken");
+        };
+        assert_eq!((array, found, expected), ("passed", 3, 4));
+
+        // `retain_vars` checks the block first and leaves it as it was.
+        let mut block = cases_block_with_passed(&[0, 1, 2, 3], &[true, false, true, true, false]);
+        let refused = block.retain_vars(&[true, false, true, false]);
+        assert!(
+            matches!(
+                refused,
+                Err(Error::BlockArrayOfAnotherSize {
+                    array: "passed",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(block.num_vars, 4);
+        assert_eq!(
+            block.passed.as_deref(),
+            Some([true, false, true, true, false].as_slice())
+        );
+    }
+
+    #[test]
+    fn passed_column_goes_through_the_blocks_reblock_joins_and_cuts() {
+        // Four blocks of one variant joined into blocks of three.
+        let blocks = vec![
+            cases_block_with_passed(&[0], &[true]),
+            cases_block_with_passed(&[1], &[false]),
+            cases_block_with_passed(&[2], &[false]),
+            cases_block_with_passed(&[3], &[true]),
+        ];
+        let mut reblock = Reblock::new(GivenBlocks::of(blocks), Some(3)).expect("the reblock");
+        let given = blocks_given(&mut reblock).expect("the blocks");
+        assert_eq!(num_vars_of(&given), [3, 1]);
+        assert_eq!(
+            given[0].passed.as_deref(),
+            Some([true, false, false].as_slice())
+        );
+        assert_eq!(given[1].passed.as_deref(), Some([true].as_slice()));
+
+        // One block of four cut into blocks of three.
+        let blocks = vec![cases_block_with_passed(
+            &[0, 1, 2, 3],
+            &[false, true, false, true],
+        )];
+        let mut reblock = Reblock::new(GivenBlocks::of(blocks), Some(3)).expect("the reblock");
+        let given = blocks_given(&mut reblock).expect("the blocks");
+        assert_eq!(num_vars_of(&given), [3, 1]);
+        assert_eq!(
+            given[0].passed.as_deref(),
+            Some([false, true, false].as_slice())
+        );
+        assert_eq!(given[1].passed.as_deref(), Some([true].as_slice()));
+
+        // A block with the column is not joined to one without it.
+        let blocks = vec![cases_block_with_passed(&[0], &[false]), cases_block(&[1])];
+        let mut reblock = Reblock::new(GivenBlocks::of(blocks), Some(3)).expect("the reblock");
+        let given = blocks_given(&mut reblock).expect("the blocks");
+        assert_eq!(num_vars_of(&given), [1, 1]);
+        assert_eq!(given[0].passed.as_deref(), Some([false].as_slice()));
+        assert_eq!(given[1].passed, None);
+    }
+
+    /// The 25 variants of `many.vcf` whose FILTER is `q10`, from chr1 1259
+    /// to chr2 19019, read in blocks of 7 and given in blocks of 100.
+    #[test]
+    fn passed_column_of_many_vcf_goes_through_reblock() {
+        let source = source_over("many.vcf", every_variant(), Needs::ALL, Some(7));
+        let mut reblock = Reblock::new(source, Some(100)).expect("the reblock");
+        let given = blocks_given(&mut reblock).expect("the blocks");
+        assert_eq!(num_vars_of(&given), [100; 5]);
+        let mut failed = Vec::new();
+        for block in &given {
+            block.check().expect("the block is of its size");
+            let pos = block.pos.as_ref().expect("the positions");
+            let passed = block.passed.as_ref().expect("the column passed");
+            failed.extend(
+                pos.iter()
+                    .zip(passed)
+                    .filter(|(_, passed)| !**passed)
+                    .map(|(pos, _)| *pos),
+            );
+        }
+        assert_eq!(failed.len(), 25);
+        assert_eq!(failed.first(), Some(&1259));
+        assert_eq!(failed.last(), Some(&19019));
+    }
+
     /// A change of `Needs` in the middle of a pass changes the columns of
     /// the blocks that come after it, and blocks of different columns are
     /// not joined: what was waiting is given as a shorter block.
@@ -4168,7 +4329,7 @@ mod tests {
 
         let given = blocks_given(&mut reblock).expect("the blocks");
         assert_eq!(num_vars_of(&given), [1, 1]);
-        assert_eq!(given[0].fields(), Needs::ALL);
+        assert_eq!(given[0].fields(), Needs::ALL.difference(Needs::PASSED));
         assert_view_is_the_row(&given[0].variant(0).expect("the variant"), 0);
         assert_eq!(given[1].fields(), Needs::GTS);
         assert_eq!(

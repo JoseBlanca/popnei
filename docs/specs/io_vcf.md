@@ -9,12 +9,15 @@ filtered them. This spec develops the row `io::vcf` of the table in section
 the `Block` that the reader gives and the `BlockReader` trait that it
 implements, and on `docs/specs/variant.md`, which has the `Needs` that say
 which fields a consumer wants and the table of the chromosome names. The
-VCF writer was added on 26 September 2026, and there is no code of it. It
+VCF writer was added on 26 September 2026. It
 also depends on `docs/specs/filters.md`, whose chain of filters it writes
 the variants of, and it brings to the reader two things the reader
 otherwise drops, the header of the file and the text of its lines. The
 ploidy read from the file when the caller gives none was added on 6
-October 2026, from issue 8 of popnei, and there is no code of it.
+October 2026, from issue 8 of popnei. The `passed` column, which the
+reader fills from FILTER and the writer reads back, was added the same
+day, from issue 9, for the filter of the variants that passed of
+`docs/specs/filters.md`, and built on 6 October 2026, in work package 1 of `docs/plans/filter-passed.md`.
 
 There is code, built from the first version of this spec, in which the
 reader filled one `Variant` at a time for its caller. The owner dropped the
@@ -42,7 +45,7 @@ From each data line of a VCF, one variant, a row of the block:
 | REF and ALT | `alleles`, the reference first; only the reference when ALT is `.` |
 | QUAL | `qual`, NaN when the column is `.` |
 | the GT of each individual | `gts` |
-| FILTER | decides whether the variant is given at all |
+| FILTER | decides whether the variant is given at all, and `passed`, whether it is `PASS` or `.` |
 | INFO and the other values of each individual | not read, unless the writer asks for the text of the lines ("The VCF writer") |
 
 An allele is kept as the text the VCF has, so a symbolic allele, `<DEL>`,
@@ -53,12 +56,22 @@ By default the reader gives only the variants that passed their filters:
 those whose FILTER is `PASS`, or `.`, which in a VCF says that no filter
 was applied. A variant with anything else there is skipped as if its line
 were not in the file. With `only_passed` false every variant is given,
-and nothing in the block says which ones had failed. The owner
+and the `passed` column of the block, when it is asked for, says which
+ones had failed. The docstrings of `open_vcf` and `openVcf` say when to
+use `only_passed` and when the filter of the variants that passed of
+`docs/specs/filters.md`, as that filter's item says, and no longer that
+nothing says which variants failed. The owner
 decided on 20 September 2026 that the FILTER is honoured and that this is
 the default; pyNei ignores the column. That `.` counts as passed was
 decided here: many programs write `.` in every line, pyNei's own script
 for its reference VCF among them, and with `.` as a failure the default
 would give such a file no variants.
+
+When `PASSED` is asked for, the reader fills the `passed` column of the
+block with whether the FILTER of each variant is `PASS` or `.`, by the one
+function that `only_passed` uses, so with `only_passed` true every variant
+it gives has `passed` true. It is read from the FILTER column the reader
+already finds and costs no parse beyond it.
 
 A FILTER that names more than one filter is where popnei and bcftools
 differ. popnei reads the whole column: it gives the variant when the column
@@ -922,16 +935,39 @@ When the source is a vars file, the lines hold what the file holds:
 | ID | the id, `.` when it is empty |
 | REF and ALT | the alleles, the reference first; ALT `.` for a variant with the reference alone |
 | QUAL | the shortest decimal text that reads back as the same `f32`, `29.5` and not `29.500000`; `.` for NaN |
-| FILTER | `.` |
+| FILTER | `.`, and `FAIL` for a variant whose `passed` is false |
 | INFO | `.` |
 | FORMAT | `GT` |
 | each individual | the alleles joined by `/`, `.` for a missing one, so `0/.` and `./.` |
 
-FILTER is `.` because the vars file does not keep it, and `.` says that
-no filter was applied, which is the most a writer that does not know can
-say. A variant written with `PASS` would claim that it passed a filter
-that nobody knows was run. The alleles are joined by `/` because a block
-holds no phase. The header is `##fileformat=VCFv4.3`, one
+FILTER is `.` for a variant that passed, and for every variant of a vars
+file that does not keep whether it passed, because the vars file does not
+keep the name of a filter, and `.` says that no filter was applied, which
+is the most a writer that does not know can say. A variant written with `PASS` would claim that it passed a filter
+that nobody knows was run.
+
+A variant whose `passed` is false is written with `FAIL`, since a vars
+file of format 1.2 keeps whether each variant passed but not the name of
+the filter it failed, and the header then has a line
+`##FILTER=<ID=FAIL,Description="It failed a filter of the VCF the
+variants were read from">`. The header is written before the first block,
+so the line is written whenever the vars file has a `passed` column, which
+its reader knows when it opens it, whether or not a variant failed;
+without it bcftools 1.24 reads a `FAIL` and warns that it is not defined in
+the header. popnei with `only_passed`, the filter of the variants that
+passed and `bcftools view -f .,PASS` all take such a variant out again. A
+vars file with no `passed` column is written with `.` and no such line.
+The owner decided this on 6 October 2026; the option not taken was `.` for
+every variant, as before format 1.2, which writes a variant that failed as
+one with no filter applied, and a VCF read back with the default of
+`only_passed` keeps it with no sign. The check: `many.vcf` read with
+`only_passed` false, written to a vars file and that to a VCF, gives 25
+lines with `FAIL`, the `##FILTER` line in the header, and 475 variants from
+`bcftools view -H -f .,PASS`. The header of the existing case of a vars
+file written to a VCF gains the `##FILTER` line, since that file is
+written from a VCF and so has the column. The alleles are joined by `/` because a block
+holds no phase. The header is `##fileformat=VCFv4.3`, the `##FILTER` line
+of `FAIL` when the vars file has a `passed` column, one
 `##contig=<ID=chr1,length=2000>` for each chromosome that the vars file
 keeps a length for, in the order the file keeps them (`docs/specs/io_vars.md`),
 `##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">` and the
@@ -1448,7 +1484,10 @@ vars file could not, since it is the case of both writers. A
 `ValueError`. A block of a VCF that holds no text, a block whose text is
 not of its variants or of its individuals, and a chromosome number the
 table of its reader has no name for are a defect of popnei, a
-`RuntimeError`, and so is a member of bgzip that could not be put
+`RuntimeError`, and so is a block with a variant whose `passed` is false
+from a source whose header says that it keeps no `passed`, since its
+`FAIL` would go out with no `##FILTER` line, an error that names the
+chromosome and the position of that variant, and so is a member of bgzip that could not be put
 together, which names the file being written.
 
 ## Speed
@@ -1649,7 +1688,10 @@ decompresses to the bytes of the plain one.
 
 ## Open points
 
-None. The owner decided on 6 October 2026 the one that reading the ploidy
+None. The owner decided on 6 October 2026 what the writer writes in
+FILTER for a variant that failed, written from a vars file, which is
+written under "What it gives" of the writer with the option not taken.
+The owner decided on 6 October 2026 the one that reading the ploidy
 from the file brought, a VCF with a header and no data line opened with no
 ploidy, which is written under "What it gives" of the reader with the
 option not taken. The owner decided on 26 September 2026 the one the writer had, what it

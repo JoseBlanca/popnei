@@ -228,6 +228,7 @@ const FILTERS_OF_THE_VARIANTS: [string, (variants: Variants) => void][] = [
       }),
   ],
   ["random", (variants) => variants.filterRandomly(0.1)],
+  ["passed", (variants) => variants.filterPassed()],
 ];
 
 for (const [kind, filter] of FILTERS_OF_THE_VARIANTS) {

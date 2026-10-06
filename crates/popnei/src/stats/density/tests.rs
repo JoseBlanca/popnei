@@ -160,6 +160,7 @@ impl Given {
                 individuals: vec!["a".to_owned()],
                 chrom_lengths: lengths(chrom_lengths),
                 vcf_meta_lines: None,
+                keeps_passed: false,
             },
             individuals: vec!["a".to_owned()],
             left,
@@ -185,6 +186,7 @@ fn block_of(chrom: Vec<u32>, pos: Vec<u64>) -> Block {
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     }
 }

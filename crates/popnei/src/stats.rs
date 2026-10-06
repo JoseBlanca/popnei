@@ -2494,6 +2494,7 @@ mod fixtures {
                 id: None,
                 alleles: None,
                 qual: None,
+                passed: None,
                 vcf_text: None,
             })
             .collect()
@@ -3847,6 +3848,7 @@ mod distribs {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }
     }
@@ -4407,6 +4409,7 @@ mod distribs {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let mut reader = GivenBlocks::of(vec![of_no_individual]);
@@ -4443,6 +4446,7 @@ mod distribs {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let mut reader = GivenBlocks::of_a_source_of(3, 2, vec![of_three_individuals]);
@@ -4479,6 +4483,7 @@ mod distribs {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let mut blocks = blocks_of(&THE_SIX_VARIANTS, 6);
@@ -4827,6 +4832,7 @@ mod per_individual {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }
     }

@@ -114,9 +114,11 @@ export function openVars(source: BytesOrFile): Variants {
  *
  * The call reads the whole source once. The file holds the six columns of a
  * VCF, the chromosome, the position, the id, the alleles, the quality and
- * the genotypes, whether or not the user will read them, so that it can
- * stand in for the VCF in any later analysis; a source that has no alleles
- * to give gives a file without that column.
+ * the genotypes, and whether each variant passed its FILTER, whether or not
+ * the user will read them, so that it can stand in for the VCF in any later
+ * analysis; a source that has no alleles to give gives a file without that
+ * column, and one that does not keep whether its variants passed, a vars
+ * file written before that column existed, gives one without it.
  *
  * The whole file is built in the memory of wasm, which grows and never
  * shrinks, so what the tab holds while the call runs is the source and the

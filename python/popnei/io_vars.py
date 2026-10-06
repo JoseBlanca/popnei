@@ -85,10 +85,12 @@ def write_vars(
 
     The call reads the whole source once. The file holds the six columns of
     a VCF, the chromosome, the position, the id, the alleles, the quality
-    and the genotypes, whether or not the user will read them, so that it
-    can stand in for the VCF in any later analysis; a source that has no
-    alleles to give, an array of genotypes, gives a file without that
-    column.
+    and the genotypes, and whether each variant passed its FILTER, whether
+    or not the user will read them, so that it can stand in for the VCF in
+    any later analysis; a source that has no alleles to give, an array of
+    genotypes, gives a file without that column, and one that does not
+    keep whether its variants passed, a vars file written before that
+    column existed, gives one without it.
 
     `num_vars_per_block` is how many variants a batch of the file holds, the
     last one aside, and ``None`` asks for the size popnei chooses for the

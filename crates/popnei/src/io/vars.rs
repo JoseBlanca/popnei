@@ -29,10 +29,10 @@ use std::sync::Arc;
 
 use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::{
-    Array, ArrayRef, FixedSizeListArray, Float32Array, Int8Array, ListArray, RecordBatch,
-    StringArray, UInt64Array,
+    Array, ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, Int8Array, ListArray,
+    RecordBatch, StringArray, UInt64Array,
 };
-use arrow_buffer::{Buffer, NullBuffer, ScalarBuffer};
+use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
 use arrow_ipc::convert::try_fb_to_schema;
 use arrow_ipc::reader::FileDecoder;
 use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
@@ -67,7 +67,7 @@ const POPNEI_BATCHES_KEY: &str = "popnei_batches";
 /// later one than its own too, ignoring the keys and the columns it does
 /// not know: that is what lets a later version of the format add a column
 /// without making the files or the readers that are there useless.
-pub const FORMAT_VERSION: &str = "1.1";
+pub const FORMAT_VERSION: &str = "1.2";
 
 /// The major version of the format that popnei reads, the part of
 /// [`FORMAT_VERSION`] before the dot.
@@ -77,7 +77,7 @@ pub(crate) const FORMAT_VERSION_READ: &str = "1";
 /// of the `popnei` key of its schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarsMetadata {
-    /// The whole string, "1.1". Only the part before the dot is checked.
+    /// The whole string, "1.2". Only the part before the dot is checked.
     pub format_version: String,
     /// The names of the individuals, in the order of their genotypes in
     /// every row of `gts`.
@@ -473,6 +473,7 @@ const ID_COLUMN: &str = "id";
 const ALLELES_COLUMN: &str = "alleles";
 const QUAL_COLUMN: &str = "qual";
 const GTS_COLUMN: &str = "gts";
+const PASSED_COLUMN: &str = "passed";
 
 /// The name arrow gives the values of a list, which is what pyarrow, and
 /// so pandas and polars, write and read.
@@ -725,6 +726,7 @@ impl<W: Write> VarsWriter<W> {
             id,
             alleles,
             qual,
+            passed,
             // The vars file has no place for the text of the lines of a
             // VCF, which the writer of a vars file does not ask for.
             vcf_text: _,
@@ -753,6 +755,9 @@ impl<W: Write> VarsWriter<W> {
         // read from the fields and not from the vector.
         if fields.contains(Needs::GTS) {
             arrays.push(gts_column(gts, self.alleles_per_var)?);
+        }
+        if let Some(passed) = passed {
+            arrays.push(Arc::new(passed_column(&passed)));
         }
         Ok((arrays, regions))
     }
@@ -792,7 +797,7 @@ impl<W: Write> VarsWriter<W> {
 /// which it lends here as `&mut reader`.
 ///
 /// It asks `reader` for every field, so a file written from a VCF holds its
-/// six columns and can stand in for it in any later analysis, and it puts a
+/// seven columns and can stand in for it in any later analysis, and it puts a
 /// [`Reblock`] of `num_vars_per_block` variants over it, `None` for
 /// [`default_num_vars_per_block`](crate::block::default_num_vars_per_block)
 /// for the individuals of `reader`, which is then the number that the
@@ -816,8 +821,8 @@ pub fn write_vars<R: BlockReader, W: Write>(
     sink: W,
     num_vars_per_block: Option<usize>,
 ) -> Result<(W, u64)> {
-    // Every field, so that a file written from a VCF holds its six columns
-    // whether or not the user will read them.
+    // Every field, so that a file written from a VCF holds its seven
+    // columns whether or not the user will read them.
     reader.set_needs(Needs::ALL);
     let individuals = reader.individuals().to_vec();
     let ploidy = reader.ploidy();
@@ -864,6 +869,9 @@ fn schema_of(fields: Needs, alleles_per_var: i32, metadata: &VarsMetadata) -> Sc
     }
     if fields.contains(Needs::GTS) {
         columns.push(Field::new(GTS_COLUMN, gts_type(alleles_per_var), false));
+    }
+    if fields.contains(Needs::PASSED) {
+        columns.push(Field::new(PASSED_COLUMN, DataType::Boolean, false));
     }
     let popnei = HashMap::from([(POPNEI_KEY.to_owned(), metadata_as_json(metadata))]);
     Schema::new(columns).with_metadata(popnei)
@@ -1056,6 +1064,14 @@ fn qual_column(qual: Vec<f32>) -> Float32Array {
     Float32Array::new(ScalarBuffer::from(qual), Some(there))
 }
 
+/// The `passed` column of one batch, whether the FILTER of each variant was
+/// `PASS` or a dot. arrow keeps a boolean in a bit, so the column is built
+/// and not taken over from the block, one bit for each variant and no
+/// allocation for each of them.
+fn passed_column(passed: &[bool]) -> BooleanArray {
+    BooleanArray::new(BooleanBuffer::from(passed), None)
+}
+
 /// The genotypes of one block as the `gts` column of one batch: one flat
 /// buffer of the alleles of every variant, `alleles_per_var` of them in
 /// each.
@@ -1165,7 +1181,7 @@ const MAX_VALUES_OF_A_LIST: u64 = 2_147_483_647;
 const A_DIRECTORY_IS_THERE: i32 = 21;
 
 /// One column of the table of "What it holds" of `docs/specs/io_vars.md`,
-/// the six a vars file can have and popnei knows. A column of any other
+/// the seven a vars file can have and popnei knows. A column of any other
 /// name is ignored, which is what lets a later version of the format add
 /// one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1182,6 +1198,9 @@ enum VarsColumn {
     Qual,
     /// The genotypes, the individuals times the ploidy for each variant.
     Gts,
+    /// Whether the FILTER of each variant was `PASS` or a dot, which a file
+    /// of 1.0 or 1.1 does not have.
+    Passed,
 }
 
 impl VarsColumn {
@@ -1194,6 +1213,7 @@ impl VarsColumn {
             ALLELES_COLUMN => Some(VarsColumn::Alleles),
             QUAL_COLUMN => Some(VarsColumn::Qual),
             GTS_COLUMN => Some(VarsColumn::Gts),
+            PASSED_COLUMN => Some(VarsColumn::Passed),
             _ => None,
         }
     }
@@ -1207,6 +1227,7 @@ impl VarsColumn {
             VarsColumn::Alleles => ALLELES_COLUMN,
             VarsColumn::Qual => QUAL_COLUMN,
             VarsColumn::Gts => GTS_COLUMN,
+            VarsColumn::Passed => PASSED_COLUMN,
         }
     }
 
@@ -1219,6 +1240,7 @@ impl VarsColumn {
             VarsColumn::Alleles => "List<Utf8>",
             VarsColumn::Qual => "Float32",
             VarsColumn::Gts => "FixedSizeList<Int8>",
+            VarsColumn::Passed => "Boolean",
         }
     }
 
@@ -1244,6 +1266,7 @@ impl VarsColumn {
                 DataType::FixedSizeList(item, width)
                     if *item.data_type() == DataType::Int8 && *width >= 0
             ),
+            VarsColumn::Passed => *found == DataType::Boolean,
         }
     }
 
@@ -1256,6 +1279,7 @@ impl VarsColumn {
             VarsColumn::Alleles => &mut columns.alleles,
             VarsColumn::Qual => &mut columns.qual,
             VarsColumn::Gts => &mut columns.gts,
+            VarsColumn::Passed => &mut columns.passed,
         }
     }
 }
@@ -1279,6 +1303,8 @@ struct VarsColumns {
     qual: Option<usize>,
     /// Where `gts` is.
     gts: Option<usize>,
+    /// Where `passed` is.
+    passed: Option<usize>,
 }
 
 impl VarsColumns {
@@ -1298,6 +1324,7 @@ impl VarsColumns {
             alleles: None,
             qual: None,
             gts: None,
+            passed: None,
         };
         for (place, field) in schema.fields().iter().enumerate() {
             let Some(column) = VarsColumn::of_the_name(field.name()) else {
@@ -1532,6 +1559,7 @@ impl<R: Read + Seek> VarsReader<R> {
             individuals: metadata.individuals.clone(),
             chrom_lengths: metadata.chrom_lengths.clone(),
             vcf_meta_lines: None,
+            keeps_passed: columns.passed.is_some(),
         };
         Ok(VarsReader {
             source,
@@ -1665,6 +1693,7 @@ fn projection_of(needs: Needs, columns: &VarsColumns) -> Vec<(VarsColumn, usize)
         (Needs::ALLELES, columns.alleles, VarsColumn::Alleles),
         (Needs::QUAL, columns.qual, VarsColumn::Qual),
         (Needs::GTS, columns.gts, VarsColumn::Gts),
+        (Needs::PASSED, columns.passed, VarsColumn::Passed),
     ] {
         if needs.contains(field)
             && let Some(place) = place
@@ -2720,6 +2749,7 @@ fn block_of_the_batch(
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     };
     // The texts of the alleles of one variant, written over for the next
@@ -2746,6 +2776,9 @@ fn block_of_the_batch(
             }
             VarsColumn::Qual => block.qual = Some(qualities(array, num_vars, metadata, place)?),
             VarsColumn::Gts => block.gts = genotypes(array, num_vars, metadata, place)?,
+            VarsColumn::Passed => {
+                block.passed = Some(passed_of_the_batch(array, num_vars, metadata, place)?);
+            }
         }
     }
     Ok(block)
@@ -2916,6 +2949,37 @@ fn qualities(
         qualities.push(quality);
     }
     Ok(qualities)
+}
+
+/// Whether the FILTER of each variant of the batch was `PASS` or a dot,
+/// copied out of the bits of the column.
+///
+/// # Errors
+///
+/// When a variant has no value, which read as either would keep or drop a
+/// variant whose FILTER nobody knows; when the column is not one of
+/// booleans or holds fewer values than the batch has variants; and when
+/// the machine does not give its memory.
+fn passed_of_the_batch(
+    array: &ArrayRef,
+    num_vars: usize,
+    metadata: &VarsMetadata,
+    place: BatchPlace,
+) -> Result<Vec<bool>> {
+    let column = column_of::<BooleanArray>(array, VarsColumn::Passed, place)?;
+    if let Some(row) = first_null(column) {
+        return Err(null_value(VarsColumn::Passed, place, row));
+    }
+    if column.len() < num_vars {
+        return Err(column_not_read(
+            VarsColumn::Passed,
+            place.batch,
+            "holds fewer values than the batch has variants",
+        ));
+    }
+    let mut passed = reserved_column(num_vars, metadata)?;
+    passed.extend(column.values().iter().take(num_vars));
+    Ok(passed)
 }
 
 /// The alleles of each variant of the batch, the reference one first.
@@ -3530,8 +3594,8 @@ mod tests {
     use arrow_array::cast::AsArray;
     use arrow_array::types::{Float32Type, Int8Type, Int32Type, UInt64Type};
     use arrow_array::{
-        Array, ArrayRef, DictionaryArray, FixedSizeListArray, Float32Array, Float64Array,
-        Int8Array, Int32Array, ListArray, RecordBatch, StringArray, UInt64Array,
+        Array, ArrayRef, BooleanArray, DictionaryArray, FixedSizeListArray, Float32Array,
+        Float64Array, Int8Array, Int32Array, ListArray, RecordBatch, StringArray, UInt64Array,
     };
     use arrow_buffer::{NullBuffer, ScalarBuffer};
     use arrow_ipc::reader::FileReader;
@@ -3692,6 +3756,7 @@ mod tests {
             id: Some(id),
             alleles: Some(alleles),
             qual: Some(qual),
+            passed: None,
             vcf_text: None,
         }
     }
@@ -3949,8 +4014,9 @@ mod tests {
     }
 
     /// `write_vars` asks its reader for every field, so that a file written
-    /// from a VCF holds its six columns, the ids, the alleles and the
-    /// qualities among them, whether or not the user will read them, and
+    /// from a VCF holds its seven columns, the ids, the alleles, the
+    /// qualities and whether each variant passed its FILTER among them,
+    /// whether or not the user will read them, and
     /// can stand in for the VCF in any later analysis.
     #[test]
     fn write_vars_asks_its_reader_for_every_field() {
@@ -4231,6 +4297,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let reader = GivenBlocks {
@@ -4702,8 +4769,11 @@ mod tests {
         let Error::VarsBlockColumns { first, found } = &error else {
             panic!("the error is {error}");
         };
-        assert_eq!(*first, Needs::ALL);
-        assert_eq!(*found, Needs::ALL.difference(Needs::QUAL));
+        // The blocks of the test have no column of whether each variant
+        // passed its FILTER.
+        let every_column = Needs::ALL.difference(Needs::PASSED);
+        assert_eq!(*first, every_column);
+        assert_eq!(*found, every_column.difference(Needs::QUAL));
         let message = error.to_string();
         assert!(message.contains("differ in `qual`"), "{message}");
 
@@ -4735,7 +4805,7 @@ mod tests {
     #[test]
     fn the_version_that_is_written_starts_with_the_part_that_is_read() {
         assert_eq!(FORMAT_VERSION.split('.').next(), Some(FORMAT_VERSION_READ));
-        assert_eq!(FORMAT_VERSION, "1.1");
+        assert_eq!(FORMAT_VERSION, "1.2");
     }
 
     /// The text of the key is what another program that opens the file
@@ -4747,7 +4817,7 @@ mod tests {
         let written = metadata_as_json(&metadata);
         assert_eq!(
             written,
-            r#"{"format_version":"1.1","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[]}"#
+            r#"{"format_version":"1.2","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[]}"#
         );
         let parsed = metadata_from_json(&written).expect("the key written is parsed back");
         assert_eq!(parsed, metadata);
@@ -5237,14 +5307,14 @@ mod tests {
         assert_eq!(num_vars, 5);
 
         let key = the_popnei_key_of(bytes.clone());
-        assert!(key.contains(r#""format_version":"1.1""#), "{key}");
+        assert!(key.contains(r#""format_version":"1.2""#), "{key}");
         assert!(
             key.contains(r#""chrom_lengths":[["chr1",2000],["chr2",1500]]"#),
             "{key}"
         );
         let expected = vec![("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)];
         let reader = opened(bytes).expect("the file is a vars file");
-        assert_eq!(reader.metadata().format_version, "1.1");
+        assert_eq!(reader.metadata().format_version, "1.2");
         assert_eq!(reader.metadata().chrom_lengths, expected);
         assert_eq!(reader.header().chrom_lengths, expected);
         assert_eq!(reader.header().individuals, ["a", "b", "c"]);
@@ -5275,6 +5345,263 @@ mod tests {
         assert_eq!(reader.header().individuals, cases_individuals());
     }
 
+    /// The chromosome, the position and whether it passed its FILTER of
+    /// every variant of those blocks, in order.
+    fn passed_of(blocks: &[Block], chroms: &ChromTable) -> Vec<(String, u64, bool)> {
+        let mut variants = Vec::new();
+        for block in blocks {
+            let chrom = block.chrom.as_ref().expect("the chromosomes");
+            let pos = block.pos.as_ref().expect("the positions");
+            let passed = block.passed.as_ref().expect("the column passed");
+            for ((chrom, pos), passed) in chrom.iter().zip(pos).zip(passed) {
+                let name = chroms.name(*chrom).expect("the name of the chromosome");
+                variants.push((name.to_owned(), *pos, *passed));
+            }
+        }
+        variants
+    }
+
+    /// The vars file of `many.vcf` read with every variant has the column
+    /// `passed` after `gts`, of booleans and with no null, which holds 25
+    /// false, the variants whose FILTER is `q10`, and the version 1.2; read
+    /// back, every block has the column, and it is, variant by variant,
+    /// what the VCF reader gives.
+    #[test]
+    fn passed_column_of_many_vcf_is_written_after_gts_and_read_back_with_its_25_false() {
+        let bytes = many_vcf_written(Some(100));
+
+        let read = FileReader::try_new(Cursor::new(bytes.clone()), None).expect("an arrow file");
+        let schema = read.schema();
+        let names: Vec<&str> = schema
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["chrom", "pos", "id", "alleles", "qual", "gts", "passed"]
+        );
+        let field = schema.field_with_name("passed").expect("the column passed");
+        assert_eq!(field.data_type(), &DataType::Boolean);
+        assert!(!field.is_nullable());
+        let mut failed_in_the_file = 0;
+        for batch in read {
+            let batch = batch.expect("a batch");
+            let column = batch
+                .column_by_name("passed")
+                .expect("the column passed")
+                .as_boolean();
+            assert_eq!(column.null_count(), 0);
+            failed_in_the_file += column.false_count();
+        }
+        assert_eq!(failed_in_the_file, 25);
+        let key = the_popnei_key_of(bytes.clone());
+        assert!(key.contains(r#""format_version":"1.2""#), "{key}");
+
+        let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
+        assert_eq!(num_vars_of(&blocks), [100; 5]);
+        let read_back = passed_of(&blocks, &chroms);
+        assert_eq!(read_back.len(), 500);
+        let failed = read_back.iter().filter(|(_, _, passed)| !passed).count();
+        assert_eq!(failed, 25);
+        let mut vcf = many_vcf_reader(None);
+        vcf.set_needs(Needs::CHROM_POS | Needs::PASSED);
+        let of_the_vcf = blocks_of(&mut vcf).expect("the blocks of many.vcf");
+        assert_eq!(read_back, passed_of(&of_the_vcf, vcf.chroms()));
+    }
+
+    /// The vars file of `many.vcf` read with the default of `only_passed`,
+    /// 475 variants, has the column with none false.
+    #[test]
+    fn passed_column_of_many_vcf_read_with_only_passed_has_no_false() {
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: true,
+            num_vars_per_block: None,
+        };
+        let vcf = VcfReader::from_path(&reference("vcf", "many.vcf"), options).expect("many.vcf");
+        let (bytes, num_vars) = write_vars(vcf, Vec::new(), Some(100)).expect("the file");
+        assert_eq!(num_vars, 475);
+
+        let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
+        let read_back = passed_of(&blocks, &chroms);
+        assert_eq!(read_back.len(), 475);
+        assert!(read_back.iter().all(|(_, _, passed)| *passed));
+    }
+
+    /// A source whose blocks have no column of whether each variant passed,
+    /// as a vars file of 1.1 is, gives a file with no such column, of the
+    /// version 1.2 all the same, and its blocks read back have none.
+    #[test]
+    fn passed_column_is_not_in_a_file_written_from_a_source_without_it() {
+        let bytes = cases_written_in_batches_of(3);
+
+        let read = FileReader::try_new(Cursor::new(bytes.clone()), None).expect("an arrow file");
+        let names: Vec<String> = read
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect();
+        assert_eq!(names, ["chrom", "pos", "id", "alleles", "qual", "gts"]);
+        let key = the_popnei_key_of(bytes.clone());
+        assert!(key.contains(r#""format_version":"1.2""#), "{key}");
+
+        let (blocks, _) = blocks_read(bytes, Needs::ALL);
+        assert_eq!(num_vars_of(&blocks), [3, 1]);
+        for block in &blocks {
+            assert_eq!(block.passed, None);
+            assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
+        }
+    }
+
+    /// A file of 1.1, with the six columns it had and no `passed`, is read
+    /// as before, with no column of whether each variant passed in its
+    /// blocks.
+    #[test]
+    fn passed_column_is_not_in_the_blocks_of_a_file_of_1_1() {
+        let mut parts = FileParts::of_cases();
+        parts.popnei = Some(metadata_as_json(&VarsMetadata {
+            format_version: "1.1".to_owned(),
+            ..metadata_of_cases()
+        }));
+        assert_eq!(parts.columns.len(), 6);
+
+        let (blocks, chroms) = blocks_read(parts.written(), Needs::ALL);
+
+        let expected: Vec<ReadRow> = CASES.iter().map(row_read).collect();
+        assert_eq!(rows_of(&blocks, &chroms), expected);
+        for block in &blocks {
+            assert_eq!(block.passed, None);
+        }
+    }
+
+    /// A reader that does not ask for the column, as a reader of 1.1 knows
+    /// nothing of it, reads a file of 1.2 with every other column as it is
+    /// and no `passed` in its blocks.
+    #[test]
+    fn passed_column_of_a_file_of_1_2_is_left_out_by_a_reader_that_does_not_ask_for_it() {
+        let bytes = many_vcf_written(Some(100));
+        let every_other = Needs::ALL.difference(Needs::PASSED);
+
+        let (without, chroms_without) = blocks_read(bytes.clone(), every_other);
+        let (with, chroms_with) = blocks_read(bytes, Needs::ALL);
+
+        assert_eq!(num_vars_of(&without), num_vars_of(&with));
+        for block in &without {
+            assert_eq!(block.passed, None);
+            assert_eq!(block.fields(), every_other);
+        }
+        for block in &with {
+            assert_eq!(block.fields(), Needs::ALL);
+        }
+        assert_eq!(
+            rows_of(&without, &chroms_without),
+            rows_of(&with, &chroms_with)
+        );
+    }
+
+    /// The column read with any other arrow type is refused with the column,
+    /// the type found and `Boolean`.
+    #[test]
+    fn passed_column_of_another_type_names_the_column_and_both_types() {
+        let mut parts = FileParts::of_cases();
+        let passed: ArrayRef = Arc::new(Int8Array::from(vec![1, 0, 0, 1]));
+        parts
+            .columns
+            .push((Field::new("passed", DataType::Int8, false), passed));
+
+        let error = refused(parts.written());
+
+        let Error::VarsColumnType {
+            column,
+            found,
+            expected,
+        } = &error
+        else {
+            panic!("the file whose `passed` is Int8 gave {error}");
+        };
+        assert_eq!(
+            (*column, found.as_str(), expected.as_str()),
+            ("passed", "Int8", "Boolean")
+        );
+    }
+
+    /// A null in the column, which another program can write, is an error
+    /// naming the column and the variant: read as true or as false it would
+    /// keep or drop a variant whose FILTER nobody knows.
+    #[test]
+    fn passed_column_with_a_null_names_the_column_and_the_variant() {
+        let mut parts = FileParts::of_cases();
+        let passed: ArrayRef = Arc::new(BooleanArray::from(vec![
+            Some(true),
+            Some(false),
+            None,
+            Some(true),
+        ]));
+        parts
+            .columns
+            .push((Field::new("passed", DataType::Boolean, true), passed));
+
+        let error = refused_at_the_block(parts.written());
+
+        let Error::VarsNullValue { column, var } = error else {
+            panic!("the file whose third `passed` is a null gave {error}");
+        };
+        assert_eq!((column, var), ("passed", 3));
+    }
+
+    /// A file with the column, written by another program, gives its values
+    /// in the block as they are.
+    #[test]
+    fn passed_column_of_another_program_is_read_as_it_is() {
+        let mut parts = FileParts::of_cases();
+        let passed: ArrayRef = Arc::new(BooleanArray::from(vec![false, true, true, false]));
+        parts
+            .columns
+            .push((Field::new("passed", DataType::Boolean, true), passed));
+
+        let (blocks, _) = blocks_read(parts.written(), Needs::PASSED);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0].passed.as_deref(),
+            Some([false, true, true, false].as_slice())
+        );
+        assert_eq!(blocks[0].fields(), Needs::PASSED);
+    }
+
+    /// Every batch of an arrow file has one schema, so a block that has the
+    /// column after a first one that had not is refused, and so is the
+    /// other way round.
+    #[test]
+    fn passed_column_in_one_block_and_not_in_another_is_refused() {
+        for first_has_it in [true, false] {
+            let mut chroms = ChromTable::new();
+            let mut first = cases_block(&mut chroms);
+            let mut second = cases_block(&mut chroms);
+            let with_it = if first_has_it {
+                &mut first
+            } else {
+                &mut second
+            };
+            with_it.passed = Some(vec![true, false, true, true]);
+            let mut writer =
+                VarsWriter::new(Vec::new(), &cases_individuals(), 2, 4).expect("the writer");
+            writer.write_block(first, &chroms).expect("the first block");
+
+            let error = writer
+                .write_block(second, &chroms)
+                .expect_err("the second block was written");
+
+            let Error::VarsBlockColumns { first, found } = &error else {
+                panic!("the second block gave {error}");
+            };
+            assert_eq!(first.contains(Needs::PASSED), first_has_it);
+            assert_eq!(found.contains(Needs::PASSED), !first_has_it);
+        }
+    }
+
     /// The lengths are written as pairs of a name and a number, with the
     /// escapes a name can need, and parsed back in their order.
     #[test]
@@ -5286,7 +5613,7 @@ mod tests {
         let written = metadata_as_json(&metadata);
         assert_eq!(
             written,
-            r#"{"format_version":"1.1","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[["chr\"2",1500],["chr1",2000]]}"#
+            r#"{"format_version":"1.2","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[["chr\"2",1500],["chr1",2000]]}"#
         );
         assert_eq!(metadata_from_json(&written).expect("parsed back"), metadata);
     }
@@ -5868,6 +6195,7 @@ mod tests {
                 alleles: Some(4),
                 qual: Some(5),
                 gts: Some(6),
+                passed: None,
             }
         );
         assert_eq!(reader.num_vars(), 4);
@@ -5899,6 +6227,7 @@ mod tests {
                 alleles: None,
                 qual: None,
                 gts: Some(0),
+                passed: None,
             }
         );
         assert_eq!(reader.num_vars(), 4);
@@ -6220,7 +6549,9 @@ mod tests {
         let expected: Vec<ReadRow> = CASES.iter().map(row_read).collect();
         assert_eq!(rows_of(&blocks, &chroms), expected);
         for block in &blocks {
-            assert_eq!(block.fields(), Needs::ALL);
+            // The block the file was written from has no column of whether
+            // each variant passed its FILTER, so the file has none.
+            assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
             assert_eq!(block.num_individuals, CASES_INDIVIDUALS);
             assert_eq!(block.ploidy, CASES_PLOIDY);
         }
@@ -6367,6 +6698,7 @@ mod tests {
             id: Some(vec![String::new(); NUM_VARS]),
             alleles: Some(alleles),
             qual: Some(vec![30.0; NUM_VARS]),
+            passed: None,
             vcf_text: None,
         };
         let expected = block.gts.clone();
@@ -6470,6 +6802,7 @@ mod tests {
             alleles: Some(3),
             qual: Some(4),
             gts: Some(5),
+            passed: None,
         };
         assert_eq!(
             projection_of(Needs::ALL, &six),
@@ -6498,6 +6831,7 @@ mod tests {
             alleles: None,
             qual: None,
             gts: Some(0),
+            passed: None,
         };
         assert_eq!(projection_of(Needs::ALL, &one), vec![(VarsColumn::Gts, 0)]);
         assert_eq!(projection_of(Needs::ID, &one), Vec::new());
@@ -6521,6 +6855,7 @@ mod tests {
             alleles: None,
             qual: None,
             gts: Some(1),
+            passed: None,
         };
         assert_eq!(
             projection_of(Needs::ALL, &moved),
@@ -7243,7 +7578,7 @@ mod tests {
     /// does not walk, which ends the list there because popnei cannot say
     /// how many nodes it takes.
     ///
-    /// popnei's own six columns reach four of the arms and no test reaches
+    /// popnei's own seven columns reach four of the arms and no test reaches
     /// the others, so a walk that counted the nodes of one of them wrong
     /// would put every bound after it on another column.
     #[test]
@@ -7922,7 +8257,15 @@ mod tests {
     /// that one batch becomes.
     #[test]
     fn a_batch_whose_arrays_are_a_window_into_longer_ones_is_read_through_it() {
-        let parts = FileParts::of_cases();
+        let mut parts = FileParts::of_cases();
+        // The cases hold no `passed`, so the test gives them one whose
+        // window, `false, true`, is not its first two values: a reader that
+        // took the bits from the start of their buffer would give
+        // `true, false`.
+        let passed: ArrayRef = Arc::new(BooleanArray::from(vec![true, false, true, false]));
+        parts
+            .columns
+            .push((Field::new("passed", DataType::Boolean, false), passed));
         let fields: Vec<Field> = parts
             .columns
             .iter()
@@ -7944,6 +8287,7 @@ mod tests {
                 alleles: Some(3),
                 qual: Some(4),
                 gts: Some(5),
+                passed: Some(6),
             },
         );
         let mut chroms = ChromTable::new();
@@ -7963,6 +8307,7 @@ mod tests {
 
         block.check().expect("the block of the window");
         assert_eq!(block.num_vars, 2);
+        assert_eq!(block.passed, Some(vec![false, true]));
         let expected: Vec<ReadRow> = CASES[1..3].iter().map(row_read).collect();
         assert_eq!(rows_of(&[block], &chroms), expected);
     }
@@ -8016,6 +8361,7 @@ mod tests {
             // The second variant has no quality, which is a NaN in the block
             // and a null in the file.
             qual: Some(vec![quality, f32::NAN]),
+            passed: None,
             vcf_text: None,
         }
     }

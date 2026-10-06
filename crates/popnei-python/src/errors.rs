@@ -573,13 +573,17 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VarsBlockDoesNotFit { .. }
         | popnei::Error::VarsBlockColumns { .. }
         | popnei::Error::VarsChromNameMissing { .. }
-        // The two of the VCF writer, which are of the same kind: a block
+        // The three of the VCF writer, which are of the same kind: a block
         // that holds neither the text of its lines nor every column a line
-        // is written from, and a chromosome number its reader has no name
-        // for. `write_vcf` asks its reader for both, so a user reaches them
-        // only through a reader with a defect.
+        // is written from, a chromosome number its reader has no name for,
+        // and a variant that failed its FILTER from a source whose header
+        // says it keeps no `passed`. `write_vcf` asks its reader for the
+        // first two, and the vars file reader says it keeps `passed` when
+        // the file has the column, so a user reaches them only through a
+        // reader with a defect.
         | popnei::Error::VcfWriterFieldsMissing { .. }
         | popnei::Error::VcfWriterChromNameMissing { .. }
+        | popnei::Error::VcfWriterPassedNotInTheHeader { .. }
         // The one of the filter by regions, which is of the same kind: a
         // block whose chromosome number the table of its reader has no name
         // for, which the filter looks the regions up by.
@@ -818,8 +822,8 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // window of the filter by linkage disequilibrium that is no base
         // pairs wide, all three of which a user gets at the call that adds
         // the filter; the others of that spec, of the filters by regions,
-        // of the first n and at random, are the `ValueError` of the last
-        // arm. The four of the filter of individuals are of it too: a name
+        // of the first n, at random and of the variants that passed, are
+        // the `ValueError` of the last arm. The four of the filter of individuals are of it too: a name
         // that is not an individual of the variants, a name that is there
         // twice, a call that names none, and a second filter of
         // individuals, all of them what a user wrote in the call that adds
@@ -1076,7 +1080,10 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // that gave no variant is here too: which file was read is what a
         // user needs in order to see whether it is the file that holds
         // none or the steps that kept none of what it holds, and the
-        // message says which of the two it was.
+        // message says which of the two it was. So is a source that holds
+        // no record of whether its variants passed their FILTER, which the
+        // filter of the variants that passed refuses: the file to write
+        // again from its VCF is the one the message starts with.
         _ => PyValueError::new_err(what_a_user_reads(&error, message, path)),
     }
 }

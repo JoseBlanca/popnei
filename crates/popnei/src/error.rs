@@ -2699,8 +2699,9 @@ pub enum Error {
 
     /// A column of the vars file has no value for one of its variants,
     /// where every variant has one: the chromosome, the position, the
-    /// alleles and the genotypes. A null `id` is the empty id and a null
-    /// `qual` is a variant with no quality, and neither is an error.
+    /// alleles, the genotypes and whether it passed its FILTER. A null `id`
+    /// is the empty id and a null `qual` is a variant with no quality, and
+    /// neither is an error.
     #[error(
         "the `{column}` column of the vars file has no value for its variant {var}, and every variant has one"
     )]
@@ -2958,6 +2959,24 @@ pub enum Error {
     VcfWriterChromNameMissing {
         /// The number that has no name.
         number: u32,
+    },
+
+    /// A block given to the VCF writer from a source of columns holds a
+    /// variant whose `passed` is false, and the header of its source says
+    /// that the source keeps no `passed`, so the header written before the
+    /// first block has no `##FILTER` line for its `FAIL`. The vars file
+    /// reader says it keeps `passed` when the file has that column, so a
+    /// user reaches this only through a reader with a defect.
+    #[error(
+        "a block given to the VCF writer holds a variant that failed its FILTER, on {chrom} at the position {pos}, and the header of its source says that it keeps no `passed`, so the `##FILTER` line of its `FAIL` was not written"
+    )]
+    VcfWriterPassedNotInTheHeader {
+        /// The chromosome of the first variant of the block that failed:
+        /// its name in the table of the reader, or its number in that table
+        /// when the table has no name for it.
+        chrom: crate::filters::TheChromOfTheVariant,
+        /// The position of that variant.
+        pos: u64,
     },
 
     /// The vars file or the VCF could not be written: the sink refused the
@@ -3374,6 +3393,28 @@ pub enum Error {
     /// are his.
     #[error("the file has no variants and the ploidy can't be inferred")]
     VcfPloidyOfNoVariants,
+
+    /// A block given to the filter of the variants that passed their FILTER
+    /// that has no `passed` column, whether each of its variants passed. A
+    /// vars file written before format 1.2, or from a source that had no
+    /// such column, may hold variants that failed, and taking every variant
+    /// of it as passed would give a result with no sign that they are
+    /// there; the owner decided on 6 October 2026 that it is refused. It is
+    /// of the source, and in Python its message starts with the path of the
+    /// file.
+    #[error(
+        "the variants hold no record of whether they passed their FILTER, so the filter of the variants that passed cannot run on them: a vars file holds it from format 1.2, written from a VCF"
+    )]
+    PassedNotRecorded,
+
+    /// A second filter of the variants that passed their FILTER. It keeps
+    /// the variants the first one kept, so a second one says that the user
+    /// has lost track of the filters their variants carry, as a second
+    /// filter that keeps variants at random does.
+    #[error(
+        "the variants are filtered by passed already, and a second filter of that kind would keep the same variants as the first"
+    )]
+    PassedFilterThatIsSet,
 }
 
 /// The two arguments of a filter that keeps variants at random, which
@@ -3429,7 +3470,8 @@ impl Error {
             // filter of the first n asked for 0 variants and a step that
             // takes variants out after it; the keep rate of the filter that
             // keeps variants at random that is not a number from 0 to 1, and
-            // a second filter of that kind; the
+            // a second filter of that kind; a second filter of the variants
+            // that passed their FILTER; the
             // four of the filter of individuals and the four of the
             // populations a statistic is calculated for, a name that is of
             // nobody, a name that is there twice, a set that names nobody,
@@ -3449,6 +3491,7 @@ impl Error {
             | Self::FirstNThatIsSet { .. }
             | Self::RandomFilterKeepRateOutOfRange { .. }
             | Self::RandomFilterThatIsSet { .. }
+            | Self::PassedFilterThatIsSet
             | Self::IndividualNotInTheSource { .. }
             | Self::IndividualNamedTwice { .. }
             | Self::NoIndividualNamed
@@ -3702,6 +3745,7 @@ impl Error {
             | Self::VarsChromNameMissing { .. }
             | Self::VcfWriterFieldsMissing { .. }
             | Self::VcfWriterChromNameMissing { .. }
+            | Self::VcfWriterPassedNotInTheHeader { .. }
             | Self::VcfWriterMemberNotBuilt { .. }
             | Self::RegionFilterChromNameMissing { .. }
             | Self::PcaTableOfAnotherSize { .. }
@@ -3744,10 +3788,13 @@ impl Error {
             // chromosome, which the filter by linkage disequilibrium is the
             // one reader of popnei to refuse, a pass that gave no variant,
             // the fields a consumer asked a block for and the name of a
-            // field itself, a kinship of a file whose entries are not
+            // field itself, a source that holds no record of whether its
+            // variants passed their FILTER, which the filter of the
+            // variants that passed refuses at its first block, a kinship of a file whose entries are not
             // finite, and the sizes the distances between individuals
             // cannot be calculated at over the individuals of that file.
             | Self::FieldsNotInTheBlock { .. }
+            | Self::PassedNotRecorded
             | Self::LdFilterVariantOutOfOrder { .. }
             | Self::HistRangeTooWide { .. }
             | Self::HistTooManyBins { .. }

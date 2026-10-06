@@ -60,8 +60,18 @@ def open_vcf(
 
     `only_passed` leaves out the variants that failed a filter, those whose
     FILTER column is neither ``PASS`` nor a dot; a dot says that no filter
-    was applied. With it false every variant of the file is given, and
-    nothing then says which ones had failed.
+    was applied. A FILTER of ``PASS;q10`` failed: popnei reads the whole
+    column. With it false every variant of the file is given, and each
+    carries whether it passed, which :meth:`Variants.filter_passed` reads
+    and :func:`popnei.write_vars` keeps.
+
+    The two are for two uses. `only_passed`, the default, drops a line that
+    failed before its genotypes are read, which is the faster when the
+    variants that failed are never wanted. ``only_passed=False`` and
+    :meth:`Variants.filter_passed` take out the same variants as a step of
+    every pass, so that how many failed is in the counts of the pass beside
+    what each other filter took out, and the variants that failed are still
+    there for a pass without that filter.
 
     It is pyNei's ``vars_from_vcf`` under another name, with the ploidy and
     the filter as arguments, which pyNei has not. pyNei gives every variant,
@@ -95,10 +105,12 @@ def write_vcf(variants: Variants, path: str | Path) -> VcfWritten:
 
     When the source is a vars file, the lines hold what the file holds:
     the chromosome, the position, the id, the alleles, the quality and the
-    genotypes, with FILTER and INFO a dot, FORMAT ``GT`` and the alleles of
-    each genotype joined by ``/``, since a vars file keeps no phase. The
-    header has one ``##contig`` line for each chromosome whose length the
-    vars file keeps.
+    genotypes, with INFO a dot, FORMAT ``GT`` and the alleles of each
+    genotype joined by ``/``, since a vars file keeps no phase. FILTER is a
+    dot, or ``FAIL`` for a variant that failed its FILTER in the VCF the vars
+    file was written from, and then the header has a ``##FILTER`` line for
+    ``FAIL``. The header also has one ``##contig`` line for each chromosome
+    whose length the vars file keeps.
 
     The lines are written in the order the source gives them, so a source
     that is not sorted gives a file that tabix refuses to index. A VCF read

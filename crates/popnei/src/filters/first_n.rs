@@ -220,7 +220,8 @@ pub fn stopped_early(steps: &[PassStep], filtering: &[(&'static str, FilteringSt
         PassStep::VarFilter(_)
         | PassStep::KeepIndividuals(_)
         | PassStep::Regions(_)
-        | PassStep::Random { .. } => None,
+        | PassStep::Random { .. }
+        | PassStep::Passed => None,
     }) else {
         return false;
     };
@@ -257,14 +258,18 @@ pub fn first_n_step(num_vars: u64) -> Result<PassStep> {
 /// # Errors
 ///
 /// When `set` holds a [`PassStep::FirstN`] and `new` is a threshold filter,
-/// the filter by linkage disequilibrium, a filter by regions of either kind
-/// or the filter that keeps variants at random, with the kind of `new`. The filter of individuals takes no variant
+/// the filter by linkage disequilibrium, a filter by regions of either kind,
+/// the filter that keeps variants at random or the filter of the variants
+/// that passed, with the kind of `new`. The filter of individuals takes no variant
 /// out and is not refused; a second filter of the first n is the error of
 /// [`refuse_a_second_filter_of_a_kind`](crate::filters::refuse_a_second_filter_of_a_kind),
 /// which says what two of them do.
 pub(crate) fn refuse_a_step_after_the_first_n(set: &[PassStep], new: &PassStep) -> Result<()> {
     let takes_variants_out = match new {
-        PassStep::VarFilter(_) | PassStep::Regions(_) | PassStep::Random { .. } => true,
+        PassStep::VarFilter(_)
+        | PassStep::Regions(_)
+        | PassStep::Random { .. }
+        | PassStep::Passed => true,
         PassStep::KeepIndividuals(_) | PassStep::FirstN(_) => false,
     };
     if takes_variants_out && set.iter().any(|step| matches!(step, PassStep::FirstN(_))) {

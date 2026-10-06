@@ -11,11 +11,12 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The eight methods that add a filter are here as well, one for each of the
+//! The nine methods that add a filter are here as well, one for each of the
 //! three numbers of a variant a filter compares, one for the filter by
 //! linkage disequilibrium, one for the individuals to keep, one for the
-//! regions of a BED file, one for the first n variants and one for the
-//! variants kept at random, and each of them refuses at the call what a
+//! regions of a BED file, one for the first n variants, one for the
+//! variants kept at random and one for the variants that passed their
+//! FILTER, and each of them refuses at the call what a
 //! user cannot filter by: a threshold that is not a number from 0 to 1,
 //! under the name of the argument they wrote it in; a keep rate that is not
 //! a number from 0 to 1, and a seed that is not a whole number of 64 bits; a
@@ -355,6 +356,19 @@ impl Steps {
                 (KEEP_RATE, Argument::KeepRate(keep_rate)),
                 (SEED, Argument::Seed(seed)),
             ],
+        };
+        self.add(step)
+    }
+
+    // The variants whose FILTER, in the VCF they were read from, was `PASS`
+    // or a dot. It takes no argument, so all the call can refuse is a
+    // second filter of this kind and this one after the filter of the first
+    // n; a source with no record of which variants passed is refused by the
+    // core at the first block of a pass, where the file is known.
+    fn filter_passed(&self) -> Result<(), PyPopneiError> {
+        let step = Step {
+            pass_step: PassStep::Passed,
+            args: Vec::new(),
         };
         self.add(step)
     }

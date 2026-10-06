@@ -28,17 +28,21 @@ they were built.
 ### What it gives
 
 A consumer, a filter, a calculation or a writer, says which fields of the
-variants it wants with a `Needs`, a set of five flags: the genotypes, the
-chromosome and the position, which travel together, the id, the alleles
-and the quality. A reader may skip the rest: most calculations want the
+variants it wants with a `Needs`, a set of seven flags. Five are the
+genotypes, the chromosome and the position, which travel together, the
+id, the alleles and the quality. A reader may skip the rest: most calculations want the
 genotypes alone, and the VCF reader then does not parse the other columns
 and the vars file reader does not decompress them. The quality is the QUAL
 column of a VCF, phred scaled: minus ten times the base ten logarithm of
 the probability that there is no variant at that site, so 30 is one in a
-thousand. A sixth flag, `VCF_TEXT`, added on 26 September 2026, asks the
+thousand. `VCF_TEXT`, added on 26 September 2026, asks the
 VCF reader for the text of each line, which only the VCF writer of
-`docs/specs/io_vcf.md` wants; it is not in `ALL`, the five that
+`docs/specs/io_vcf.md` wants; it is not in `ALL`, the six that
 `write_vars` asks for, because the vars file has no place for it.
+`PASSED`, whether each variant passed its FILTER, was added on 6 October
+2026 and is in `ALL`, which holds six of the seven; the tests that
+compare a set of fields with `ALL`, or a vars file with format 1.1 or six
+columns, change with it.
 
 The chromosome of a variant is a number, an index into the table of
 chromosome names that its reader keeps, the `ChromTable`, so that a block
@@ -353,9 +357,14 @@ impl Needs {
     pub const ID: Needs;
     pub const ALLELES: Needs;
     pub const QUAL: Needs;
+    /// Whether each variant passed its FILTER, the `passed` column of a
+    /// block, added on 6 October 2026 for the filter of the variants that
+    /// passed of `docs/specs/filters.md`.
+    pub const PASSED: Needs;
     /// The text of the lines of a VCF, for its writer. Not in ALL.
     pub const VCF_TEXT: Needs;
-    /// GTS to QUAL, the five above VCF_TEXT, built from them.
+    /// GTS to QUAL and PASSED, the six that a vars file holds, built from
+    /// them.
     pub const ALL: Needs;
     pub fn empty() -> Needs;
     pub fn contains(self, fields: Needs) -> bool;

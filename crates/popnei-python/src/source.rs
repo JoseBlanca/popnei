@@ -308,6 +308,10 @@ impl Blocks {
             id,
             alleles,
             qual,
+            // Whether each variant passed its FILTER is for the filter of
+            // the variants that passed, and not a field that `iter_blocks`
+            // gives.
+            passed: _,
             // The text of the lines of a VCF is for its writer, and not a
             // field that `iter_blocks` gives.
             vcf_text: _,

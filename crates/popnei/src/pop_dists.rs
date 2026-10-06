@@ -2863,6 +2863,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let mut reader = GivenBlocks::of(individuals, vec![block], false);
@@ -2956,6 +2957,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let mut reader = GivenBlocks::of(individuals, vec![block], false);
@@ -3001,6 +3003,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let mut reader = GivenBlocks::of(individuals, vec![block], false);
@@ -3150,6 +3153,7 @@ mod tests {
                 id: None,
                 alleles: None,
                 qual: None,
+                passed: None,
                 vcf_text: None,
             })
             .collect()
@@ -4399,6 +4403,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }
     }

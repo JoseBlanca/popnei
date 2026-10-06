@@ -1802,7 +1802,7 @@ impl PassCounts {
 
     /// The kind of each filter of the chain, the outermost first:
     /// `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`, `"regions"`,
-    /// `"excluded_regions"`, `"first_n"` or `"random"`.
+    /// `"excluded_regions"`, `"first_n"`, `"random"` or `"passed"`.
     #[must_use]
     pub fn kinds(&self) -> Vec<String> {
         self.kinds.clone()
@@ -1967,6 +1967,10 @@ impl Blocks {
             id,
             alleles,
             qual,
+            // Whether each variant passed its FILTER is for the filter of
+            // the variants that passed, and not a field that `iterBlocks`
+            // gives.
+            passed: _,
             // The text of the lines of a VCF is for its writer, and not a
             // field that `iterBlocks` gives.
             vcf_text: _,

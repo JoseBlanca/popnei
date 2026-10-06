@@ -17,19 +17,20 @@
 //!
 //! A pass reads every byte of the file whatever is asked for, and
 //! decompresses only the columns that were asked for, so the two passes
-//! differ in the decompression and in the vectors the other five columns
-//! are built into.
+//! differ in the decompression and in the vectors the other columns are
+//! built into.
 //!
 //! The file is not the one the spec took its 19.1 to 19.3 ms on. That one
 //! held the `gts` column alone and pyarrow 23.0.0 wrote it, 15.68 MB; this
-//! one holds the six columns of a vars file, popnei wrote it, so `lz4_flex`
-//! compressed its buffers, and it is 16280410 bytes for the panel of 20000
-//! variants. The genotypes are of the same simulation, and the 3 in 100
-//! that are missing are drawn at another point of the generator than
-//! pyNei's script draws them at, so the compressed bytes are not the same
-//! either. What stands against the 21 ms is still the pass with the
+//! one holds every column of a vars file, popnei wrote it, so `lz4_flex`
+//! compressed its buffers, and it was 16280410 bytes for the panel of 20000
+//! variants when a vars file had six columns, before format 1.2 added
+//! whether each variant passed its FILTER. The genotypes are of the same
+//! simulation, and the 3 in 100 that are missing are drawn at another
+//! point of the generator than pyNei's script draws them at, so the
+//! compressed bytes are not the same either. What stands against the 21 ms is still the pass with the
 //! genotypes alone: it decompresses that one column, and reads past the
-//! buffers of the other five without decompressing them.
+//! buffers of the others without decompressing them.
 //!
 //! Before any of the three is timed there is one pass with every field
 //! asked for whose time is not taken. The first touch of the memory a pass
@@ -373,6 +374,7 @@ impl Digest {
             id,
             alleles,
             qual,
+            passed,
             vcf_text,
         } = block;
         self.number(place);
@@ -423,6 +425,13 @@ impl Digest {
                 // The bits, because a quality that no variant has is NaN and
                 // NaN is equal to nothing, itself included.
                 self.number(u64::from(quality.to_bits()));
+            }
+        }
+        self.there(passed.is_some());
+        if let Some(passed) = passed {
+            self.count(passed.len());
+            for passed_it in passed {
+                self.number(u64::from(*passed_it));
             }
         }
         self.there(vcf_text.is_some());
@@ -517,7 +526,7 @@ fn read_the_file(bytes: &[u8], needs: Needs, asked_for: Needs) -> Result<Run, St
     let mut sum: i64 = 0;
     while let Some(block) = reader.next_block().map_err(|problem| problem.to_string())? {
         // The check is inside the clock, where it costs one test of each of
-        // the five columns of a block, four blocks in a file of this panel,
+        // the columns of a block, four blocks in a file of this panel,
         // against the millions of genotypes of the sum beside it. A
         // consumer of blocks asks the same of every block it is given.
         the_fields_are(block.fields(), asked_for)?;

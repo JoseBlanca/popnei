@@ -500,6 +500,7 @@ fn block_of(gts: &[i8], chrom: u32, first_var: usize) -> Block {
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     }
 }
@@ -509,6 +510,7 @@ static NO_HEADER: SourceHeader = SourceHeader {
     individuals: Vec::new(),
     chrom_lengths: Vec::new(),
     vcf_meta_lines: None,
+    keeps_passed: false,
 };
 
 impl BlockReader for BlocksInMemory {

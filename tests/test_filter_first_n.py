@@ -280,6 +280,7 @@ _STEPS_THAT_TAKE_VARIANTS_OUT = {
     "excluded_regions": lambda variants: variants.filter_by_regions(
         _REGIONS_BED, exclude=True
     ),
+    "passed": lambda variants: variants.filter_passed(),
 }
 _REGIONS_BED = Path(__file__).parent / "reference" / "filters" / "regions.bed"
 
