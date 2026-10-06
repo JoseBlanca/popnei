@@ -10,18 +10,25 @@ first genotype that is not a single dot, in the first 4096 data lines, and
 the opening fails with words that ask for the ploidy when none is there.
 A VCF with a header and no data line, opened with no ploidy, is refused
 with "the file has no variants and the ploidy can't be inferred", as you
-decided. A ploidy that is given means what it meant before. Every check of
-the `coding` skill passes, with no fewer tests than before the plan, but
-for the node test of the kinship that failed on `main` before it. Nothing
-is left open. What is asked of you is the order to merge the branch into
-`main`, and with it issue 8 can be closed.
+decided. A ploidy that is given means what it meant before. Below, "the
+search" is that reading of the ploidy when the file is opened, and "a
+pass" is one reading of the file by a calculation.
+
+Every check of the `coding` skill passes, and each runs more tests than
+before the plan. One node test fails, `a kinship that does not tell the
+two variances apart gives none of them`, which failed in the same way on
+`main` at df92324 before the plan and is not of it. No decision of the
+spec is left open; two small things were seen and not taken, under "What
+the review found". What is asked of you is the order to merge the branch
+into `main`, and with it issue 8 can be closed.
 
 ## 1. The ploidy read from the file
 
 Task 1.1, the core, is 51a860d: `ploidy_of_vcf`, `NUM_LINES_FOR_THE_PLOIDY`,
 the error cases `VcfPloidyNotRead` and `VcfPloidyOfNoVariants`, and the new
 words of `VcfPloidyOutOfRange` and `VcfGenotypePloidy`. `cargo test -p
-popnei --lib io::vcf::tests::ploidy_of_vcf` runs 31 tests, which pass. The
+popnei --lib io::vcf::tests::ploidy_of_vcf` runs 31 tests, which pass; the
+fixes of the review brought them to 34. The
 search builds a `VcfReader` and reads the data lines through its source, so
 the header is read by the reader's own code.
 
@@ -54,7 +61,8 @@ Each run on 2a6c486, after the fixes of the review, on 6 October 2026.
 | 6, the API | `inspect.signature(popnei.open_vcf)`; `hasattr(_core, "DEFAULT_PLOIDY")` | `ploidy: int \| None = None`; `False`; `default_ploidy` is in no file of the wasm package |
 
 `cargo fmt --check`, `cargo clippy -D warnings`, `cargo wasm-check` and
-`cargo wasm-check-js` pass. The baseline was 1419, 1269, 734 and 543.
+`cargo wasm-check-js` pass. Before the plan, on df92324, the four suites
+ran 1419, 1269 and 734 tests that passed and 543 node tests.
 
 ### What the review found
 
@@ -86,10 +94,12 @@ was corrected in 05b5da1:
   of 8 KiB where a pass has 256 KiB and a copy of the error of a file that
   could not be opened. The core has `ploidy_of_vcf_at`, which shares the
   opening of `from_path` (7c11a26).
-- The Python error of a value read from the file made every error that
-  names no file a `ValueError`, so a defect of popnei passing through it
-  later would have read as a wrong input. It names the one case, the
-  ploidy out of range, and sends the rest to the usual mapping (72b87eb).
+- When the search gave an error that carries no path, the Python binding
+  made it a `ValueError` with the path, whatever the error was, so a
+  defect of popnei passing that way later would have read as a wrong
+  input. The binding now does this for the one error of that kind the
+  search gives, a ploidy above 255 read from a genotype, and sends every
+  other error to the usual mapping of errors to exceptions (72b87eb).
 - The doc comment of `openVcf` said that both refusals ask for the ploidy,
   and the one of a file with no variant does not; a node test of a
   genotype of 256 alleles; the bound linked to its constant in the Rust
@@ -110,8 +120,8 @@ not wrong, and is left as it is.
   the ploidy 2 to keep checking the error of a pass, and new tests check
   the error at the call.
 - Opening a file now reads it twice up to its first genotype with alleles.
-  The architecture reviewer timed the worst case the spec names, a release
-  build, 100000 individuals and 4095 lines of single dots, 820 MB: the
+  The architecture reviewer timed the worst case the spec names on the
+  owner's machine, with a release build, 100000 individuals and 4095 lines of single dots, 820 MB: the
   search took 1.67 to 1.93 s, and a whole pass 0.43 s on all threads and
   3.0 s on one. A file whose first line has a called genotype opens in
   about the time of a read of its header.
