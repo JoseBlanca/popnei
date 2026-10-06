@@ -121,59 +121,80 @@ that `docs/rust_core.md` reports and whose code is `spike/pynei_spike` in
 the pyNei repository.
 
 The caller may give the ploidy, and when they do not, popnei reads it from
-the file when the file is opened: it is the number of alleles of the first
-genotype that is not a single `.`, the genotypes taken in the order of the
-lines and, in a line, of the individuals. A single `.` is a missing
-genotype of any ploidy and says nothing of it, while `./.` holds two
-missing alleles and says 2. A separator at the start is taken off first,
-as everywhere in the reader, so `/0/1/1` says 3 and `/.` is a single dot.
-Every data line is looked at, those that failed their filter among them:
-the ploidy of a file is the same on every line, and the first lines of a
-file of calls are often failed ones. An empty line, which the reader
-skips, is not a data line. The search stops at the first genotype with
-alleles, so in nearly every file it reads the header and one line, a
-second time, since the reader of the opening reads the header too.
+the file when the file is opened. The search for it, `ploidy_of_vcf` of
+"The Rust interface", reads the header as the reader does, with the same
+errors, so a source that is not a VCF is refused with the words it has
+today. Then it takes the genotypes in the order of the data lines and, in a
+line, of the individuals, and the ploidy is the number of alleles of the
+first genotype that is not a single `.`. A single `.` is a missing genotype
+of any ploidy and says nothing of it, while `./.` holds two missing alleles
+and says 2. A separator at the start is taken off first, as everywhere in
+the reader, so `/0/1/1` says 3 and `/.` is a single dot. Every data line is
+looked at, those that failed their filter among them: the ploidy of a file
+is the same on every line, and the first lines of a file of calls are often
+failed ones. An empty line, which the reader skips, is not a data line.
 
-The search looks at 4096 data lines at most, `NUM_LINES_FOR_THE_PLOIDY`.
-When none of them holds a genotype with alleles, the opening fails with a
-`ValueError` that says to give the ploidy: "the first 4096 variants of
-the VCF have no genotype with alleles, only missing ones written as a
-dot, so its ploidy cannot be read from it; give the ploidy". A file whose
-lines end before the search finds a genotype with alleles is **Open 1**,
-below. The bound is there so that a file of missing genotypes is not read
-to its end when it is opened; it is a number of lines and not a block,
-because the size of a block is computed from the ploidy, and it is not
-the batch of the reader, which is one line in wasm. In the worst case,
-4096 lines of single dots, the search reads 4096 x 2 bytes for each
-individual, 82 MB for 10000 individuals.
+The search takes the ploidy only from a genotype it can read: in a line of
+ten columns or more whose FORMAT has `GT`, a `GT` value made of allele
+numbers and dots between separators. It skips, and goes on to the next
+genotype, a line of fewer columns, a FORMAT with no `GT`, a column with no
+value at the place of `GT`, an empty genotype and one with something else
+in it, `0/x/1`. It reports none of them: each is refused by the pass that
+reads it, as for a ploidy that was given, and so are an allele number that
+REF and ALT do not declare and a column of individuals too few. A
+genotype the search counted wrongly would give a wrong ploidy that no error
+follows in a pass that reads the positions alone, which is what issue 8
+is about, so the search counts only what the reader would read as a
+genotype. A genotype it can read of more than `MAX_PLOIDY` alleles gives a
+ploidy out of range, the error of a ploidy given out of range, whose words
+say "the ploidy of the VCF" and no longer "the ploidy asked of the
+reader".
 
-The search reads of a line its FORMAT and the genotypes it looks at.
-What else is wrong in the lines it looks at, an allele number that REF
-and ALT do not declare or a column of individuals too few, is found by the
-pass that reads them, as for a ploidy that was given. Two things are
-refused at the opening, each with the error of a data line that names the
-line and the individual or the column, because the search cannot go on
-past them: a line whose FORMAT has no `GT`, and a genotype of more than
-`MAX_PLOIDY` alleles.
+The search stops at the first genotype with alleles, so in nearly every
+file it reads the header and the first data line. The file is then opened
+again for the reader that reads the individuals, and once more for each
+pass, as it is today. It looks at 4096 data lines at most,
+`NUM_LINES_FOR_THE_PLOIDY`, and when none of them holds a genotype with
+alleles the opening fails with a `ValueError` that says to give the
+ploidy: "none of the first 4096 data lines of the VCF holds a genotype
+with alleles, so its ploidy cannot be read from the file; give the
+ploidy". A file whose data lines end before 4096 and hold none gives the
+same error, with the number of lines it had, since the ploidy 2 would reach
+a result: the missing alleles of a missing genotype, which a filter by
+missing data and the counts of a statistic count, are one for each allele
+of the ploidy. A file with a header and no data line is **Open 1**, below.
+
+The bound keeps the opening of a file of missing genotypes from reading it
+to its end. 4096 lines was chosen here, as a number that a file of calls
+does not reach with every genotype missing; nothing has measured it. It
+is a number of lines and not a block, because the size of a block is
+computed from the ploidy. In the worst case, lines whose columns are a
+single dot and nothing else, the search reads 2 bytes for each individual
+and line, 82 MB of text for 10000 individuals; a FORMAT with more keys
+makes a line longer.
+
+An error of the source that the search meets is an error of the opening:
+a bgzipped file whose second member is corrupted fails at `open_vcf` and
+`openVcf` when no ploidy is given, where it failed at the first pass,
+because the first member of such a file can hold the header and no whole
+data line.
 
 The ploidy that was read is the one the variants are read with, as if the
 caller had given it, and it is the `ploidy` that the `Variants` of
 `open_vcf` reports. A genotype of another number of alleles further on is
 refused when a pass reads it, as for a ploidy that was given: the file is
-of mixed ploidies. The words of that error say that the genotype is of
-one ploidy and the variants are read with the other, and no longer that
-the reader was asked for the other, which a caller who gave no ploidy did
-not do.
+of mixed ploidies. The words of that error become "line {line} of the VCF,
+the column of {individual}: its genotype is of the ploidy {found} and the
+variants are read with the ploidy {expected}; popnei does not read a VCF
+whose genotypes are of different ploidies", which hold for a ploidy that
+was read and for one that was given.
 
 The owner decided on 6 October 2026, from issue 8, that the ploidy is read
 from the file when it is not given. Before, it was always given, with 2
 when the caller said nothing, and to take it from the first genotype was
-the option not taken. With the 2 a tetraploid file opened with no ploidy
-gave "ploidy 2" and the right number of variants, and the error came at
-the first pass that read genotypes, which a pass that reads the positions
-alone, the density of the variants, never does: the review of popnei_web
-of 5 October 2026 opened `tetraploid.vcf.gz` that way and got its 200
-variants and no error.
+the option not taken; a tetraploid file opened with no ploidy then gave
+its variants as diploid ones and an error only at the first pass that read
+genotypes.
 
 ### Its Python and TypeScript functions
 
@@ -212,8 +233,8 @@ The differences from pyNei:
 - The name, `open_vcf` for `vars_from_vcf`.
 - The `ploidy` argument is new, and the rule above with it. Left out, it
   is read from the file as pyNei means to read it, with two differences:
-  pyNei takes the first genotype of the first line whatever it is, a
-  single `.` among them, where popnei looks on to the first genotype with
+  pyNei takes the genotype of the first individual in the first data
+  line whatever it is, a single `.` among them, where popnei looks on to the first genotype with
   alleles; and pyNei gets 2 for every file (see "What pyNei does that is
   odd").
 - The `only_passed` argument is new, and by default the variants that
@@ -799,21 +820,31 @@ returns:
 | `3:0/1/1` and the others, under the FORMAT `DP:GT` | 3 |
 | 4095 lines of `. . .`, and then a line `0/1 . .` | 2 |
 | 4096 lines of `. . .`, and then a line `0/1 . .` | the error, with 4096 |
-| a FORMAT `DP` in the first line | the error of that line, at the FORMAT column |
-| a genotype of 256 alleles first | the error of that line, at its individual |
+| a FORMAT `DP` in the first line, and then `0/1 0/0 1/1` | 2 |
+| `0/x/1 1/1/1 .` | 3 |
+| `DP:GT` with `3 0/1 .`, the first column with no `GT` value | 2 |
+| a line of eight columns, and then `0/1 0/0 1/1` | 2 |
+| 3 lines of `. . .` and no more | the error, with 3 |
+| a genotype of 256 alleles first | the error of a ploidy out of range, with 256 |
+| bytes that are not a VCF | the error of a source that is not a VCF |
 
 And these, on the files of the repository: `cases.vcf.gz` gives 2,
 `tests/reference/dists/haploid.vcf.gz` 1, and
 `tests/reference/dists/tetraploid.vcf.gz` 4. A file with a header and
-no variant, and one of three lines of `. . .` and no more, give what
-**Open 1** decides. The test of the error asserts its words, with the
-number of lines in them. A test of the words of the error of a genotype
-of another ploidy asserts that they no longer say "asked for".
+no data line gives what **Open 1** decides, the ploidy 2 meanwhile. The
+test of the error of the search asserts its words, with the number of
+lines in them, and the tests of the errors of a genotype of another
+ploidy and of a ploidy out of range assert their new words.
 
 At `open_vcf`, pytest: `tetraploid.vcf.gz` opened with no ploidy has
 `ploidy` 4 and gives its 200 variants with four alleles each, and
 `haploid.vcf.gz` has `ploidy` 1; a file of 4096 lines of single dots is a
-`ValueError` at the call, whose message starts with the path. The
+`ValueError` at the call, whose message starts with the path. The tests of
+a bgzipped file whose second member is corrupted, in
+`tests/test_corrupted_bgzip.py` and `js/popnei/test/corrupted.test.ts`,
+give the ploidy 2, so that they still check the error of a pass, and one
+more test of each opens that file with no ploidy and gets the error at the
+call. The
 comparison with pyNei of `docs/specs/block.md` opens its files with no
 ploidy, so its check of `ploidy` against pyNei's 2 is made through the
 search. In TypeScript, under node: `openVcf` of the bytes of
@@ -1205,7 +1236,8 @@ own, opened as a pass is, from the first byte, and builds the reader of
 the opening and the readers of every pass with the ploidy it returns, as
 if the caller had given it. So `VcfReader::new` does not change, and a
 file is read once more, up to its first genotype with alleles, when it is
-opened. Neither binding gives `DEFAULT_PLOIDY` to its package any longer:
+opened. `ploidy_of_vcf` returns `DEFAULT_PLOIDY` for a file with a header
+and no data line, the "meanwhile" of **Open 1**. Neither binding gives `DEFAULT_PLOIDY` to its package any longer:
 `default_ploidy` of the wasm crate and `DEFAULT_PLOIDY` of `popnei._core`
 go out.
 
@@ -1291,7 +1323,8 @@ Six are a `ValueError`, since a file whose content is not what a VCF
 holds is a wrong input like a wrong argument: the source is not a
 VCF, with what was found; a wrong header, with what is wrong; a ploidy
 out of range, which is the one thing `new` refuses that is not in the
-source, with the ploidy that was asked for; a wrong data line, with the
+source and which `ploidy_of_vcf` gives for a genotype of more than
+`MAX_PLOIDY` alleles, with the ploidy; a wrong data line, with the
 number of the line, the column or the individual, and what is wrong; a
 genotype of another ploidy, with the line, the individual, the ploidy of
 the genotype and the one the variants are read with; and a ploidy that
@@ -1594,24 +1627,27 @@ decompresses to the bytes of the plain one.
 The owner decides these, and the implementer follows the "meanwhile" of
 each until they do.
 
-**Open 1. A file whose lines end before a genotype with alleles, opened
-with no ploidy.** A VCF with a header and no variant, or with a few lines
-whose genotypes are all single dots and no more, has no genotype the
-ploidy can be read from, and none that a ploidy would contradict. The
-options:
+**Open 1. A VCF with a header and no data line, opened with no ploidy.**
+Such a file has no genotype the ploidy can be read from, and none that a
+ploidy would reach: every pass over it gives no variant, so the ploidy is
+seen only as the `ploidy` of its `Variants`. The options:
 
-- Refuse it at the opening with the words of the search that gave up,
-  the number in them being the data lines the file had, 0 for a header
-  alone. No ploidy is ever made up, and the error says what to do. A
-  file of no variant, which gives no variants and no error when a ploidy
-  is given, as the owner decided on 20 September 2026, then needs one.
-- Open it with the ploidy 2. Such a file opens as it does today, and the
-  `Variants` reports a ploidy that nothing in the file says. A count of
-  missing alleles of those variants, in a filter by missing data or in
-  the counts of a statistic, would be one for each allele of that ploidy,
-  so the 2 would reach a result.
+- Open it with the ploidy 2, `DEFAULT_PLOIDY`. It opens as it does today,
+  when a ploidy is given or left at 2, and gives no variants and no error
+  at the opening, as the owner decided on 20 September 2026 for a VCF with
+  no variants. Its `Variants` reports a ploidy of 2 that nothing in the
+  file says. About 16 tests, 9 in pytest and 7 in node, open such a file
+  with no ploidy, most to check the error "the pass gave no variant and its
+  source holds none", and they stay as they are.
+- Refuse it at the opening, with the error of the search and 0 lines in
+  it. No ploidy is ever made up. A user who opens a file with no variant
+  gets this error and not the one of a pass with no variant, and those 16
+  tests give the ploidy 2. pyNei refuses such a file too, in
+  `_parse_metadata`, with "Empty VCF file, it has no variants".
 
-The recommendation is to refuse it. Meanwhile, it is refused.
+The recommendation is the ploidy 2: no result depends on it, and the
+decision of 20 September 2026 stands. Meanwhile, `ploidy_of_vcf` returns
+2 for such a file.
 
 The owner decided on 26 September 2026 the one the writer had, what it
 does with AC and AN when individuals were taken out, which is written under
