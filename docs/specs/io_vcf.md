@@ -1484,7 +1484,9 @@ vars file could not, since it is the case of both writers. A
 `ValueError`. A block of a VCF that holds no text, a block whose text is
 not of its variants or of its individuals, and a chromosome number the
 table of its reader has no name for are a defect of popnei, a
-`RuntimeError`, and so is a member of bgzip that could not be put
+`RuntimeError`, and so is a block with a variant whose `passed` is false
+from a source whose header says that it keeps no `passed`, since its
+`FAIL` would go out with no `##FILTER` line, and so is a member of bgzip that could not be put
 together, which names the file being written.
 
 ## Speed

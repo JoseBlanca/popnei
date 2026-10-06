@@ -559,6 +559,11 @@ pub struct SourceHeader {
     /// The lines of the header of a VCF before `#CHROM`, as the file has
     /// them. None for any other source.
     pub vcf_meta_lines: Option<Vec<String>>,
+    /// Whether the blocks of the source can carry `passed`: true for a
+    /// VCF and for a vars file with that column, false for any other
+    /// source. The VCF writer writes the `##FILTER` line of `FAIL` from it,
+    /// before the first block. Added on 6 October 2026.
+    pub keeps_passed: bool,
 }
 ```
 
