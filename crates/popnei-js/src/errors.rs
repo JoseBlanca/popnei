@@ -154,7 +154,9 @@ pub enum JsPopneiError {
     /// count for each bin of its distribution, a pass that gave a
     /// different number of names of individuals and of rates, or a pass
     /// with no count of the variants of a pair of the populations it
-    /// counted over.
+    /// counted over. It is also a JavaScript with no `performance.now()`
+    /// that gives a number, the clock of `onSoFar`, which is no defect of
+    /// popnei but which node, every browser and every web worker have.
     Broken(String),
 }
 

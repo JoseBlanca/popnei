@@ -1499,8 +1499,11 @@ pub(crate) fn the_run_of<T>(
 /// the core calls after each block, the last one too, and the function of
 /// the page is called when `soFarEvery` seconds have gone by since the pass
 /// started or since the last call, as "The result so far" of
-/// `docs/specs/js_sources.md` has it. The time is the clock of JavaScript,
-/// `Date.now()`, read here and not in the core, which reads no clock.
+/// `docs/specs/js_sources.md` has it. The time is `performance.now()` of
+/// JavaScript, a clock that never goes back, where `Date.now()` follows the
+/// clock of the system and goes back when that is set back, so a call could
+/// wait for as long as it went back. It is read here and not in the core,
+/// which reads no clock.
 pub(crate) struct TheResultSoFar {
     /// The function the package gives, which builds the result of
     /// TypeScript out of what crosses and hands it to the function of the
@@ -1508,8 +1511,10 @@ pub(crate) struct TheResultSoFar {
     told: Function,
     /// `soFarEvery`, in milliseconds.
     every: f64,
+    /// The clock, `performance.now()`.
+    clock: TheClock,
     /// When the pass started or the function was last called, in the
-    /// milliseconds of `Date.now()`.
+    /// milliseconds of the clock.
     last_at: f64,
     /// What building the result so far failed with, which is an error of
     /// this crate the core has no case for: the core is handed an error of
@@ -1524,7 +1529,9 @@ impl TheResultSoFar {
     /// # Errors
     ///
     /// When `every_seconds` is not a finite number of 0 or more, which is a
-    /// defect of the package: it refuses any other before the call.
+    /// defect of the package: it refuses any other before the call; and
+    /// when the JavaScript that runs popnei has no `performance.now()` that
+    /// gives a number.
     pub(crate) fn from_now(
         told: Option<Function>,
         every_seconds: f64,
@@ -1538,10 +1545,13 @@ impl TheResultSoFar {
         let Some(told) = told else {
             return Ok(None);
         };
+        let clock = TheClock::of_javascript()?;
+        let last_at = clock.now()?;
         Ok(Some(TheResultSoFar {
             told,
             every: every_seconds * 1000.0,
-            last_at: js_sys::Date::now(),
+            clock,
+            last_at,
             failed: None,
         }))
     }
@@ -1556,7 +1566,7 @@ impl TheResultSoFar {
     /// # Errors
     ///
     /// When the function throws, which stops `run` with the value it threw,
-    /// and when `result` fails, which is kept for
+    /// and when `result` or the clock fails, which is kept for
     /// [`TheResultSoFar::what_the_pass_gives`]: either way the error given
     /// back ends the pass, and the core reads no block more.
     pub(crate) fn after_a_block(
@@ -1564,7 +1574,13 @@ impl TheResultSoFar {
         run: &RunOfAConsumer,
         result: impl FnOnce() -> Result<JsValue, JsPopneiError>,
     ) -> Result<(), popnei::Error> {
-        let now = js_sys::Date::now();
+        let now = match self.clock.now() {
+            Ok(now) => now,
+            Err(error) => {
+                self.failed = Some(error);
+                return Err(the_pass_ended_after_a_block());
+            }
+        };
         if now - self.last_at < self.every {
             return Ok(());
         }
@@ -1599,6 +1615,57 @@ impl TheResultSoFar {
             None => given,
         }
     }
+}
+
+/// `performance.now()` of JavaScript, which node, the page and a web worker
+/// all have on their global object, in milliseconds from when the program
+/// started.
+struct TheClock {
+    /// `performance`, which `now` is called on.
+    performance: JsValue,
+    /// Its `now`.
+    now: Function,
+}
+
+impl TheClock {
+    /// The `performance.now()` of the global object.
+    ///
+    /// # Errors
+    ///
+    /// When the global object has no `performance` with a function `now`.
+    fn of_javascript() -> Result<TheClock, JsPopneiError> {
+        let performance =
+            js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance"))
+                .map_err(|_thrown| no_clock())?;
+        let now = js_sys::Reflect::get(&performance, &JsValue::from_str("now"))
+            .map_err(|_thrown| no_clock())?
+            .dyn_into::<Function>()
+            .map_err(|_not_a_function| no_clock())?;
+        Ok(TheClock { performance, now })
+    }
+
+    /// What the clock reads now, in milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// When `performance.now()` throws or gives what is not a number.
+    fn now(&self) -> Result<f64, JsPopneiError> {
+        self.now
+            .call0(&self.performance)
+            .ok()
+            .and_then(|now| now.as_f64())
+            .ok_or_else(no_clock)
+    }
+}
+
+/// That the JavaScript that runs popnei has no `performance.now()` that gives
+/// a number, which node, every browser and every web worker have.
+fn no_clock() -> JsPopneiError {
+    JsPopneiError::Broken(
+        "the JavaScript that runs popnei has no `performance.now()` that gives a \
+         number, and it is the clock that says when `onSoFar` is called"
+            .to_owned(),
+    )
 }
 
 /// What the function after a block gives the core when the function of
