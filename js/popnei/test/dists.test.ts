@@ -461,7 +461,7 @@ test("a source with no variant is refused and says that the source has none", ()
   // function gives for the same source: the two languages say the same
   // thing, and Python writes the path of the file before it, which the bytes
   // a TypeScript user gives have not.
-  const variants = openVcf(vcfOf([]));
+  const variants = openVcf(vcfOf([]), { ploidy: 2 });
   try {
     assert.throws(() => calcPairwiseKosmanDists(variants), {
       message:
@@ -478,7 +478,7 @@ test("a source with no variant says so whatever filters were on it", () => {
   // message is the one of a source with no variant and carries no count: a
   // filter that was given nothing and kept nothing says no more than the
   // sentence does.
-  const variants = openVcf(vcfOf([]));
+  const variants = openVcf(vcfOf([]), { ploidy: 2 });
   try {
     variants.filterByMaf(0.95);
     assert.throws(() => calcPairwiseKosmanDists(variants), {

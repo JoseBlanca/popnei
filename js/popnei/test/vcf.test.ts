@@ -22,7 +22,12 @@ import { init, openVcf } from "popnei";
 
 import loadTheWasm from "../wasm/popnei.js";
 import { numberOfOpenPasses } from "../dist/variant.js";
-import { manyVariantsVcf, referenceVcf, vcfOf } from "./reference.ts";
+import {
+  manyVariantsVcf,
+  referenceDists,
+  referenceVcf,
+  vcfOf,
+} from "./reference.ts";
 
 await init();
 
@@ -351,7 +356,9 @@ test("a genotype of another ploidy is an error at the block that holds it", () =
   const tetraploid = vcfOf([
     "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0/1/1\t0/1/1/1\t0/0/0/0",
   ]);
-  const variants = openVcf(tetraploid);
+  // With no ploidy the file would be read as tetraploid: the ploidy given
+  // is the one the genotype is checked against.
+  const variants = openVcf(tetraploid, { ploidy: 2 });
   assert.throws(() => [...variants.iterBlocks()], {
     name: "Error",
     message: /ind1/,
@@ -371,8 +378,79 @@ test("the ploidy of the reader is the one that was asked for", () => {
   variants.free();
 });
 
+test("the ploidy from the file: tetraploid.vcf.gz opened with no options is tetraploid", async () => {
+  const variants = openVcf(await referenceDists("tetraploid.vcf.gz"));
+  try {
+    assert.equal(variants.ploidy, 4);
+    assert.equal(variants.numIndividuals, 12);
+    let numVars = 0;
+    for (const block of variants.iterBlocks()) {
+      // Four alleles for each of the 12 individuals of every variant.
+      assert.equal(block.gts.length, block.numVars * 12 * 4);
+      numVars += block.numVars;
+    }
+    assert.equal(numVars, 200);
+  } finally {
+    variants.free();
+  }
+});
+
+test("the ploidy from the file: haploid.vcf.gz opened with no ploidy is haploid", async () => {
+  const variants = openVcf(await referenceDists("haploid.vcf.gz"));
+  assert.equal(variants.ploidy, 1);
+  variants.free();
+});
+
+test("the ploidy from the file is not read when one is given: tetraploid.vcf.gz with ploidy 2 fails at its blocks", async () => {
+  const variants = openVcf(await referenceDists("tetraploid.vcf.gz"), {
+    ploidy: 2,
+  });
+  try {
+    assert.equal(variants.ploidy, 2);
+    assert.throws(() => [...variants.iterBlocks()], {
+      name: "Error",
+      message:
+        /its genotype is of the ploidy 4 and the variants are read with the ploidy 2/,
+    });
+  } finally {
+    variants.free();
+  }
+});
+
+test("the ploidy from the file: 4096 lines of missing genotypes are refused at the call", () => {
+  const lines = Array.from(
+    { length: 4096 },
+    (_unused, line) => `chr1\t${line + 1}\t.\tA\tT\t.\tPASS\t.\tGT\t.\t.\t.`,
+  );
+  assert.throws(() => openVcf(vcfOf(lines)), {
+    name: "Error",
+    message:
+      /none of the first 4096 data lines of the VCF holds a genotype with alleles, so its ploidy cannot be read from the file; give the ploidy/,
+  });
+});
+
+test("the ploidy from the file: the first genotype with alleles after missing ones gives it", () => {
+  const variants = openVcf(
+    vcfOf([
+      "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t.\t.\t.",
+      "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t.\t0/1/1\t.",
+    ]),
+  );
+  assert.equal(variants.ploidy, 3);
+  variants.free();
+});
+
+test("the ploidy from the file: a VCF with no variant is refused at the call", () => {
+  assert.throws(() => openVcf(vcfOf([])), {
+    name: "Error",
+    message: /the file has no variants and the ploidy can't be inferred/,
+  });
+});
+
 test("a VCF with no variant gives no block", () => {
-  const variants = openVcf(vcfOf([]));
+  // With no ploidy such a file is refused at the call; the ploidy given is
+  // what opens it.
+  const variants = openVcf(vcfOf([]), { ploidy: 2 });
   assert.deepEqual([...variants.iterBlocks()], []);
   assert.deepEqual(variants.individuals, ["ind1", "ind2", "ind3"]);
   variants.free();

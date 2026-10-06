@@ -698,7 +698,8 @@ pub(crate) enum TheFileOfASource {
 impl TheFileOfASource {
     /// The reader of what says what the file holds, the header of a VCF or
     /// the schema and the footer of a vars file, which `openVcf` and
-    /// `openVars` read before they return.
+    /// `openVars` read before they return, and of the search for the ploidy
+    /// of a VCF opened with none, which `openVcf` makes before that.
     ///
     /// `source` is the number of the entry of [`IN_JAVASCRIPT`] the source
     /// keeps its file in. The pass belongs to no run, because there is no

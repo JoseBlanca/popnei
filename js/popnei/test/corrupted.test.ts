@@ -51,7 +51,10 @@ async function withTheDamagedMember(): Promise<Uint8Array> {
 }
 
 test("a bgzipped VCF whose member is damaged throws and gives no empty file", async () => {
+  // The ploidy given keeps the opening from reading past the header, so
+  // the damaged member is met by the pass.
   const variants = openVcf(await withTheDamagedMember(), {
+    ploidy: 2,
     onlyPassed: false,
   });
   try {
@@ -70,4 +73,14 @@ test("a bgzipped VCF whose member is damaged throws and gives no empty file", as
   } finally {
     variants.free();
   }
+});
+
+test("the ploidy from the file: a bgzipped VCF whose member is damaged throws at the call", async () => {
+  // With no ploidy the opening reads on to the first genotype with alleles,
+  // which is in the damaged member.
+  const bytes = await withTheDamagedMember();
+  assert.throws(() => openVcf(bytes, { onlyPassed: false }), {
+    name: "Error",
+    message: /member 2, which starts at the byte 310 .* is corrupted/s,
+  });
 });

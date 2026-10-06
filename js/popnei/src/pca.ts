@@ -148,7 +148,7 @@ export function doPca(
   const rows = wholeNumberOfOneOrMore("numRows", numRows);
   const cols = wholeNumberOfOneOrMore("numCols", numCols);
   const values = valuesOfATable("data", data, rows, cols);
-  // The two defaults are the core's, as the ploidy of `openVcf` is, so that
+  // The two defaults are the core's, as the `onlyPassed` of `openVcf` is, so that
   // Python and TypeScript cannot drift apart on what a table is analysed as
   // when the caller says nothing.
   const centerData =

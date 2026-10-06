@@ -819,7 +819,7 @@ test("a source with no variant is refused and says that the source has none", ()
   // gives for the same source: the two languages say the same thing, and
   // Python writes the path of the file before it, which the bytes a
   // TypeScript user gives have not.
-  const variants = openVcf(vcfOf([]));
+  const variants = openVcf(vcfOf([]), { ploidy: 2 });
   try {
     assert.throws(
       () =>
