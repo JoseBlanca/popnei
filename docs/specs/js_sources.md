@@ -652,13 +652,16 @@ three is what its own consumer gives for the same options, to the bit: the
 three are added up from the same blocks by the same code, and only the pass
 is shared.
 
-How much time it saves has not been measured. The density asks the reader
-for the chromosome and the position alone, so the VCF reader does not parse
-the genotypes for it, and parsing the genotypes was 92% of a read of
-`big.vcf` when it was measured for the VCF reader. The saving is then about
-one of the two passes that parse the genotypes, near half of the time of the
-three, and not the two thirds that issue 10 guessed. The plan measures it on
-`big.vcf` before a number is given to a user.
+How much time it saves has not been measured. What it is made of has: the
+density asks the reader for the chromosome and the position alone, so the
+VCF reader does not parse the genotypes for it, and on `big.vcf`, 403 MB
+plain, 100000 variants of 1000 individuals, it took 0.041 s on one thread
+where a read with the genotypes took 0.575 s, by "Speed" of
+`docs/specs/stats.md`, measured on 27 September 2026 on the owner's Apple M5
+Pro. Three passes then cost about two reads with the genotypes and one pass
+one, so the saving is near half of the time on one thread, which is what
+wasm has, and not the two thirds that issue 10 guessed. The plan measures
+the three against the one on `big.vcf` before a number is given to a user.
 
 The owner decided on 7 October 2026 that it is one consumer of exactly these
 three, and that it is in the TypeScript API alone. The options not taken
