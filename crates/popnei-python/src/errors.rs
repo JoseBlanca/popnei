@@ -126,7 +126,8 @@ pub(crate) enum PyPopneiError {
     /// then names no file: the ploidy out of range that `ploidy_of_vcf`
     /// read from a genotype of 256 alleles, which is the case of a ploidy
     /// of 256 given to `open_vcf`. `popnei::Error::names_the_file` cannot
-    /// tell the two apart, and the call that met it can.
+    /// tell the two apart, and the call that met it can. Every other case
+    /// is what it is in [`PyPopneiError::OfTheFile`].
     ReadFromTheFile {
         /// What the core refused.
         error: popnei::Error,
@@ -280,7 +281,7 @@ impl PyPopneiError {
     }
 
     /// The error of the core that was met in what was read from `path`,
-    /// which names that file whatever the case, as
+    /// which names that file when it is the ploidy out of range, as
     /// [`PyPopneiError::ReadFromTheFile`] says.
     pub(crate) fn read_from_the_file(error: popnei::Error, path: &Path) -> PyPopneiError {
         PyPopneiError::ReadFromTheFile {
@@ -339,14 +340,16 @@ impl From<PyPopneiError> for PyErr {
         match error {
             PyPopneiError::Core(error) => exception_of(error, None),
             PyPopneiError::OfTheFile { error, path } => exception_of(error, Some(path)),
-            // A case that names no file is one a caller can also write, and
-            // here it was read from the file: it is the `ValueError` it is
-            // as an argument, with the path before its message.
+            // The ploidy out of range names no file, since a caller can
+            // also write it, and here it was read from the file: it is the
+            // `ValueError` it is as an argument, with the path before its
+            // message. Every other case is what `exception_of` makes it, a
+            // defect a `RuntimeError`.
             PyPopneiError::ReadFromTheFile { error, path } => {
-                if error.names_the_file() {
-                    exception_of(error, Some(path))
-                } else {
+                if matches!(error, popnei::Error::VcfPloidyOutOfRange { .. }) {
                     PyValueError::new_err(of_the_file(error.to_string(), Some(path)))
+                } else {
+                    exception_of(error, Some(path))
                 }
             }
             // No largest number is named here. What the largest is depends
