@@ -573,13 +573,17 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VarsBlockDoesNotFit { .. }
         | popnei::Error::VarsBlockColumns { .. }
         | popnei::Error::VarsChromNameMissing { .. }
-        // The two of the VCF writer, which are of the same kind: a block
+        // The three of the VCF writer, which are of the same kind: a block
         // that holds neither the text of its lines nor every column a line
-        // is written from, and a chromosome number its reader has no name
-        // for. `write_vcf` asks its reader for both, so a user reaches them
-        // only through a reader with a defect.
+        // is written from, a chromosome number its reader has no name for,
+        // and a variant that failed its FILTER from a source whose header
+        // says it keeps no `passed`. `write_vcf` asks its reader for the
+        // first two, and the vars file reader says it keeps `passed` when
+        // the file has the column, so a user reaches them only through a
+        // reader with a defect.
         | popnei::Error::VcfWriterFieldsMissing { .. }
         | popnei::Error::VcfWriterChromNameMissing { .. }
+        | popnei::Error::VcfWriterPassedNotInTheHeader
         // The one of the filter by regions, which is of the same kind: a
         // block whose chromosome number the table of its reader has no name
         // for, which the filter looks the regions up by.

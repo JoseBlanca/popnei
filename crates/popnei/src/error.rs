@@ -2961,6 +2961,17 @@ pub enum Error {
         number: u32,
     },
 
+    /// A block given to the VCF writer from a source of columns holds a
+    /// variant whose `passed` is false, and the header of its source says
+    /// that the source keeps no `passed`, so the header written before the
+    /// first block has no `##FILTER` line for its `FAIL`. The vars file
+    /// reader says it keeps `passed` when the file has that column, so a
+    /// user reaches this only through a reader with a defect.
+    #[error(
+        "a block given to the VCF writer holds a variant that failed its FILTER, and the header of its source says that it keeps no `passed`, so the `##FILTER` line of its `FAIL` was not written"
+    )]
+    VcfWriterPassedNotInTheHeader,
+
     /// The vars file or the VCF could not be written: the sink refused the
     /// bytes, a disc that filled up among them, or arrow-rs could not write
     /// what it was given.
@@ -3703,6 +3714,7 @@ impl Error {
             | Self::VarsChromNameMissing { .. }
             | Self::VcfWriterFieldsMissing { .. }
             | Self::VcfWriterChromNameMissing { .. }
+            | Self::VcfWriterPassedNotInTheHeader
             | Self::VcfWriterMemberNotBuilt { .. }
             | Self::RegionFilterChromNameMissing { .. }
             | Self::PcaTableOfAnotherSize { .. }

@@ -150,8 +150,10 @@ pub fn num_vars_per_block_of_write_vcf(source: WriterSource) -> Option<usize> {
 /// individuals and the ploidy of the pass; when a source that is not a VCF
 /// has no column of the chromosome, the position, the alleles or the
 /// genotypes, [`Error::VcfWriterColumnMissing`]; when a block of a VCF holds
-/// no text, or a block a chromosome number its reader has no name for,
-/// which are defects of the reader; and when the sink fails, [`Error::FileNotWritten`]. The bytes
+/// no text, a block a chromosome number its reader has no name for, or a
+/// variant whose `passed` is false when the header of the source says it
+/// keeps no `passed`, [`Error::VcfWriterPassedNotInTheHeader`], which are
+/// defects of the reader; and when the sink fails, [`Error::FileNotWritten`]. The bytes
 /// written before the error are on the sink, and it is the caller that
 /// removes the file.
 pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
@@ -171,6 +173,7 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
     let num_individuals = reader.individuals().len();
     let ploidy = reader.ploidy();
     let without_counts = num_individuals < reader.header().individuals.len();
+    let keeps_passed = reader.header().keeps_passed;
     let mut out = match options.bgzip {
         true => VcfOut::Bgzip(BgzipOut::new(sink)),
         false => VcfOut::Plain(sink),
@@ -187,6 +190,16 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
                 found_num_individuals: block.num_individuals,
                 found_ploidy: block.ploidy,
             });
+        }
+        // The header went out before this block, with the `##FILTER` line
+        // of `FAIL` only when the source said it keeps `passed`.
+        if !keeps_passed
+            && block
+                .passed
+                .as_ref()
+                .is_some_and(|passed| passed.contains(&false))
+        {
+            return Err(Error::VcfWriterPassedNotInTheHeader);
         }
         let how = LinesOf::block(&block, reader.chroms(), without_counts, from)?;
         format_rows(&how, block.num_vars, &mut buffers)?;
@@ -1360,6 +1373,24 @@ mod tests {
                 assert_eq!(fields, Needs::VCF_TEXT);
             }
             other => panic!("not the error of the missing text: {other:?}"),
+        }
+    }
+
+    /// A source of columns whose header says it keeps no `passed` and
+    /// whose block holds a variant that failed, chr1 250 of `write.vcf`, is
+    /// a reader with a defect: its `FAIL` would have no `##FILTER` line.
+    #[test]
+    fn write_vcf_refuses_a_variant_that_failed_from_a_source_whose_header_keeps_no_passed_column() {
+        let mut reader = OneBlock::of_write_vcf(Needs::ALL);
+        reader.header.vcf_meta_lines = None;
+        reader.header.keeps_passed = false;
+        match write_vcf(&mut reader, Vec::new(), PLAIN) {
+            Err(error @ Error::VcfWriterPassedNotInTheHeader) => {
+                assert!(error.to_string().contains("##FILTER"), "{error}");
+            }
+            other => {
+                panic!("not the error of a failed variant the header has no line for: {other:?}")
+            }
         }
     }
 
