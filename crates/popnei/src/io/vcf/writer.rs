@@ -1107,6 +1107,46 @@ mod tests {
         }
     }
 
+    /// The same vars file written to a VCF through the filter of
+    /// individuals, which keeps two of them: the header the writer is given
+    /// is the one the filter passes on from the vars file, so it still has
+    /// the `##FILTER` line of `FAIL`, and the 25 variants that failed are
+    /// still written with it.
+    #[test]
+    fn write_vcf_passed_column_of_many_vcf_through_the_filter_of_individuals_keeps_the_25_fail() {
+        let reader = reader_of("many.vcf", false, Some(7));
+        let kept: Vec<String> = reader.individuals().iter().take(2).cloned().collect();
+        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+
+        let (text, num_vars) = written(|| {
+            let reader = VarsReader::new(Cursor::new(vars.clone())).expect("the vars file");
+            chain_of(Box::new(reader), &[PassStep::KeepIndividuals(kept.clone())])
+                .expect("the chain")
+        });
+
+        assert_eq!(num_vars, 500);
+        assert!(
+            text.lines()
+                .take_while(|line| line.starts_with("##"))
+                .any(|line| line == FAIL_FILTER_LINE),
+            "{text}"
+        );
+        let header_line = text
+            .lines()
+            .find(|line| line.starts_with("#CHROM"))
+            .expect("the #CHROM line");
+        assert_eq!(header_line.split('\t').skip(9).collect::<Vec<_>>(), kept);
+        let filters = filters_of(&text);
+        let failed = filters
+            .iter()
+            .filter(|(_, _, filter)| filter == "FAIL")
+            .count();
+        assert_eq!(failed, 25);
+        if let Some(num_passed) = num_passed_by_bcftools(&text) {
+            assert_eq!(num_passed, 475);
+        }
+    }
+
     /// A vars file with no `passed` column, written from blocks without it,
     /// is written to a VCF with `.` in every FILTER and no `##FILTER` line,
     /// the 25 variants of `many.vcf` that failed among them.

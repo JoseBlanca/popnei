@@ -7578,7 +7578,7 @@ mod tests {
     /// does not walk, which ends the list there because popnei cannot say
     /// how many nodes it takes.
     ///
-    /// popnei's own six columns reach four of the arms and no test reaches
+    /// popnei's own seven columns reach four of the arms and no test reaches
     /// the others, so a walk that counted the nodes of one of them wrong
     /// would put every bound after it on another column.
     #[test]
