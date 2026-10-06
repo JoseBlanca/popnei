@@ -1457,6 +1457,31 @@ mod tests {
                 }
             }
         }
+        // A block in which every variant passed is written, with no `FAIL`;
+        // one in which every variant failed is refused at its first.
+        for every_one_passed in [true, false] {
+            let mut reader = OneBlock::of_write_vcf(Needs::ALL);
+            reader.header.vcf_meta_lines = None;
+            reader.header.keeps_passed = false;
+            let block = reader.block.as_mut().expect("the block of write.vcf");
+            block.passed = Some(vec![every_one_passed; block.num_vars]);
+            let num_vars = block.num_vars;
+            let written = write_vcf(&mut reader, Vec::new(), PLAIN);
+            match (every_one_passed, written) {
+                (true, Ok((text, written_vars))) => {
+                    assert_eq!(written_vars, u64::try_from(num_vars).expect("a count"));
+                    let text = String::from_utf8(text).expect("the text of the VCF");
+                    assert!(!text.contains("FAIL"), "{text}");
+                }
+                (false, Err(Error::VcfWriterPassedNotInTheHeader { chrom, pos })) => {
+                    assert_eq!(chrom, TheChromOfTheVariant::Named("chr1".to_owned()));
+                    assert_eq!(pos, 100);
+                }
+                (_, other) => panic!(
+                    "every variant passed is {every_one_passed}, and the writer gave {other:?}"
+                ),
+            }
+        }
     }
 
     #[test]
