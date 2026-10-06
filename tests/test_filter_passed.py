@@ -35,6 +35,9 @@ FIRST_FAILED = 1259
 # The columns of `many.bcftools.tsv` before the genotypes, the last of which
 # is FILTER.
 FILTER_COLUMN = 6
+# A vars file of format 1.1, with no `passed` column, of the four variants
+# of `cases.vcf`, which `tests/reference/vars/make_of_1_1.py` writes.
+OF_1_1_VARS = Path(__file__).parent / "reference" / "vars" / "of_1_1.vars"
 
 
 def _many(reference_vcf_dir: Path) -> Variants:
@@ -163,6 +166,24 @@ def test_filter_passed_over_a_vars_file_of_1_1_is_a_value_error_with_its_path(
 
     message = str(refusal.value)
     assert message.startswith(str(without)), message
+    assert "no record of whether they passed their FILTER" in message
+    assert "from format 1.2" in message
+
+
+def test_filter_passed_over_a_vars_file_of_1_1_refuses_the_first_block_of_iter_blocks() -> (
+    None
+):
+    """The first block of a pass is where the refusal comes, with the file
+    in front, as the docstring of `filter_passed` says."""
+    variants = open_vars(OF_1_1_VARS)
+    variants.filter_passed()
+    blocks = variants.iter_blocks()
+
+    with pytest.raises(ValueError) as refusal:
+        next(blocks)
+
+    message = str(refusal.value)
+    assert message.startswith(str(OF_1_1_VARS)), message
     assert "no record of whether they passed their FILTER" in message
     assert "from format 1.2" in message
 
