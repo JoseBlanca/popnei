@@ -349,8 +349,10 @@ export function onlyTheseOptions(
   for (const key of Object.keys(value)) {
     if (!options.includes(key)) {
       throw new Error(
-        `popnei: \`${key}\` is not an option of \`${functionName}\`, whose ` +
-          `options are ${listed(options)}`,
+        `popnei: \`${key}\` is not an option of \`${functionName}\`, ` +
+          (options.length === 0
+            ? "which takes no option"
+            : `whose options are ${listed(options)}`),
       );
     }
   }

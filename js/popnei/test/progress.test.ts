@@ -467,7 +467,7 @@ test("twelve iterations of blocks over one source are twelve runs of one pass", 
 });
 
 /**
- * The runs of this file: the fifteen consumers of `consumers.ts`, each with
+ * The runs of this file: the sixteen consumers of `consumers.ts`, each with
  * the options `numPassesOf` is asked with, and the association study a
  * second time, asked for the GRAMMAR-Gamma approximation, which is its two
  * passes.
@@ -489,7 +489,7 @@ const THE_CONSUMERS: readonly TheCallOfAConsumer[] = [
   },
 ];
 
-test("the fifteen consumers the calls are read of are the fifteen the crate names", () => {
+test("the sixteen consumers the calls are read of are the sixteen the crate names", () => {
   // The loop below is worth what its list holds: a consumer left out of it
   // is never run and nothing says so. Taking `calcPopDiversity` out of this
   // list left all 417 tests of the package passing. The crate's own list is

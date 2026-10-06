@@ -13,8 +13,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::num::NonZeroU64;
 
+use super::{AfterABlock, SoFar, no_variant_in_the_pass, nothing_after_a_block};
 use crate::block::{Block, BlockReader};
 use crate::error::{Error, Result};
+use crate::filters::FilteringStats;
 use crate::phases::{Phase, timed};
 use crate::variant::{ChromTable, Needs};
 
@@ -191,25 +193,43 @@ fn windows_of(
 ///   without them, or variants built from an array of genotypes.
 /// - [`Error::PassGaveNoVariant`] for a pass that gave no variant, whatever
 ///   the lengths.
-/// - What [`Block::check`] refuses, [`Error::VarDensityChromNameMissing`]
-///   for a chromosome number the table of the reader has no name for, both
+/// - What [`Block::check`] refuses, [`Error::ReaderGaveABlockOfNoVariants`]
+///   for a block of no variants and [`Error::VarDensityChromNameMissing`]
+///   for a chromosome number the table of the reader has no name for, all
 ///   defects of a reader, and whatever the reader fails with.
 pub fn calc_var_density<R: BlockReader + ?Sized>(
     reader: &mut R,
     window_size: u64,
     chrom_lengths: Option<&[(String, u64)]>,
 ) -> Result<VarDensity> {
-    let window_size = NonZeroU64::new(window_size).ok_or(Error::VarDensityWindowSizeZero)?;
-    let mut density = match chrom_lengths {
-        Some(lengths) => {
-            TheDensity::of_the_lengths(lengths, LengthsFrom::ChromLengths, window_size)?
-        }
-        None => TheDensity::of_the_lengths(
-            &reader.header().chrom_lengths,
-            LengthsFrom::Source,
-            window_size,
-        )?,
-    };
+    calc_var_density_with(
+        reader,
+        window_size,
+        chrom_lengths,
+        &mut nothing_after_a_block,
+    )
+}
+
+/// [`calc_var_density`], with `after_a_block` called after each block the
+/// pass adds, the last one too, with the density over the variants read so
+/// far.
+///
+/// A chromosome with a length has all its windows from the first call; one
+/// with no length has them up to the window of its last variant read so
+/// far, so its windows grow from one call to the next, and a chromosome
+/// with no length that no variant has reached yet is not in the result.
+///
+/// # Errors
+///
+/// Those of [`calc_var_density`], and the error `after_a_block` returns,
+/// which ends the pass there.
+pub fn calc_var_density_with<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    window_size: u64,
+    chrom_lengths: Option<&[(String, u64)]>,
+    after_a_block: AfterABlock<'_, VarDensity>,
+) -> Result<VarDensity> {
+    let mut density = TheDensity::before_the_pass(&*reader, window_size, chrom_lengths)?;
     // The chromosome and the position are all a window needs, so a reader
     // over a file leaves the genotypes and every other column unparsed.
     reader.set_needs(Needs::CHROM_POS);
@@ -222,23 +242,44 @@ pub fn calc_var_density<R: BlockReader + ?Sized>(
         timed(Phase::Work, || {
             density.count_the_block(&block, reader.chroms())
         })?;
+        after_a_block(&DensitySoFar {
+            density: &density,
+            chain: &*reader,
+        })?;
     }
     if density.num_vars == 0 {
-        let filters = reader.filtering_stats();
-        return Err(Error::PassGaveNoVariant {
-            // The filter nearest the source was given what the source
-            // gave; with no filter the pass gave what the source gave,
-            // which is nothing.
-            num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
-            filters,
-        });
+        return Err(no_variant_in_the_pass(reader));
     }
     Ok(density.into_the_result())
 }
 
-/// The counts of a density while the pass goes.
+/// What a pass of [`calc_var_density_with`] has counted after a block,
+/// which builds the density from its counts when asked.
+struct DensitySoFar<'pass, R: ?Sized> {
+    density: &'pass TheDensity,
+    /// The chain of the pass, which has just given the last block.
+    chain: &'pass R,
+}
+
+impl<R: BlockReader + ?Sized> SoFar<VarDensity> for DensitySoFar<'_, R> {
+    fn num_vars(&self) -> u64 {
+        self.density.num_vars
+    }
+
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.chain.filtering_stats()
+    }
+
+    fn result(&self) -> Result<VarDensity> {
+        Ok(self.density.the_result())
+    }
+}
+
+/// The counts of a density while the pass goes, which a pass of
+/// [`calc_var_density_with`] counts from block to block and
+/// [`calc_variants_summary`](super::calc_variants_summary) counts too.
 #[derive(Debug)]
-struct TheDensity {
+pub(super) struct TheDensity {
     window_size: NonZeroU64,
     /// Where the lengths came from, which the error of a variant past one
     /// names.
@@ -247,7 +288,7 @@ struct TheDensity {
     /// The windows of every chromosome of `chroms`, [`MAX_NUM_WINDOWS`] at
     /// most.
     num_windows: u64,
-    num_vars: u64,
+    pub(super) num_vars: u64,
 }
 
 /// The chromosomes of a density, with where each is found by its name and
@@ -264,6 +305,32 @@ struct TheChroms {
 }
 
 impl TheDensity {
+    /// The density of a pass over `reader` before any block, in windows of
+    /// `window_size`, with the lengths of `chrom_lengths` when it is given
+    /// and those of the header of `reader` when it is not.
+    ///
+    /// # Errors
+    ///
+    /// A `window_size` of 0, and those of the lengths that
+    /// [`calc_var_density`] gives before the pass.
+    pub(super) fn before_the_pass<R: BlockReader + ?Sized>(
+        reader: &R,
+        window_size: u64,
+        chrom_lengths: Option<&[(String, u64)]>,
+    ) -> Result<TheDensity> {
+        let window_size = NonZeroU64::new(window_size).ok_or(Error::VarDensityWindowSizeZero)?;
+        match chrom_lengths {
+            Some(lengths) => {
+                TheDensity::of_the_lengths(lengths, LengthsFrom::ChromLengths, window_size)
+            }
+            None => TheDensity::of_the_lengths(
+                &reader.header().chrom_lengths,
+                LengthsFrom::Source,
+                window_size,
+            ),
+        }
+    }
+
     /// The density before the pass: every chromosome of `lengths` with all
     /// its windows at 0, in the order of `lengths`.
     ///
@@ -327,11 +394,17 @@ impl TheDensity {
     /// # Errors
     ///
     /// Those of [`calc_var_density`] that a block gives.
-    fn count_the_block(&mut self, block: &Block, names: &ChromTable) -> Result<()> {
+    pub(super) fn count_the_block(&mut self, block: &Block, names: &ChromTable) -> Result<()> {
         // The chromosomes and the positions are walked together, so a
         // column of another length than the block would pair a variant with
         // the position of another.
         block.check()?;
+        // Every reader of popnei gives one variant at least in a block and
+        // no block when it has no more, so a block of none is a defect of
+        // the reader, which the other two statistics refuse too.
+        if block.num_vars == 0 {
+            return Err(Error::ReaderGaveABlockOfNoVariants);
+        }
         let missing = Needs::CHROM_POS.difference(block.fields());
         if !missing.is_empty() {
             return Err(Error::FieldsNotInTheBlock { fields: missing });
@@ -351,24 +424,37 @@ impl TheDensity {
                 &mut self.num_windows,
             )?;
         }
-        // A `usize` is 64 bits on the targets popnei builds natively for and
-        // 32 in wasm, so every one of them is a `u64`; and a pass of more
-        // than 18446744073709551615 variants reads more rows than any source
-        // holds.
-        self.num_vars = self
-            .num_vars
-            .saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+        // A pass of more than 18446744073709551615 variants reads more rows
+        // than any source holds.
+        self.num_vars = self.num_vars.saturating_add(super::num_vars_of(block));
         Ok(())
     }
 
-    fn into_the_result(self) -> VarDensity {
+    /// The density of the pass when it ends, which takes the counts.
+    pub(super) fn into_the_result(self) -> VarDensity {
+        let num_windows = self.num_windows_of_the_result();
         VarDensity {
             window_size: self.window_size,
             chroms: self.chroms.chroms,
             num_vars: self.num_vars,
-            // At most MAX_NUM_WINDOWS, which every addition to it checked.
-            num_windows: usize::try_from(self.num_windows).unwrap_or(MAX_NUM_WINDOWS),
+            num_windows,
         }
+    }
+
+    /// The density over the variants counted so far, which copies the
+    /// counts and leaves them to the pass.
+    pub(super) fn the_result(&self) -> VarDensity {
+        VarDensity {
+            window_size: self.window_size,
+            chroms: self.chroms.chroms.clone(),
+            num_vars: self.num_vars,
+            num_windows: self.num_windows_of_the_result(),
+        }
+    }
+
+    fn num_windows_of_the_result(&self) -> usize {
+        // At most MAX_NUM_WINDOWS, which every addition to it checked.
+        usize::try_from(self.num_windows).unwrap_or(MAX_NUM_WINDOWS)
     }
 }
 

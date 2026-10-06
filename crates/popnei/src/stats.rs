@@ -19,7 +19,7 @@ use crate::block::{
     Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of, with_one_block_ahead,
 };
 use crate::error::{Error, Result};
-use crate::filters::resolve_individuals;
+use crate::filters::{FilteringStats, resolve_individuals};
 use crate::io::vcf::MAX_PLOIDY;
 use crate::phases::{Phase, timed};
 use crate::variant::{
@@ -30,7 +30,89 @@ use crate::variant::{
 mod density;
 pub use density::{
     DensityOfChrom, DensityWindow, LengthsFrom, MAX_NUM_WINDOWS, VarDensity, calc_var_density,
+    calc_var_density_with,
 };
+
+mod summary;
+pub use summary::{
+    VarDensityConfig, VariantsSummary, VariantsSummaryConfig, calc_variants_summary,
+};
+
+#[cfg(test)]
+mod so_far_tests;
+
+/// What a pass of [`calc_per_var_distribs_with`],
+/// [`calc_per_individual_stats_with`], [`calc_var_density_with`] or
+/// [`calc_variants_summary`] has added up after a block: how many variants
+/// it has read, the counts of the filters of its chain as they stand after
+/// that block, and the result over those variants, `T`, which is built only
+/// when it is asked for.
+///
+/// The result is the one the calculation would return over those variants
+/// alone, since each of them builds its result at the end from totals it
+/// adds up block by block, and this builds it from the totals as they
+/// are. Building it costs what building the final one costs.
+pub trait SoFar<T> {
+    /// The variants the pass has read, those of every block given so far.
+    fn num_vars(&self) -> u64;
+    /// The counts of the filters of the chain of the pass after the block
+    /// it has just added, by the name of each filter, the filter nearest
+    /// the consumer first, as [`BlockReader::filtering_stats`] gives them.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
+    /// The result over the variants read so far.
+    ///
+    /// # Errors
+    ///
+    /// None of the three calculations has one today: the result over the
+    /// variants of a block or more is always built, and a statistic that no
+    /// variant gave a value yet has none, as in the final result.
+    fn result(&self) -> Result<T>;
+}
+
+/// The function a pass calls after each block it has added, the last one
+/// too, with what it has added up so far.
+///
+/// An error it returns ends the pass, which asks its reader for no block
+/// more, and is what the calculation returns. Natively the block after the
+/// last one it was given may already have been read by the thread that
+/// reads one block ahead, and the counts of the filters of the chain
+/// include it. It is how a caller stops a pass between two blocks, and the
+/// core reads no clock: a caller that wants the result every so many
+/// seconds reads its own.
+pub type AfterABlock<'a, T> = &'a mut dyn FnMut(&dyn SoFar<T>) -> Result<()>;
+
+/// The function after a block that does nothing, which
+/// [`calc_per_var_distribs`], [`calc_per_individual_stats`] and
+/// [`calc_var_density`] give their function `_with`, and which a caller of
+/// [`calc_variants_summary`] that wants no result so far gives it:
+/// `&mut nothing_after_a_block`.
+///
+/// # Errors
+///
+/// None: it returns `Ok(())`.
+pub fn nothing_after_a_block<T>(_: &dyn SoFar<T>) -> Result<()> {
+    Ok(())
+}
+
+/// The error of a pass over `reader` that gave no variant, with the counts
+/// of the filters of its chain when the pass ended.
+fn no_variant_in_the_pass<R: BlockReader + ?Sized>(reader: &R) -> Error {
+    let filters = reader.filtering_stats();
+    Error::PassGaveNoVariant {
+        // The filter nearest the source was given what the source gave;
+        // with no filter the pass gave what the source gave, which is
+        // nothing.
+        num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
+        filters,
+    }
+}
+
+/// The variants of `block`, as a count of a pass.
+fn num_vars_of(block: &Block) -> u64 {
+    // A `usize` is 64 bits on the targets popnei builds natively for and 32
+    // in wasm, so every one of them is a `u64`.
+    u64::try_from(block.num_vars).unwrap_or(u64::MAX)
+}
 
 /// The name of the one population of a calculation that was given no
 /// populations, inherited from pyNei's `DEF_POP_NAME`.
@@ -1299,20 +1381,33 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
     reader: &mut R,
     config: &PerVarDistribsConfig,
 ) -> Result<PerVarDistribs> {
-    // A NaN is outside every range, so the comparison refuses it too.
-    if !(0.0..=1.0).contains(&config.poly_threshold) {
-        return Err(Error::PolyThresholdOutOfRange {
-            value: config.poly_threshold,
-        });
-    }
-    let asked = Asked::of(&config.stats);
+    calc_per_var_distribs_with(reader, config, &mut nothing_after_a_block)
+}
+
+/// [`calc_per_var_distribs`], with `after_a_block` called after each block
+/// the pass adds, the last one too, with the distributions over the
+/// variants read so far.
+///
+/// The bins of every histogram are those of `config` from the first call,
+/// so the bins of a result so far are the same as those of the final
+/// result. The counts of the filters it gives are those of the chain after
+/// the block the pass has just added, although natively the chain is read
+/// one block ahead on a thread of its own, which sends them beside the
+/// block; in wasm it is read one block after another.
+///
+/// # Errors
+///
+/// Those of [`calc_per_var_distribs`], and the error `after_a_block`
+/// returns, which ends the pass there.
+pub fn calc_per_var_distribs_with<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    config: &PerVarDistribsConfig,
+    after_a_block: AfterABlock<'_, PerVarDistribs>,
+) -> Result<PerVarDistribs> {
+    let mut distribs = DistribsAddedUp::before_the_pass(config, &*reader)?;
     // The six statistics follow from the genotypes of a row, so no column
     // of a block is read and the reader is asked to fill none of them.
     reader.set_needs(Needs::GTS);
-    let mut totals = Totals::of(config.pops.len(), config.bins.num_bins(), asked);
-    let mut num_vars: u64 = 0;
-    let num_individuals = reader.individuals().len();
-    let ploidy = reader.ploidy();
     // The blocks are read on a thread of its own, one block ahead, so that
     // the read of the next block and the counting of the one in hand
     // overlap. This pass is almost all reader:
@@ -1329,31 +1424,107 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
     let mut lent = &mut *reader;
     with_one_block_ahead(&mut lent, |blocks| {
         while let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? {
-            timed(Phase::Work, || -> Result<()> {
-                let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-                add_the_block(&block, alleles_per_var, config, asked, &mut totals)?;
-                // A `usize` is 64 bits on the targets popnei builds natively for
-                // and 32 in wasm, so every one of them is a `u64`; and a pass of
-                // more than 18446744073709551615 variants reads more rows than any
-                // source holds.
-                num_vars =
-                    num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
-                Ok(())
+            timed(Phase::Work, || distribs.add_the_block(&block))?;
+            after_a_block(&DistribsSoFar {
+                distribs: &distribs,
+                chain: &*blocks,
             })?;
         }
         Ok(())
     })?;
-    if num_vars == 0 {
-        let filters = reader.filtering_stats();
-        return Err(Error::PassGaveNoVariant {
-            // The filter nearest the source was given what the source
-            // gave; with no filter the pass gave what the source gave,
-            // which is nothing.
-            num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
-            filters,
-        });
+    if distribs.num_vars == 0 {
+        return Err(no_variant_in_the_pass(reader));
     }
-    Ok(the_distribs(&totals, config, asked, num_vars))
+    Ok(distribs.the_result())
+}
+
+/// What a pass of [`calc_per_var_distribs_with`] adds up from block to
+/// block, which [`calc_variants_summary`] adds up too: the totals of every
+/// statistic of every population and the variants read, from which the
+/// distributions are built when they are asked for.
+struct DistribsAddedUp<'config> {
+    config: &'config PerVarDistribsConfig,
+    asked: Asked,
+    totals: Totals,
+    num_vars: u64,
+    num_individuals: usize,
+    ploidy: usize,
+}
+
+impl<'config> DistribsAddedUp<'config> {
+    /// The totals of a pass of `config` over `reader` before any block.
+    ///
+    /// # Errors
+    ///
+    /// A `poly_threshold` that is not a number from 0 to 1.
+    fn before_the_pass<R: BlockReader + ?Sized>(
+        config: &'config PerVarDistribsConfig,
+        reader: &R,
+    ) -> Result<DistribsAddedUp<'config>> {
+        // A NaN is outside every range, so the comparison refuses it too.
+        if !(0.0..=1.0).contains(&config.poly_threshold) {
+            return Err(Error::PolyThresholdOutOfRange {
+                value: config.poly_threshold,
+            });
+        }
+        let asked = Asked::of(&config.stats);
+        Ok(DistribsAddedUp {
+            config,
+            asked,
+            totals: Totals::of(config.pops.len(), config.bins.num_bins(), asked),
+            num_vars: 0,
+            num_individuals: reader.individuals().len(),
+            ploidy: reader.ploidy(),
+        })
+    }
+
+    /// It adds the statistics of every row of `block` into the totals.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`calc_per_var_distribs`] that a block gives.
+    fn add_the_block(&mut self, block: &Block) -> Result<()> {
+        let alleles_per_var = alleles_per_var_of(block, self.num_individuals, self.ploidy)?;
+        add_the_block(
+            block,
+            alleles_per_var,
+            self.config,
+            self.asked,
+            &mut self.totals,
+        )?;
+        // A pass of more than 18446744073709551615 variants reads more rows
+        // than any source holds.
+        self.num_vars = self.num_vars.saturating_add(num_vars_of(block));
+        Ok(())
+    }
+
+    /// The distributions over the variants added so far.
+    fn the_result(&self) -> PerVarDistribs {
+        the_distribs(&self.totals, self.config, self.asked, self.num_vars)
+    }
+}
+
+/// What a pass of [`calc_per_var_distribs_with`] has added up after a
+/// block, which builds the distributions from its totals when asked.
+struct DistribsSoFar<'pass> {
+    distribs: &'pass DistribsAddedUp<'pass>,
+    /// The reader the pass takes its blocks from, which answers with the
+    /// counts of the filters as they were when it gave the last block.
+    chain: &'pass dyn BlockReader,
+}
+
+impl SoFar<PerVarDistribs> for DistribsSoFar<'_> {
+    fn num_vars(&self) -> u64 {
+        self.distribs.num_vars
+    }
+
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.chain.filtering_stats()
+    }
+
+    fn result(&self) -> Result<PerVarDistribs> {
+        Ok(self.distribs.the_result())
+    }
 }
 
 /// It adds the statistics of every row of a block into `totals`.
@@ -1783,17 +1954,31 @@ impl PerIndividualStats {
 pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
     reader: &mut R,
 ) -> Result<PerIndividualStats> {
+    calc_per_individual_stats_with(reader, &mut nothing_after_a_block)
+}
+
+/// [`calc_per_individual_stats`], with `after_a_block` called after each
+/// block the pass adds, the last one too, with the rates of every
+/// individual over the variants read so far.
+///
+/// The counts of the filters it gives are those of the chain after the
+/// block the pass has just added, although natively the chain is read one
+/// block ahead on a thread of its own, which sends them beside the block;
+/// in wasm it is read one block after another.
+///
+/// # Errors
+///
+/// Those of [`calc_per_individual_stats`], and the error `after_a_block`
+/// returns, which ends the pass there.
+pub fn calc_per_individual_stats_with<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    after_a_block: AfterABlock<'_, PerIndividualStats>,
+) -> Result<PerIndividualStats> {
+    let mut individuals = IndividualsCounted::before_the_pass(&*reader);
     // The two counts of an individual follow from its genotype at each
     // variant, so no column of a block is read and the reader is asked to
     // fill none of them.
     reader.set_needs(Needs::GTS);
-    let num_individuals = reader.individuals().len();
-    let ploidy = reader.ploidy();
-    // The two counts of every individual, which every chunk of rows of
-    // every block is added into: what is kept from one block to the next
-    // grows with the individuals and not with the variants.
-    let mut counted = vec![OfAnIndividual::none(); num_individuals];
-    let mut num_vars: u64 = 0;
     // The blocks are read on a thread of its own, one block ahead, for the
     // reason `calc_per_var_distribs` above has it: this pass is almost all
     // reader. Over 100000 variants of 1000 individuals of a vars file it
@@ -1810,34 +1995,97 @@ pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
     let mut lent = &mut *reader;
     with_one_block_ahead(&mut lent, |blocks| {
         while let Some(block) = timed(Phase::NextBlock, || blocks.next_block())? {
-            timed(Phase::Work, || -> Result<()> {
-                let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-                count_the_block(&block, alleles_per_var, &mut counted)?;
-                // A `usize` is 64 bits on the targets popnei builds natively for
-                // and 32 in wasm, so every one of them is a `u64`; and a pass of
-                // more than 18446744073709551615 variants reads more rows than any
-                // source holds.
-                num_vars =
-                    num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
-                Ok(())
+            timed(Phase::Work, || individuals.add_the_block(&block))?;
+            after_a_block(&IndividualsSoFar {
+                individuals: &individuals,
+                chain: &*blocks,
             })?;
         }
         Ok(())
     })?;
-    if num_vars == 0 {
-        let filters = reader.filtering_stats();
-        return Err(Error::PassGaveNoVariant {
-            // The filter nearest the source was given what the source
-            // gave; with no filter the pass gave what the source gave,
-            // which is nothing.
-            num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
-            filters,
-        });
+    if individuals.num_vars == 0 {
+        return Err(no_variant_in_the_pass(reader));
     }
-    Ok(PerIndividualStats {
-        individuals: counted,
-        num_vars,
-    })
+    Ok(individuals.into_the_result())
+}
+
+/// What a pass of [`calc_per_individual_stats_with`] counts from block to
+/// block, which [`calc_variants_summary`] counts too: the two counts of
+/// every individual and the variants read, from which the rates are built
+/// when they are asked for.
+struct IndividualsCounted {
+    /// The two counts of every individual, which every chunk of rows of
+    /// every block is added into: what is kept from one block to the next
+    /// grows with the individuals and not with the variants.
+    counted: Vec<OfAnIndividual>,
+    num_vars: u64,
+    ploidy: usize,
+}
+
+impl IndividualsCounted {
+    /// The counts of a pass over `reader` before any block.
+    fn before_the_pass<R: BlockReader + ?Sized>(reader: &R) -> IndividualsCounted {
+        IndividualsCounted {
+            counted: vec![OfAnIndividual::none(); reader.individuals().len()],
+            num_vars: 0,
+            ploidy: reader.ploidy(),
+        }
+    }
+
+    /// It counts the genotypes of every row of `block`.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`calc_per_individual_stats`] that a block gives.
+    fn add_the_block(&mut self, block: &Block) -> Result<()> {
+        let alleles_per_var = alleles_per_var_of(block, self.counted.len(), self.ploidy)?;
+        count_the_block(block, alleles_per_var, &mut self.counted)?;
+        // A pass of more than 18446744073709551615 variants reads more rows
+        // than any source holds.
+        self.num_vars = self.num_vars.saturating_add(num_vars_of(block));
+        Ok(())
+    }
+
+    /// The rates of every individual when the pass ends, which takes the
+    /// counts.
+    fn into_the_result(self) -> PerIndividualStats {
+        PerIndividualStats {
+            individuals: self.counted,
+            num_vars: self.num_vars,
+        }
+    }
+
+    /// The rates of every individual over the variants counted so far,
+    /// which copies the counts and leaves them to the pass.
+    fn the_result(&self) -> PerIndividualStats {
+        PerIndividualStats {
+            individuals: self.counted.clone(),
+            num_vars: self.num_vars,
+        }
+    }
+}
+
+/// What a pass of [`calc_per_individual_stats_with`] has counted after a
+/// block, which builds the rates from its counts when asked.
+struct IndividualsSoFar<'pass> {
+    individuals: &'pass IndividualsCounted,
+    /// The reader the pass takes its blocks from, which answers with the
+    /// counts of the filters as they were when it gave the last block.
+    chain: &'pass dyn BlockReader,
+}
+
+impl SoFar<PerIndividualStats> for IndividualsSoFar<'_> {
+    fn num_vars(&self) -> u64 {
+        self.individuals.num_vars
+    }
+
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.chain.filtering_stats()
+    }
+
+    fn result(&self) -> Result<PerIndividualStats> {
+        Ok(self.individuals.the_result())
+    }
 }
 
 /// It counts the genotypes of every row of a block into `counted`, one

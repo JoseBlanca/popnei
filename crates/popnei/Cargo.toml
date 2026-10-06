@@ -210,3 +210,13 @@ harness = false
 [[bench]]
 name = "write_vcf"
 harness = false
+
+# How long the three statistics a page shows when a file is opened take in
+# three passes, one for each, against the one pass of calc_variants_summary,
+# of deliverable 4 of work package 1 of docs/plans/stats-so-far.md. It takes
+# the paths of VCFs or vars files, the runs and the threads, and prints one
+# wall time of each per run, so it runs without a harness, as the thirteen
+# above do.
+[[bench]]
+name = "variants_summary"
+harness = false

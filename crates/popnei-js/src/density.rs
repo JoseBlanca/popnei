@@ -17,14 +17,22 @@
 //! "The density of the variants along the chromosomes" of
 //! `docs/specs/stats.md` has the design.
 
+use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 
+use popnei::stats::{SoFar, VarDensity, VarDensityConfig};
+
 use crate::errors::JsPopneiError;
-use crate::source::{Consumer, LARGEST_POSITION, OpenSource, PassCounts, the_run_of};
+use crate::source::{
+    Consumer, LARGEST_POSITION, OpenSource, PassCounts, TheResultSoFar, the_run_of,
+};
+use crate::stats::TheResultSoFarAsked;
 use crate::steps::{Steps, chain_of};
 
-/// The arguments of one pass, as they crossed from TypeScript.
-pub(crate) struct ArgumentsOfTheDensity {
+/// The arguments of the density of a pass, as they crossed from TypeScript,
+/// which `calcVarDensity` and `calcVariantsSummary` give.
+#[wasm_bindgen]
+pub struct ArgumentsOfTheDensity {
     /// The width of a window in base pairs.
     pub(crate) window_size: f64,
     /// The names of the chromosomes of `chromLengths`, in the order the
@@ -35,22 +43,37 @@ pub(crate) struct ArgumentsOfTheDensity {
     pub(crate) chrom_lengths: Vec<f64>,
 }
 
-/// The number of variants in each window along each chromosome over one pass
-/// over `source`, through the steps of `steps`.
+#[wasm_bindgen]
+impl ArgumentsOfTheDensity {
+    /// Windows of `window_size` base pairs, with the lengths of
+    /// `chrom_lengths` for the chromosomes of `chrom_names` when it is not
+    /// nothing, and those of the source otherwise.
+    #[wasm_bindgen(constructor)]
+    #[must_use]
+    pub fn new(
+        window_size: f64,
+        chrom_names: Option<Vec<String>>,
+        chrom_lengths: Vec<f64>,
+    ) -> ArgumentsOfTheDensity {
+        ArgumentsOfTheDensity {
+            window_size,
+            chrom_names,
+            chrom_lengths,
+        }
+    }
+}
+
+/// The width of the windows and the lengths of the chromosomes that
+/// `asked` gives, as the core takes them.
 ///
 /// # Errors
 ///
 /// A width or a length that is not a whole number from 1 to 2^53 - 1, and
 /// names and lengths of two sizes, each a defect of the package, which
-/// refuses them before the call; what the core refuses, a variant past the
-/// length of its chromosome among it; a window whose end is past 2^53, which
-/// a number of JavaScript would round; the memory of a page, when it cannot
-/// hold the arrays of the windows; and a source that cannot be read.
-pub(crate) fn var_density_of(
-    source: &dyn OpenSource,
-    steps: &Steps,
+/// refuses them before the call.
+pub(crate) fn density_config_of(
     asked: &ArgumentsOfTheDensity,
-) -> Result<VarDensityOfAPass, JsPopneiError> {
+) -> Result<VarDensityConfig, JsPopneiError> {
     let window_size = the_base_pairs_of("windowSize", asked.window_size)?;
     let chrom_lengths = asked
         .chrom_names
@@ -74,67 +97,133 @@ pub(crate) fn var_density_of(
                 .collect::<Result<Vec<(String, u64)>, JsPopneiError>>()
         })
         .transpose()?;
+    Ok(VarDensityConfig {
+        window_size,
+        chrom_lengths,
+    })
+}
+
+/// The number of variants in each window along each chromosome over one pass
+/// over `source`, through the steps of `steps`.
+///
+/// The function of `so_far` is given the density over the variants read so
+/// far, built as the final one is, with the counts of the pass as they stand
+/// after the block.
+///
+/// # Errors
+///
+/// A width or a length that is not a whole number from 1 to 2^53 - 1, and
+/// names and lengths of two sizes, each a defect of the package, which
+/// refuses them before the call; what the core refuses, a variant past the
+/// length of its chromosome among it; a window whose end is past 2^53, which
+/// a number of JavaScript would round; the memory of a page, when it cannot
+/// hold the arrays of the windows; a source that cannot be read; and the
+/// value the function of `so_far` threw.
+pub(crate) fn var_density_of(
+    source: &dyn OpenSource,
+    steps: &Steps,
+    asked: &ArgumentsOfTheDensity,
+    so_far: TheResultSoFarAsked,
+) -> Result<VarDensityOfAPass, JsPopneiError> {
+    let VarDensityConfig {
+        window_size,
+        chrom_lengths,
+    } = density_config_of(asked)?;
     the_run_of(source, &Consumer::VarDensity, |run| {
         let reader = source.reader(run, None)?;
         let mut chain = chain_of(reader, steps.steps())?;
-        let density =
-            popnei::stats::calc_var_density(&mut *chain, window_size, chrom_lengths.as_deref())?;
+        let mut told = TheResultSoFar::from_now(so_far.told, so_far.every_seconds)?;
+        let given = popnei::stats::calc_var_density_with(
+            &mut *chain,
+            window_size,
+            chrom_lengths.as_deref(),
+            &mut |added_up: &dyn SoFar<VarDensity>| {
+                let Some(told) = told.as_mut() else {
+                    return Ok(());
+                };
+                told.after_a_block(run, || {
+                    let counts = PassCounts::of_the_filters(
+                        added_up.num_vars(),
+                        steps.steps(),
+                        &added_up.filtering_stats(),
+                    );
+                    Ok(JsValue::from(windows_of(&added_up.result()?, counts)?))
+                })
+            },
+        )
+        .map_err(JsPopneiError::from);
+        let density = TheResultSoFar::what_the_pass_gives(told, given)?;
         let counts = PassCounts::of(density.num_vars(), steps.steps(), &*chain);
-        let mut chroms = Vec::with_capacity(density.chroms().len());
-        let mut windows_per_chrom = Vec::with_capacity(density.chroms().len());
-        for chrom in density.chroms() {
-            chroms.push(chrom.name.clone());
-            // A chromosome has at most `MAX_NUM_WINDOWS` windows, which a
-            // `u32` holds.
-            windows_per_chrom.push(u32::try_from(chrom.counts.len()).unwrap_or(u32::MAX));
+        windows_of(&density, counts)
+    })
+}
+
+/// `density`, the windows the core counted over the variants of a pass or of
+/// its first blocks, on their way to JavaScript, with `counts`, the counts of
+/// the pass.
+///
+/// # Errors
+///
+/// When the memory of a page cannot hold the arrays of the windows, and when
+/// a window ends past 2^53, which a number of JavaScript would round.
+pub(crate) fn windows_of(
+    density: &VarDensity,
+    counts: PassCounts,
+) -> Result<VarDensityOfAPass, JsPopneiError> {
+    let mut chroms = Vec::with_capacity(density.chroms().len());
+    let mut windows_per_chrom = Vec::with_capacity(density.chroms().len());
+    for chrom in density.chroms() {
+        chroms.push(chrom.name.clone());
+        // A chromosome has at most `MAX_NUM_WINDOWS` windows, which a
+        // `u32` holds.
+        windows_per_chrom.push(u32::try_from(chrom.counts.len()).unwrap_or(u32::MAX));
+    }
+    let num_windows = density.num_windows();
+    let mut starts = Vec::new();
+    let mut ends = Vec::new();
+    let mut num_vars = Vec::new();
+    // 20 bytes a window, 200 MB for the most windows a density has, which
+    // an allocation that fails in wasm would abort with instead of an
+    // `Error`.
+    let no_room = || {
+        JsPopneiError::NoMemory(format!(
+            "the {num_windows} windows of the density do not fit in the memory popnei \
+             has left: a page holds at most 4 GB, and every file that is open counts; \
+             a wider window gives fewer of them"
+        ))
+    };
+    starts
+        .try_reserve_exact(num_windows)
+        .map_err(|_| no_room())?;
+    ends.try_reserve_exact(num_windows).map_err(|_| no_room())?;
+    num_vars
+        .try_reserve_exact(num_windows)
+        .map_err(|_| no_room())?;
+    for window in density.windows() {
+        // The end is the larger of the two, so a window that ends at
+        // 2^53 or before starts there too.
+        if window.end > LARGEST_POSITION {
+            return Err(JsPopneiError::NotInJavaScript(format!(
+                "the window {start} to {end} of the chromosome {chrom} ends past \
+                 {LARGEST_POSITION}, the last whole number a number of JavaScript holds: \
+                 the one after it would be read as another, and the same file read from \
+                 Python gives the end the length or the window has",
+                start = window.start,
+                end = window.end,
+                chrom = window.chrom,
+            )));
         }
-        let num_windows = density.num_windows();
-        let mut starts = Vec::new();
-        let mut ends = Vec::new();
-        let mut num_vars = Vec::new();
-        // 20 bytes a window, 200 MB for the most windows a density has, which
-        // an allocation that fails in wasm would abort with instead of an
-        // `Error`.
-        let no_room = || {
-            JsPopneiError::NoMemory(format!(
-                "the {num_windows} windows of the density do not fit in the memory popnei \
-                 has left: a page holds at most 4 GB, and every file that is open counts; \
-                 a wider window gives fewer of them"
-            ))
-        };
-        starts
-            .try_reserve_exact(num_windows)
-            .map_err(|_| no_room())?;
-        ends.try_reserve_exact(num_windows).map_err(|_| no_room())?;
-        num_vars
-            .try_reserve_exact(num_windows)
-            .map_err(|_| no_room())?;
-        for window in density.windows() {
-            // The end is the larger of the two, so a window that ends at
-            // 2^53 or before starts there too.
-            if window.end > LARGEST_POSITION {
-                return Err(JsPopneiError::NotInJavaScript(format!(
-                    "the window {start} to {end} of the chromosome {chrom} ends past \
-                     {LARGEST_POSITION}, the last whole number a number of JavaScript holds: \
-                     the one after it would be read as another, and the same file read from \
-                     Python gives the end the length or the window has",
-                    start = window.start,
-                    end = window.end,
-                    chrom = window.chrom,
-                )));
-            }
-            starts.push(position_in_javascript(window.start));
-            ends.push(position_in_javascript(window.end));
-            num_vars.push(window.num_vars);
-        }
-        Ok(VarDensityOfAPass {
-            chroms,
-            windows_per_chrom,
-            starts,
-            ends,
-            num_vars,
-            counts,
-        })
+        starts.push(position_in_javascript(window.start));
+        ends.push(position_in_javascript(window.end));
+        num_vars.push(window.num_vars);
+    }
+    Ok(VarDensityOfAPass {
+        chroms,
+        windows_per_chrom,
+        starts,
+        ends,
+        num_vars,
+        counts,
     })
 }
 

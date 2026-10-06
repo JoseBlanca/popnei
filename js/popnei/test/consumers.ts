@@ -1,15 +1,15 @@
 /**
- * The fifteen consumers of a `Variants`, each with a call of it over
+ * The sixteen consumers of a `Variants`, each with a call of it over
  * `many.vcf`, and the names the binding crate knows them by.
  *
  * A consumer is a function of the package that reads a `Variants` and gives
  * a result, the iteration of `iterBlocks` and the writers `writeVars` and
- * `writeVcf` among them, as `docs/glossary.md` has the word. Two tests loop over all fifteen:
+ * `writeVcf` among them, as `docs/glossary.md` has the word. Two tests loop over all sixteen:
  * `stop.test.ts`, which stops each of them from inside the function that is
  * told the progress, and `progress.test.ts`, which reads the calls each of
  * them made. Both need the same calls, so they are written here once.
  *
- * The list is held to the crate's fifteen by
+ * The list is held to the crate's sixteen by
  * [`theConsumersTheCrateNames`], which reads them out of the message a name
  * of no consumer is refused with: a consumer added to the package and not
  * to this list, or to this list and not to the crate, fails the test of
@@ -31,6 +31,7 @@ import {
   calcPopDiversity,
   calcRogersHuffR2Matrix,
   calcVarDensity,
+  calcVariantsSummary,
   doPcaFromVariants,
   doPcoaFromVariants,
   numPassesOf,
@@ -73,7 +74,7 @@ export interface TheCallOfAConsumer {
 }
 
 /**
- * The fifteen consumers, each with a call over `many.vcf` that reads the file
+ * The sixteen consumers, each with a call over `many.vcf` that reads the file
  * to its end.
  *
  * `transformToBiallelic` is true where the calculation asks for it, because
@@ -99,6 +100,16 @@ export const THE_CONSUMERS: readonly TheCallOfAConsumer[] = [
     name: "calcVarDensity",
     run: (variants) => {
       calcVarDensity(variants, 1000);
+    },
+  },
+  {
+    name: "calcVariantsSummary",
+    run: (variants) => {
+      calcVariantsSummary(variants, {
+        perVar: {},
+        perIndividual: {},
+        density: { windowSize: 1000 },
+      });
     },
   },
   {
@@ -197,7 +208,7 @@ export const THE_CONSUMERS: readonly TheCallOfAConsumer[] = [
  * in the list that message is built from, and the test of
  * `num_passes.test.ts` that runs each of them is what holds those two
  * together. What this gives the other files is a list that no file of
- * TypeScript wrote, so a list of this package that names another fifteen is
+ * TypeScript wrote, so a list of this package that names another sixteen is
  * caught.
  *
  * @throws {Error} When `calcKinships`, which is the name of no consumer, is

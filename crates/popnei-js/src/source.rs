@@ -31,7 +31,9 @@
 //! reading, and the value it threw is kept in the run and given back to the
 //! application in place of the error the failed read became, so a cancel is
 //! the application's own value and popnei's errors stay the ones it made
-//! itself.
+//! itself. The function of `onSoFar`, which a consumer that adds up over the
+//! blocks of its pass gives the result so far between two of them, is
+//! [`TheResultSoFar`], and what it throws ends the run in the same way.
 //!
 //! [`Blocks`] is that pass, whichever source it came from: it owns the chain
 //! of readers of the pass, the source with a filter over it for each step of
@@ -65,6 +67,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{Blob, FileReaderSync};
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
+use popnei::filters::FilteringStats;
 use popnei::variant::Needs;
 
 use crate::errors::JsPopneiError;
@@ -102,6 +105,8 @@ pub(crate) enum Consumer {
     PerIndividualStats,
     /// `calcVarDensity`.
     VarDensity,
+    /// `calcVariantsSummary`, the three above in one pass.
+    VariantsSummary,
     /// `calcPairwiseKosmanDists`.
     KosmanDists,
     /// `calcPopDists`.
@@ -176,6 +181,7 @@ impl Consumer {
             Consumer::PerVarDistribs
             | Consumer::PerIndividualStats
             | Consumer::VarDensity
+            | Consumer::VariantsSummary
             | Consumer::KosmanDists
             | Consumer::PopDists
             | Consumer::PopDiversity
@@ -206,6 +212,7 @@ impl Consumer {
             "calcPerVarDistribs" => Ok(Consumer::PerVarDistribs),
             "calcPerIndividualStats" => Ok(Consumer::PerIndividualStats),
             "calcVarDensity" => Ok(Consumer::VarDensity),
+            "calcVariantsSummary" => Ok(Consumer::VariantsSummary),
             "calcPairwiseKosmanDists" => Ok(Consumer::KosmanDists),
             "calcPopDists" => Ok(Consumer::PopDists),
             "calcPopDiversity" => Ok(Consumer::PopDiversity),
@@ -231,10 +238,11 @@ impl Consumer {
 
 /// The name of each consumer as a user of the package writes it, for the
 /// message of a name that is of none of them.
-const THE_CONSUMERS: [&str; 15] = [
+const THE_CONSUMERS: [&str; 16] = [
     "calcPerVarDistribs",
     "calcPerIndividualStats",
     "calcVarDensity",
+    "calcVariantsSummary",
     "calcPairwiseKosmanDists",
     "calcPopDists",
     "calcPopDiversity",
@@ -1025,7 +1033,15 @@ struct Run {
     /// It is nothing when the run starts, so no run throws what another one
     /// was stopped with: a run that ends gives its entry back and the next
     /// one made in it is a new [`Run`].
+    ///
+    /// The function of `onSoFar`, which a consumer calls between two blocks,
+    /// stops a run by putting what it threw here too.
     stopped_with: Option<JsValue>,
+    /// Whether the function of `onSoFar` threw, which ended the pass that was
+    /// reading between two of its blocks. The page is told nothing more of
+    /// that run, the call that would say how far its pass read among it, as
+    /// when the function of `onProgress` stops a pass.
+    stopped_between_blocks: bool,
 }
 
 /// One pass of a run that is over: which pass of the run it was, how many
@@ -1246,6 +1262,7 @@ pub(crate) fn starts_a_run_of(source: u32, consumer: &Consumer) -> RunOfAConsume
                 passes_begun: 0,
                 passes_that_ended: Vec::new(),
                 stopped_with: None,
+                stopped_between_blocks: false,
             },
         )
     });
@@ -1272,10 +1289,14 @@ fn the_pass_that_starts(run: u32) -> u32 {
 ///
 /// A pass whose run is not in the table of this thread is not kept: its run
 /// is over already, or the pass was moved to another thread, and either way
-/// nobody is told of it.
+/// nobody is told of it. Neither is a pass that was reading when the function
+/// of `onSoFar` threw, which is told no more than one the function of
+/// `onProgress` stopped.
 fn a_pass_of_the_run_ended(run: u32, ended: PassThatEnded) {
     RUNS.with_borrow_mut(|runs| {
-        if let Some(run) = entry_to_change(runs, run) {
+        if let Some(run) = entry_to_change(runs, run)
+            && !run.stopped_between_blocks
+        {
             run.passes_that_ended.push(ended);
         }
     });
@@ -1344,14 +1365,17 @@ fn what_a_run_was_stopped_with(run: u32) -> Option<JsValue> {
 }
 
 /// The function the page is told the progress of the run numbered `run` with,
-/// and how many passes that run makes, or nothing when the run is over or its
-/// source was given no function.
+/// and how many passes that run makes, or nothing when the run is over, its
+/// source was given no function, or the function of `onSoFar` stopped it.
 ///
 /// The function is cloned out of the table, which is a handle of JavaScript
 /// copied, so that no table is borrowed while it runs.
 fn what_tells_the_page(run: u32) -> Option<(Function, u32)> {
     let (source, num_passes) = RUNS.with_borrow(|runs| {
         let run = entry_of(runs, run)?;
+        if run.stopped_between_blocks {
+            return None;
+        }
         Some((run.source, run.num_passes))
     })?;
     let told = IN_JAVASCRIPT.with_borrow(|sources| entry_of(sources, source)?.told.clone())?;
@@ -1387,6 +1411,26 @@ impl RunOfAConsumer {
                 None => error,
             }),
         }
+    }
+}
+
+impl RunOfAConsumer {
+    /// The function of `onSoFar` threw `thrown` between two blocks of a pass
+    /// of this run, which is what the consumer throws in place of the error
+    /// the core gives back for the pass, as for a throw of the function of
+    /// `onProgress`; and the page is told nothing more of this run.
+    ///
+    /// A run that was stopped already keeps the first value, as
+    /// [`the_run_was_stopped`] says.
+    fn was_stopped_between_blocks(&self, thrown: JsValue) {
+        RUNS.with_borrow_mut(|runs| {
+            if let Some(run) = entry_to_change(runs, self.0) {
+                run.stopped_between_blocks = true;
+                if run.stopped_with.is_none() {
+                    run.stopped_with = Some(thrown);
+                }
+            }
+        });
     }
 }
 
@@ -1445,6 +1489,195 @@ pub(crate) fn the_run_of<T>(
     let run = source.starts_a_run(consumer);
     let given = reads_the_source(&run);
     run.what_the_consumer_gives(given)
+}
+
+/// The function `onSoFar` of a consumer, which is given the result over the
+/// variants read so far between two blocks of its pass, and the clock that
+/// says when.
+///
+/// The consumer calls [`TheResultSoFar::after_a_block`] from the function
+/// the core calls after each block, the last one too, and the function of
+/// the page is called when `soFarEvery` seconds have gone by since the pass
+/// started or since the last call, as "The result so far" of
+/// `docs/specs/js_sources.md` has it. The time is `performance.now()` of
+/// JavaScript, a clock that never goes back, where `Date.now()` follows the
+/// clock of the system and goes back when that is set back, so a call could
+/// wait for as long as it went back. It is read here and not in the core,
+/// which reads no clock.
+pub(crate) struct TheResultSoFar {
+    /// The function the package gives, which builds the result of
+    /// TypeScript out of what crosses and hands it to the function of the
+    /// application.
+    told: Function,
+    /// `soFarEvery`, in milliseconds.
+    every: f64,
+    /// The clock, `performance.now()`.
+    clock: TheClock,
+    /// When the pass started or the function was last called, in the
+    /// milliseconds of the clock.
+    last_at: f64,
+    /// What building the result so far failed with, which is an error of
+    /// this crate the core has no case for: the core is handed an error of
+    /// its own to end the pass, and the consumer gives this one.
+    failed: Option<JsPopneiError>,
+}
+
+impl TheResultSoFar {
+    /// The function `told`, called every `every_seconds`, from now, and
+    /// nothing when the application gave no function.
+    ///
+    /// # Errors
+    ///
+    /// When `every_seconds` is not a finite number of 0 or more, which is a
+    /// defect of the package: it refuses any other before the call; and
+    /// when the JavaScript that runs popnei has no `performance.now()` that
+    /// gives a number.
+    pub(crate) fn from_now(
+        told: Option<Function>,
+        every_seconds: f64,
+    ) -> Result<Option<TheResultSoFar>, JsPopneiError> {
+        if !every_seconds.is_finite() || every_seconds < 0.0 {
+            return Err(JsPopneiError::Broken(format!(
+                "`soFarEvery` arrived as {every_seconds}, and it is a finite number of \
+                 seconds of 0 or more, which is a defect of popnei; please report it"
+            )));
+        }
+        let Some(told) = told else {
+            return Ok(None);
+        };
+        let clock = TheClock::of_javascript()?;
+        let last_at = clock.now()?;
+        Ok(Some(TheResultSoFar {
+            told,
+            every: every_seconds * 1000.0,
+            clock,
+            last_at,
+            failed: None,
+        }))
+    }
+
+    /// Calls the function with what `result` builds, when its time has come,
+    /// and does nothing otherwise.
+    ///
+    /// The function is called with no table of this crate borrowed, as the
+    /// function of `onProgress` is, so an application that calls popnei from
+    /// inside it does not trap.
+    ///
+    /// # Errors
+    ///
+    /// When the function throws, which stops `run` with the value it threw,
+    /// and when `result` or the clock fails, which is kept for
+    /// [`TheResultSoFar::what_the_pass_gives`]: either way the error given
+    /// back ends the pass, and the core reads no block more.
+    pub(crate) fn after_a_block(
+        &mut self,
+        run: &RunOfAConsumer,
+        result: impl FnOnce() -> Result<JsValue, JsPopneiError>,
+    ) -> Result<(), popnei::Error> {
+        let now = match self.clock.now() {
+            Ok(now) => now,
+            Err(error) => {
+                self.failed = Some(error);
+                return Err(the_pass_ended_after_a_block());
+            }
+        };
+        if now - self.last_at < self.every {
+            return Ok(());
+        }
+        self.last_at = now;
+        let so_far = match result() {
+            Ok(so_far) => so_far,
+            Err(error) => {
+                self.failed = Some(error);
+                return Err(the_pass_ended_after_a_block());
+            }
+        };
+        if let Err(thrown) = self.told.call1(&JsValue::NULL, &so_far) {
+            run.was_stopped_between_blocks(thrown);
+            return Err(the_pass_ended_after_a_block());
+        }
+        Ok(())
+    }
+
+    /// `given`, what the core gave back for the pass, with the error that
+    /// building the result so far failed with in place of the one the core
+    /// ended the pass with for it.
+    ///
+    /// # Errors
+    ///
+    /// That error, and otherwise the one of `given`.
+    pub(crate) fn what_the_pass_gives<T>(
+        so_far: Option<TheResultSoFar>,
+        given: Result<T, JsPopneiError>,
+    ) -> Result<T, JsPopneiError> {
+        match so_far.and_then(|so_far| so_far.failed) {
+            Some(failed) => Err(failed),
+            None => given,
+        }
+    }
+}
+
+/// `performance.now()` of JavaScript, which node, the page and a web worker
+/// all have on their global object, in milliseconds from when the program
+/// started.
+struct TheClock {
+    /// `performance`, which `now` is called on.
+    performance: JsValue,
+    /// Its `now`.
+    now: Function,
+}
+
+impl TheClock {
+    /// The `performance.now()` of the global object.
+    ///
+    /// # Errors
+    ///
+    /// When the global object has no `performance` with a function `now`.
+    fn of_javascript() -> Result<TheClock, JsPopneiError> {
+        let performance =
+            js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance"))
+                .map_err(|_thrown| no_clock())?;
+        let now = js_sys::Reflect::get(&performance, &JsValue::from_str("now"))
+            .map_err(|_thrown| no_clock())?
+            .dyn_into::<Function>()
+            .map_err(|_not_a_function| no_clock())?;
+        Ok(TheClock { performance, now })
+    }
+
+    /// What the clock reads now, in milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// When `performance.now()` throws or gives what is not a number.
+    fn now(&self) -> Result<f64, JsPopneiError> {
+        self.now
+            .call0(&self.performance)
+            .ok()
+            .and_then(|now| now.as_f64())
+            .ok_or_else(no_clock)
+    }
+}
+
+/// That the JavaScript that runs popnei has no `performance.now()` that gives
+/// a number, which node, every browser and every web worker have.
+fn no_clock() -> JsPopneiError {
+    JsPopneiError::Broken(
+        "the JavaScript that runs popnei has no `performance.now()` that gives a \
+         number, and it is the clock that says when `onSoFar` is called"
+            .to_owned(),
+    )
+}
+
+/// What the function after a block gives the core when the function of
+/// `onSoFar` threw or its result could not be built, which ends the pass.
+///
+/// No user reads it: the consumer throws the value the function threw, or
+/// the error the result failed with, in its place.
+fn the_pass_ended_after_a_block() -> popnei::Error {
+    popnei::Error::Io(std::io::Error::other(
+        "the function that is given the result so far threw, or that result could \
+         not be built, and the pass ended between two blocks",
+    ))
 }
 
 /// That the memory of wasm takes `num_bytes` more, asked for before a
@@ -1841,9 +2074,22 @@ impl PassCounts {
     /// not those of the `Variants` when the counts are read: a step added
     /// while a pass runs is not in it.
     pub(crate) fn of(num_vars: u64, steps: &[Step], chain: &dyn BlockReader) -> PassCounts {
-        let filtering = chain.filtering_stats();
+        PassCounts::of_the_filters(num_vars, steps, &chain.filtering_stats())
+    }
+
+    /// The counts of a pass that gave `num_vars` variants, with `filtering`
+    /// the counts of the filters of its chain, which was built from `steps`,
+    /// by the name of each filter, the outermost first.
+    ///
+    /// It is what the result so far of a pass carries, whose counts the core
+    /// gives as they stand after a block, while the chain is lent to it.
+    pub(crate) fn of_the_filters(
+        num_vars: u64,
+        steps: &[Step],
+        filtering: &[(&'static str, FilteringStats)],
+    ) -> PassCounts {
         PassCounts {
-            stopped_early: stopped_early(steps, &filtering),
+            stopped_early: stopped_early(steps, filtering),
             num_vars: num_vars as f64,
             kinds: filtering
                 .iter()

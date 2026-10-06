@@ -33,13 +33,15 @@
 //!
 //! `docs/specs/stats.md` has the design.
 
+use js_sys::Function;
+use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
-use popnei::stats::{ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops};
+use popnei::stats::{ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops, SoFar};
 
 use crate::errors::JsPopneiError;
-use crate::source::{Consumer, OpenSource, PassCounts, the_run_of};
+use crate::source::{Consumer, OpenSource, PassCounts, TheResultSoFar, the_run_of};
 use crate::steps::{Steps, chain_of};
 
 /// The name of the argument that says below which major allele frequency a
@@ -59,14 +61,17 @@ const BIN_TYPE_IN_THE_CORE: &str = "bin_type";
 const PLOIDY: &str = "ploidy";
 const THE_EXPONENT_IN_THE_CORE: &str = "exponent";
 
-/// The arguments of one pass, as they crossed from TypeScript.
+/// The arguments of the distributions of the statistics of each variant, as
+/// they crossed from TypeScript, which `calcPerVarDistribs` and
+/// `calcVariantsSummary` give.
 ///
 /// The package has checked that each of them is of the type the core takes,
 /// since a number of JavaScript reaches a whole number of the core as 32
 /// bits with no error; what is left is what the core says of them, an
 /// unknown name of a statistic and a threshold that is no frequency among
 /// it.
-pub(crate) struct ArgumentsOfThePass {
+#[wasm_bindgen]
+pub struct ArgumentsOfThePass {
     /// The statistics to calculate, under the names above.
     pub(crate) stats: Vec<String>,
     /// The name of each population, in the order the user gave them, and
@@ -94,12 +99,77 @@ pub(crate) struct ArgumentsOfThePass {
     pub(crate) poly_threshold: f64,
 }
 
+#[wasm_bindgen]
+impl ArgumentsOfThePass {
+    /// The arguments of `calcPerVarDistribs` of `docs/specs/stats.md`, as the
+    /// package checked them and flat: `stats` holds the name of each
+    /// statistic to calculate; the populations are their names, the names of
+    /// the individuals of every one of them one after another, and how many
+    /// individuals each of them holds, and `pop_names` is nothing when the
+    /// user named no population, which is one population of every individual
+    /// of the pass; `min_num_individuals` is how many called genotypes a
+    /// population needs at a variant to have a value there; `hist_start`,
+    /// `hist_end`, `num_bins` and `bin_type` are the histogram every
+    /// statistic is counted in; `ploidy` is the exponent of the two expected
+    /// heterozygosities, and nothing for the ploidy of the variants; and
+    /// `poly_threshold` is the major allele frequency below which a variant
+    /// is polymorphic in a population.
+    #[wasm_bindgen(constructor)]
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments of `calcPerVarDistribs` of `docs/specs/stats.md`, each \
+                  one as the package checked it, and the populations flat: an array of \
+                  arrays is not one of the types wasm-bindgen carries"
+    )]
+    pub fn new(
+        stats: Vec<String>,
+        pop_names: Option<Vec<String>>,
+        pop_individuals: Vec<String>,
+        num_individuals_per_pop: Vec<u32>,
+        min_num_individuals: u32,
+        hist_start: f64,
+        hist_end: f64,
+        num_bins: usize,
+        bin_type: String,
+        ploidy: Option<usize>,
+        poly_threshold: f64,
+    ) -> ArgumentsOfThePass {
+        ArgumentsOfThePass {
+            stats,
+            pop_names,
+            pop_individuals,
+            num_individuals_per_pop,
+            min_num_individuals,
+            hist_range: (hist_start, hist_end),
+            num_bins,
+            bin_type,
+            ploidy,
+            poly_threshold,
+        }
+    }
+}
+
+/// What a consumer of the three that add up over the blocks of a pass, or
+/// the summary of the three, is asked to give while the pass runs, as it
+/// crossed from TypeScript: the function the package gives for `onSoFar`,
+/// nothing when the application gave none, and `soFarEvery`, the seconds
+/// between two calls of it.
+pub(crate) struct TheResultSoFarAsked {
+    pub(crate) told: Option<Function>,
+    pub(crate) every_seconds: f64,
+}
+
 /// The six per variant statistics of one pass over `source`, through the
 /// steps of `steps`.
 ///
 /// The chain of readers of the pass is built here and stays here, lent to
 /// the core, so that the counts of its filters are read when the pass is
 /// over: the loop over the blocks is the core's.
+///
+/// The function of `so_far` is given the distributions over the variants
+/// read so far, built as the final ones are, with the counts of the pass as
+/// they stand after the block.
 ///
 /// # Errors
 ///
@@ -109,74 +179,194 @@ pub(crate) struct ArgumentsOfThePass {
 /// 255; when a population names an individual the pass does not give, names
 /// one twice or names none, and when `pops` holds no population; when the
 /// major allele frequency below which a variant is polymorphic is not a
-/// number from 0 to 1; when the source cannot be read; and when the pass
-/// gives no variant.
+/// number from 0 to 1; when the source cannot be read; when the pass gives
+/// no variant; and the value the function of `so_far` threw.
 pub(crate) fn per_var_distribs_of(
     source: &dyn OpenSource,
     steps: &Steps,
     asked: &ArgumentsOfThePass,
+    so_far: TheResultSoFarAsked,
 ) -> Result<PerVarDistribs, JsPopneiError> {
-    let stats = the_stats(&asked.stats)?;
-    let (start, end) = asked.hist_range;
-    let bins =
-        HistBins::of_kind(&asked.bin_type, start, end, asked.num_bins).map_err(under_its_name)?;
-    let named = the_pops_given(asked)?;
-    // The ploidy of the variants turns the alleles a population called into
-    // called genotypes, for the `min_num_individuals` test, and it is also
-    // the exponent of the two expected heterozygosities when the user asks
-    // for no other, which the core decides and not this crate.
-    let of_the_variants = source.ploidy();
-    let obs_het = ObsHet::new(asked.min_num_individuals);
-    let maf = Maf::new(of_the_variants, asked.min_num_individuals)?;
-    let exp_het =
-        ExpHet::of_the_exponent_asked_for(asked.ploidy, of_the_variants, asked.min_num_individuals)
-            .map_err(under_its_name)?;
-    // Every statistic of the pass counts its values in these bins, so their
-    // edges are the result's and are kept here, where the bins themselves go
-    // on to the core.
-    let hist_bin_edges = bins.edges().to_vec();
+    let before_the_pass = DistribsBeforeThePass::of(source, asked)?;
     the_run_of(source, &Consumer::PerVarDistribs, |run| {
         let reader = source.reader(run, None)?;
         let mut chain = chain_of(reader, steps.steps())?;
-        let pops = match named {
-            Some(named) => Pops::from_names(&named, chain.individuals())?,
-            None => Pops::all(chain.individuals().len()),
-        };
-        let pop_names = (0..pops.len())
-            .map(|pop| pops.name(pop).to_owned())
-            .collect();
-        let config = PerVarDistribsConfig {
+        let DistribsOfThePass {
+            config,
+            pop_names,
+            hist_bin_edges,
+        } = before_the_pass.over(chain.individuals())?;
+        let mut told = TheResultSoFar::from_now(so_far.told, so_far.every_seconds)?;
+        let given = popnei::stats::calc_per_var_distribs_with(
+            &mut *chain,
+            &config,
+            &mut |added_up: &dyn SoFar<popnei::stats::PerVarDistribs>| {
+                let Some(told) = told.as_mut() else {
+                    return Ok(());
+                };
+                told.after_a_block(run, || {
+                    let counts = PassCounts::of_the_filters(
+                        added_up.num_vars(),
+                        steps.steps(),
+                        &added_up.filtering_stats(),
+                    );
+                    let distribs = added_up.result().map_err(under_its_name)?;
+                    Ok(JsValue::from(distribs_of(
+                        distribs,
+                        pop_names.clone(),
+                        hist_bin_edges.clone(),
+                        counts,
+                    )?))
+                })
+            },
+        )
+        .map_err(under_its_name);
+        let distribs = TheResultSoFar::what_the_pass_gives(told, given)?;
+        let counts = PassCounts::of(distribs.num_vars, steps.steps(), &*chain);
+        distribs_of(distribs, pop_names, hist_bin_edges, counts)
+    })
+}
+
+/// What the distributions of a pass are counted with that is known before
+/// the pass starts, out of the arguments a user wrote: the statistics, the
+/// bins and their edges, the populations as the user named them, the three
+/// statistics that take arguments of their own and the polymorphism
+/// threshold.
+pub(crate) struct DistribsBeforeThePass {
+    stats: Vec<PerVarStat>,
+    named: Option<PopsGiven>,
+    bins: HistBins,
+    hist_bin_edges: Vec<f64>,
+    obs_het: ObsHet,
+    maf: Maf,
+    exp_het: ExpHet,
+    poly_threshold: f64,
+}
+
+/// What the distributions of a pass are counted with, once the chain of the
+/// pass has said which individuals it gives, with the names of the
+/// populations and the edges of the bins the result is given under.
+pub(crate) struct DistribsOfThePass {
+    pub(crate) config: PerVarDistribsConfig,
+    pub(crate) pop_names: Vec<String>,
+    pub(crate) hist_bin_edges: Vec<f64>,
+}
+
+impl DistribsBeforeThePass {
+    /// The distributions `asked` asks for over the variants of `source`.
+    ///
+    /// # Errors
+    ///
+    /// When a name of the statistics is of no statistic; when the histogram
+    /// cannot be made of the range, the number of bins and the kind of bins
+    /// that were given; when the exponent of the expected heterozygosities is
+    /// 0 or above 255; and when the arrays of the populations do not hold
+    /// the individuals of every population, which is a defect of the
+    /// package.
+    pub(crate) fn of(
+        source: &dyn OpenSource,
+        asked: &ArgumentsOfThePass,
+    ) -> Result<DistribsBeforeThePass, JsPopneiError> {
+        let stats = the_stats(&asked.stats)?;
+        let (start, end) = asked.hist_range;
+        let bins = HistBins::of_kind(&asked.bin_type, start, end, asked.num_bins)
+            .map_err(under_its_name)?;
+        let named = the_pops_given(asked)?;
+        // The ploidy of the variants turns the alleles a population called
+        // into called genotypes, for the `min_num_individuals` test, and it
+        // is also the exponent of the two expected heterozygosities when the
+        // user asks for no other, which the core decides and not this crate.
+        let of_the_variants = source.ploidy();
+        let obs_het = ObsHet::new(asked.min_num_individuals);
+        let maf = Maf::new(of_the_variants, asked.min_num_individuals)?;
+        let exp_het = ExpHet::of_the_exponent_asked_for(
+            asked.ploidy,
+            of_the_variants,
+            asked.min_num_individuals,
+        )
+        .map_err(under_its_name)?;
+        // Every statistic of the pass counts its values in these bins, so
+        // their edges are the result's and are kept here, where the bins
+        // themselves go on to the core.
+        let hist_bin_edges = bins.edges().to_vec();
+        Ok(DistribsBeforeThePass {
             stats,
-            pops,
+            named,
             bins,
+            hist_bin_edges,
             obs_het,
             maf,
             exp_het,
             poly_threshold: asked.poly_threshold,
-        };
-        let distribs =
-            popnei::stats::calc_per_var_distribs(&mut *chain, &config).map_err(under_its_name)?;
-        let counts = PassCounts::of(distribs.num_vars, steps.steps(), &*chain);
-        let popnei::stats::PerVarDistribs {
-            obs_het,
-            maf,
-            exp_het,
-            unbiased_exp_het,
-            poly_vars_ratio,
-            missing_rate,
-            num_vars: _,
-        } = distribs;
-        Ok(PerVarDistribs {
-            pop_names,
-            hist_bin_edges,
-            obs_het: distrib_of(obs_het.as_ref(), PerVarStat::ObsHet)?,
-            maf: distrib_of(maf.as_ref(), PerVarStat::Maf)?,
-            exp_het: distrib_of(exp_het.as_ref(), PerVarStat::ExpHet)?,
-            unbiased_exp_het: distrib_of(unbiased_exp_het.as_ref(), PerVarStat::UnbiasedExpHet)?,
-            poly_vars_ratio: poly_counts_of(poly_vars_ratio.as_ref())?,
-            missing_rate: distrib_of(missing_rate.as_ref(), PerVarStat::MissingRate)?,
-            counts,
         })
+    }
+
+    /// The distributions over `individuals`, those the chain of the pass
+    /// gives, which the populations the user named are resolved against.
+    ///
+    /// # Errors
+    ///
+    /// When a population names an individual of none of `individuals`,
+    /// names one twice or names none, and when the user named no population
+    /// at all.
+    pub(crate) fn over(self, individuals: &[String]) -> Result<DistribsOfThePass, JsPopneiError> {
+        let pops = match self.named {
+            Some(named) => Pops::from_names(&named, individuals)?,
+            None => Pops::all(individuals.len()),
+        };
+        let pop_names: Vec<String> = (0..pops.len())
+            .map(|pop| pops.name(pop).to_owned())
+            .collect();
+        Ok(DistribsOfThePass {
+            config: PerVarDistribsConfig {
+                stats: self.stats,
+                pops,
+                bins: self.bins,
+                obs_het: self.obs_het,
+                maf: self.maf,
+                exp_het: self.exp_het,
+                poly_threshold: self.poly_threshold,
+            },
+            pop_names,
+            hist_bin_edges: self.hist_bin_edges,
+        })
+    }
+}
+
+/// `distribs`, the distributions the core gave over the variants of a pass
+/// or of its first blocks, on their way to JavaScript, under the names of
+/// the populations and the edges of the bins of the pass and with `counts`,
+/// the counts of the pass.
+///
+/// # Errors
+///
+/// Those of [`distrib_of`] and [`poly_counts_of`], each a histogram or a
+/// count that JavaScript is not given as it is.
+pub(crate) fn distribs_of(
+    distribs: popnei::stats::PerVarDistribs,
+    pop_names: Vec<String>,
+    hist_bin_edges: Vec<f64>,
+    counts: PassCounts,
+) -> Result<PerVarDistribs, JsPopneiError> {
+    let popnei::stats::PerVarDistribs {
+        obs_het,
+        maf,
+        exp_het,
+        unbiased_exp_het,
+        poly_vars_ratio,
+        missing_rate,
+        num_vars: _,
+    } = distribs;
+    Ok(PerVarDistribs {
+        pop_names,
+        hist_bin_edges,
+        obs_het: distrib_of(obs_het.as_ref(), PerVarStat::ObsHet)?,
+        maf: distrib_of(maf.as_ref(), PerVarStat::Maf)?,
+        exp_het: distrib_of(exp_het.as_ref(), PerVarStat::ExpHet)?,
+        unbiased_exp_het: distrib_of(unbiased_exp_het.as_ref(), PerVarStat::UnbiasedExpHet)?,
+        poly_vars_ratio: poly_counts_of(poly_vars_ratio.as_ref())?,
+        missing_rate: distrib_of(missing_rate.as_ref(), PerVarStat::MissingRate)?,
+        counts,
     })
 }
 
@@ -393,7 +583,7 @@ fn for_javascript(count: u64, statistic: PerVarStat) -> Result<u32, JsPopneiErro
 /// The other number the core refuses as an exponent is the ploidy of the
 /// variants, which a user never writes: a reader refuses a ploidy of 0 or
 /// above 255 when the file is opened.
-fn under_its_name(error: popnei::Error) -> JsPopneiError {
+pub(crate) fn under_its_name(error: popnei::Error) -> JsPopneiError {
     if let popnei::Error::PolyThresholdOutOfRange { value } = error {
         return JsPopneiError::Threshold {
             name: POLY_THRESHOLD,
@@ -614,15 +804,20 @@ impl PerVarDistribs {
 /// the core, so that the counts of its filters are read when the pass is
 /// over: the loop over the blocks is the core's.
 ///
+/// The function of `so_far` is given the rates over the variants read so
+/// far, built as the final ones are, with the counts of the pass as they
+/// stand after the block.
+///
 /// # Errors
 ///
 /// When the source cannot be read, a wrong line of a VCF among the causes;
-/// when the pass gives no variant; and when the chain gave the names of a
+/// when the pass gives no variant; when the chain gave the names of a
 /// different number of individuals than the pass gave rates, which is a
-/// defect of popnei.
+/// defect of popnei; and the value the function of `so_far` threw.
 pub(crate) fn per_individual_stats_of(
     source: &dyn OpenSource,
     steps: &Steps,
+    so_far: TheResultSoFarAsked,
 ) -> Result<PerIndividualStats, JsPopneiError> {
     the_run_of(source, &Consumer::PerIndividualStats, |run| {
         let reader = source.reader(run, None)?;
@@ -631,36 +826,74 @@ pub(crate) fn per_individual_stats_of(
         // the order of these names: a filter of individuals gives them in the
         // order the user named them.
         let individuals = chain.individuals().to_vec();
-        let stats = popnei::stats::calc_per_individual_stats(&mut *chain)?;
+        let mut told = TheResultSoFar::from_now(so_far.told, so_far.every_seconds)?;
+        let given = popnei::stats::calc_per_individual_stats_with(
+            &mut *chain,
+            &mut |added_up: &dyn SoFar<popnei::stats::PerIndividualStats>| {
+                let Some(told) = told.as_mut() else {
+                    return Ok(());
+                };
+                told.after_a_block(run, || {
+                    let counts = PassCounts::of_the_filters(
+                        added_up.num_vars(),
+                        steps.steps(),
+                        &added_up.filtering_stats(),
+                    );
+                    let stats = added_up.result()?;
+                    Ok(JsValue::from(rates_of(
+                        &stats,
+                        individuals.clone(),
+                        counts,
+                    )?))
+                })
+            },
+        )
+        .map_err(JsPopneiError::from);
+        let stats = TheResultSoFar::what_the_pass_gives(told, given)?;
         let counts = PassCounts::of(stats.num_vars(), steps.steps(), &*chain);
-        let num_individuals = stats.num_individuals();
-        // The package reads the name of an individual and its two rates at the
-        // same place of three arrays, and a name and a rate that are not of
-        // the same individual are a wrong number that says nothing about
-        // itself.
-        if individuals.len() != num_individuals {
-            return Err(JsPopneiError::Broken(format!(
-                "the pass gave the names of {given} individuals and the rates of \
-                 {num_individuals}",
-                given = individuals.len()
-            )));
-        }
-        let missing_gt_rate = (0..num_individuals)
-            .map(|individual| stats.missing_rate(individual))
-            .collect();
-        // An individual with no called genotype has no heterozygosity rate,
-        // and NaN is what the package gives its user for a value the core does
-        // not have, as it does for the mean of a population in which no
-        // variant had one.
-        let obs_het_rate = (0..num_individuals)
-            .map(|individual| stats.obs_het_rate(individual).unwrap_or(f64::NAN))
-            .collect();
-        Ok(PerIndividualStats {
-            individuals,
-            missing_gt_rate,
-            obs_het_rate,
-            counts,
-        })
+        rates_of(&stats, individuals, counts)
+    })
+}
+
+/// `stats`, the rates the core gave over the variants of a pass or of its
+/// first blocks, on their way to JavaScript, under `individuals`, the names
+/// the chain of the pass gave, and with `counts`, the counts of the pass.
+///
+/// # Errors
+///
+/// When the chain gave the names of a different number of individuals than
+/// the pass gave rates, which is a defect of popnei.
+pub(crate) fn rates_of(
+    stats: &popnei::stats::PerIndividualStats,
+    individuals: Vec<String>,
+    counts: PassCounts,
+) -> Result<PerIndividualStats, JsPopneiError> {
+    let num_individuals = stats.num_individuals();
+    // The package reads the name of an individual and its two rates at the
+    // same place of three arrays, and a name and a rate that are not of the
+    // same individual are a wrong number that says nothing about itself.
+    if individuals.len() != num_individuals {
+        return Err(JsPopneiError::Broken(format!(
+            "the pass gave the names of {given} individuals and the rates of \
+             {num_individuals}",
+            given = individuals.len()
+        )));
+    }
+    let missing_gt_rate = (0..num_individuals)
+        .map(|individual| stats.missing_rate(individual))
+        .collect();
+    // An individual with no called genotype has no heterozygosity rate, and
+    // NaN is what the package gives its user for a value the core does not
+    // have, as it does for the mean of a population in which no variant had
+    // one.
+    let obs_het_rate = (0..num_individuals)
+        .map(|individual| stats.obs_het_rate(individual).unwrap_or(f64::NAN))
+        .collect();
+    Ok(PerIndividualStats {
+        individuals,
+        missing_gt_rate,
+        obs_het_rate,
+        counts,
     })
 }
 

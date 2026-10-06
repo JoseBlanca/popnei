@@ -86,18 +86,24 @@ export {
   calcPerIndividualStats,
   calcPerVarDistribs,
   calcVarDensity,
+  calcVariantsSummary,
 } from "./stats.js";
 export type {
   BinType,
   HistKwargs,
   PerIndividualStats,
+  PerIndividualStatsOptions,
   PerVarDistribs,
   PerVarDistribsOptions,
+  PerVarOptionsOfASummary,
   PerVarStat,
   PolyVarsStats,
+  SoFarOptions,
   StatsDistrib,
   VarDensity,
   VarDensityOptions,
+  VariantsSummary,
+  VariantsSummaryOptions,
 } from "./stats.js";
 export { Variants } from "./variant.js";
 export type {

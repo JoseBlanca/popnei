@@ -3415,6 +3415,17 @@ pub enum Error {
         "the variants are filtered by passed already, and a second filter of that kind would keep the same variants as the first"
     )]
     PassedFilterThatIsSet,
+
+    /// A summary of the variants was asked for none of its three
+    /// statistics, the distributions of the statistics of each variant, the
+    /// rates of each individual and the density of the variants. Such a pass
+    /// would read the source for nothing, so it is refused before a variant
+    /// is read. The TypeScript package is the one that reaches it, from a
+    /// call that leaves out the three; in JavaScript it is an `Error`.
+    #[error(
+        "the summary of the variants was asked for none of its three statistics: ask for one at least, the distributions of the statistics of each variant, the rates of each individual or the density of the variants"
+    )]
+    VariantsSummaryOfNoStatistic,
 }
 
 /// The two arguments of a filter that keeps variants at random, which
@@ -3638,6 +3649,9 @@ impl Error {
                 from: crate::stats::LengthsFrom::ChromLengths,
                 ..
             }
+            // A summary of the variants asked for none of its three
+            // statistics.
+            | Self::VariantsSummaryOfNoStatistic
             // The distances a user gave to a principal coordinate analysis
             // or to Lingoes' correction, which no file holds: one that is
             // negative or infinite, pairs that have none, distances that

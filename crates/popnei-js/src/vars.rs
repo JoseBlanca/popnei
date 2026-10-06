@@ -39,10 +39,11 @@ use crate::source::{
     the_bytes_of_a_new_source, the_file_of_a_new_source, the_source_was_freed,
 };
 use crate::stats::{
-    ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, per_individual_stats_of,
-    per_var_distribs_of,
+    ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, TheResultSoFarAsked,
+    per_individual_stats_of, per_var_distribs_of,
 };
 use crate::steps::Steps;
+use crate::summary::{TheStatisticsAsked, VariantsSummaryOfAPass, variants_summary_of};
 
 /// A vars file that was opened: where its file is, and the individuals and
 /// the ploidy its schema named.
@@ -143,22 +144,10 @@ impl VarsSource {
     }
 
     /// The five per variant statistics of one pass over the file, through
-    /// the steps of `steps`, for each population of `pop_names`.
-    ///
-    /// The arguments are those of `calcPerVarDistribs` of
-    /// `docs/specs/stats.md`, as the package checked them and flat: `stats`
-    /// holds the name of each statistic to calculate; the populations are
-    /// their names, the names of the individuals of every one of them one
-    /// after another, and how many individuals each of them holds, and
-    /// `pop_names` is nothing when the user named no population, which is
-    /// one population of every individual of the pass;
-    /// `min_num_individuals` is how many called genotypes a population needs
-    /// at a variant to have a value there; `hist_start`, `hist_end`,
-    /// `num_bins` and `bin_type` are the histogram every statistic is
-    /// counted in; `ploidy` is the exponent of the two expected
-    /// heterozygosities, and nothing for the ploidy of the variants; and
-    /// `poly_threshold` is the major allele frequency below which a variant
-    /// is polymorphic in a population.
+    /// the steps of `steps`, with the arguments of `asked`. `on_so_far` is
+    /// the function that is given the distributions over the variants read
+    /// so far while the pass runs, every `so_far_every` seconds, and nothing
+    /// when the application gave none.
     ///
     /// # Errors
     ///
@@ -167,85 +156,114 @@ impl VarsSource {
     /// above 255, a population that names an individual the pass does not
     /// give, names one twice or names none, `pops` with no population, a
     /// polymorphism threshold that is no frequency, a source that cannot be
-    /// read, and a pass that gives no variant.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the arguments of `calcPerVarDistribs` of `docs/specs/stats.md`, each \
-                  one as the package checked it, and the populations flat: an array of \
-                  arrays is not one of the types wasm-bindgen carries"
-    )]
+    /// read, a pass that gives no variant, and the value `on_so_far` threw.
     pub fn calc_per_var_distribs(
         &self,
         steps: Steps,
-        stats: Vec<String>,
-        pop_names: Option<Vec<String>>,
-        pop_individuals: Vec<String>,
-        num_individuals_per_pop: Vec<u32>,
-        min_num_individuals: u32,
-        hist_start: f64,
-        hist_end: f64,
-        num_bins: usize,
-        bin_type: String,
-        ploidy: Option<usize>,
-        poly_threshold: f64,
+        asked: ArgumentsOfThePass,
+        on_so_far: Option<Function>,
+        so_far_every: f64,
     ) -> Result<PerVarDistribs, JsPopneiError> {
         per_var_distribs_of(
             self,
             &steps,
-            &ArgumentsOfThePass {
-                stats,
-                pop_names,
-                pop_individuals,
-                num_individuals_per_pop,
-                min_num_individuals,
-                hist_range: (hist_start, hist_end),
-                num_bins,
-                bin_type,
-                ploidy,
-                poly_threshold,
+            &asked,
+            TheResultSoFarAsked {
+                told: on_so_far,
+                every_seconds: so_far_every,
             },
         )
     }
 
     /// The missing rate and the heterozygosity rate of every individual of
-    /// one pass over the file, through the steps of `steps`.
+    /// one pass over the file, through the steps of `steps`, with
+    /// `on_so_far` given the rates over the variants read so far while the
+    /// pass runs, every `so_far_every` seconds, when it is not nothing.
     ///
     /// # Errors
     ///
     /// Those of [`per_individual_stats_of`]: a source that cannot be read,
-    /// and a pass that gives no variant.
+    /// a pass that gives no variant, and the value `on_so_far` threw.
     pub fn calc_per_individual_stats(
         &self,
         steps: Steps,
+        on_so_far: Option<Function>,
+        so_far_every: f64,
     ) -> Result<PerIndividualStats, JsPopneiError> {
-        per_individual_stats_of(self, &steps)
+        per_individual_stats_of(
+            self,
+            &steps,
+            TheResultSoFarAsked {
+                told: on_so_far,
+                every_seconds: so_far_every,
+            },
+        )
     }
 
-    /// The number of variants in each window of `window_size` base pairs
-    /// along each chromosome of one pass over the file, through the steps of
-    /// `steps`, with the lengths of `chrom_lengths` for the chromosomes of
-    /// `chrom_names` when it is not nothing, and those of the source
-    /// otherwise.
+    /// The number of variants in each window along each chromosome of one
+    /// pass over the file, through the steps of `steps`, with the width of
+    /// the windows and the lengths of the chromosomes of `asked`.
+    /// `on_so_far` is given the density over the variants read so far while
+    /// the pass runs, every `so_far_every` seconds, when it is not nothing.
     ///
     /// # Errors
     ///
     /// Those of [`var_density_of`]: what the core refuses, a variant past
     /// the length of its chromosome among it, a window that ends past 2^53,
-    /// a source that cannot be read, and a pass that gives no variant.
+    /// a source that cannot be read, a pass that gives no variant, and the
+    /// value `on_so_far` threw.
     pub fn calc_var_density(
         &self,
         steps: Steps,
-        window_size: f64,
-        chrom_names: Option<Vec<String>>,
-        chrom_lengths: Vec<f64>,
+        asked: ArgumentsOfTheDensity,
+        on_so_far: Option<Function>,
+        so_far_every: f64,
     ) -> Result<VarDensityOfAPass, JsPopneiError> {
         var_density_of(
             self,
             &steps,
-            &ArgumentsOfTheDensity {
-                window_size,
-                chrom_names,
-                chrom_lengths,
+            &asked,
+            TheResultSoFarAsked {
+                told: on_so_far,
+                every_seconds: so_far_every,
+            },
+        )
+    }
+
+    /// The statistics of `calc_per_var_distribs`, of
+    /// `calc_per_individual_stats` and of `calc_var_density` in one pass
+    /// over the file, through the steps of `steps`: the distributions with
+    /// the arguments of `per_var`, the rates when `per_individual` is true
+    /// and the density with the arguments of `density`, each nothing when it
+    /// is not asked for. `on_so_far` is given the three over the variants
+    /// read so far while the pass runs, every `so_far_every` seconds, when it
+    /// is not nothing.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`variants_summary_of`]: a call that asks for none of the
+    /// three, what the call of each of the three refuses, any of which ends
+    /// the pass with none of them, and the value `on_so_far` threw.
+    pub fn calc_variants_summary(
+        &self,
+        steps: Steps,
+        per_var: Option<ArgumentsOfThePass>,
+        per_individual: bool,
+        density: Option<ArgumentsOfTheDensity>,
+        on_so_far: Option<Function>,
+        so_far_every: f64,
+    ) -> Result<VariantsSummaryOfAPass, JsPopneiError> {
+        variants_summary_of(
+            self,
+            &steps,
+            &TheStatisticsAsked {
+                per_var,
+                per_individual,
+                density,
+            },
+            TheResultSoFarAsked {
+                told: on_so_far,
+                every_seconds: so_far_every,
             },
         )
     }
