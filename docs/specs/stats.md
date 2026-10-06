@@ -1720,6 +1720,70 @@ The binding crates build the Python and TypeScript results from these,
 NaN for a `None`, and the names of the individuals from `individuals()`
 of the reader.
 
+The result so far and the three in one pass, which the TypeScript package
+gives and `docs/specs/js_sources.md` specifies, "The result so far" and
+"The three statistics of a file in one pass". They were added on 7 October
+2026, from issue 10, and there is no code of them. Each of the three
+calculations above is split into what it adds up from a block and what it
+gives from what it added up, which is the step each of them already takes
+at the end of its pass, so that the result can be given before the end and
+the three can share one pass. The three functions above become these with
+a function that does nothing, and give what they gave.
+
+```rust
+/// What a pass has added up after a block: how many variants it has read,
+/// the counts of the filters of its chain as they stand, and the result
+/// over those variants, which is built only when it is asked for.
+pub trait SoFar<T> {
+    fn num_vars(&self) -> u64;
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
+    fn result(&self) -> Result<T>;
+}
+
+/// The function a pass calls after each block but the last. An error it
+/// returns ends the pass and is what the calculation returns.
+pub type AfterABlock<'a, T> = &'a mut dyn FnMut(&dyn SoFar<T>) -> Result<()>;
+
+pub fn calc_per_var_distribs_with<R: BlockReader + ?Sized>(
+    reader: &mut R, config: &PerVarDistribsConfig, after_a_block: AfterABlock<'_, PerVarDistribs>,
+) -> Result<PerVarDistribs>;
+pub fn calc_per_individual_stats_with<R: BlockReader + ?Sized>(
+    reader: &mut R, after_a_block: AfterABlock<'_, PerIndividualStats>,
+) -> Result<PerIndividualStats>;
+pub fn calc_var_density_with<R: BlockReader + ?Sized>(
+    reader: &mut R, window_size: u64, chrom_lengths: Option<&[(String, u64)]>,
+    after_a_block: AfterABlock<'_, VarDensity>,
+) -> Result<VarDensity>;
+
+/// Which of the three a pass of `calc_variants_summary` gives; one at
+/// least, or the error of a summary of nothing.
+pub struct VariantsSummaryConfig {
+    pub per_var: Option<PerVarDistribsConfig>,
+    pub per_individual: bool,
+    pub density: Option<(u64, Option<Vec<(String, u64)>>)>,
+}
+/// Each one that was asked for, the same to the bit as its own function
+/// gives over the same reader.
+pub struct VariantsSummary {
+    pub per_var: Option<PerVarDistribs>,
+    pub per_individual: Option<PerIndividualStats>,
+    pub density: Option<VarDensity>,
+}
+/// One pass over `reader`, asking it for the union of what the three that
+/// are asked for ask for.
+pub fn calc_variants_summary<R: BlockReader + ?Sized>(
+    reader: &mut R, config: &VariantsSummaryConfig, after_a_block: AfterABlock<'_, VariantsSummary>,
+) -> Result<VariantsSummary>;
+```
+
+Natively a pass reads one block ahead on a thread of its own, and the
+counts of its filters are those of the chain that thread holds; what
+`filtering_stats` of `SoFar` gives there may be of a block more than the
+pass has added up. Only the wasm crate calls these with a function that
+does something, and in wasm there is no such thread. The error this adds
+is a summary asked for none of the three, a `ValueError` were Python to
+reach it, which it does not.
+
 ## Speed
 
 The per variant passes are among what the objectives want fast. The

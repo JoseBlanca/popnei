@@ -9,7 +9,13 @@ what the source tells the page while it reads, so that the page can show how
 far a pass has got and can stop it; and how many passes over the file each
 consumer makes. It develops section 11 of `docs/architecture.md`, the
 TypeScript boundary, and it is what issue 1 of popnei asks for, which the
-owner made a priority on 24 September 2026.
+owner made a priority on 24 September 2026. On 7 October 2026 it gained
+two items from issue 10, written for the page of popnei_web, the web
+application of popnei, that shows the statistics of a file as soon as it is
+opened: "The result so far", which a calculation gives the page while its
+pass runs, and "The three statistics of a file in one pass", a consumer that
+reads the file once for what three consumers read it three times for. There
+is no code of either.
 
 It changes the JavaScript binding crate, `crates/popnei-js`, and the
 TypeScript package, `js/popnei`, both of which are written and read a file
@@ -508,7 +514,8 @@ numPassesOf(consumer: ConsumerName, options?: object): number
 passes: `"calcPerVarDistribs"`, `"calcPerIndividualStats"`,
 `"calcPairwiseKosmanDists"`, `"calcPopDists"`, `"calcPopDiversity"`,
 `"calcRogersHuffR2Matrix"`, `"calcLdAndDistPerPop"`, `"calcKinship"`,
-`"doPcaFromVariants"`, `"calcGwas"`, `"writeVars"` and `"iterBlocks"`.
+`"doPcaFromVariants"`, `"calcGwas"`, `"writeVars"`, `"iterBlocks"` and
+`"calcVariantsSummary"`.
 `options` is the options object that function takes, and only
 `numPrinComps` of `doPcaFromVariants` and `useGrammarGammaApprox` of
 `calcGwas` change the answer; each is checked as that function checks it, so
@@ -540,6 +547,168 @@ The test of the item above
 runs each of the thirteen and compares the passes the calls showed with the
 number this function gives, which is what would catch a consumer that grew a
 pass and did not say so.
+
+## The result so far
+
+### What it gives
+
+A pass over a VCF of millions of variants takes minutes, and the three
+calculations whose results only add up over the blocks of a pass can give,
+while their pass runs, the result over the variants read so far: the
+distributions of `calcPerVarDistribs`, the rates of `calcPerIndividualStats`,
+the counts of `calcVarDensity`, and the three of `calcVariantsSummary`
+below. A page draws the histograms as they fill and keeps the last one on
+screen when the user stops the pass. The page cannot work these out itself
+from the blocks of `iterBlocks`: the numbers popnei_web shows are popnei's,
+which popnei verifies, and a second way of computing them in the page would
+be one more thing to verify.
+
+The result so far is pushed and not asked for. While a pass runs the worker
+is inside wasm and reads no message, as "What the source tells the page"
+says, so a request that the page posted would wait until the pass ended. The
+consumer calls a function the application gives, between two blocks, and
+that function posts the result to the page. The page always holds the last
+result it was sent, at most a few seconds old. The other way, the page
+setting a flag in a `SharedArrayBuffer` that the pass would read, needs
+headers that GitHub Pages does not send, as the opening of this spec says,
+and gives a page that redraws every few seconds nothing more.
+
+The function is called after a block, when `soFarEvery` seconds have gone by
+since the pass started or since the last call, and never after the last
+block, whose result is what the consumer returns. It is given the result
+over the variants of the blocks read so far, of the type the consumer
+returns, with its `passStats` as they stand: `passStats.numVars` is how many
+variants it covers, for the page to write "over the first 1,200,000
+variants". That result is the one the consumer would return over those
+variants alone; it is the same final step, taken early. Every histogram of
+`calcPerVarDistribs` has its range before the pass starts, `(0, 1)` by
+default, so the bins of a result so far are those of the last one. The
+density with no lengths has the windows up to the last variant read so far.
+
+When the function throws, the pass ends there and the consumer throws what
+it threw, as when the function of `onProgress` throws. An error of the pass,
+a variant past the length of its chromosome among them, is thrown as it is
+today; a page keeps the last result it was given in both cases. The time is
+read with the clock of JavaScript in the binding crate, and the core crate
+reads no clock.
+
+The owner decided on 7 October 2026 that the function is a function the
+consumer calls, that every one of the four takes it, and that it is in the
+TypeScript API alone: Python has no worker and no page, and the owner does
+not want parameters in the Python API that a Python user has no use for.
+The options not taken were a function only in `calcVariantsSummary`, and a
+page that asks for the result through shared memory.
+
+### Its TypeScript function
+
+```ts
+calcPerVarDistribs(variants, {..., onSoFar, soFarEvery})
+calcPerIndividualStats(variants, {onSoFar, soFarEvery})
+calcVarDensity(variants, windowSize, {chromLengths, onSoFar, soFarEvery})
+calcVariantsSummary(variants, {perVar, perIndividual, density, onSoFar, soFarEvery})
+```
+
+`onSoFar` is a function that takes the result so far, of the type the
+consumer returns. `soFarEvery` is a number of seconds, finite and 0 or more,
+2 when it is not given; 0 calls the function after every block but the last,
+which is what the tests use. A `soFarEvery` given without `onSoFar` is an
+`Error`, because it would be a value that does nothing, and so is an
+`onSoFar` that is not a function and a `soFarEvery` that is not such a
+number; each is an `Error` at the call, before the pass starts.
+`calcPerIndividualStats` takes an options object for these two alone, and
+has none today.
+
+This is a difference between the two APIs that goal 2 of
+`docs/objectives.md` asks to be written down: the Python functions take
+neither.
+
+### How it is verified
+
+Under node, on `many.vcf` opened with every variant, with `soFarEvery` 0:
+`calcPerVarDistribs` calls the function once for each block but the last,
+and the `passStats.numVars` of the calls grow by the variants of each block;
+the result of each call equals, field by field, that of
+`calcPerVarDistribs` over the same `Variants` with `filterFirstN` of that
+number of variants, which reads the same first variants; the same for
+`calcPerIndividualStats` and `calcVarDensity`, the last with and without
+lengths; and a pass of a single block calls it never. A function that
+throws a value at its second call makes the consumer throw that value, and
+the next call over the same `Variants` runs whole. A `soFarEvery` with no
+`onSoFar`, an `onSoFar` of 3 and a `soFarEvery` of -1 and of `NaN` are each
+an `Error` at the call. That the default calls it no more often than every 2
+seconds is checked with a source slowed by a function of `onProgress` that
+waits, on a file of a few blocks.
+
+## The three statistics of a file in one pass
+
+### What it gives
+
+`calcVariantsSummary` gives, in one pass, what `calcPerVarDistribs`,
+`calcPerIndividualStats` and `calcVarDensity` give in three: the
+distributions of the statistics of each variant, the rates of each
+individual and the density of the variants along the chromosomes. A page
+that shows the three when a file is opened reads the file once. Each of the
+three is what its own consumer gives for the same options, to the bit: the
+three are added up from the same blocks by the same code, and only the pass
+is shared.
+
+How much time it saves has not been measured. The density asks the reader
+for the chromosome and the position alone, so the VCF reader does not parse
+the genotypes for it, and parsing the genotypes was 92% of a read of
+`big.vcf` when it was measured for the VCF reader. The saving is then about
+one of the two passes that parse the genotypes, near half of the time of the
+three, and not the two thirds that issue 10 guessed. The plan measures it on
+`big.vcf` before a number is given to a user.
+
+The owner decided on 7 October 2026 that it is one consumer of exactly these
+three, and that it is in the TypeScript API alone. The options not taken
+were a way to run any set of consumers in one pass, which would split every
+one of the fifteen into what it adds up and what it gives at the end and
+cannot hold the PCA, which reads the file twice; and a Python function of
+the same.
+
+### Its TypeScript function
+
+```ts
+calcVariantsSummary(variants, {
+  perVar,         // the options of calcPerVarDistribs, or absent
+  perIndividual,  // {} for the rates of each individual, or absent
+  density,        // {windowSize, chromLengths}, or absent
+  onSoFar, soFarEvery,
+}): VariantsSummary
+```
+
+A statistic is given when its key is there and left out when it is not;
+`perVar` and `density` are checked as the options of `calcPerVarDistribs`
+and the `windowSize` and `chromLengths` of `calcVarDensity` are, and
+`perIndividual` is an empty object. A call with none of the three is an
+`Error` that says to ask for one. `VariantsSummary` has `perVar`, a `PerVarDistribs` or
+`null`, `perIndividual`, a `PerIndividualStats` or `null`, `density`, a
+`VarDensity` or `null`, each of the type its consumer returns so that the
+code of a page that draws one draws it from here unchanged, and `passStats`,
+the counts of the one pass, which each of the three also carries. The pass
+asks the reader for what the three ask for together: the genotypes when
+`perVar` or `perIndividual` is there, and the chromosome and the position
+when `density` is. A pass that gives no variant is the `Error` the three
+give for it. `numPassesOf("calcVariantsSummary")` is 1.
+
+It mirrors nothing: pyNei has no such function, and Python has none, which
+is a difference between the two APIs that goal 2 of `docs/objectives.md`
+asks to be written down.
+
+### How it is verified
+
+Under node, on `many.vcf` opened with every variant and on its vars file:
+`calcVariantsSummary` with the three gives `perVar`, `perIndividual` and
+`density` equal, field by field and to the bit, to the results of the three
+consumers with the same options, and a `passStats` equal to theirs; with one
+of them left out, that one is `null` and the others are as before; with
+`density` alone, the pass asks for no genotypes, which the test sees in the
+bytes a vars file reader decompresses; and with none, an `Error`. With
+`onSoFar` and `soFarEvery` 0, the three of each call equal those of the
+consumers over `filterFirstN` of that number of variants, as in the item
+above. The cargo tests of the function of the core that the binding calls
+make the same comparison on `many.vcf`.
 
 ## The Rust interface
 
