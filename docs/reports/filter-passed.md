@@ -1,7 +1,24 @@
 # Report: the filter of the variants that passed their FILTER
 
 6 October 2026. The work report of `docs/plans/filter-passed.md`, on the
-branch `spec/filter-passed`. State: under way.
+branch `spec/filter-passed`. State: done.
+
+The plan is done, on the branch `spec/filter-passed`, not merged.
+`variants.filter_passed()` in Python and `variants.filterPassed()` in
+TypeScript keep the variants whose FILTER column was `PASS` or a dot, as a
+step of every pass, and every `pass_stats` gives their count under
+`"passed"`: on `many.vcf` opened with every variant, 500 given and 475
+kept, the 475 that `bcftools view -f .,PASS` gives. To make that possible a
+block carries, for each variant, whether it passed; the vars file keeps
+it, from format 1.2; and a VCF written back from a vars file marks a
+variant that failed with `FAIL`, as you decided. A vars file without that
+record is refused at the first block, with its path, as you decided, and
+`only_passed` stays true by default. Every check of the `coding` skill
+passes, and each runs more tests than before the plan; one node test fails,
+`a kinship that does not tell the two variances apart gives none of them`,
+which failed in the same way on `main` before the plan. No decision is
+left open. What is asked of you is the order to merge the branch into
+`main`, and with it issue 9 can be closed.
 
 ## 1. The column of whether each variant passed
 
@@ -110,3 +127,53 @@ a block with no `passed`, which names the file, and `PassedFilterThatIsSet`.
 of them failed against a stub that gave every block on, and the other 3
 test the refusals of a step. The words of a second filter of this kind are
 the task's, since the spec gives none.
+
+Tasks 2.2, the Python side, is fe95abd, and 2.3, the TypeScript side, is
+10a1980; they ran side by side. The TypeScript task rewrote the list of
+filters of `js/popnei/README.md`, which named five of what are now nine.
+
+### The deliverables
+
+Run on 8db578b, after the fixes of the review.
+
+| deliverable | command | result |
+|---|---|---|
+| 1, the cargo tests of the filter | `cargo test -p popnei --lib filters::passed -- --list` | 15; 0 on 6abacd1 |
+| 2, every test passes | the six cargo commands, `uv run pytest`, `npm test` | 1489 and 1339 passed; 751; node 557 tests, 556 pass, 1 fails, the kinship test that fails on `main` |
+| 3, the pytest tests | `uv run pytest -k filter_passed` | 9 passed; exit 5 on 6abacd1 |
+| 4, the node tests | the spec reporter with `--test-name-pattern=filterPassed` | 4 by name; 0 on 6abacd1 |
+| 5, the browser | `npm run test:browser` | 9 passed |
+| 6, the docstrings | read | `open_vcf`, `openVcf`, `filter_passed` and `filterPassed` say when to use `only_passed` and when the filter, and to add the filter first, after the filter by regions |
+
+### What the review found
+
+Five reviewers, spec, tests, errors, api and binding, each in a worktree
+of its own, read b92c5eb..ffa4970. None found a wrong result. The binding
+reviewer ran the fifteen calculations of each package with the filter on
+`many.vcf`: each gave 500 and 475 under `"passed"`, and each refused a vars
+file without the column, in Python with its path first. These held and are
+fixed:
+
+- The spec and both docstrings gave 0.58 s for a whole read of `big.vcf`,
+  the first of five runs whose median is 0.54 s (141bd52, 192fdd3).
+- The docstring of `filter_first_n` left `filter_passed` out of the steps it
+  refuses after it; the doc of the TypeScript crate counted eight filters;
+  a test comment gave a wrong place (192fdd3).
+- The order of the counts was not tested, so a reader that put its counts
+  after those of its source passed; the test runs the MAF filter before it
+  too and asserts the list in order (c789952).
+- No node test refused a source without the column; `of_1_1.vars`, the
+  four variants of `cases.vcf` in format 1.1 without it, written by a
+  script beside it, is the fixture of that test and of a pytest test of
+  `iter_blocks` (f96ce93, 8db578b).
+
+Not taken: the words of the refusals of a step say "filtered by passed
+already", built from the kind as for every filter; they read awkwardly and
+say what happened.
+
+### What the owner should know
+
+- A vars file marked 1.1 that has a `passed` column is read with it, by
+  the rule of the version, which reads any column of a later minor version.
+- Issues 6 and 7 are closed, with their merge, df92324, and the release
+  js-v0.2.0. This plan is not in a release yet.
