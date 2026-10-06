@@ -525,6 +525,7 @@ fn a_source_with_no_positions_by_regions_is_the_error_of_a_field_at_its_first_bl
             individuals: vec!["ind1".to_owned()],
             chrom_lengths: Vec::new(),
             vcf_meta_lines: None,
+            keeps_passed: false,
         },
     };
     let mut reader = RegionsReader::new(
@@ -1131,6 +1132,7 @@ impl GivenBlocks {
                 individuals: vec!["ind1".to_owned()],
                 chrom_lengths: Vec::new(),
                 vcf_meta_lines: None,
+                keeps_passed: false,
             },
             calls: Arc::new(AtomicUsize::new(0)),
         }

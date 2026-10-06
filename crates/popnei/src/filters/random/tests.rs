@@ -596,6 +596,7 @@ impl Recording {
                 individuals: vec!["ind1".to_owned()],
                 chrom_lengths: Vec::new(),
                 vcf_meta_lines: None,
+                keeps_passed: false,
             },
         }
     }

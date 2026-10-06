@@ -30,9 +30,12 @@ from popnei import (
 BCFTOOLS_PASS_LINE = '##FILTER=<ID=PASS,Description="All filters passed">\n'
 
 # The file written from the vars file of `write.vcf` read with the default,
-# the header and the five lines of "How it is verified" of the writer.
+# the header and the five lines of "How it is verified" of the writer. The
+# vars file of a VCF keeps whether each variant passed, so the header has
+# the line of `FAIL`, which no line here has.
 FROM_THE_VARS_FILE = (
     "##fileformat=VCFv4.3\n"
+    '##FILTER=<ID=FAIL,Description="It failed a filter of the VCF the variants were read from">\n'
     "##contig=<ID=chr1,length=2000>\n"
     "##contig=<ID=chr2,length=1500>\n"
     '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'

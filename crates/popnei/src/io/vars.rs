@@ -1559,6 +1559,7 @@ impl<R: Read + Seek> VarsReader<R> {
             individuals: metadata.individuals.clone(),
             chrom_lengths: metadata.chrom_lengths.clone(),
             vcf_meta_lines: None,
+            keeps_passed: columns.passed.is_some(),
         };
         Ok(VarsReader {
             source,

@@ -1216,6 +1216,13 @@ pub struct SourceHeader {
     /// The lines of the header of a VCF before `#CHROM`, as the file has
     /// them. `None` for any other source.
     pub vcf_meta_lines: Option<Vec<String>>,
+    /// Whether the blocks of the source hold `passed`, whether the FILTER
+    /// of each variant was `PASS` or `.`, when they are asked for it: true
+    /// for a VCF and for a vars file with a `passed` column, false for a
+    /// vars file without one and for a source that says nothing of itself.
+    /// The VCF writer writes the `##FILTER` line of `FAIL` from it, before
+    /// the first block.
+    pub keeps_passed: bool,
 }
 
 /// The header of a source of the tests that says nothing of itself.
@@ -1224,6 +1231,7 @@ pub(crate) static AN_EMPTY_HEADER: SourceHeader = SourceHeader {
     individuals: Vec::new(),
     chrom_lengths: Vec::new(),
     vcf_meta_lines: None,
+    keeps_passed: false,
 };
 
 /// Anything that gives blocks: the VCF reader, the vars file reader, a

@@ -160,6 +160,7 @@ impl Given {
                 individuals: vec!["a".to_owned()],
                 chrom_lengths: lengths(chrom_lengths),
                 vcf_meta_lines: None,
+                keeps_passed: false,
             },
             individuals: vec!["a".to_owned()],
             left,

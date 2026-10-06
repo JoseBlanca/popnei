@@ -31,6 +31,16 @@ const CHROM_LINE_COLUMNS: &str = "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\
 const FILEFORMAT_LINE: &str = "##fileformat=VCFv4.3";
 const GT_FORMAT_LINE: &str = "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">";
 
+/// The FILTER of a line written from the columns of a variant whose
+/// `passed` is false, and the header line that defines it, which comes
+/// after the `##fileformat` line when the source keeps `passed`: a vars
+/// file keeps whether each variant passed but not the name of the filter
+/// it failed. Decided by the owner on 6 October 2026, in
+/// `docs/specs/io_vcf.md`.
+const FAIL_FILTER: &[u8] = b"FAIL";
+const FAIL_FILTER_LINE: &str =
+    "##FILTER=<ID=FAIL,Description=\"It failed a filter of the VCF the variants were read from\">";
+
 /// How many rows of a block one job of the formatting writes at least,
 /// into a buffer of its own, which is kept from one block to the next.
 ///
@@ -110,12 +120,15 @@ pub fn num_vars_per_block_of_write_vcf(source: WriterSource) -> Option<usize> {
 /// parse is refused. A binding crate opens the source with the size of blocks that
 /// [`num_vars_per_block_of_write_vcf`] gives. The header is that of `reader.header()`: the lines
 /// before `#CHROM` of a VCF, or, from any other source, a `##fileformat`
-/// line, one `##contig` line for each chromosome of known length and the
-/// `##FORMAT` line of GT; then a `#CHROM` line of `reader.individuals()`.
-/// The lines of a VCF are written from the text the reader kept of them;
-/// those of any other source from the columns of its blocks, which have to
-/// hold the chromosome, the position, the alleles and the genotypes, and an
-/// id or a quality the source has no column for is `.`. When
+/// line, the `##FILTER` line of `FAIL` when the header says that the source
+/// keeps `passed`, one `##contig` line for each chromosome of known length
+/// and the `##FORMAT` line of GT; then a `#CHROM` line of
+/// `reader.individuals()`. The lines of a VCF are written from the text the
+/// reader kept of them; those of any other source from the columns of its
+/// blocks, which have to hold the chromosome, the position, the alleles and
+/// the genotypes, and an id or a quality the source has no column for is
+/// `.`. Such a line has FILTER `FAIL` for a variant whose `passed` is false
+/// and `.` for any other. When
 /// the pass has fewer individuals than its source, AC and AN are taken out
 /// of every line and their `##INFO` lines out of the header, since they are
 /// counts over individuals that are no longer in the file. A source with no
@@ -266,6 +279,10 @@ fn header_of<R: BlockReader + ?Sized>(reader: &R, without_counts: bool) -> Vec<u
         None => {
             text.extend_from_slice(FILEFORMAT_LINE.as_bytes());
             text.push(b'\n');
+            if header.keeps_passed {
+                text.extend_from_slice(FAIL_FILTER_LINE.as_bytes());
+                text.push(b'\n');
+            }
             for (chrom, length) in &header.chrom_lengths {
                 text.extend_from_slice(
                     format!("##contig=<ID={chrom},length={length}>\n").as_bytes(),
@@ -329,8 +346,8 @@ enum LinesOf<'a> {
 }
 
 /// The columns of a block that a line is written from when it has no text:
-/// the four every line needs, and the id and the quality, which a source
-/// can lack and which are `.` then.
+/// the four every line needs, and the id, the quality and whether each
+/// variant passed, which a source can lack and which are `.` then.
 struct ColumnsOfABlock<'a> {
     chroms: &'a ChromTable,
     chrom: &'a [u32],
@@ -338,6 +355,7 @@ struct ColumnsOfABlock<'a> {
     id: Option<&'a [String]>,
     alleles: &'a AllelesColumn,
     qual: Option<&'a [f32]>,
+    passed: Option<&'a [bool]>,
     gts: &'a [i8],
     ploidy: usize,
     alleles_per_var: usize,
@@ -384,6 +402,7 @@ impl<'a> LinesOf<'a> {
             id: block.id.as_deref(),
             alleles: block.alleles.as_ref().ok_or_else(|| missing("alleles"))?,
             qual: block.qual.as_deref(),
+            passed: block.passed.as_deref(),
             gts: &block.gts,
             ploidy: block.ploidy.max(1),
             alleles_per_var: block.num_individuals.saturating_mul(block.ploidy),
@@ -521,7 +540,12 @@ impl ColumnsOfABlock<'_> {
             Some(qual) if !qual.is_nan() => write!(out, "{qual}").map_err(not_written)?,
             _ => out.push(b'.'),
         }
-        out.extend_from_slice(b"\t.\t.\tGT");
+        out.push(b'\t');
+        match self.passed.and_then(|passed| passed.get(var)) {
+            Some(false) => out.extend_from_slice(FAIL_FILTER),
+            Some(true) | None => out.push(b'.'),
+        }
+        out.extend_from_slice(b"\t.\tGT");
         let start = var.saturating_mul(self.alleles_per_var);
         let row = self
             .gts
@@ -897,7 +921,11 @@ mod tests {
         let (text, num_vars) = written(|| {
             Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
         });
+        // The vars file of a VCF has the column of whether each variant
+        // passed, so the header has the line of `FAIL`, which no line here
+        // has: the line that failed was not read.
         let expected = "##fileformat=VCFv4.3\n\
+            ##FILTER=<ID=FAIL,Description=\"It failed a filter of the VCF the variants were read from\">\n\
             ##contig=<ID=chr1,length=2000>\n\
             ##contig=<ID=chr2,length=1500>\n\
             ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
@@ -927,6 +955,130 @@ mod tests {
             .map(|row| row.replace('|', "/"))
             .collect();
         assert_eq!(rows, bcftools);
+    }
+
+    /// The `##FILTER` line that a VCF written from a vars file with a
+    /// `passed` column has, as `docs/specs/io_vcf.md` gives it.
+    const FAIL_FILTER_LINE: &str = "##FILTER=<ID=FAIL,Description=\"It failed a filter of the VCF the variants were read from\">";
+
+    /// The chromosome, the position and the FILTER of each data line of
+    /// `text`.
+    fn filters_of(text: &str) -> Vec<(String, u64, String)> {
+        text.lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| {
+                let columns: Vec<&str> = line.split('\t').collect();
+                (
+                    columns[0].to_owned(),
+                    columns[1].parse().expect("a position"),
+                    columns[6].to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    /// How many data lines `bcftools view -H -f .,PASS` prints of the VCF
+    /// `text`, or `None` when bcftools cannot be run.
+    fn num_passed_by_bcftools(text: &str) -> Option<usize> {
+        if !can_run("bcftools") {
+            return None;
+        }
+        let path = std::env::temp_dir().join(format!(
+            "popnei-write-vcf-{}-{}.vcf",
+            std::process::id(),
+            FILES_WRITTEN.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::write(&path, text).expect("the file was written");
+        let output = Command::new("bcftools")
+            .args(["view", "-H", "-f", ".,PASS"])
+            .arg(&path)
+            .output()
+            .expect("bcftools ran");
+        let _ = std::fs::remove_file(&path);
+        assert!(output.status.success(), "bcftools view: {output:?}");
+        Some(
+            String::from_utf8(output.stdout)
+                .expect("text")
+                .lines()
+                .count(),
+        )
+    }
+
+    /// `many.vcf` read with `only_passed` false, written to a vars file and
+    /// that to a VCF: the 25 variants whose FILTER is `q10` are written with
+    /// `FAIL`, the 475 others with `.`, the header has the `##FILTER` line
+    /// of `FAIL`, and bcftools takes the 25 out again.
+    #[test]
+    fn write_vcf_passed_column_of_many_vcf_writes_25_lines_with_fail_and_the_filter_line() {
+        let reader = reader_of("many.vcf", false, Some(7));
+        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let opened = VarsReader::new(Cursor::new(vars.clone())).expect("the vars file");
+        assert!(opened.header().keeps_passed);
+
+        let (text, num_vars) = written(|| {
+            Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
+        });
+
+        assert_eq!(num_vars, 500);
+        let meta_lines: Vec<&str> = text
+            .lines()
+            .take_while(|line| line.starts_with("##"))
+            .collect();
+        assert_eq!(
+            meta_lines,
+            [
+                "##fileformat=VCFv4.3",
+                FAIL_FILTER_LINE,
+                "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
+            ]
+        );
+        let filters = filters_of(&text);
+        let failed: Vec<(String, u64)> = filters
+            .iter()
+            .filter(|(_, _, filter)| filter == "FAIL")
+            .map(|(chrom, pos, _)| (chrom.clone(), *pos))
+            .collect();
+        let q10: Vec<(String, u64)> = filters_of(&text_of("many.vcf"))
+            .into_iter()
+            .filter(|(_, _, filter)| filter == "q10")
+            .map(|(chrom, pos, _)| (chrom, pos))
+            .collect();
+        assert_eq!(failed.len(), 25);
+        assert_eq!(failed, q10);
+        assert_eq!(
+            filters
+                .iter()
+                .filter(|(_, _, filter)| filter == ".")
+                .count(),
+            475
+        );
+        if let Some(num_passed) = num_passed_by_bcftools(&text) {
+            assert_eq!(num_passed, 475);
+        }
+    }
+
+    /// A vars file with no `passed` column, written from blocks without it,
+    /// is written to a VCF with `.` in every FILTER and no `##FILTER` line,
+    /// the 25 variants of `many.vcf` that failed among them.
+    #[test]
+    fn write_vcf_passed_column_missing_from_a_vars_file_writes_no_fail_and_no_filter_line() {
+        let reader = WithoutColumns {
+            reader: reader_of("many.vcf", false, None),
+            dropped: Needs::PASSED,
+        };
+        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let opened = VarsReader::new(Cursor::new(vars.clone())).expect("the vars file");
+        assert!(!opened.header().keeps_passed);
+
+        let (text, num_vars) = written(|| {
+            Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
+        });
+
+        assert_eq!(num_vars, 500);
+        assert!(!text.contains("##FILTER"), "{text}");
+        let filters = filters_of(&text);
+        assert_eq!(filters.len(), 500);
+        assert!(filters.iter().all(|(_, _, filter)| filter == "."));
     }
 
     #[test]
@@ -1070,9 +1222,9 @@ mod tests {
         }
     }
 
-    /// The reader over `write.vcf`, read with the default, whose blocks lose
-    /// the columns of `dropped`: a source of fewer fields, as the vars file
-    /// of another writer can be.
+    /// A reader over a reference VCF whose blocks lose the columns of
+    /// `dropped`: a source of fewer fields, as the vars file of another
+    /// writer can be.
     struct WithoutColumns {
         reader: VcfReader<BufReader<File>>,
         dropped: Needs,
@@ -1095,6 +1247,9 @@ mod tests {
             }
             if self.dropped.contains(Needs::QUAL) {
                 block.qual = None;
+            }
+            if self.dropped.contains(Needs::PASSED) {
+                block.passed = None;
             }
             Ok(Some(block))
         }
@@ -1192,7 +1347,9 @@ mod tests {
         })
         .0;
         assert!(text.contains("\nchr1\t100\trs1\tA\tT\t29.5\t.\t.\tGT\t0/1\t0/1\t1/1\n"));
-        assert!(text.contains("\nchr1\t250\t.\tAT\tA\t.\t.\t.\tGT\t./.\t0/1\t0/0\n"));
+        // Its FILTER was `q10`, and a source of columns keeps only that it
+        // failed.
+        assert!(text.contains("\nchr1\t250\t.\tAT\tA\t.\tFAIL\t.\tGT\t./.\t0/1\t0/0\n"));
     }
 
     #[test]
@@ -1246,6 +1403,7 @@ mod tests {
             Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
         });
         let expected = "##fileformat=VCFv4.3\n\
+            ##FILTER=<ID=FAIL,Description=\"It failed a filter of the VCF the variants were read from\">\n\
             ##contig=<ID=chr1,length=2000>\n\
             ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
             #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ta\n\

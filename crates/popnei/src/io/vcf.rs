@@ -782,7 +782,12 @@ impl<R: BufRead + Send> VcfReader<R> {
             source,
             options,
             individuals: Vec::new(),
-            header: SourceHeader::default(),
+            // Every line has a FILTER, so a block holds `passed` when it is
+            // asked for.
+            header: SourceHeader {
+                keeps_passed: true,
+                ..SourceHeader::default()
+            },
             chroms: ChromTable::new(),
             needs: Needs::ALL,
             num_vars_per_block: 0,

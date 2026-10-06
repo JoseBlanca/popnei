@@ -3298,6 +3298,7 @@ mod tests {
                     individuals: (1..=5).map(|number| format!("ind{number}")).collect(),
                     chrom_lengths: vec![("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)],
                     vcf_meta_lines: Some(vec!["##fileformat=VCFv4.3".to_owned()]),
+                    keeps_passed: false,
                 },
                 offers: Arc::new(AtomicUsize::new(0)),
                 num_skipped: 0,
@@ -3416,6 +3417,7 @@ mod tests {
                     .to_vec(),
                 chrom_lengths: vec![("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)],
                 vcf_meta_lines: Some(vec!["##fileformat=VCFv4.3".to_owned()]),
+                keeps_passed: false,
             }
         }
 
