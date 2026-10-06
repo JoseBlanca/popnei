@@ -10,15 +10,20 @@
  * keeps are those of `many.bcftools.tsv`, what bcftools 1.24 printed for
  * `many.vcf`, whose FILTER is `PASS` or a dot: the 475 that `bcftools view
  * -H -f .,PASS many.vcf` gave on 6 October 2026.
+ *
+ * The refusal of a source with no record of whether its variants passed is
+ * tested on `tests/reference/vars/of_1_1.vars`, a vars file of format 1.1
+ * that `tests/reference/vars/make_of_1_1.py` writes, which the Python tests
+ * read too.
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { PassStats, Variants } from "popnei";
-import { init, openVcf } from "popnei";
+import { calcPairwiseKosmanDists, init, openVars, openVcf } from "popnei";
 
-import { referenceVcf } from "./reference.ts";
+import { referenceVars, referenceVcf } from "./reference.ts";
 
 await init();
 
@@ -124,5 +129,19 @@ test("filterPassed refuses a second filter of its kind and leaves the steps as t
       /filtered by passed already, and a second filter of that kind would keep the same variants as the first/,
   });
   assert.deepEqual(variants.steps, [{ kind: "passed", args: {} }]);
+  variants.free();
+});
+
+test("filterPassed over a vars file of 1.1, which has no record of whether its variants passed, throws at the first calculation", async () => {
+  // The file holds the four variants of `cases.vcf`, the one at 200 that
+  // failed its filter q10 among them; the filter refuses it rather than
+  // taking that one as passed.
+  const variants = openVars(await referenceVars("of_1_1.vars"));
+  variants.filterPassed();
+  assert.throws(() => calcPairwiseKosmanDists(variants), {
+    name: "Error",
+    message:
+      /the variants hold no record of whether they passed their FILTER, so the filter of the variants that passed cannot run on them: a vars file holds it from format 1.2, written from a VCF/,
+  });
   variants.free();
 });

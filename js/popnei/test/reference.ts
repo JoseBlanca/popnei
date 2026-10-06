@@ -7,7 +7,8 @@
  * `tests/reference/vcf/make_reference.py` writes and bcftools was run on.
  * The reference vars files are those of `docs/specs/io_vars.md`, in
  * `tests/reference/vars/`, which `tests/reference/vars/make_reference.py`
- * writes with pyarrow because popnei cannot write them. The tables of
+ * and `tests/reference/vars/make_of_1_1.py` write with pyarrow because
+ * popnei cannot write them. The tables of
  * `docs/specs/pca.md` are in `tests/reference/pca/`, which
  * `tests/reference/pca/make_reference.py` writes. The Python tests read the
  * same files.
@@ -57,7 +58,10 @@ export async function referenceVcf(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_VCF_DIR)));
 }
 
-/** The bytes of the reference vars file `name`, `zstd.vars`. */
+/**
+ * The bytes of the reference vars file `name`, `zstd.vars`, or
+ * `of_1_1.vars`, which `tests/reference/vars/make_of_1_1.py` writes.
+ */
 export async function referenceVars(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_VARS_DIR)));
 }
