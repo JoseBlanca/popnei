@@ -22,10 +22,14 @@ lists.
 **Open 1**, a VCF with a header and no data line opened with no ploidy, is
 not answered. Task 1.1 builds its "meanwhile", the ploidy 2. When the
 owner chooses the refusal, 1.1 changes one branch of `ploidy_of_vcf` and
-its test, and 1.2 and 1.3 give the ploidy 2 in the 16 tests that the
-spec counts, in a new task of each.
-
-Not built: nothing the spec leaves out of this item.
+its test, and 1.2 and 1.3 give the ploidy 2, in a new task of each, in
+the 16 tests that open a VCF with a header and no data line and give no
+ploidy: in pytest `test_block.py:297`, `test_dists.py:611` and `:633`,
+`test_diversity.py:824`, `test_io_vars.py:320`, `test_ld.py:561`,
+`test_pass_stats.py:152`, `test_stats.py:588` and `:1100`; in node
+`dists.test.ts:464` and `:481`, `diversity.test.ts:879`,
+`pass_stats.test.ts:212`, `pop_dists.test.ts:822`, `vcf.test.ts:375` and
+`stats.test.ts:999`, the lines at df92324.
 
 ## What has to be in place
 
@@ -64,10 +68,10 @@ Deliverables:
    counts 26 or more. It counts 0 on df92324.
 2. Every existing test passes, no fewer than the baseline. The only tests
    of before that change are those that assert the words of the error of
-   a genotype of another ploidy or of a ploidy out of range, the pytest
-   test of a tetraploid file refused at its blocks, which gives
-   `ploidy=2`, and the tests of a corrupted second member, which give the
-   ploidy 2, as the spec says.
+   a genotype of another ploidy or of a ploidy out of range; the pytest
+   test that a tetraploid file is refused when its blocks are asked for,
+   which now passes `ploidy=2` to `open_vcf`; and the tests of a corrupted
+   second member, which pass the ploidy 2, as the spec says.
 3. Pytest tests whose names contain `ploidy_from_the_file`, at `open_vcf`,
    with the checks the spec gives Python: `tetraploid.vcf.gz` with `ploidy`
    4 and 200 variants of four alleles, `haploid.vcf.gz` with `ploidy` 1,
@@ -79,9 +83,9 @@ Deliverables:
    the spec gives TypeScript, among them the corrupted second member at the
    call. `node --test --test-reporter=spec --test-name-pattern="ploidy
    from the file" test/*.test.ts | grep -c "ploidy from the file"`, in
-   `js/popnei` after `npm run build`, prints 0 on df92324. The pattern
-   does not make node count 0 tests, since it counts each file as one, so
-   the check is the count of the names.
+   `js/popnei` after `npm run build`, prints 0 on df92324. The count of
+   tests that node prints is no check here: it counts every test file as
+   a test, 33 with a pattern that matches nothing.
 5. `npm run test:browser` in `js/popnei` passes, with the case of a `File`
    read in a web worker opened with no ploidy and its `ploidy` checked.
 6. `python -c "import popnei, inspect;
@@ -102,11 +106,14 @@ Tasks:
   at the end of the enum, and the new words of `VcfPloidyOutOfRange` and
   `VcfGenotypePloidy`, from the paragraphs of the spec named in the
   opening. Deliverable 1, and 2 for the core. The genotype the search
-  counts has to be one the reader would read as a genotype, or a pass
-  that reads positions alone gives a wrong ploidy and no error: that is the
-  silent failure of this plan, and the rows of the table with `0/x/1`, a
-  column with no `GT` value and a line of eight columns are its guard.
-  They go in the commit of the search, before anything is built on it.
+  counts has to be one the reader would read as a genotype. A genotype it
+  miscounted, `0/x/1` counted as three alleles in a file of two, gives a
+  wrong ploidy that no error follows in a calculation that reads the
+  chromosome and the position of each variant and no genotype, the density
+  of the variants: that is the silent failure of this plan. The rows of
+  the table with `0/x/1`, a column with no `GT` value and a line of eight
+  columns, each of which the search has to skip, are its guard, and they
+  go in the same commit as the search, before 1.2 and 1.3 build on it.
 - [ ] 1.2 The Python side. In `crates/popnei-python/src/vcf.rs`, `open_vcf`
   takes a ploidy that may be `None` and then calls `ploidy_of_vcf` on the
   file opened for it, with its errors made into those of the file as the
@@ -126,12 +133,19 @@ Tasks:
   TypeScript. Needs 1.1; it can run beside 1.2, whose files it does not
   touch.
 
-What could go wrong: a fixture or a test that opens a non-diploid VCF with
-no ploidy and expects 2, or the error of a pass, now gets the ploidy of
-the file. The reviewer found none beyond those of deliverable 2, and a test
-that fails for this reason is changed to give the ploidy only when what it
-checks is the pass; one that checks the opening keeps the new result. A
-test whose cause is not that is reported to the owner and not changed.
+What could go wrong: a test that opens a VCF that is not diploid, or that
+the search cannot read through, with no ploidy now gets the ploidy of the
+file or an error at `open_vcf`. The review of the spec searched the tests
+and found only those of deliverable 2. A test that fails for this reason
+is changed to give the ploidy when what it asserts happens after the
+opening, an error or a result of its blocks; one that asserts what the
+opening gives keeps the new result and its assertion changes. A test that
+fails for another cause is reported to the owner and not changed.
+
+The work package is done when its six deliverables hold, the checks of
+the `coding` skill pass with no fewer tests than the baseline, and the
+review of the `code-review` skill has been made and its findings
+evaluated, as the `following-plans` skill says.
 
 ## Baseline
 
