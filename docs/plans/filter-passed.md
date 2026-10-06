@@ -163,11 +163,11 @@ Tasks:
   source without the column among those that name the file, from "The
   filter of the variants that passed their FILTER" and "The Rust
   interface" of `docs/specs/filters.md`. Deliverables 1, 2.
-- [ ] 2.2 The Python side: the step in `crates/popnei-python/src/steps.rs`,
+- [x] 2.2 The Python side: the step in `crates/popnei-python/src/steps.rs`,
   `Variants.filter_passed`, the kinds of `filters.py`, the docstring of
   `open_vcf`, and the list of kinds in `tests/test_filter_first_n.py`.
   Deliverables 2, 3, 6. Needs 2.1.
-- [ ] 2.3 The TypeScript side: the step in `crates/popnei-js/src/steps.rs`,
+- [x] 2.3 The TypeScript side: the step in `crates/popnei-js/src/steps.rs`,
   `filterPassed`, the kinds of `filters.ts` and of `source.rs`, the doc
   comment of `openVcf`, and the list of kinds in
   `js/popnei/test/filter_first_n.test.ts`. Deliverables 2, 4, 5, 6. Needs
