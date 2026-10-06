@@ -21,7 +21,7 @@ September 2026, for the reasons at the end of section 1 of the
 architecture. `Block`, `AllelesColumn`, the default size, the names of the
 fields and `iter_blocks` stay as they were built. The column `passed` was added
 on 6 October 2026, from issue 9, for the filter of the variants that
-passed of `docs/specs/filters.md`, and there is no code of it. It is a
+passed of `docs/specs/filters.md`, and built on 6 October 2026, in work package 1 of `docs/plans/filter-passed.md`. It is a
 column of the core alone: it is not among the fields that `iter_blocks`
 names, and a Python or TypeScript user sees it only through that filter.
 

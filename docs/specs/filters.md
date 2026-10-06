@@ -21,7 +21,8 @@ individuals, the filter that takes out the variants that repeat what a
 variant before them said, the filter by regions, the filter that keeps
 variants at random, the filter that keeps the first n and the filter of
 the variants that passed their FILTER. The last was added on 6 October
-2026, from issue 9 of the repository, and there is no code of it; the two
+2026, from issue 9 of the repository, and there is code of its column and
+none of the filter; the two
 before it were added on 5 October 2026, from issues 6 and 7. The
 filter by regions
 was added on 26 September 2026; the two before it were

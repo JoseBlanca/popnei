@@ -9,7 +9,7 @@ filtered them. This spec develops the row `io::vcf` of the table in section
 the `Block` that the reader gives and the `BlockReader` trait that it
 implements, and on `docs/specs/variant.md`, which has the `Needs` that say
 which fields a consumer wants and the table of the chromosome names. The
-VCF writer was added on 26 September 2026, and there is no code of it. It
+VCF writer was added on 26 September 2026. It
 also depends on `docs/specs/filters.md`, whose chain of filters it writes
 the variants of, and it brings to the reader two things the reader
 otherwise drops, the header of the file and the text of its lines. The
@@ -17,7 +17,7 @@ ploidy read from the file when the caller gives none was added on 6
 October 2026, from issue 8 of popnei. The `passed` column, which the
 reader fills from FILTER and the writer reads back, was added the same
 day, from issue 9, for the filter of the variants that passed of
-`docs/specs/filters.md`, and there is no code of it.
+`docs/specs/filters.md`, and built on 6 October 2026, in work package 1 of `docs/plans/filter-passed.md`.
 
 There is code, built from the first version of this spec, in which the
 reader filled one `Variant` at a time for its caller. The owner dropped the
@@ -1486,7 +1486,8 @@ not of its variants or of its individuals, and a chromosome number the
 table of its reader has no name for are a defect of popnei, a
 `RuntimeError`, and so is a block with a variant whose `passed` is false
 from a source whose header says that it keeps no `passed`, since its
-`FAIL` would go out with no `##FILTER` line, and so is a member of bgzip that could not be put
+`FAIL` would go out with no `##FILTER` line, an error that names the
+chromosome and the position of that variant, and so is a member of bgzip that could not be put
 together, which names the file being written.
 
 ## Speed

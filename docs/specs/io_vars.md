@@ -115,7 +115,9 @@ September 2026 with the code.
 `passed` was added on 6 October 2026, for the filter of the variants that
 passed of `docs/specs/filters.md`, from issue 9, and with it the version
 went from 1.1 to 1.2. The writer writes it when its source keeps it: a
-VCF, and a vars file of 1.2 that has it. A file of 1.0 or 1.1 has no such
+VCF, and a vars file of 1.2 that has it, unless the source gives no
+variant: the columns of a file are those of its first block, and a file
+with no block holds `gts` alone, which nothing reads a `passed` of. A file of 1.0 or 1.1 has no such
 column and is read as before, with no `passed` in its blocks, and the
 filter of the variants that passed refuses it at the first block, naming
 the file, as the owner decided on 6 October 2026. A reader of 1.1 reads a
@@ -505,8 +507,8 @@ holds" says, and no value popnei writes is one. A null `id` is the empty id
 and a null `qual` is no quality.
 
 That error is for a file whose schema says the column can hold nulls, which
-is what another program writes. popnei writes `chrom`, `pos`, `alleles` and
-`gts` as columns with no nulls, and arrow-rs refuses a batch of such a column
+is what another program writes. popnei writes `chrom`, `pos`, `alleles`,
+`gts` and `passed` as columns with no nulls, and arrow-rs refuses a batch of such a column
 that holds one before popnei sees it, so a null there is a batch that could
 not be read, with what arrow-rs said of it and no variant named: the variant
 of a batch that arrow-rs would not decode is not known.
@@ -755,7 +757,7 @@ bytes that are not an arrow file; and
 writes with pyarrow since popnei cannot, which opens and gives the error
 at its first `next_block`. Each test checks
 the kind of the error and what it names. These are read and are not errors: a
-`format_version` of `1.7`; a file with a seventh column, `depth`; a file
+`format_version` of `1.7`; a file with a column it does not know, `depth`; a file
 written with no compression. And a file written with batches of 100 gives
 blocks of 100, which the test checks with no `reblock` in between.
 
