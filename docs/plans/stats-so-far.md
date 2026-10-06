@@ -81,9 +81,10 @@ Deliverables:
    `big.vars`, one thread, a release build, the median of 7 interleaved
    runs, written into "The three statistics of a file in one pass" of
    `docs/specs/js_sources.md` in place of the estimate, with the script that
-   measured it in `crates/popnei/benches/`. The owner decided to build the
-   one pass whatever it saves; when it saves less than a fifth, the
-   orchestrator says so in the report and goes on.
+   measured it in `crates/popnei/benches/`. When it saves less than a fifth
+   on both files, the orchestrator stops before task 2.2 and asks the owner
+   whether the one pass is still worth a consumer of its own, with the
+   numbers; task 2.1, the result so far, does not depend on the answer.
 
 Stands on: nothing of this plan.
 
