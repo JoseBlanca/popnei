@@ -695,9 +695,13 @@ function vcfOf(names: string[], lines: string[][]): Uint8Array {
   );
 }
 
-/** doPcoaFromVariants of the VCF `vcf`, with no steps. */
+/**
+ * doPcoaFromVariants of the VCF `vcf`, with no steps, opened with the ploidy
+ * of the individuals of `vcfOf`: a VCF with no data line is refused at the
+ * opening when no ploidy is given.
+ */
 function pcoaOfTheVcf(vcf: Uint8Array): ReturnType<typeof doPcoaFromVariants> {
-  const variants = openVcf(vcf);
+  const variants = openVcf(vcf, { ploidy: 2 });
   try {
     return doPcoaFromVariants(variants);
   } finally {

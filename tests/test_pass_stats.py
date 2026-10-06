@@ -149,7 +149,7 @@ def test_a_source_with_no_variants_counts_none(vcf_of_lines, tmp_path: Path) -> 
     It is not an error, so the pass is a pass like any other and its count
     is 0.
     """
-    variants = open_vcf(vcf_of_lines([]))
+    variants = open_vcf(vcf_of_lines([]), ploidy=2)
 
     blocks = variants.iter_blocks()
     assert list(blocks) == []

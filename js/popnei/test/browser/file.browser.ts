@@ -1,13 +1,14 @@
 /**
  * That popnei reads a file the user picked in the page one range of bytes
  * at a time: a VCF, the same VCF gzipped and a vars file give the variants
- * the tests under node give, a file of more than one range gives the
- * variants of every range of it, a range that comes back short or is
+ * the tests under node give, a VCF opened with no ploidy has the ploidy of
+ * its genotypes, a file of more than one range gives the variants of every
+ * range of it, a range that comes back short or is
  * refused ends the pass with popnei's error, and a file of 299994147 bytes
  * is passed over with the memory of wasm staying under 16 MiB.
  *
  * A range of a `File` is read with `FileReaderSync`, which a browser has
- * only inside a web worker, so none of these seven can run under node.
+ * only inside a web worker, so none of these eight can run under node.
  * Playwright starts Chromium and the server of `server.ts`, opens
  * `harness.html` and asks it for a case of `cases/`, which asserts the
  * numbers inside the worker and whose message is what a failure here shows.
@@ -21,6 +22,13 @@ const HARNESS = "/js/popnei/test/browser/harness.html";
 test("a File of many.vcf gives the variants the file has", async ({ page }) => {
   await page.goto(HARNESS);
   await page.evaluate((name) => window.runInTheWorker(name), "vcf_file");
+});
+
+test("a File opened with no ploidy has the ploidy of the file", async ({
+  page,
+}) => {
+  await page.goto(HARNESS);
+  await page.evaluate((name) => window.runInTheWorker(name), "tetraploid_file");
 });
 
 test("a File of many.vcf.gz gives those same variants", async ({ page }) => {

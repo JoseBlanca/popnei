@@ -2,7 +2,6 @@
 
 import {
   default_only_passed as defaultOnlyPassed,
-  default_ploidy as defaultPloidy,
   open_vcf as openVcfOfTheCore,
   open_vcf_of_a_file as openVcfOfAFileOfTheCore,
 } from "../wasm/popnei.js";
@@ -32,7 +31,9 @@ export type BytesOrFile = Uint8Array | Blob;
 export interface OpenVcfOptions {
   /**
    * How many alleles every genotype of the file holds, the same for every
-   * individual and every variant. 2 when it is not given.
+   * individual and every variant. When it is not given it is read from the
+   * file: the number of alleles of its first genotype that is not a single
+   * dot.
    */
   ploidy?: number;
   /**
@@ -68,25 +69,37 @@ export interface OpenVcfOptions {
  * `ploidy` is how many alleles every genotype of the file holds, and a
  * genotype of any other number of alleles is an `Error` when it is read:
  * popnei does not read a VCF of mixed ploidies, because its calculations are
- * not defined for one. `onlyPassed` leaves out the variants that failed a
- * filter, those whose FILTER column is neither `PASS` nor a dot; a dot says
- * that no filter was applied. With it false every variant of the file is
- * given, and nothing then says which ones had failed. The two defaults are
- * the ones of the core crate, a ploidy of 2 and only the variants that
- * passed.
+ * not defined for one. When it is not given, `openVcf` reads it from the
+ * file before it returns: it is the number of alleles of the first genotype,
+ * in the order of the lines and of the individuals, that is not a single
+ * dot, which is a missing genotype of any ploidy. A file whose first 4096
+ * data lines hold no such genotype is then an `Error` here, which says to
+ * give the ploidy, and so is a file with a header and no data line, which
+ * says that the file has no variants and its ploidy cannot be inferred. That
+ * search reads the file from its start, so a file damaged before its first
+ * genotype with alleles, a corrupted member of a bgzipped file among the
+ * causes, is an `Error` here as well, and not at the first pass.
+ *
+ * `onlyPassed` leaves out the variants that failed a filter, those whose
+ * FILTER column is neither `PASS` nor a dot; a dot says that no filter was
+ * applied. With it false every variant of the file is given, and nothing
+ * then says which ones had failed. Only the variants that passed are given
+ * when it is not.
  *
  * What it returns holds memory of wasm until its `free()` is called.
  *
  * It is pyNei's `vars_from_vcf` under another name, with the ploidy and the
  * filter as arguments, which pyNei has not; pyNei takes the ploidy from the
- * first genotype of the file and gives every variant.
+ * genotype of the first individual of the first data line, a single dot
+ * among them, and gives every variant.
  *
  * @throws {Error} When `source` is neither a `Uint8Array` nor a `File` or
  * `Blob`, when a `File` or a `Blob` is given where there is no
  * `FileReaderSync`, which is everywhere but a web worker, when `ploidy` is
  * not a whole number of 1 or more, when `onlyPassed` is not a boolean, when
  * the bytes are not a VCF popnei can read, when the ploidy is above 255,
- * and when `init` has not been awaited.
+ * when no ploidy is given and none can be read from the file, and when
+ * `init` has not been awaited.
  */
 export function openVcf(
   source: BytesOrFile,
@@ -94,9 +107,10 @@ export function openVcf(
 ): Variants {
   theWasmHasToBeLoaded();
   anObjectOfOptions("openVcf", options, ["ploidy", "onlyPassed"]);
+  // Left out, it is read from the file by the core.
   const ploidy =
     options.ploidy === undefined
-      ? defaultPloidy()
+      ? undefined
       : wholeNumberOfOneOrMore("ploidy", options.ploidy);
   const onlyPassed =
     options.onlyPassed === undefined

@@ -2537,14 +2537,16 @@ pub enum Error {
         problem: String,
     },
 
-    /// The ploidy the VCF reader was asked for is 0, or above the largest
-    /// one it reads. It is the one thing `VcfReader::new` refuses that does
-    /// not come from the source.
+    /// The ploidy of a VCF is 0, or above the largest one a reader takes:
+    /// the ploidy the VCF reader was asked for, which is the one thing
+    /// `VcfReader::new` refuses that does not come from the source, or the
+    /// number of alleles of the genotype `ploidy_of_vcf` read the ploidy
+    /// from.
     #[error(
-        "the ploidy asked of the VCF reader is {ploidy}, and a genotype holds one allele at least and {largest} at most"
+        "the ploidy {ploidy} is not one popnei reads: a genotype holds one allele at least and {largest} at most"
     )]
     VcfPloidyOutOfRange {
-        /// The ploidy that was asked for.
+        /// The ploidy that was asked for or read.
         ploidy: usize,
         /// The largest one the reader takes, `vcf::MAX_PLOIDY`.
         largest: usize,
@@ -2563,10 +2565,11 @@ pub enum Error {
     },
 
     /// A genotype of the VCF holds a number of alleles other than the
-    /// ploidy the reader was given. popnei does not read a VCF of mixed
-    /// ploidies: its calculations are not defined for one.
+    /// ploidy the variants are read with, which the caller gave or
+    /// `ploidy_of_vcf` read from an earlier genotype. popnei does not read a
+    /// VCF of mixed ploidies: its calculations are not defined for one.
     #[error(
-        "line {line} of the VCF, the column of {individual}: its genotype is of the ploidy {found} and the reader was asked for the ploidy {expected}; popnei does not read a VCF whose genotypes are of different ploidies, and the ploidy is an argument of the reader"
+        "line {line} of the VCF, the column of {individual}: its genotype is of the ploidy {found} and the variants are read with the ploidy {expected}; popnei does not read a VCF whose genotypes are of different ploidies"
     )]
     VcfGenotypePloidy {
         /// The number of the line in the file, counted from 1 with the
@@ -2576,7 +2579,7 @@ pub enum Error {
         individual: String,
         /// How many alleles the genotype holds.
         found: usize,
-        /// The ploidy the reader was given.
+        /// The ploidy the variants are read with.
         expected: usize,
     },
 
@@ -3346,6 +3349,31 @@ pub enum Error {
         /// over one has none; the error of the steps a user adds has them.
         keep_rate_and_seed_that_is_set: Option<KeepRateAndSeed>,
     },
+
+    /// `ploidy_of_vcf` found no genotype with alleles in the first
+    /// `num_lines` data lines of the VCF, which are
+    /// `vcf::NUM_LINES_FOR_THE_PLOIDY` or every data line of a file that
+    /// has fewer: each genotype it could read was a single dot, a missing
+    /// genotype of any ploidy. The file is not opened with a ploidy of 2,
+    /// because a filter by missing data and the counts of a statistic count
+    /// the missing alleles of a missing genotype, one for each allele of
+    /// the ploidy, and so the caller gives it.
+    #[error(
+        "{lines} no genotype with alleles, so its ploidy cannot be read from the file; give the ploidy",
+        lines = the_data_lines_looked_at(*num_lines)
+    )]
+    VcfPloidyNotRead {
+        /// How many data lines were looked at.
+        num_lines: usize,
+    },
+
+    /// `ploidy_of_vcf` was given a VCF with a header and no data line,
+    /// whose ploidy nothing in it says. popnei calculates nothing from such
+    /// a file; with a ploidy given, it is opened and gives no variants. The
+    /// owner decided on 6 October 2026 that it is refused, and the words
+    /// are his.
+    #[error("the file has no variants and the ploidy can't be inferred")]
+    VcfPloidyOfNoVariants,
 }
 
 /// The two arguments of a filter that keeps variants at random, which
@@ -3707,7 +3735,9 @@ impl Error {
             // What a reader found in what it read, or was asked of a
             // file it had read: a source that is not a VCF and one that is
             // not a vars file, a header popnei cannot read, a wrong data
-            // line, a genotype of the wrong ploidy, a wrong line of a BED
+            // line, a genotype of the wrong ploidy, a VCF whose ploidy could
+            // not be read from it and one with no data line to read it from
+            // when no ploidy was given, a wrong line of a BED
             // file and one with no region, the thirteen of the
             // vars file that "The Rust interface" of `docs/specs/io_vars.md`
             // lists, a variant whose position goes back within its
@@ -3735,6 +3765,8 @@ impl Error {
             | Self::VcfDataLine { .. }
             | Self::VcfWriterColumnMissing { .. }
             | Self::VcfGenotypePloidy { .. }
+            | Self::VcfPloidyNotRead { .. }
+            | Self::VcfPloidyOfNoVariants
             | Self::BedLine { .. }
             | Self::BedWithNoRegion
             | Self::NotAVarsFile { .. }
@@ -3906,6 +3938,17 @@ fn the_remedies_of_a_fit_that_did_not_settle(model: crate::gwas::GwasModel) -> &
         crate::gwas::GwasModel::Glmm => {
             "Three things do that and they have different remedies: a covariate that separates the individuals that have the condition from the ones that have not has no finite effect for a fit to reach, and the fit walks towards an infinite one, so take that covariate out; or two covariates carry so nearly the same thing that the system of a round can no longer be factored, although they are independent enough for the study to have been accepted, so take one of the two out; or the kinship asks for a random effect that the trait cannot fit, which a kinship that relates every pair alike does, its effect being one number for every individual that the intercept already holds, and then it is the kinship to look at and not a covariate"
         }
+    }
+}
+
+/// The data lines `ploidy_of_vcf` looked at, as the subject of the sentence
+/// that says they hold no genotype with alleles: "the first 4096 data lines
+/// of the VCF hold", and "the one data line of the VCF holds" for one.
+fn the_data_lines_looked_at(num_lines: usize) -> String {
+    if num_lines == 1 {
+        "the one data line of the VCF holds".to_string()
+    } else {
+        format!("the first {num_lines} data lines of the VCF hold")
     }
 }
 
@@ -4141,11 +4184,11 @@ mod tests {
         assert!(message.contains("ind2"), "{message}");
         assert!(message.contains("ploidy 4"), "{message}");
         assert!(message.contains("ploidy 2"), "{message}");
-        // The reader can be asked for another ploidy, and a VCF of mixed
-        // ploidies is refused whatever it is asked for: a user who gets
-        // this needs to be told both.
+        // The ploidy may have been given or read from an earlier genotype,
+        // and a VCF of mixed ploidies is refused either way: a user who gets
+        // this needs to be told both ploidies and that the file is mixed.
         assert!(message.contains("different ploidies"), "{message}");
-        assert!(message.contains("argument"), "{message}");
+        assert!(message.contains("read with the ploidy 2"), "{message}");
     }
 
     /// The errors of a study that a user's own arguments are refused with

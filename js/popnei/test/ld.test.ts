@@ -372,6 +372,9 @@ test("a source with no variant says so", async () => {
         "",
       ].join("\n"),
     ),
+    // A VCF with no data line is refused at the opening when no ploidy is
+    // given.
+    { ploidy: 2 },
   );
   try {
     // The sentence is the core's, the one every calculation over a pass

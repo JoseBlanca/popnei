@@ -585,7 +585,7 @@ def test_per_var_distribs_of_a_source_with_no_variant_is_refused(vcf_of_lines) -
     """A VCF with a header and no data line holds no variant, which the
     message says apart from the steps keeping none."""
     with pytest.raises(ValueError, match="its source holds none"):
-        calc_per_var_distribs(open_vcf(vcf_of_lines([])))
+        calc_per_var_distribs(open_vcf(vcf_of_lines([]), ploidy=2))
 
 
 def test_per_var_distribs_does_not_change_hist_kwargs() -> None:
@@ -1097,7 +1097,7 @@ def test_per_individual_stats_of_a_source_with_no_variant_are_refused(
     over no variant is no number: the message says that the source holds
     none."""
     with pytest.raises(ValueError, match="the pass gave no variant") as refusal:
-        calc_per_individual_stats(open_vcf(vcf_of_lines([])))
+        calc_per_individual_stats(open_vcf(vcf_of_lines([]), ploidy=2))
     assert "its source holds none" in str(refusal.value)
 
 

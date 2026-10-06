@@ -121,6 +121,19 @@ pub(crate) enum PyPopneiError {
         /// the caller asked for.
         path: PathBuf,
     },
+    /// Something the core refused in what it read from a file, with the
+    /// file, where the same case can also be an argument a caller wrote and
+    /// then names no file: the ploidy out of range that `ploidy_of_vcf`
+    /// read from a genotype of 256 alleles, which is the case of a ploidy
+    /// of 256 given to `open_vcf`. `popnei::Error::names_the_file` cannot
+    /// tell the two apart, and the call that met it can. Every other case
+    /// is what it is in [`PyPopneiError::OfTheFile`].
+    ReadFromTheFile {
+        /// What the core refused.
+        error: popnei::Error,
+        /// The file it was read from, as in [`PyPopneiError::OfTheFile`].
+        path: PathBuf,
+    },
     /// An argument that says how many of something there are, the ploidy or
     /// the variants of a block, and holds a number that counts nothing: a
     /// negative one, one above what this machine counts, which in wasm is
@@ -267,6 +280,16 @@ impl PyPopneiError {
         }
     }
 
+    /// The error of the core that was met in what was read from `path`,
+    /// which names that file when it is the ploidy out of range, as
+    /// [`PyPopneiError::ReadFromTheFile`] says.
+    pub(crate) fn read_from_the_file(error: popnei::Error, path: &Path) -> PyPopneiError {
+        PyPopneiError::ReadFromTheFile {
+            error,
+            path: path.to_path_buf(),
+        }
+    }
+
     /// A defect of this crate that was found while `path` was being read,
     /// which the message names as every error of a file does.
     pub(crate) fn broken_of_the_file(message: String, path: &Path) -> PyPopneiError {
@@ -317,6 +340,18 @@ impl From<PyPopneiError> for PyErr {
         match error {
             PyPopneiError::Core(error) => exception_of(error, None),
             PyPopneiError::OfTheFile { error, path } => exception_of(error, Some(path)),
+            // The ploidy out of range names no file, since a caller can
+            // also write it, and here it was read from the file: it is the
+            // `ValueError` it is as an argument, with the path before its
+            // message. Every other case is what `exception_of` makes it, a
+            // defect a `RuntimeError`.
+            PyPopneiError::ReadFromTheFile { error, path } => {
+                if matches!(error, popnei::Error::VcfPloidyOutOfRange { .. }) {
+                    PyValueError::new_err(of_the_file(error.to_string(), Some(path)))
+                } else {
+                    exception_of(error, Some(path))
+                }
+            }
             // No largest number is named here. What the largest is depends
             // on the argument, 255 for a ploidy, and the core says it of
             // each: a bound of this crate beside it would give a user two
@@ -775,16 +810,20 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // The arguments a user writes: how many variants a block holds,
         // and how many alleles a genotype of the file has, which the reader
         // is given when the file is opened because it needs it to read the
-        // first genotype. The three of `docs/specs/filters.md` are of the
-        // same kind: the threshold of a filter that is not a number from 0
-        // to 1, a second filter of a kind the variants are filtered by
-        // already, and a window of the filter by linkage disequilibrium
-        // that is no base pairs wide, all three of which a user gets at the
-        // call that adds the filter. The four of the filter of individuals
-        // are of it too: a name that is
-        // not an individual of the variants, a name that is there twice, a
-        // call that names none, and a second filter of individuals, all of
-        // them what a user wrote in the call that adds the step. The four
+        // first genotype; a ploidy read from a genotype of the file and not
+        // given names the file, through `ReadFromTheFile` above. Three of
+        // the cases of `docs/specs/filters.md` are of the same kind: the
+        // threshold of a filter that is not a number from 0 to 1, a second
+        // filter of a kind the variants are filtered by already, and a
+        // window of the filter by linkage disequilibrium that is no base
+        // pairs wide, all three of which a user gets at the call that adds
+        // the filter; the others of that spec, of the filters by regions,
+        // of the first n and at random, are the `ValueError` of the last
+        // arm. The four of the filter of individuals are of it too: a name
+        // that is not an individual of the variants, a name that is there
+        // twice, a call that names none, and a second filter of
+        // individuals, all of them what a user wrote in the call that adds
+        // the step. The four
         // of `pops`, the populations a statistic is calculated for, are the
         // same kind of thing in the argument of the call that calculates
         // it: a name that is not an individual of the variants, a name

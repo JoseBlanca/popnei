@@ -607,7 +607,7 @@ def write_vcf(path: Path, names: list[str], lines: list[list[str]]) -> Path:
 def test_a_pass_that_gives_no_variant_is_refused(tmp_path):
     vcf = write_vcf(tmp_path / "none.vcf", ["i0", "i1", "i2"], [])
     with pytest.raises(ValueError, match="the pass gave no variant"):
-        do_pcoa_from_variants(open_vcf(vcf))
+        do_pcoa_from_variants(open_vcf(vcf, ploidy=2))
 
 
 def test_variants_whose_distances_are_all_zero_are_refused(tmp_path):

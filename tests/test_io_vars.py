@@ -317,7 +317,7 @@ def test_write_vars_writes_a_file_of_no_batch_for_a_source_with_no_variants(
     block has the one column every vars file has, the genotypes, of the
     width of its three diploid individuals.
     """
-    variants = open_vcf(vcf_of_lines([]))
+    variants = open_vcf(vcf_of_lines([]), ploidy=2)
     path = tmp_path / "no_variant.vars"
 
     write_vars(variants, path)

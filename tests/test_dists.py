@@ -611,7 +611,7 @@ def test_a_source_with_no_variant_is_refused(vcf_of_lines) -> None:
     path = vcf_of_lines([])
 
     with pytest.raises(ValueError) as refusal:
-        calc_pairwise_kosman_dists(open_vcf(path))
+        calc_pairwise_kosman_dists(open_vcf(path, ploidy=2))
 
     assert _what_it_said_of(refusal, path) == (
         "the pass gave no variant and its source holds none: a statistic of "
@@ -631,7 +631,7 @@ def test_a_source_with_no_variant_is_told_apart_from_steps_that_kept_none(
     sentence does.
     """
     path = vcf_of_lines([])
-    variants = open_vcf(path)
+    variants = open_vcf(path, ploidy=2)
     variants.filter_by_missing_data(0)
 
     with pytest.raises(ValueError) as refusal:

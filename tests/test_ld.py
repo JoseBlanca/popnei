@@ -561,7 +561,7 @@ def test_a_source_with_no_variant_is_refused(vcf_of_lines) -> None:
     path = vcf_of_lines([])
 
     with pytest.raises(ValueError) as refusal:
-        calc_rogers_huff_r2_matrix(open_vcf(path))
+        calc_rogers_huff_r2_matrix(open_vcf(path, ploidy=2))
 
     assert str(refusal.value) == (
         f"{path}: the pass gave no variant and its source holds none: a "

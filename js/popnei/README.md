@@ -216,8 +216,8 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
 - `#[wasm_bindgen]` on a `pub const` does not compile: "will not work on
   constants unless you are defining a
   `#[wasm_bindgen(typescript_custom_section)]`". So the defaults of the
-  API, the ploidy of 2 and the filter of `docs/specs/io_vcf.md` and the
-  five of `calcPerVarDistribs` among them, cross as functions that return
+  API, the filter of `docs/specs/io_vcf.md` and the five of
+  `calcPerVarDistribs` among them, cross as functions that return
   the constants of the core.
 - A number of JavaScript that goes in as a `usize` is a float64 turned
   into an integer of 32 bits with no error: the fraction is thrown away

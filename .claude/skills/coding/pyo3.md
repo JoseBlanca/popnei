@@ -127,9 +127,12 @@ builds the frozen dataclasses.
 `impl From<popnei::Error> for PyErr` cannot be written in this crate,
 because neither type is ours. So the crate has an error type of its own,
 `enum PyPopneiError`, with a `From<popnei::Error>`, a `From<PyErr>` and one
-`From<PyPopneiError> for PyErr`. Its thirteen cases are the error of the
+`From<PyPopneiError> for PyErr`. Its fourteen cases are the error of the
 core; that same error with the file it happened in, which the core was not
-given; an argument that says how many of something there are and counts
+given; the error of the core met in what was read from a file where the
+same case can also be an argument the caller wrote, the ploidy out of range
+read from a genotype of more than 255 alleles, which then names the file;
+an argument that says how many of something there are and counts
 nothing, which this crate refuses before the core sees it; three more
 whole numbers it refuses the same way, each under its own words, a
 distance along a chromosome, the seed of the filter that keeps variants at

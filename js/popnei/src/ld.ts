@@ -160,7 +160,7 @@ export function calcRogersHuffR2Matrix(
     "variants",
     variants,
   );
-  // The default is the core's, as the ploidy of `openVcf` is, so that
+  // The default is the core's, as the `onlyPassed` of `openVcf` is, so that
   // Python and TypeScript cannot drift apart on how many variants the
   // matrix is taken of when the caller says nothing.
   const maxNumVars =

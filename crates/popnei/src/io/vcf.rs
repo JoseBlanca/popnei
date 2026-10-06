@@ -49,9 +49,11 @@ pub use writer::{
     write_vcf,
 };
 
-/// The ploidy a VCF is read with when the caller asks for no other, the
-/// ploidy of a diploid organism. pyNei has no such argument and reports 2
-/// for every file it reads.
+/// The ploidy of [`VcfOptions::default`], the ploidy of a diploid
+/// organism, which the tests and the benchmarks of the core read a VCF
+/// with. A caller of a binding crate that gives no ploidy gets the one
+/// [`ploidy_of_vcf`] reads from the file instead. pyNei has no such
+/// argument and reports 2 for every file it reads.
 pub const DEFAULT_PLOIDY: usize = 2;
 
 /// Whether a VCF is read with the variants that failed a filter left out,
@@ -67,6 +69,16 @@ pub const DEFAULT_ONLY_PASSED: bool = true;
 /// ploidy of `usize::MAX` asked for a vector of that many alleles at the
 /// first genotype written as a dot.
 pub const MAX_PLOIDY: usize = 255;
+
+/// How many data lines [`ploidy_of_vcf`] looks at for a genotype with
+/// alleles before it gives up. The number was chosen as one that a file of
+/// calls does not reach with every genotype missing; nothing has measured
+/// it. It is a number of lines and not a block, because the size of a
+/// block is computed from the ploidy.
+// The docstring of `open_vcf` in `python/popnei/io_vcf.py` and the doc
+// comment of `openVcf` in `js/popnei/src/io_vcf.ts` write its value, 4096,
+// and change with it.
+pub const NUM_LINES_FOR_THE_PLOIDY: usize = 4096;
 
 /// The two bytes every gzipped file starts with.
 const GZIP_BYTES: [u8; 2] = [0x1f, 0x8b];
@@ -1518,15 +1530,147 @@ impl VcfReader<BufReader<File>> {
     /// When the file cannot be opened, with the path in the error, and
     /// everything [`VcfReader::new`] fails with.
     pub fn from_path(path: &Path, options: VcfOptions) -> Result<Self> {
-        let file = File::open(path).map_err(|error| Error::FileNotOpened {
-            path: path.to_path_buf(),
-            source: error,
-        })?;
-        VcfReader::new(
-            BufReader::with_capacity(BYTES_OF_THE_FILE_BUFFER, file),
-            options,
-        )
+        VcfReader::new(file_at(path)?, options)
     }
+}
+
+/// The ploidy of the VCF at `path`, gzipped or not, as [`ploidy_of_vcf`]
+/// reads it, with the file opened as [`VcfReader::from_path`] opens it.
+///
+/// # Errors
+///
+/// [`Error::FileNotOpened`], with the path, when the file cannot be opened,
+/// and everything [`ploidy_of_vcf`] fails with.
+pub fn ploidy_of_vcf_at(path: &Path) -> Result<usize> {
+    ploidy_of_vcf(file_at(path)?)
+}
+
+/// The file at `path` opened for a reader, with the buffer of
+/// [`BYTES_OF_THE_FILE_BUFFER`] bytes.
+///
+/// # Errors
+///
+/// [`Error::FileNotOpened`], with the path, when the file cannot be opened.
+fn file_at(path: &Path) -> Result<BufReader<File>> {
+    let file = File::open(path).map_err(|error| Error::FileNotOpened {
+        path: path.to_path_buf(),
+        source: error,
+    })?;
+    Ok(BufReader::with_capacity(BYTES_OF_THE_FILE_BUFFER, file))
+}
+
+/// The ploidy of the VCF in `source`, gzipped or not: the number of alleles
+/// of the first genotype of its data lines that is not a single dot, which
+/// is a missing genotype of any ploidy. `./.` says 2, and a separator at
+/// the start is taken off first, so `/0/1/1` says 3 and `/.` is a single
+/// dot.
+///
+/// The header is read by [`VcfReader::new`], so a source that is not a VCF
+/// gives the error it gives. The data lines are then looked at in their
+/// order, those that failed their filter among them, and in a line the
+/// columns of the individuals of the header in theirs, up to
+/// [`NUM_LINES_FOR_THE_PLOIDY`] data lines; an empty line is not one. Only
+/// a genotype the reader would read as one counts: the `GT` value of a
+/// line of ten columns or more whose FORMAT has `GT`, made of allele
+/// numbers and dots between separators. A line of fewer columns, a FORMAT
+/// with no `GT`, a column with no value at the place of `GT`, an empty
+/// genotype and one with anything else in it, `0/x/1`, are passed over in
+/// silence, and the pass that reads them refuses them. A genotype counted
+/// wrongly would give a wrong ploidy that no error follows in a pass that
+/// reads the positions alone.
+///
+/// # Errors
+///
+/// When [`VcfReader::new`] refuses the header; [`Error::VcfPloidyOutOfRange`]
+/// when the first genotype with alleles holds more than [`MAX_PLOIDY`];
+/// [`Error::VcfPloidyNotRead`] when none of the data lines looked at holds a
+/// genotype with alleles; [`Error::VcfPloidyOfNoVariants`] when the file has
+/// a header and no data line; and the errors of the source, a member of a
+/// bgzipped file that is corrupted or a file cut short among them, met
+/// before the first genotype with alleles.
+pub fn ploidy_of_vcf<R: BufRead + Send>(source: R) -> Result<usize> {
+    // The reader of the header is the one every pass builds, so the header
+    // is refused with its words. The ploidy and the size of a block it is
+    // built with are not used: no block is read from it.
+    let mut reader = VcfReader::new(
+        source,
+        VcfOptions {
+            ploidy: 1,
+            only_passed: false,
+            num_vars_per_block: None,
+        },
+    )?;
+    let num_individuals = reader.individuals.len();
+    let mut line = Vec::new();
+    let mut num_lines: usize = 0;
+    while num_lines < NUM_LINES_FOR_THE_PLOIDY {
+        line.clear();
+        if reader.source.read_line(&mut line)? == 0 {
+            // A bgzipped source that ends with no mark of its end was cut
+            // short, and the data lines that were cut off may hold the
+            // genotype that was looked for.
+            if reader.source.was_cut_short() {
+                return Err(Error::VcfBgzipEndMissing);
+            }
+            if num_lines == 0 {
+                return Err(Error::VcfPloidyOfNoVariants);
+            }
+            return Err(Error::VcfPloidyNotRead { num_lines });
+        }
+        // The end of the line is taken off here and an empty line passed
+        // over, as the batch of the reader does, and taken off once more
+        // where the line is cut, as the parse of the reader does: a line
+        // that ends in `\r\r\n` is read by both.
+        let line = without_the_bytes_of_the_line_end(&line);
+        if line.is_empty() {
+            continue;
+        }
+        // Below `NUM_LINES_FOR_THE_PLOIDY`, checked by the loop.
+        num_lines = num_lines.saturating_add(1);
+        if let Some(ploidy) = ploidy_of_the_line(line, num_individuals) {
+            if ploidy > MAX_PLOIDY {
+                return Err(Error::VcfPloidyOutOfRange {
+                    ploidy,
+                    largest: MAX_PLOIDY,
+                });
+            }
+            return Ok(ploidy);
+        }
+    }
+    Err(Error::VcfPloidyNotRead { num_lines })
+}
+
+/// The number of alleles of the first genotype with alleles of the data
+/// line `line`, among the columns of its first `num_individuals`
+/// individuals, or `None` when it holds none that the reader would read as
+/// a genotype: the line has fewer than ten columns or no `GT` in its
+/// FORMAT, or each of those columns is a single dot, has no value at the
+/// place of `GT`, or holds something other than allele numbers and dots
+/// between separators.
+fn ploidy_of_the_line(line: &[u8], num_individuals: usize) -> Option<usize> {
+    let (head, individual_columns) = columns_of_a_data_line(line);
+    let format = head.split(|byte| *byte == b'\t').nth(8)?;
+    let gt_index = gt_place_in(format)?;
+    ByteColumns::new(individual_columns?)
+        .take(num_individuals)
+        .find_map(|column| alleles_of_the_genotype(gt_of(column, gt_index)?))
+}
+
+/// How many alleles the genotype `text` holds, or `None` when it is a single
+/// dot, which is a missing genotype of any ploidy, or is not one the reader
+/// reads: empty, or with an allele that is neither a dot nor a run of
+/// digits. It is read with the functions the reader reads it with.
+fn alleles_of_the_genotype(text: &[u8]) -> Option<usize> {
+    let mut alleles: usize = 0;
+    for allele in allele_texts_of(text)? {
+        if matches!(allele_text_of(allele), AlleleText::NotAnAllele) {
+            return None;
+        }
+        // The alleles are at most the bytes of the genotype, so the count
+        // does not reach the largest `usize`.
+        alleles = alleles.saturating_add(1);
+    }
+    Some(alleles)
 }
 
 /// The chromosome and the length of the `##contig` line `text`, the line
@@ -1868,14 +2012,20 @@ fn allele_texts<'a>(reference: &'a str, alternatives: &'a str) -> impl Iterator<
 /// Where `GT` is among the keys of the FORMAT column, which is where the
 /// genotype of each individual is in its own column.
 fn gt_index_of(format: &str, line: u64) -> Result<usize> {
+    gt_place_in(format.as_bytes()).ok_or_else(|| Error::VcfDataLine {
+        line,
+        place: VcfPlace::Column("FORMAT"),
+        problem: format!("`{format}` has no GT key, and GT is the genotype"),
+    })
+}
+
+/// Where `GT` is among the keys of the FORMAT column `format`, or `None`
+/// when it has no `GT` key. [`gt_index_of`] and [`ploidy_of_vcf`] both look
+/// for it here.
+fn gt_place_in(format: &[u8]) -> Option<usize> {
     format
-        .split(':')
-        .position(|key| key == "GT")
-        .ok_or_else(|| Error::VcfDataLine {
-            line,
-            place: VcfPlace::Column("FORMAT"),
-            problem: format!("`{format}` has no GT key, and GT is the genotype"),
-        })
+        .split(|byte| *byte == b':')
+        .position(|key| key == b"GT")
 }
 
 /// What the parse of a data line into a row of a block needs to know, which
@@ -2091,20 +2241,7 @@ fn parse_row(
         ..
     } = rules;
     row.clear();
-    let line = without_the_bytes_of_the_line_end(line);
-    // The nine first columns are the ones whose text a block keeps, and
-    // they are the ones read as text: the columns of the individuals are
-    // read as bytes, which is what "Speed" of `docs/specs/io_vcf.md` asks
-    // for, and no UTF-8 is checked in them.
-    let (head, individual_columns) = match memchr::memchr_iter(b'\t', line).nth(8) {
-        Some(ninth_tab) => (
-            line.get(..ninth_tab).unwrap_or_default(),
-            // The tab is at `ninth_tab`, so there is a byte after it or the
-            // columns of the individuals are one empty column.
-            line.get(ninth_tab.saturating_add(1)..),
-        ),
-        None => (line, None),
-    };
+    let (head, individual_columns) = columns_of_a_data_line(line);
     let Ok(head) = std::str::from_utf8(head) else {
         return Err(Error::VcfDataLine {
             line: number,
@@ -2172,6 +2309,28 @@ fn parse_row(
         )?;
     }
     Ok(())
+}
+
+/// The data line `line`, as the source gave it, cut into its nine first
+/// columns and the columns of its individuals, which are `None` when it has
+/// no ninth tab, after the end of the line is taken off.
+///
+/// The nine first columns are the ones whose text a block keeps, and they
+/// are the ones read as text: the columns of the individuals are read as
+/// bytes, which is what "Speed" of `docs/specs/io_vcf.md` asks for, and no
+/// UTF-8 is checked in them. [`parse_row`] and [`ploidy_of_vcf`] both cut a
+/// line here.
+fn columns_of_a_data_line(line: &[u8]) -> (&[u8], Option<&[u8]>) {
+    let line = without_the_bytes_of_the_line_end(line);
+    match memchr::memchr_iter(b'\t', line).nth(8) {
+        Some(ninth_tab) => (
+            line.get(..ninth_tab).unwrap_or_default(),
+            // The tab is at `ninth_tab`, so there is a byte after it or the
+            // columns of the individuals are one empty column.
+            line.get(ninth_tab.saturating_add(1)..),
+        ),
+        None => (line, None),
+    }
 }
 
 /// The line without the `\n` or the `\r\n` it ends in, when it has one. The
@@ -2364,20 +2523,15 @@ fn fill_row_genotype(
     line: u64,
     individual: &str,
 ) -> Result<()> {
-    // VCF 4.4 lets a genotype start with its separator, `/0/1`.
-    let text = match text.first() {
-        Some(b'/' | b'|') => text.get(1..).unwrap_or_default(),
-        _ => text,
-    };
-    if text == MISSING_VALUE.as_bytes() {
+    let Some(allele_texts) = allele_texts_of(text) else {
         for allele in genotype.iter_mut() {
             *allele = MISSING_ALLELE;
         }
         return Ok(());
-    }
+    };
     let mut written: usize = 0;
     let mut alleles = genotype.iter_mut();
-    for allele_text in text.split(|byte| *byte == b'/' || *byte == b'|') {
+    for allele_text in allele_texts {
         let allele = parse_row_allele(allele_text, num_alleles, line, individual)?;
         if let Some(place) = alleles.next() {
             *place = allele;
@@ -2397,6 +2551,56 @@ fn fill_row_genotype(
     Ok(())
 }
 
+/// The texts of the alleles of the genotype `text`, between its separators,
+/// or `None` when it is a single dot, which is a missing genotype of any
+/// ploidy. VCF 4.4 lets a genotype start with its separator, `/0/1`, which
+/// is taken off first, so `/.` is a single dot. [`fill_row_genotype`] and
+/// [`ploidy_of_vcf`] both read a genotype here.
+fn allele_texts_of(text: &[u8]) -> Option<impl Iterator<Item = &[u8]>> {
+    let text = match text.first() {
+        Some(b'/' | b'|') => text.get(1..).unwrap_or_default(),
+        _ => text,
+    };
+    if text == MISSING_VALUE.as_bytes() {
+        return None;
+    }
+    Some(text.split(|byte| *byte == b'/' || *byte == b'|'))
+}
+
+/// What the text of one allele of a genotype is.
+enum AlleleText {
+    /// A dot.
+    Missing,
+    /// A run of digits, and its number, which stops growing at the largest
+    /// `u32`: past the largest allele the number is out of range whatever
+    /// its other digits are.
+    Number(u32),
+    /// Empty, or with a byte that is not a digit.
+    NotAnAllele,
+}
+
+/// What the bytes `text` of one allele of a genotype are.
+/// [`parse_row_allele`] and [`ploidy_of_vcf`] both read an allele here.
+fn allele_text_of(text: &[u8]) -> AlleleText {
+    if text == MISSING_VALUE.as_bytes() {
+        return AlleleText::Missing;
+    }
+    if text.is_empty() {
+        return AlleleText::NotAnAllele;
+    }
+    let mut number: u32 = 0;
+    for byte in text {
+        let Some(digit) = char::from(*byte).to_digit(10) else {
+            return AlleleText::NotAnAllele;
+        };
+        // Once the number is above the largest allele the answer is the
+        // same whatever its other digits are, so it stops growing there and
+        // the two operations cannot overflow.
+        number = number.saturating_mul(10).saturating_add(digit);
+    }
+    AlleleText::Number(number)
+}
+
 /// One allele of a genotype, as bytes: a number of the alleles the variant
 /// declares, or [`MISSING_ALLELE`] for a dot.
 ///
@@ -2404,30 +2608,24 @@ fn fill_row_genotype(
 /// byte that is not a digit, and the message shows it as the replacement
 /// character.
 fn parse_row_allele(text: &[u8], num_alleles: usize, line: u64, individual: &str) -> Result<i8> {
-    if text == MISSING_VALUE.as_bytes() {
-        return Ok(MISSING_ALLELE);
-    }
     let wrong = |problem: String| Error::VcfDataLine {
         line,
         place: VcfPlace::Individual(individual.to_string()),
         problem,
     };
-    if text.is_empty() {
-        return Err(wrong("`` is not an allele number".to_string()));
-    }
-    let mut number: u32 = 0;
-    for byte in text {
-        let Some(digit) = char::from(*byte).to_digit(10) else {
+    let number = match allele_text_of(text) {
+        AlleleText::Missing => return Ok(MISSING_ALLELE),
+        AlleleText::Number(number) => number,
+        AlleleText::NotAnAllele if text.is_empty() => {
+            return Err(wrong("`` is not an allele number".to_string()));
+        }
+        AlleleText::NotAnAllele => {
             return Err(wrong(format!(
                 "{text} is not an allele number, which is a run of digits",
                 text = shown(text),
             )));
-        };
-        // Once the number is above the largest allele the answer is the
-        // same whatever its other digits are, so it stops growing there and
-        // the two operations cannot overflow.
-        number = number.saturating_mul(10).saturating_add(digit);
-    }
+        }
+    };
     let Ok(allele) = i8::try_from(number) else {
         return Err(wrong(format!(
             "the allele {text} is above {MAX_ALLELE}, the largest allele popnei holds",
@@ -6260,5 +6458,432 @@ mod tests {
             .map(|at| if at % 3 == 0 { b'\t' } else { b'x' })
             .collect();
         assert_eq!(tabs_in(&line), 1000);
+    }
+
+    /// The tests of the ploidy read from the file, `ploidy_of_vcf`, from
+    /// "The ploidy read from the file." of "How it is verified" of
+    /// `docs/specs/io_vcf.md`: one for each row of its table, each on a VCF
+    /// of three individuals written here, one for each of the three files
+    /// of the repository it names, one for a header with no data line, and
+    /// the words of the errors.
+    mod ploidy_of_vcf {
+        use std::fs::File;
+        use std::io::{BufReader, Cursor};
+        use std::path::{Path, PathBuf};
+
+        use super::{
+            FIRST_DATA_LINE, HEADER, blocks_of, error_reading, options, reference_vcf,
+            the_file_of_the_review, vcf_of,
+        };
+        use crate::error::{Error, Result};
+        use crate::io::vcf::{
+            MAX_PLOIDY, NUM_LINES_FOR_THE_PLOIDY, VcfReader, ploidy_of_vcf, ploidy_of_vcf_at,
+        };
+
+        /// The ploidy of a VCF held in memory.
+        fn ploidy_of(vcf: &str) -> Result<usize> {
+            ploidy_of_vcf(Cursor::new(vcf.as_bytes().to_vec()))
+        }
+
+        /// The ploidy `ploidy_of_vcf` read, or a panic with its error.
+        fn read_ploidy(vcf: &str) -> usize {
+            match ploidy_of(vcf) {
+                Ok(ploidy) => ploidy,
+                Err(error) => panic!("the ploidy was not read: {error}"),
+            }
+        }
+
+        /// The error of `ploidy_of_vcf`, or a panic with the ploidy it read.
+        fn error_of_the_search(vcf: &str) -> Error {
+            match ploidy_of(vcf) {
+                Ok(ploidy) => panic!("the ploidy {ploidy} was read"),
+                Err(error) => error,
+            }
+        }
+
+        /// A data line of a VCF of the tests, written with spaces as
+        /// `vcf_of` takes it, with the genotypes of the three individuals
+        /// under the FORMAT `GT`.
+        fn line_of(genotypes: &str) -> String {
+            format!("chr1 100 . A T . PASS . GT {genotypes}")
+        }
+
+        /// A VCF of `missing` lines whose three genotypes are a single dot,
+        /// and then the lines `after`.
+        fn after_lines_of_dots(missing: usize, after: &[&str]) -> String {
+            let dots = line_of(". . .");
+            let mut lines: Vec<String> = vec![dots; missing];
+            lines.extend(after.iter().map(|line| line_of(line)));
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            vcf_of(&lines)
+        }
+
+        /// One of the files of `tests/reference/dists/`.
+        fn reference_dists(name: &str) -> PathBuf {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/reference/dists")
+                .join(name)
+        }
+
+        /// The ploidy of the file at `path`.
+        fn ploidy_of_file(path: &Path) -> usize {
+            let file = File::open(path).unwrap();
+            match ploidy_of_vcf(BufReader::new(file)) {
+                Ok(ploidy) => ploidy,
+                Err(error) => panic!("{}: {error}", path.display()),
+            }
+        }
+
+        #[test]
+        fn a_diploid_line_gives_2() {
+            assert_eq!(read_ploidy(&vcf_of(&[&line_of("0/1 0/0 1/1")])), 2);
+        }
+
+        #[test]
+        fn a_haploid_line_gives_1() {
+            assert_eq!(read_ploidy(&vcf_of(&[&line_of("1 0 .")])), 1);
+        }
+
+        #[test]
+        fn a_tetraploid_line_gives_4() {
+            let vcf = vcf_of(&[&line_of("0/0/1/1 0/1/1/1 0/0/0/0")]);
+            assert_eq!(read_ploidy(&vcf), 4);
+        }
+
+        #[test]
+        fn a_single_dot_says_nothing_and_the_genotype_after_it_gives_3() {
+            assert_eq!(read_ploidy(&vcf_of(&[&line_of(". 0/1/1 .")])), 3);
+        }
+
+        #[test]
+        fn a_line_of_single_dots_says_nothing_and_the_phased_line_after_it_gives_2() {
+            let vcf = vcf_of(&[&line_of(". . ."), &line_of("0|1 . .")]);
+            assert_eq!(read_ploidy(&vcf), 2);
+        }
+
+        #[test]
+        fn two_missing_alleles_give_2() {
+            assert_eq!(read_ploidy(&vcf_of(&[&line_of("./. . .")])), 2);
+        }
+
+        #[test]
+        fn a_separator_at_the_start_is_taken_off_and_gives_3() {
+            assert_eq!(read_ploidy(&vcf_of(&[&line_of("/0/1/1 . .")])), 3);
+        }
+
+        #[test]
+        fn a_dot_after_a_separator_is_a_single_dot_and_the_genotype_after_it_gives_2() {
+            assert_eq!(read_ploidy(&vcf_of(&[&line_of("/. 0/1 .")])), 2);
+        }
+
+        #[test]
+        fn an_empty_line_is_skipped_and_the_line_after_it_gives_2() {
+            let vcf = vcf_of(&["", &line_of("0/1 0/0 1/1")]);
+            assert_eq!(read_ploidy(&vcf), 2);
+        }
+
+        #[test]
+        fn a_line_that_failed_its_filter_is_looked_at_and_gives_4() {
+            let vcf = vcf_of(&["chr1 100 . A T . q10 . GT 0/0/0/0 0/0/0/1 0/0/1/1"]);
+            assert_eq!(read_ploidy(&vcf), 4);
+        }
+
+        #[test]
+        fn a_gt_that_is_not_the_first_key_of_the_format_gives_3() {
+            let vcf = vcf_of(&["chr1 100 . A T . PASS . DP:GT 3:0/1/1 3:0/0/0 ."]);
+            assert_eq!(read_ploidy(&vcf), 3);
+        }
+
+        #[test]
+        fn a_genotype_after_4095_lines_of_single_dots_gives_2() {
+            let vcf = after_lines_of_dots(4095, &["0/1 . ."]);
+            assert_eq!(read_ploidy(&vcf), 2);
+        }
+
+        #[test]
+        fn a_genotype_after_4096_lines_of_single_dots_is_not_looked_at() {
+            let vcf = after_lines_of_dots(4096, &["0/1 . ."]);
+            let error = error_of_the_search(&vcf);
+            assert!(
+                matches!(error, Error::VcfPloidyNotRead { num_lines: 4096 }),
+                "the error is {error}"
+            );
+            assert_eq!(NUM_LINES_FOR_THE_PLOIDY, 4096);
+        }
+
+        #[test]
+        fn a_line_whose_format_has_no_gt_is_skipped_and_the_line_after_it_gives_2() {
+            let vcf = vcf_of(&[
+                "chr1 100 . A T . PASS . DP 0/1/1 0/1/1 0/1/1",
+                &line_of("0/1 0/0 1/1"),
+            ]);
+            assert_eq!(read_ploidy(&vcf), 2);
+        }
+
+        #[test]
+        fn a_genotype_with_a_letter_is_skipped_and_the_genotype_after_it_gives_3() {
+            assert_eq!(read_ploidy(&vcf_of(&[&line_of("0/x/1 1/1/1 .")])), 3);
+        }
+
+        /// The row of the spec above gives 3 whether the search skips
+        /// `0/x/1` or counts it as three alleles. Under a diploid genotype
+        /// only skipping it gives 2, the ploidy the pass reads the file
+        /// with.
+        #[test]
+        fn a_genotype_with_a_letter_is_not_counted_in_a_diploid_file() {
+            assert_eq!(read_ploidy(&vcf_of(&[&line_of("0/x/1 0/1 .")])), 2);
+        }
+
+        /// The row of the spec writes the second column `0/1`, which under
+        /// `DP:GT` has no `GT` value either; it is written `3:0/1` here, the
+        /// genotype the row means to be read after the column that has none.
+        #[test]
+        fn a_column_with_no_value_where_the_format_has_gt_is_skipped() {
+            let vcf = vcf_of(&["chr1 100 . A T . PASS . DP:GT 3 3:0/1 ."]);
+            assert_eq!(read_ploidy(&vcf), 2);
+        }
+
+        #[test]
+        fn an_empty_genotype_and_one_with_an_empty_allele_are_skipped() {
+            let vcf = vcf_of(&[
+                "chr1 100 . A T . PASS . GT:DP :3 0/1// .",
+                &line_of(". 0/1 ."),
+            ]);
+            assert_eq!(read_ploidy(&vcf), 2);
+        }
+
+        /// The reader reads the columns of the individuals of the header
+        /// and refuses a line with more, so a column past them is not a
+        /// genotype it reads.
+        #[test]
+        fn a_column_past_the_individuals_of_the_header_is_not_looked_at() {
+            let vcf = vcf_of(&[&line_of(". . . 0/1/1"), &line_of("0/1 0/0 1/1")]);
+            assert_eq!(read_ploidy(&vcf), 2);
+        }
+
+        #[test]
+        fn a_line_of_eight_columns_is_skipped_and_the_line_after_it_gives_2() {
+            let vcf = vcf_of(&["chr1 100 . A T . PASS .", &line_of("0/1 0/0 1/1")]);
+            assert_eq!(read_ploidy(&vcf), 2);
+        }
+
+        #[test]
+        fn three_lines_of_single_dots_and_no_more_give_the_error_with_3() {
+            let error = error_of_the_search(&after_lines_of_dots(3, &[]));
+            assert!(
+                matches!(error, Error::VcfPloidyNotRead { num_lines: 3 }),
+                "the error is {error}"
+            );
+        }
+
+        #[test]
+        fn a_genotype_of_256_alleles_first_is_a_ploidy_out_of_range() {
+            let genotype = vec!["0"; 256].join("/");
+            let error = error_of_the_search(&vcf_of(&[&line_of(&format!("{genotype} . ."))]));
+            let Error::VcfPloidyOutOfRange { ploidy, largest } = error else {
+                panic!("the error is {error}");
+            };
+            assert_eq!((ploidy, largest), (256, MAX_PLOIDY));
+        }
+
+        #[test]
+        fn a_genotype_of_255_alleles_first_gives_255() {
+            let genotype = vec!["0"; 255].join("/");
+            let vcf = vcf_of(&[&line_of(&format!("{genotype} . ."))]);
+            assert_eq!(read_ploidy(&vcf), 255);
+        }
+
+        #[test]
+        fn bytes_that_are_not_a_vcf_give_the_error_of_the_reader() {
+            let error = error_of_the_search("chr1\t100\trs1\n");
+            let Error::NotAVcf { found } = error else {
+                panic!("the error is {error}");
+            };
+            assert_eq!(found, "`chr1\\x09100\\x09rs1\\x0a`");
+        }
+
+        #[test]
+        fn cases_vcf_gz_gives_2() {
+            assert_eq!(ploidy_of_file(&reference_vcf("cases.vcf.gz")), 2);
+        }
+
+        #[test]
+        fn the_haploid_file_of_the_distances_gives_1() {
+            assert_eq!(ploidy_of_file(&reference_dists("haploid.vcf.gz")), 1);
+        }
+
+        #[test]
+        fn the_tetraploid_file_of_the_distances_gives_4() {
+            assert_eq!(ploidy_of_file(&reference_dists("tetraploid.vcf.gz")), 4);
+        }
+
+        #[test]
+        fn the_ploidy_of_the_vcf_at_a_path_is_read_and_a_path_with_no_file_is_named() {
+            assert_eq!(
+                ploidy_of_vcf_at(&reference_dists("tetraploid.vcf.gz")).unwrap(),
+                4
+            );
+            let path = reference_dists("no_such_file.vcf");
+            let error = ploidy_of_vcf_at(&path).unwrap_err();
+            let Error::FileNotOpened { path: named, .. } = error else {
+                panic!("the error is {error}");
+            };
+            assert_eq!(named, path);
+        }
+
+        #[test]
+        fn a_header_with_no_data_line_is_the_error_of_a_file_with_no_variants() {
+            for vcf in [HEADER.to_string(), vcf_of(&["", ""])] {
+                let error = error_of_the_search(&vcf);
+                assert_eq!(
+                    error.to_string(),
+                    "the file has no variants and the ploidy can't be inferred"
+                );
+                assert!(matches!(error, Error::VcfPloidyOfNoVariants), "{error}");
+            }
+        }
+
+        /// The first member of `many.vcf.gz` is its header and the second
+        /// holds the first data lines, so a corrupted second member is
+        /// what the search meets first, and a file cut after the header is
+        /// a file cut short and not one with no variants.
+        #[test]
+        fn an_error_of_the_source_before_the_first_genotype_is_the_error_of_the_search() {
+            let error = match ploidy_of_vcf(Cursor::new(the_file_of_the_review())) {
+                Ok(ploidy) => panic!("the ploidy {ploidy} was read"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(error, Error::VcfBgzipCorrupted { member: 2, .. }),
+                "the error is {error}"
+            );
+
+            let mut cut = std::fs::read(reference_vcf("many.vcf.gz")).unwrap();
+            cut.truncate(310);
+            let error = match ploidy_of_vcf(Cursor::new(cut)) {
+                Ok(ploidy) => panic!("the ploidy {ploidy} was read"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(error, Error::VcfBgzipEndMissing),
+                "the error is {error}"
+            );
+        }
+
+        #[test]
+        fn the_error_of_the_search_says_how_many_lines_it_looked_at_and_to_give_the_ploidy() {
+            let error = error_of_the_search(&after_lines_of_dots(4096, &[]));
+            assert_eq!(
+                error.to_string(),
+                "the first 4096 data lines of the VCF hold no genotype with alleles, so its \
+                 ploidy cannot be read from the file; give the ploidy"
+            );
+            let error = error_of_the_search(&after_lines_of_dots(3, &[]));
+            assert_eq!(
+                error.to_string(),
+                "the first 3 data lines of the VCF hold no genotype with alleles, so its \
+                 ploidy cannot be read from the file; give the ploidy"
+            );
+            let error = error_of_the_search(&after_lines_of_dots(1, &[]));
+            assert_eq!(
+                error.to_string(),
+                "the one data line of the VCF holds no genotype with alleles, so its ploidy \
+                 cannot be read from the file; give the ploidy"
+            );
+        }
+
+        #[test]
+        fn the_error_of_a_ploidy_out_of_range_has_the_same_words_read_and_given() {
+            let words = "the ploidy 256 is not one popnei reads: a genotype holds one allele at \
+                         least and 255 at most";
+            let genotype = vec!["1"; 256].join("/");
+            let read = error_of_the_search(&vcf_of(&[&line_of(&format!(". {genotype} ."))]));
+            assert_eq!(read.to_string(), words);
+            let given =
+                match VcfReader::new(Cursor::new(HEADER.as_bytes().to_vec()), options(256, true)) {
+                    Ok(reader) => panic!("the reader was built over {:?}", reader.individuals),
+                    Err(error) => error,
+                };
+            assert_eq!(given.to_string(), words);
+        }
+
+        /// The search and the reader read a genotype with the same code, so
+        /// over every genotype written with a few tokens, and with the line
+        /// ends the reader takes off, in a file of one individual: when the
+        /// search gives a ploidy, the reader reads the line with it and with
+        /// no other, and when it gives none, the reader reads it
+        /// with every ploidy from 1 to 4, a single dot, or with none. The
+        /// search does not read an allele number against REF and ALT, which
+        /// the reader does, so a genotype whose tokens write a number above
+        /// the 10 that the ALT of the file declares, `11` or `1010`, is
+        /// left out; 3695 of the 4681 genotypes are left, with three ends
+        /// each, and each is read five times at most.
+        #[test]
+        fn the_search_counts_a_genotype_as_the_reader_reads_it() {
+            const TOKENS: [&str; 8] = ["", "0", "1", ".", "/", "|", "x", "10"];
+            const HEADER_OF_ONE: &str = "\
+##fileformat=VCFv4.4
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tind1
+";
+            let mut genotypes = vec![String::new()];
+            let mut last = vec![String::new()];
+            for _ in 0..4 {
+                last = last
+                    .iter()
+                    .flat_map(|start| TOKENS.iter().map(move |token| format!("{start}{token}")))
+                    .collect();
+                genotypes.extend(last.iter().cloned());
+            }
+            assert_eq!(genotypes.len(), 4681);
+            genotypes.retain(|genotype| {
+                genotype
+                    .split(|byte: char| !byte.is_ascii_digit())
+                    .all(|number| number.parse::<u32>().ok().is_none_or(|number| number <= 10))
+            });
+            assert_eq!(genotypes.len(), 3695);
+            let reads = |vcf: &str, ploidy: usize| {
+                VcfReader::new(Cursor::new(vcf.as_bytes().to_vec()), options(ploidy, true))
+                    .and_then(|mut reader| blocks_of(&mut reader))
+                    .is_ok_and(|blocks| blocks.len() == 1)
+            };
+            for genotype in &genotypes {
+                for end in ["\n", "\r\n", "\r\r\n"] {
+                    let vcf = format!(
+                        "{HEADER_OF_ONE}chr1\t100\t.\tA\tC,G,T,AA,AC,AG,AT,CA,CC,CG\t.\t\
+                         PASS\t.\tGT\t{genotype}{end}"
+                    );
+                    let read_with: Vec<usize> =
+                        (1..=4).filter(|ploidy| reads(&vcf, *ploidy)).collect();
+                    match ploidy_of(&vcf) {
+                        Ok(ploidy) => assert_eq!(
+                            read_with,
+                            [ploidy],
+                            "{genotype:?}{end:?}: the search gives {ploidy}"
+                        ),
+                        Err(_) => assert!(
+                            read_with.is_empty() || read_with == [1, 2, 3, 4],
+                            "{genotype:?}{end:?}: the search gives none and the reader reads \
+                             it with {read_with:?}"
+                        ),
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn the_error_of_a_genotype_of_another_ploidy_names_the_ploidy_the_variants_are_read_with() {
+            let vcf = vcf_of(&[&line_of("0/1 0/0 1/1"), &line_of("0/1 0/0/1/1 1/1")]);
+            let ploidy = read_ploidy(&vcf);
+            let error = error_reading(&vcf, options(ploidy, true));
+            let line = FIRST_DATA_LINE.saturating_add(1);
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "line {line} of the VCF, the column of ind2: its genotype is of the ploidy 4 \
+                     and the variants are read with the ploidy 2; popnei does not read a VCF \
+                     whose genotypes are of different ploidies"
+                )
+            );
+        }
     }
 }

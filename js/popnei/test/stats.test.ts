@@ -996,7 +996,7 @@ test("a pass over a source with no variant is refused", () => {
   // A rate over no variant is no number, and the message says whether the
   // source held none or the steps kept none of them: this VCF has a header
   // and no data line.
-  const variants = openVcf(vcfOf([]));
+  const variants = openVcf(vcfOf([]), { ploidy: 2 });
 
   assert.throws(
     () => calcPerIndividualStats(variants),

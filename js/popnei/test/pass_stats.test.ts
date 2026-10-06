@@ -209,7 +209,7 @@ test("a source with no variants counts none", () => {
   // A VCF whose header names three individuals and that has no variant. It
   // is not an error, so the pass is a pass like any other and its count
   // is 0.
-  const variants = openVcf(vcfOf([]));
+  const variants = openVcf(vcfOf([]), { ploidy: 2 });
 
   const blocks = variants.iterBlocks();
   assert.deepEqual([...blocks], []);

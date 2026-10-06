@@ -876,7 +876,7 @@ test("a pass that gives no variant is refused and says where the variants went",
   // gives for the same source: the two languages say the same thing, and
   // Python writes the path of the file before it, which the bytes a
   // TypeScript user gives have not.
-  const ofNoVariant = openVcf(vcfOf([]));
+  const ofNoVariant = openVcf(vcfOf([]), { ploidy: 2 });
   try {
     assert.throws(
       () => calcPopDiversity(ofNoVariant, { stats: WITH_NO_SPECTRUM }),

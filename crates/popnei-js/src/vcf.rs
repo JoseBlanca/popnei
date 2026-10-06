@@ -13,7 +13,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::Blob;
 
 use popnei::block::BlockReader;
-use popnei::io::vcf::{VcfOptions, VcfReader};
+use popnei::io::vcf::{VcfOptions, VcfReader, ploidy_of_vcf};
 
 use crate::density::{ArgumentsOfTheDensity, VarDensityOfAPass, var_density_of};
 use crate::dists::{KosmanDistances, kosman_dists_of};
@@ -621,82 +621,82 @@ impl OpenSource for VcfSource {
 }
 
 /// The VCF in `bytes`, plain or gzipped, read with `ploidy` alleles in every
-/// genotype and, when `only_passed` is true, without the variants that
-/// failed a filter.
+/// genotype, or with the number of alleles of its first genotype that has
+/// any when `ploidy` is nothing, and, when `only_passed` is true, without the
+/// variants that failed a filter.
 ///
 /// It reads the header, so the individuals are known when it returns.
 ///
 /// # Errors
 ///
 /// When the bytes are not a VCF that popnei can read, and when the ploidy is
-/// out of the range the core takes.
+/// out of the range the core takes. With no ploidy, those of
+/// [`ploidy_of_vcf`] as well: a file with no data line, one whose first
+/// [`NUM_LINES_FOR_THE_PLOIDY`](popnei::io::vcf::NUM_LINES_FOR_THE_PLOIDY) data
+/// lines hold no genotype with alleles, and bytes that cannot be read up to its
+/// first genotype with alleles.
 #[wasm_bindgen]
 pub fn open_vcf(
     bytes: Vec<u8>,
-    ploidy: usize,
+    ploidy: Option<usize>,
     only_passed: bool,
 ) -> Result<VcfSource, JsPopneiError> {
     let (file, in_javascript) = the_bytes_of_a_new_source(bytes)?;
-    the_vcf_of(
-        file,
-        in_javascript,
-        VcfOptions {
-            ploidy,
-            only_passed,
-            num_vars_per_block: None,
-        },
-    )
+    the_vcf_of(file, in_javascript, ploidy, only_passed)
 }
 
 /// The VCF in `file`, the file the user picked in the page or a `Blob` an
 /// application made itself, plain or gzipped, read with `ploidy` alleles in
-/// every genotype and, when `only_passed` is true, without the variants that
-/// failed a filter.
+/// every genotype, or with the number of alleles of its first genotype that
+/// has any when `ploidy` is nothing, and, when `only_passed` is true,
+/// without the variants that failed a filter.
 ///
 /// The file stays in the page. Every pass over it asks the browser for one
 /// range of a few MiB at a time through `FileReaderSync`, which a browser
 /// gives only inside a web worker, so the file is never in the memory of
 /// wasm whole and a file larger than that memory is read.
 ///
-/// It reads the header, so the individuals are known when it returns.
+/// It reads the header, so the individuals are known when it returns, and
+/// with no ploidy it reads the file once more before that, from its start
+/// to its first genotype with alleles.
 ///
 /// # Errors
 ///
 /// When the browser has no `FileReaderSync`, which is every call outside a
 /// web worker; when `Blob.size` is not a whole number of bytes popnei reads a
 /// file by; when the file is not a VCF that popnei can read; and when the
-/// ploidy is out of the range the core takes.
+/// ploidy is out of the range the core takes. With no ploidy, those of
+/// [`ploidy_of_vcf`] as well: a file with no data line, one whose first
+/// [`NUM_LINES_FOR_THE_PLOIDY`](popnei::io::vcf::NUM_LINES_FOR_THE_PLOIDY) data
+/// lines hold no genotype with alleles, and a file that cannot be read up to
+/// its first genotype with alleles.
 #[wasm_bindgen]
 pub fn open_vcf_of_a_file(
     file: Blob,
-    ploidy: usize,
+    ploidy: Option<usize>,
     only_passed: bool,
 ) -> Result<VcfSource, JsPopneiError> {
     let (file, in_javascript) = the_file_of_a_new_source(file)?;
-    the_vcf_of(
-        file,
-        in_javascript,
-        VcfOptions {
-            ploidy,
-            only_passed,
-            num_vars_per_block: None,
-        },
-    )
+    the_vcf_of(file, in_javascript, ploidy, only_passed)
 }
 
 /// The source of the VCF in `file`, which keeps the file and the function the
 /// page is told the progress with in the entry numbered `in_javascript`, read
-/// with `options`.
+/// with `ploidy` alleles in every genotype, or with the ploidy
+/// [`ploidy_of_vcf`] reads from the file when it is nothing, and with
+/// `only_passed`.
 ///
 /// # Errors
 ///
-/// When the file is not a VCF that popnei can read, and when the ploidy is
-/// out of the range the core takes. The entry goes with an open that failed:
-/// no `Variants` was made, so no `free()` will come for it.
+/// When the file is not a VCF that popnei can read, when the ploidy is out
+/// of the range the core takes, and, with no ploidy, those of
+/// [`ploidy_of_vcf`]. The entry goes with an open that failed: no
+/// `Variants` was made, so no `free()` will come for it.
 fn the_vcf_of(
     file: TheFileOfASource,
     in_javascript: u32,
-    options: VcfOptions,
+    ploidy: Option<usize>,
+    only_passed: bool,
 ) -> Result<VcfSource, JsPopneiError> {
     // The header is read when the reader is built and no variant is.
     // Nothing here asks for a block, so a file whose blocks would need more
@@ -704,13 +704,27 @@ fn the_vcf_of(
     // the ploidy 255, is opened all the same and its individuals read; the
     // size of its blocks is the user's to choose at `iterBlocks`.
     //
-    // The read belongs to no run and is told to nobody: there is no
-    // `Variants` yet for an application to have set a function on.
-    let opened = file
-        .the_opening_pass(in_javascript)
-        .and_then(|pass| VcfReader::new(pass, options));
-    let reader = match opened {
-        Ok(reader) => reader,
+    // The reads belong to no run and are told to nobody: there is no
+    // `Variants` yet for an application to have set a function on. With no
+    // ploidy the file is read twice, the first time from its start to its
+    // first genotype with alleles, and each read is a pass of its own from
+    // the first byte.
+    let opened = ploidy
+        .map_or_else(
+            || file.the_opening_pass(in_javascript).and_then(ploidy_of_vcf),
+            Ok,
+        )
+        .and_then(|ploidy| {
+            let options = VcfOptions {
+                ploidy,
+                only_passed,
+                num_vars_per_block: None,
+            };
+            let reader = VcfReader::new(file.the_opening_pass(in_javascript)?, options)?;
+            Ok((options, reader))
+        });
+    let (options, reader) = match opened {
+        Ok(opened) => opened,
         Err(error) => {
             the_source_was_freed(in_javascript);
             return Err(error.into());
@@ -723,13 +737,6 @@ fn the_vcf_of(
         individuals,
         in_javascript,
     })
-}
-
-/// The ploidy a VCF is read with when the caller says nothing.
-#[wasm_bindgen]
-#[must_use]
-pub fn default_ploidy() -> usize {
-    popnei::io::vcf::DEFAULT_PLOIDY
 }
 
 /// Whether the variants that failed a filter are left out when the caller

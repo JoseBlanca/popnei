@@ -12,6 +12,10 @@ same file as no variant and says nothing, so popnei is stricter here.
 A damaged file is an `OSError`, by the owner's convention: a file that
 cannot be read, that was cut short or that is corrupted. The variants of the
 members before the damaged one are given first.
+
+The tests of a pass give the ploidy 2. With none, the ploidy is read from the
+file when it is opened, and the damaged member, which comes before the first
+genotype of the file, is found then.
 """
 
 from pathlib import Path
@@ -45,7 +49,7 @@ def test_a_bgzipped_vcf_whose_member_is_damaged_is_an_error_and_not_an_empty_fil
     reference_vcf_dir: Path, tmp_path: Path
 ) -> None:
     path = _with_the_damaged_member(reference_vcf_dir, tmp_path)
-    variants = open_vcf(path, only_passed=False)
+    variants = open_vcf(path, ploidy=2, only_passed=False)
     read = 0
     with pytest.raises(OSError) as refusal:
         for block in variants.iter_blocks(num_vars_per_block=100):
@@ -78,10 +82,27 @@ def test_the_damaged_file_gives_no_block_at_all_with_the_size_popnei_chooses(
     `test_truncated_and_infinite.py`.
     """
     path = _with_the_damaged_member(reference_vcf_dir, tmp_path)
-    variants = open_vcf(path, only_passed=False)
+    variants = open_vcf(path, ploidy=2, only_passed=False)
     read = 0
     with pytest.raises(OSError) as refusal:
         for block in variants.iter_blocks():
             read += block.num_vars
     assert read == 0
     assert refusal.value.filename == str(path)
+
+
+def test_the_ploidy_from_the_file_of_the_damaged_file_is_refused_at_the_call(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """With no ploidy, the search for it reads the damaged member, since the
+    first member holds no whole data line, and `open_vcf` is refused with
+    the words of a pass.
+    """
+    path = _with_the_damaged_member(reference_vcf_dir, tmp_path)
+    with pytest.raises(OSError) as refusal:
+        open_vcf(path, only_passed=False)
+    assert refusal.value.filename == str(path)
+    assert refusal.value.errno is None
+    message = str(refusal.value)
+    assert "corrupted" in message
+    assert "member 2" in message
