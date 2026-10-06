@@ -496,8 +496,9 @@ The width of `gts` has to be the number of `individuals` times the `ploidy` of
 the `popnei` key; if not, the error gives the width found and the one
 expected, because the width is what turns the flat buffer into variants.
 
-A null in `chrom`, `pos`, `alleles` or `gts` is an error naming the column and
-the variant, counted from 1 over the whole file. A null among the alleles of a
+A null in `chrom`, `pos`, `alleles`, `gts` or `passed` is an error naming the
+column and the variant, counted from 1 over the whole file; a null `passed`
+read as true or false would keep or drop a variant with no sign. A null among the alleles of a
 variant, or among its genotypes, is a null of that column too: arrow gives the
 values inside a list a field of their own that can hold nulls, as "What it
 holds" says, and no value popnei writes is one. A null `id` is the empty id
