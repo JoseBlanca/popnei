@@ -98,7 +98,7 @@ Tasks:
   3. A result so far that is not the result over those variants would be
   wrong in silence; the comparison with the calculation over the first that
   many variants is its guard, and it goes in the commit of the split.
-- [ ] 1.2 `calc_variants_summary`, `VariantsSummaryConfig` and
+- [x] 1.2 `calc_variants_summary`, `VariantsSummaryConfig` and
   `VariantsSummary`, from the same part. Deliverables 2, 3. Needs 1.1.
 - [ ] 1.3 The measurement of deliverable 4, and the spec's sentence of the
   saving replaced with its numbers, in a commit of its own before the code

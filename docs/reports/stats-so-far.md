@@ -19,3 +19,11 @@ before and 0.670, 0.652 and 0.643 s after on `big.vcf`.
 `many.vcf` has no `##contig` length, so the density of the TypeScript test
 "with the lengths of the file" would have tested the windows that grow
 twice; the spec gives the lengths in that test now.
+
+Task 1.2 is 660cf55: `calc_variants_summary` in
+`crates/popnei/src/stats/summary.rs`, with the totals of each of the three
+calculations in a type of their own that the three and the summary share,
+so that no counting is copied, and the error of a summary of none.
+`cargo test -p popnei --lib variants_summary` runs 5 tests, among them the
+seven combinations of the three against the three calculations, and a
+reader that records what it is asked for.
