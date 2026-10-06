@@ -101,7 +101,7 @@ Stands on: nothing of this plan.
 
 Tasks:
 
-- [ ] 1.1 The core, in `crates/popnei/src/io/vcf.rs` and
+- [x] 1.1 The core, in `crates/popnei/src/io/vcf.rs` and
   `crates/popnei/src/error.rs`: `NUM_LINES_FOR_THE_PLOIDY`,
   `ploidy_of_vcf`, which reads the header with the code and the errors of
   `VcfReader::new` and not with a copy of it, the two error cases of the
