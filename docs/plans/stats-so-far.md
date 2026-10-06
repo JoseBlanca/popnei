@@ -1,6 +1,6 @@
 # Plan: the result so far of three statistics, and the three in one pass
 
-7 October 2026. State: **under way**, approved by the owner on 7 October 2026. It builds the two items that
+7 October 2026. State: **done** on 7 October 2026, approved by the owner that day. It builds the two items that
 `docs/specs/js_sources.md` gained on 7 October 2026 from issue 10 of the
 repository, "The result so far" and "The three statistics of a file in one
 pass", and what they need of the core, the part at the end of "The Rust

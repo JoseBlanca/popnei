@@ -1,7 +1,27 @@
 # Report: the result so far of three statistics, and the three in one pass
 
 7 October 2026. The work report of `docs/plans/stats-so-far.md`, on the
-branch `spec/stats-so-far`. State: under way.
+branch `spec/stats-so-far`. State: done.
+
+The plan is done, on the branch `spec/stats-so-far`, not merged.
+In the TypeScript package, `calcPerVarDistribs`, `calcPerIndividualStats`,
+`calcVarDensity` and the new `calcVariantsSummary` take `onSoFar` and
+`soFarEvery`: while their pass runs they call `onSoFar`, at most every
+`soFarEvery` seconds, 2 by default, with the result over the variants read
+so far, which is to the bit what the call would return over those variants,
+and with its counts; a page draws it as it fills, and keeps the last one if
+its user stops the pass. `calcVariantsSummary` gives the three results from
+one reading of the file, each to the bit what its own call gives. On
+`big.vcf`, 403 MB, one pass took 1.247 s against 2.240 s for the three,
+44% less; on `big.vars` the saving is small, 2% to 10% by the load of the
+machine, because a vars file is read in under a hundredth of a second and
+the counting of each statistic is not shared. Python is untouched, as you
+decided. Every check of the `coding` skill passes, and each runs more tests
+than before the plan; one node test fails, `a kinship that does not tell
+the two variances apart gives none of them`, which failed in the same way
+on `main` before. No decision is left open. What is asked of you is the
+order to merge the branch into `main`; with it issue 10 can be closed, and
+popnei_web gets it from a release of the wasm package.
 
 ## 1. The core
 
@@ -88,3 +108,65 @@ pass whose function threw as one that `onProgress` stopped, telling the page
 nothing more. 42 node tests in `test/so_far.test.ts`; 41 of them failed
 before the change, and the one that did not, a `soFarEvery` of 3600 that
 never calls, passes on a function that takes no options as well.
+
+Task 2.2 is 9d467d9: `calcVariantsSummary` in both, through the core's
+`calc_variants_summary`, with the builders and the result so far of 2.1. Its
+options cross to the crate as two objects, `ArgumentsOfThePass` and
+`ArgumentsOfTheDensity`, which `calcPerVarDistribs` and `calcVarDensity` now
+use too, so that their checks are shared and not copied. It is the
+sixteenth consumer, in `consumers.ts`, so the tests that run every consumer
+run it.
+
+### The deliverables
+
+Run on 9f6c29c, after the fixes of the review.
+
+| deliverable | command | result |
+|---|---|---|
+| 1, `onSoFar` | the spec reporter with `--test-name-pattern=onSoFar` | 70 by name; 0 on d22e7a2 |
+| 2, `calcVariantsSummary` | the same with its name | 36; 0 on d22e7a2 |
+| 3, the passes and the consumers | `test/num_passes.test.ts`, `test/consumers.ts` | 1 pass, among the sixteen |
+| 4, every test passes | the six cargo commands, `uv run pytest`, `npm test`, `npm run test:browser` | 1506 and 1356 passed; 751; node 650 tests, 649 pass, 1 fails, the kinship test that fails on `main`; browser 9 |
+
+### What the review found
+
+Five reviewers, spec, tests, errors, api and binding, each in a worktree of
+its own, read 96e9ac6 and 9d467d9. None found a wrong result. The errors
+reviewer threw four kinds of value from `onSoFar` in the four calls over a
+VCF, a gzipped VCF and a vars file, 48 cases, and each came back as it was
+thrown, with the page told nothing more; the binding reviewer ran a density
+of 9990000 windows with `onSoFar` and the memory of wasm rose once, to 384
+MiB, and did not grow with each call. What held is fixed, each new test
+failing first on the mutant that the reviewers showed passing:
+
+- The counts of the filters in a result so far were not tested; with
+  `filterByMaf(0.95)` they are now literals for each call (7f031ac).
+- The interval counted from the last call was not tested, and the test the
+  spec gave could not fail on this machine, where a pass over 500 blocks of
+  one variant takes 2 ms; the spec has one now whose bound holds on any
+  machine: 30 to 36 calls on the code, 500 on the mutant (9f6c29c).
+- The default of 2 seconds, the refusal of an unknown option of
+  `calcPerIndividualStats`, and an error of the pass or of the building of
+  the result so far with `onSoFar` set were not tested (8867ea0, db9968a,
+  da468a7).
+- The clock is `performance.now()`, which never goes back, in place of the
+  clock of the wall (a7ebfc9); that `onSoFar` is not awaited is written
+  down; the README counts thirteen calculations and says what `onSoFar` is;
+  four messages and doc comments are clearer (a65896a).
+
+### How the work went
+
+This part is for whoever next revises a skill or writes a plan, and the
+owner can stop here.
+
+- The spec wrote tests that could not fail, twice: on `many.vcf`, which is
+  one block for the VCF reader, so `onSoFar` would never have been called;
+  and the test of the interval, whose numbers did not fit the speed of a
+  pass on this machine. The spec reviewer found the first and the fixing
+  subagent the second. A test written in a spec is a claim about the code
+  and the data together, and the `writing-specs` skill could ask the writer
+  to check that a test of the spec can fail on the data it names.
+- Task 2.1 ran beside the fixes of the review of work package 1, the first
+  in the binding and the package and the second in the core, in one
+  worktree, with neither touching the other's files; it saved the time of
+  the review.
