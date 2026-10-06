@@ -1,30 +1,30 @@
 # Plan: the ploidy of a VCF read from the file when the caller gives none
 
-6 October 2026. State: **draft**. It builds what `docs/specs/io_vcf.md`
+6 October 2026. State: **approved** by the owner on 6 October 2026. It builds what `docs/specs/io_vcf.md`
 gained on 6 October 2026 from issue 8 of the repository: with no ploidy
 given, `open_vcf` and `openVcf` read the ploidy from the first genotype
 of the file that has alleles. The parts of the spec are the paragraphs on
 the ploidy in "What it gives" of the reader, from "The caller may give the
 ploidy", the ploidy bullet of "Its Python and TypeScript functions", the
 paragraphs from "The ploidy read from the file." in "How it is verified"
-and in "The Rust interface", and **Open 1**. It runs through the core
+and in "The Rust interface". The spec has no open point: the owner
+decided on 6 October 2026 that a VCF with a header and no data line,
+opened with no ploidy, is refused. It runs through the core
 crate, both binding crates, the Python package and the TypeScript package,
 in one work package.
 
 ## In and out
 
-Built: `ploidy_of_vcf` and `NUM_LINES_FOR_THE_PLOIDY` in the core, the new
-error case and the new words of two old ones, the call of `ploidy_of_vcf`
+Built: `ploidy_of_vcf` and `NUM_LINES_FOR_THE_PLOIDY` in the core, the two
+new error cases and the new words of two old ones, the call of `ploidy_of_vcf`
 in both binding crates when no ploidy is given, a `ploidy` of `None` or
 left out in both packages, their doc comments, and the tests the spec
 lists.
 
-**Open 1**, a VCF with a header and no data line opened with no ploidy, is
-not answered. Task 1.1 builds its "meanwhile", the ploidy 2. When the
-owner chooses the refusal, 1.1 changes one branch of `ploidy_of_vcf` and
-its test, and 1.2 and 1.3 give the ploidy 2, in a new task of each, in
-the 16 tests that open a VCF with a header and no data line and give no
-ploidy: in pytest `test_block.py:297`, `test_dists.py:611` and `:633`,
+The tests that open a VCF with a header and no data line and give no
+ploidy, 16 of them, now give the ploidy 2, since that file is refused at
+the opening without one and what they check is a pass with no variant: in
+pytest `test_block.py:297`, `test_dists.py:611` and `:633`,
 `test_diversity.py:824`, `test_io_vars.py:320`, `test_ld.py:561`,
 `test_pass_stats.py:152`, `test_stats.py:588` and `:1100`; in node
 `dists.test.ts:464` and `:481`, `diversity.test.ts:879`,
@@ -71,7 +71,9 @@ Deliverables:
    a genotype of another ploidy or of a ploidy out of range; the pytest
    test that a tetraploid file is refused when its blocks are asked for,
    which now passes `ploidy=2` to `open_vcf`; and the tests of a corrupted
-   second member, which pass the ploidy 2, as the spec says.
+   second member, which pass the ploidy 2, as the spec says; and the 16
+   tests of a VCF with no data line named under "In and out", which pass
+   the ploidy 2.
 3. Pytest tests whose names contain `ploidy_from_the_file`, at `open_vcf`,
    with the checks the spec gives Python: `tetraploid.vcf.gz` with `ploidy`
    4 and 200 variants of four alleles, `haploid.vcf.gz` with `ploidy` 1,
@@ -102,8 +104,9 @@ Tasks:
 - [ ] 1.1 The core, in `crates/popnei/src/io/vcf.rs` and
   `crates/popnei/src/error.rs`: `NUM_LINES_FOR_THE_PLOIDY`,
   `ploidy_of_vcf`, which reads the header with the code and the errors of
-  `VcfReader::new` and not with a copy of it, the error case of the search
-  at the end of the enum, and the new words of `VcfPloidyOutOfRange` and
+  `VcfReader::new` and not with a copy of it, the two error cases of the
+  search at the end of the enum, the one of a file with no data line with
+  the owner's words, and the new words of `VcfPloidyOutOfRange` and
   `VcfGenotypePloidy`, from the paragraphs of the spec named in the
   opening. Deliverable 1, and 2 for the core. The genotype the search
   counts has to be one the reader would read as a genotype. A genotype it
