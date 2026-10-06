@@ -1,6 +1,6 @@
 # Plan: the filter of the variants that passed their FILTER
 
-6 October 2026. State: **draft**. It builds what the specs gained on 6
+6 October 2026. State: **under way**, approved by the owner on 6 October 2026. It builds what the specs gained on 6
 October 2026 from issue 9 of the repository: the filter `filter_passed` /
 `filterPassed`, of the kind `"passed"`, that keeps the variants whose
 FILTER column was `PASS` or a dot, and the `passed` column it reads. The
