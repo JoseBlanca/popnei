@@ -5,11 +5,16 @@
 repository, "The result so far" and "The three statistics of a file in one
 pass", and what they need of the core, the part at the end of "The Rust
 interface" of `docs/specs/stats.md` that starts "The result so far and the
-three in one pass". The specs have no open point: the owner decided on 7
+three in one pass". The result so far is what `calcPerVarDistribs`,
+`calcPerIndividualStats` and `calcVarDensity` would return over the
+variants their pass has read up to a block, given to a function of the
+page while the pass runs; the one pass is `calcVariantsSummary`, which
+gives those three results from one reading of the file. The specs have no open point: the owner decided on 7
 October 2026 that the result so far is a function the consumer calls, in
 TypeScript alone, on all four calls, and that the one pass is a consumer of
 exactly the three statistics. Two work packages: the core, then the wasm
-binding crate and the TypeScript package.
+binding crate and the TypeScript package. Every task stands on the one
+before it, so none runs beside another.
 
 ## In and out
 
@@ -76,7 +81,9 @@ Deliverables:
    `big.vars`, one thread, a release build, the median of 7 interleaved
    runs, written into "The three statistics of a file in one pass" of
    `docs/specs/js_sources.md` in place of the estimate, with the script that
-   measured it in `crates/popnei/benches/`.
+   measured it in `crates/popnei/benches/`. The owner decided to build the
+   one pass whatever it saves; when it saves less than a fifth, the
+   orchestrator says so in the report and goes on.
 
 Stands on: nothing of this plan.
 
