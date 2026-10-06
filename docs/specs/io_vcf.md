@@ -935,7 +935,7 @@ When the source is a vars file, the lines hold what the file holds:
 | ID | the id, `.` when it is empty |
 | REF and ALT | the alleles, the reference first; ALT `.` for a variant with the reference alone |
 | QUAL | the shortest decimal text that reads back as the same `f32`, `29.5` and not `29.500000`; `.` for NaN |
-| FILTER | `.`, and `FAIL` for a variant whose `passed` is false (**Open 1**) |
+| FILTER | `.`, and `FAIL` for a variant whose `passed` is false |
 | INFO | `.` |
 | FORMAT | `GT` |
 | each individual | the alleles joined by `/`, `.` for a missing one, so `0/.` and `./.` |
@@ -944,9 +944,30 @@ FILTER is `.` for a variant that passed, and for every variant of a vars
 file that does not keep whether it passed, because the vars file does not
 keep the name of a filter, and `.` says that no filter was applied, which
 is the most a writer that does not know can say. A variant written with `PASS` would claim that it passed a filter
-that nobody knows was run. The alleles are joined by `/` because a block
+that nobody knows was run.
+
+A variant whose `passed` is false is written with `FAIL`, since a vars
+file of format 1.2 keeps whether each variant passed but not the name of
+the filter it failed, and the header then has a line
+`##FILTER=<ID=FAIL,Description="It failed a filter of the VCF the
+variants were read from">`. The header is written before the first block,
+so the line is written whenever the vars file has a `passed` column, which
+its reader knows when it opens it, whether or not a variant failed;
+without it bcftools 1.24 reads a `FAIL` and warns that it is not defined in
+the header. popnei with `only_passed`, the filter of the variants that
+passed and `bcftools view -f .,PASS` all take such a variant out again. A
+vars file with no `passed` column is written with `.` and no such line.
+The owner decided this on 6 October 2026; the option not taken was `.` for
+every variant, as before format 1.2, which writes a variant that failed as
+one with no filter applied, and a VCF read back with the default of
+`only_passed` keeps it with no sign. The check: `many.vcf` read with
+`only_passed` false, written to a vars file and that to a VCF, gives 25
+lines with `FAIL`, the `##FILTER` line in the header, and 475 variants from
+`bcftools view -H -f .,PASS`. The header of the existing case of a vars
+file written to a VCF gains the `##FILTER` line, since that file is
+written from a VCF and so has the column. The alleles are joined by `/` because a block
 holds no phase. The header is `##fileformat=VCFv4.3`, the `##FILTER` line
-of **Open 1** when the vars file has a `passed` column, one
+of `FAIL` when the vars file has a `passed` column, one
 `##contig=<ID=chr1,length=2000>` for each chromosome that the vars file
 keeps a length for, in the order the file keeps them (`docs/specs/io_vars.md`),
 `##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">` and the
@@ -1664,38 +1685,9 @@ decompresses to the bytes of the plain one.
 
 ## Open points
 
-The owner decides these, and the implementer follows the "meanwhile" of
-each until they do.
-
-**Open 1. The FILTER of a variant that failed, written from a vars file.**
-A vars file of format 1.2 keeps whether each variant passed its FILTER,
-but not the name of the filter it failed. Before format 1.2, when the
-writer wrote a line from the columns of a block, it wrote `.` in FILTER,
-which says that no filter was applied. The options:
-
-- Write `FAIL` for a variant whose `passed` is false, with a header line
-  `##FILTER=<ID=FAIL,Description="It failed a filter of the VCF the
-  variants were read from">`, and `.` for the others. The header is
-  written before the first block, so the line is written whenever the
-  vars file has a `passed` column, which its reader knows when it opens
-  it, whether or not a variant failed; without it bcftools 1.24 reads a
-  `FAIL` and warns that it is not defined in the header. popnei with
-  `only_passed`, the filter of the variants that passed and `bcftools view
-  -f .,PASS` all take it out again. The name of the filter it failed is
-  lost.
-- Write `.` for every variant, as today. A variant that failed is written
-  as one with no filter applied, and the VCF read back with the default of
-  `only_passed` keeps it, with no sign.
-
-The recommendation is `FAIL`. Meanwhile, the writer writes `FAIL` and the
-header line. A vars file with no `passed` column is written with `.` and
-no such line, as before. The check of the meanwhile: `many.vcf` read with
-`only_passed` false, written to a vars file and that to a VCF, gives 25
-lines with `FAIL`, the `##FILTER` line in the header, and 475 variants
-from `bcftools view -H -f .,PASS`. The header of the existing case of a
-vars file written to a VCF gains the `##FILTER` line, since that file is
-written from a VCF and so has the column.
-
+None. The owner decided on 6 October 2026 what the writer writes in
+FILTER for a variant that failed, written from a vars file, which is
+written under "What it gives" of the writer with the option not taken.
 The owner decided on 6 October 2026 the one that reading the ploidy
 from the file brought, a VCF with a header and no data line opened with no
 ploidy, which is written under "What it gives" of the reader with the

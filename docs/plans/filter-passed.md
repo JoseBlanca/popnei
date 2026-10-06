@@ -9,7 +9,7 @@ FILTER" and what it adds to "The Rust interface" of
 `docs/specs/filters.md`; the `passed` field of `Block` in
 `docs/specs/block.md`; `PASSED` and `ALL` of `Needs` in
 `docs/specs/variant.md`; the paragraph "When `PASSED` is asked for", the
-writer's FILTER and **Open 1** in `docs/specs/io_vcf.md`; and the `passed`
+writer's FILTER for a variant that failed in `docs/specs/io_vcf.md`; and the `passed`
 column and format 1.2 in `docs/specs/io_vars.md`. Two work packages: the
 column, then the filter.
 
@@ -20,13 +20,8 @@ by the vars file, written back by the VCF writer; the filter in the core,
 both binding crates and both packages; the docstrings of `open_vcf` and
 `openVcf` that say when to use `only_passed` and when the filter.
 
-**Open 1** of `docs/specs/io_vcf.md`, what the VCF writer writes in FILTER
-for a variant that failed, is not answered. Task 1.3 builds its
-"meanwhile", `FAIL` with its `##FILTER` line. When the owner chooses `.`,
-the spec is changed first, and a new task takes out of the writer the
-`FAIL` and the `##FILTER` line, with the tests of 1.3 that assert them and
-the `##FILTER` line that 1.3 added to the expected header of the vars file
-written to a VCF; 1.1 and 1.2 do not change.
+The specs have no open point: the owner decided on 6 October 2026 that
+the VCF writer writes `FAIL` for a variant that failed.
 
 Not built: the column among the fields that `iter_blocks` names
 (`docs/specs/block.md`).
@@ -103,9 +98,9 @@ Tasks:
   from "What it holds" of `docs/specs/io_vars.md`. The pytest test of
   `write_vars`. Deliverables 1, 2, 3. Needs 1.1.
 - [ ] 1.3 The VCF writer of a vars file, in
-  `crates/popnei/src/io/vcf/writer.rs`: `FAIL` and the `##FILTER` line, the
-  "meanwhile" of **Open 1**, with its check run with bcftools as the spec
-  gives it. Deliverables 1, 2. Needs 1.2, for a vars reader that says
+  `crates/popnei/src/io/vcf/writer.rs`: `FAIL` and the `##FILTER` line, as
+  the owner decided, with its check run with bcftools as the spec gives
+  it. Deliverables 1, 2. Needs 1.2, for a vars reader that says
   whether the file has the column.
 
 What could go wrong: `Needs::ALL` is the default of every reader, so every
