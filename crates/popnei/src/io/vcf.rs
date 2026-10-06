@@ -1527,15 +1527,33 @@ impl VcfReader<BufReader<File>> {
     /// When the file cannot be opened, with the path in the error, and
     /// everything [`VcfReader::new`] fails with.
     pub fn from_path(path: &Path, options: VcfOptions) -> Result<Self> {
-        let file = File::open(path).map_err(|error| Error::FileNotOpened {
-            path: path.to_path_buf(),
-            source: error,
-        })?;
-        VcfReader::new(
-            BufReader::with_capacity(BYTES_OF_THE_FILE_BUFFER, file),
-            options,
-        )
+        VcfReader::new(file_at(path)?, options)
     }
+}
+
+/// The ploidy of the VCF at `path`, gzipped or not, as [`ploidy_of_vcf`]
+/// reads it, with the file opened as [`VcfReader::from_path`] opens it.
+///
+/// # Errors
+///
+/// [`Error::FileNotOpened`], with the path, when the file cannot be opened,
+/// and everything [`ploidy_of_vcf`] fails with.
+pub fn ploidy_of_vcf_at(path: &Path) -> Result<usize> {
+    ploidy_of_vcf(file_at(path)?)
+}
+
+/// The file at `path` opened for a reader, with the buffer of
+/// [`BYTES_OF_THE_FILE_BUFFER`] bytes.
+///
+/// # Errors
+///
+/// [`Error::FileNotOpened`], with the path, when the file cannot be opened.
+fn file_at(path: &Path) -> Result<BufReader<File>> {
+    let file = File::open(path).map_err(|error| Error::FileNotOpened {
+        path: path.to_path_buf(),
+        source: error,
+    })?;
+    Ok(BufReader::with_capacity(BYTES_OF_THE_FILE_BUFFER, file))
 }
 
 /// The ploidy of the VCF in `source`, gzipped or not: the number of alleles
@@ -6455,7 +6473,9 @@ mod tests {
             the_file_of_the_review, vcf_of,
         };
         use crate::error::{Error, Result};
-        use crate::io::vcf::{MAX_PLOIDY, NUM_LINES_FOR_THE_PLOIDY, VcfReader, ploidy_of_vcf};
+        use crate::io::vcf::{
+            MAX_PLOIDY, NUM_LINES_FOR_THE_PLOIDY, VcfReader, ploidy_of_vcf, ploidy_of_vcf_at,
+        };
 
         /// The ploidy of a VCF held in memory.
         fn ploidy_of(vcf: &str) -> Result<usize> {
@@ -6692,6 +6712,20 @@ mod tests {
         #[test]
         fn the_tetraploid_file_of_the_distances_gives_4() {
             assert_eq!(ploidy_of_file(&reference_dists("tetraploid.vcf.gz")), 4);
+        }
+
+        #[test]
+        fn the_ploidy_of_the_vcf_at_a_path_is_read_and_a_path_with_no_file_is_named() {
+            assert_eq!(
+                ploidy_of_vcf_at(&reference_dists("tetraploid.vcf.gz")).unwrap(),
+                4
+            );
+            let path = reference_dists("no_such_file.vcf");
+            let error = ploidy_of_vcf_at(&path).unwrap_err();
+            let Error::FileNotOpened { path: named, .. } = error else {
+                panic!("the error is {error}");
+            };
+            assert_eq!(named, path);
         }
 
         #[test]
