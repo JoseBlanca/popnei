@@ -154,7 +154,9 @@ fn keeps_the_475_variants_of_many_vcf_that_bcftools_keeps_in_blocks_of_7_and_of_
 
 /// With the MAF filter of 0.8 after it, built by `chain_of` as a pass of a
 /// binding crate is, the MAF filter is given the 475 that passed and keeps
-/// 364, which is what `bcftools view -f .,PASS -Q 0.8:major` gives.
+/// 364, which is what `bcftools view -f .,PASS -Q 0.8:major` gives. Before
+/// it, the MAF filter keeps 384 of the 500, and the counts of the pass have
+/// this filter's first.
 #[test]
 fn with_the_maf_filter_of_0_8_after_it_the_maf_filter_is_given_475_and_keeps_364() {
     let steps = vec![
@@ -173,6 +175,28 @@ fn with_the_maf_filter_of_0_8_after_it_the_maf_filter_is_given_475_and_keeps_364
         assert_eq!(
             chain.filtering_stats(),
             vec![("maf", pair(475, 364)), ("passed", pair(500, 475))],
+            "{num_vars_per_block:?}"
+        );
+        // The other order, so that the counts of this filter come before
+        // those of its source: the MAF filter is given the 500 and keeps
+        // 384, of which 364 passed.
+        let mut chain = chain_of(
+            Box::new(many_vcf_reader(num_vars_per_block)),
+            &[
+                PassStep::VarFilter(VarFilteringCriterion::MaxMaf(0.8)),
+                PassStep::Passed,
+            ],
+        )
+        .expect("the chain");
+        let blocks = blocks_of(&mut *chain).expect("the blocks");
+        assert_eq!(
+            blocks.iter().map(|block| block.num_vars).sum::<usize>(),
+            364,
+            "{num_vars_per_block:?}"
+        );
+        assert_eq!(
+            chain.filtering_stats(),
+            vec![("passed", pair(384, 364)), ("maf", pair(500, 384))],
             "{num_vars_per_block:?}"
         );
     }
