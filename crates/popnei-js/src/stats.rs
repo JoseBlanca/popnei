@@ -33,13 +33,15 @@
 //!
 //! `docs/specs/stats.md` has the design.
 
+use js_sys::Function;
+use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
-use popnei::stats::{ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops};
+use popnei::stats::{ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops, SoFar};
 
 use crate::errors::JsPopneiError;
-use crate::source::{Consumer, OpenSource, PassCounts, the_run_of};
+use crate::source::{Consumer, OpenSource, PassCounts, TheResultSoFar, the_run_of};
 use crate::steps::{Steps, chain_of};
 
 /// The name of the argument that says below which major allele frequency a
@@ -94,12 +96,25 @@ pub(crate) struct ArgumentsOfThePass {
     pub(crate) poly_threshold: f64,
 }
 
+/// What a consumer of the three that add up over the blocks of a pass is
+/// asked to give while the pass runs, as it crossed from TypeScript: the
+/// function the package gives for `onSoFar`, nothing when the application
+/// gave none, and `soFarEvery`, the seconds between two calls of it.
+pub(crate) struct TheResultSoFarAsked {
+    pub(crate) told: Option<Function>,
+    pub(crate) every_seconds: f64,
+}
+
 /// The six per variant statistics of one pass over `source`, through the
 /// steps of `steps`.
 ///
 /// The chain of readers of the pass is built here and stays here, lent to
 /// the core, so that the counts of its filters are read when the pass is
 /// over: the loop over the blocks is the core's.
+///
+/// The function of `so_far` is given the distributions over the variants
+/// read so far, built as the final ones are, with the counts of the pass as
+/// they stand after the block.
 ///
 /// # Errors
 ///
@@ -109,12 +124,13 @@ pub(crate) struct ArgumentsOfThePass {
 /// 255; when a population names an individual the pass does not give, names
 /// one twice or names none, and when `pops` holds no population; when the
 /// major allele frequency below which a variant is polymorphic is not a
-/// number from 0 to 1; when the source cannot be read; and when the pass
-/// gives no variant.
+/// number from 0 to 1; when the source cannot be read; when the pass gives
+/// no variant; and the value the function of `so_far` threw.
 pub(crate) fn per_var_distribs_of(
     source: &dyn OpenSource,
     steps: &Steps,
     asked: &ArgumentsOfThePass,
+    so_far: TheResultSoFarAsked,
 ) -> Result<PerVarDistribs, JsPopneiError> {
     let stats = the_stats(&asked.stats)?;
     let (start, end) = asked.hist_range;
@@ -142,7 +158,7 @@ pub(crate) fn per_var_distribs_of(
             Some(named) => Pops::from_names(&named, chain.individuals())?,
             None => Pops::all(chain.individuals().len()),
         };
-        let pop_names = (0..pops.len())
+        let pop_names: Vec<String> = (0..pops.len())
             .map(|pop| pops.name(pop).to_owned())
             .collect();
         let config = PerVarDistribsConfig {
@@ -154,29 +170,71 @@ pub(crate) fn per_var_distribs_of(
             exp_het,
             poly_threshold: asked.poly_threshold,
         };
-        let distribs =
-            popnei::stats::calc_per_var_distribs(&mut *chain, &config).map_err(under_its_name)?;
+        let mut told = TheResultSoFar::from_now(so_far.told, so_far.every_seconds)?;
+        let given = popnei::stats::calc_per_var_distribs_with(
+            &mut *chain,
+            &config,
+            &mut |added_up: &dyn SoFar<popnei::stats::PerVarDistribs>| {
+                let Some(told) = told.as_mut() else {
+                    return Ok(());
+                };
+                told.after_a_block(run, || {
+                    let counts = PassCounts::of_the_filters(
+                        added_up.num_vars(),
+                        steps.steps(),
+                        &added_up.filtering_stats(),
+                    );
+                    let distribs = added_up.result().map_err(under_its_name)?;
+                    Ok(JsValue::from(distribs_of(
+                        distribs,
+                        pop_names.clone(),
+                        hist_bin_edges.clone(),
+                        counts,
+                    )?))
+                })
+            },
+        )
+        .map_err(under_its_name);
+        let distribs = TheResultSoFar::what_the_pass_gives(told, given)?;
         let counts = PassCounts::of(distribs.num_vars, steps.steps(), &*chain);
-        let popnei::stats::PerVarDistribs {
-            obs_het,
-            maf,
-            exp_het,
-            unbiased_exp_het,
-            poly_vars_ratio,
-            missing_rate,
-            num_vars: _,
-        } = distribs;
-        Ok(PerVarDistribs {
-            pop_names,
-            hist_bin_edges,
-            obs_het: distrib_of(obs_het.as_ref(), PerVarStat::ObsHet)?,
-            maf: distrib_of(maf.as_ref(), PerVarStat::Maf)?,
-            exp_het: distrib_of(exp_het.as_ref(), PerVarStat::ExpHet)?,
-            unbiased_exp_het: distrib_of(unbiased_exp_het.as_ref(), PerVarStat::UnbiasedExpHet)?,
-            poly_vars_ratio: poly_counts_of(poly_vars_ratio.as_ref())?,
-            missing_rate: distrib_of(missing_rate.as_ref(), PerVarStat::MissingRate)?,
-            counts,
-        })
+        distribs_of(distribs, pop_names, hist_bin_edges, counts)
+    })
+}
+
+/// `distribs`, the distributions the core gave over the variants of a pass
+/// or of its first blocks, on their way to JavaScript, under the names of
+/// the populations and the edges of the bins of the pass and with `counts`,
+/// the counts of the pass.
+///
+/// # Errors
+///
+/// Those of [`distrib_of`] and [`poly_counts_of`], each a histogram or a
+/// count that JavaScript is not given as it is.
+fn distribs_of(
+    distribs: popnei::stats::PerVarDistribs,
+    pop_names: Vec<String>,
+    hist_bin_edges: Vec<f64>,
+    counts: PassCounts,
+) -> Result<PerVarDistribs, JsPopneiError> {
+    let popnei::stats::PerVarDistribs {
+        obs_het,
+        maf,
+        exp_het,
+        unbiased_exp_het,
+        poly_vars_ratio,
+        missing_rate,
+        num_vars: _,
+    } = distribs;
+    Ok(PerVarDistribs {
+        pop_names,
+        hist_bin_edges,
+        obs_het: distrib_of(obs_het.as_ref(), PerVarStat::ObsHet)?,
+        maf: distrib_of(maf.as_ref(), PerVarStat::Maf)?,
+        exp_het: distrib_of(exp_het.as_ref(), PerVarStat::ExpHet)?,
+        unbiased_exp_het: distrib_of(unbiased_exp_het.as_ref(), PerVarStat::UnbiasedExpHet)?,
+        poly_vars_ratio: poly_counts_of(poly_vars_ratio.as_ref())?,
+        missing_rate: distrib_of(missing_rate.as_ref(), PerVarStat::MissingRate)?,
+        counts,
     })
 }
 
@@ -614,15 +672,20 @@ impl PerVarDistribs {
 /// the core, so that the counts of its filters are read when the pass is
 /// over: the loop over the blocks is the core's.
 ///
+/// The function of `so_far` is given the rates over the variants read so
+/// far, built as the final ones are, with the counts of the pass as they
+/// stand after the block.
+///
 /// # Errors
 ///
 /// When the source cannot be read, a wrong line of a VCF among the causes;
-/// when the pass gives no variant; and when the chain gave the names of a
+/// when the pass gives no variant; when the chain gave the names of a
 /// different number of individuals than the pass gave rates, which is a
-/// defect of popnei.
+/// defect of popnei; and the value the function of `so_far` threw.
 pub(crate) fn per_individual_stats_of(
     source: &dyn OpenSource,
     steps: &Steps,
+    so_far: TheResultSoFarAsked,
 ) -> Result<PerIndividualStats, JsPopneiError> {
     the_run_of(source, &Consumer::PerIndividualStats, |run| {
         let reader = source.reader(run, None)?;
@@ -631,36 +694,74 @@ pub(crate) fn per_individual_stats_of(
         // the order of these names: a filter of individuals gives them in the
         // order the user named them.
         let individuals = chain.individuals().to_vec();
-        let stats = popnei::stats::calc_per_individual_stats(&mut *chain)?;
+        let mut told = TheResultSoFar::from_now(so_far.told, so_far.every_seconds)?;
+        let given = popnei::stats::calc_per_individual_stats_with(
+            &mut *chain,
+            &mut |added_up: &dyn SoFar<popnei::stats::PerIndividualStats>| {
+                let Some(told) = told.as_mut() else {
+                    return Ok(());
+                };
+                told.after_a_block(run, || {
+                    let counts = PassCounts::of_the_filters(
+                        added_up.num_vars(),
+                        steps.steps(),
+                        &added_up.filtering_stats(),
+                    );
+                    let stats = added_up.result()?;
+                    Ok(JsValue::from(rates_of(
+                        &stats,
+                        individuals.clone(),
+                        counts,
+                    )?))
+                })
+            },
+        )
+        .map_err(JsPopneiError::from);
+        let stats = TheResultSoFar::what_the_pass_gives(told, given)?;
         let counts = PassCounts::of(stats.num_vars(), steps.steps(), &*chain);
-        let num_individuals = stats.num_individuals();
-        // The package reads the name of an individual and its two rates at the
-        // same place of three arrays, and a name and a rate that are not of
-        // the same individual are a wrong number that says nothing about
-        // itself.
-        if individuals.len() != num_individuals {
-            return Err(JsPopneiError::Broken(format!(
-                "the pass gave the names of {given} individuals and the rates of \
-                 {num_individuals}",
-                given = individuals.len()
-            )));
-        }
-        let missing_gt_rate = (0..num_individuals)
-            .map(|individual| stats.missing_rate(individual))
-            .collect();
-        // An individual with no called genotype has no heterozygosity rate,
-        // and NaN is what the package gives its user for a value the core does
-        // not have, as it does for the mean of a population in which no
-        // variant had one.
-        let obs_het_rate = (0..num_individuals)
-            .map(|individual| stats.obs_het_rate(individual).unwrap_or(f64::NAN))
-            .collect();
-        Ok(PerIndividualStats {
-            individuals,
-            missing_gt_rate,
-            obs_het_rate,
-            counts,
-        })
+        rates_of(&stats, individuals, counts)
+    })
+}
+
+/// `stats`, the rates the core gave over the variants of a pass or of its
+/// first blocks, on their way to JavaScript, under `individuals`, the names
+/// the chain of the pass gave, and with `counts`, the counts of the pass.
+///
+/// # Errors
+///
+/// When the chain gave the names of a different number of individuals than
+/// the pass gave rates, which is a defect of popnei.
+fn rates_of(
+    stats: &popnei::stats::PerIndividualStats,
+    individuals: Vec<String>,
+    counts: PassCounts,
+) -> Result<PerIndividualStats, JsPopneiError> {
+    let num_individuals = stats.num_individuals();
+    // The package reads the name of an individual and its two rates at the
+    // same place of three arrays, and a name and a rate that are not of the
+    // same individual are a wrong number that says nothing about itself.
+    if individuals.len() != num_individuals {
+        return Err(JsPopneiError::Broken(format!(
+            "the pass gave the names of {given} individuals and the rates of \
+             {num_individuals}",
+            given = individuals.len()
+        )));
+    }
+    let missing_gt_rate = (0..num_individuals)
+        .map(|individual| stats.missing_rate(individual))
+        .collect();
+    // An individual with no called genotype has no heterozygosity rate, and
+    // NaN is what the package gives its user for a value the core does not
+    // have, as it does for the mean of a population in which no variant had
+    // one.
+    let obs_het_rate = (0..num_individuals)
+        .map(|individual| stats.obs_het_rate(individual).unwrap_or(f64::NAN))
+        .collect();
+    Ok(PerIndividualStats {
+        individuals,
+        missing_gt_rate,
+        obs_het_rate,
+        counts,
     })
 }
 

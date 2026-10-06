@@ -39,8 +39,8 @@ use crate::source::{
     the_bytes_of_a_new_source, the_file_of_a_new_source, the_source_was_freed,
 };
 use crate::stats::{
-    ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, per_individual_stats_of,
-    per_var_distribs_of,
+    ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, TheResultSoFarAsked,
+    per_individual_stats_of, per_var_distribs_of,
 };
 use crate::steps::Steps;
 
@@ -158,7 +158,10 @@ impl VarsSource {
     /// counted in; `ploidy` is the exponent of the two expected
     /// heterozygosities, and nothing for the ploidy of the variants; and
     /// `poly_threshold` is the major allele frequency below which a variant
-    /// is polymorphic in a population.
+    /// is polymorphic in a population. `on_so_far` is the function that is
+    /// given the distributions over the variants read so far while the pass
+    /// runs, every `so_far_every` seconds, and nothing when the application
+    /// gave none.
     ///
     /// # Errors
     ///
@@ -167,7 +170,7 @@ impl VarsSource {
     /// above 255, a population that names an individual the pass does not
     /// give, names one twice or names none, `pops` with no population, a
     /// polymorphism threshold that is no frequency, a source that cannot be
-    /// read, and a pass that gives no variant.
+    /// read, a pass that gives no variant, and the value `on_so_far` threw.
     #[expect(
         clippy::too_many_arguments,
         reason = "the arguments of `calcPerVarDistribs` of `docs/specs/stats.md`, each \
@@ -188,6 +191,8 @@ impl VarsSource {
         bin_type: String,
         ploidy: Option<usize>,
         poly_threshold: f64,
+        on_so_far: Option<Function>,
+        so_far_every: f64,
     ) -> Result<PerVarDistribs, JsPopneiError> {
         per_var_distribs_of(
             self,
@@ -204,40 +209,60 @@ impl VarsSource {
                 ploidy,
                 poly_threshold,
             },
+            TheResultSoFarAsked {
+                told: on_so_far,
+                every_seconds: so_far_every,
+            },
         )
     }
 
     /// The missing rate and the heterozygosity rate of every individual of
-    /// one pass over the file, through the steps of `steps`.
+    /// one pass over the file, through the steps of `steps`, with
+    /// `on_so_far` given the rates over the variants read so far while the
+    /// pass runs, every `so_far_every` seconds, when it is not nothing.
     ///
     /// # Errors
     ///
     /// Those of [`per_individual_stats_of`]: a source that cannot be read,
-    /// and a pass that gives no variant.
+    /// a pass that gives no variant, and the value `on_so_far` threw.
     pub fn calc_per_individual_stats(
         &self,
         steps: Steps,
+        on_so_far: Option<Function>,
+        so_far_every: f64,
     ) -> Result<PerIndividualStats, JsPopneiError> {
-        per_individual_stats_of(self, &steps)
+        per_individual_stats_of(
+            self,
+            &steps,
+            TheResultSoFarAsked {
+                told: on_so_far,
+                every_seconds: so_far_every,
+            },
+        )
     }
 
     /// The number of variants in each window of `window_size` base pairs
     /// along each chromosome of one pass over the file, through the steps of
     /// `steps`, with the lengths of `chrom_lengths` for the chromosomes of
     /// `chrom_names` when it is not nothing, and those of the source
-    /// otherwise.
+    /// otherwise. `on_so_far` is given the density over the variants read so
+    /// far while the pass runs, every `so_far_every` seconds, when it is not
+    /// nothing.
     ///
     /// # Errors
     ///
     /// Those of [`var_density_of`]: what the core refuses, a variant past
     /// the length of its chromosome among it, a window that ends past 2^53,
-    /// a source that cannot be read, and a pass that gives no variant.
+    /// a source that cannot be read, a pass that gives no variant, and the
+    /// value `on_so_far` threw.
     pub fn calc_var_density(
         &self,
         steps: Steps,
         window_size: f64,
         chrom_names: Option<Vec<String>>,
         chrom_lengths: Vec<f64>,
+        on_so_far: Option<Function>,
+        so_far_every: f64,
     ) -> Result<VarDensityOfAPass, JsPopneiError> {
         var_density_of(
             self,
@@ -246,6 +271,10 @@ impl VarsSource {
                 window_size,
                 chrom_names,
                 chrom_lengths,
+            },
+            TheResultSoFarAsked {
+                told: on_so_far,
+                every_seconds: so_far_every,
             },
         )
     }

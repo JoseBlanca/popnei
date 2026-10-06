@@ -22,8 +22,19 @@
  *
  * `calcVarDensity` takes no `pops` either: it counts the variants in windows
  * along each chromosome, and reads no genotype.
+ *
+ * The three build their results at the end of the pass from totals they add
+ * up block by block, so each of them can give, while the pass runs, the
+ * result over the variants read so far, to a function of the application,
+ * `onSoFar`, which a page draws the histograms from as they fill. Python has
+ * no such option: it has no page to draw on.
  */
 
+import type {
+  PerIndividualStats as PerIndividualStatsOfTheCore,
+  PerVarDistribs as PerVarDistribsOfTheCore,
+  VarDensityOfAPass,
+} from "../wasm/popnei.js";
 import {
   default_bin_type as defaultBinType,
   default_hist_range as defaultHistRange,
@@ -95,8 +106,51 @@ export interface HistKwargs {
   binType?: BinType;
 }
 
+/**
+ * The two options of the result so far, which `calcPerVarDistribs`,
+ * `calcPerIndividualStats` and `calcVarDensity` take, `T` being the result
+ * the calculation returns.
+ */
+export interface SoFarOptions<T> {
+  /**
+   * A function that is given, while the pass runs, the result over the
+   * variants read so far, of the type the calculation returns, with its
+   * `passStats` as they stand: `passStats.numVars` is how many variants it
+   * covers. It is called after a block of the pass, the last one too, when
+   * `soFarEvery` seconds have gone by since the pass started or since the
+   * last call, so the last call, when there is one, is given what the
+   * calculation then returns.
+   *
+   * The result so far is the one the calculation would return over those
+   * variants alone. The bins of the histograms are those of the last result
+   * from the first call; the density with no length for a chromosome has
+   * its windows up to the last variant read so far. Each call builds the
+   * result as the final one is built, a few hundred numbers for the
+   * histograms, two for each individual and four for each window of the
+   * density, so a density of millions of windows asks for a longer
+   * `soFarEvery`.
+   *
+   * A value it throws ends the pass and is what the calculation throws, as
+   * a value thrown by the function of `Variants.onProgress` is, and that
+   * function is told nothing more of the pass. From inside it, the `free()`
+   * of the variants being read is refused as it is from inside the function
+   * of `onProgress`.
+   */
+  onSoFar?: (soFar: T) => void;
+
+  /**
+   * How many seconds go by between two calls of `onSoFar`, a finite number
+   * of 0 or more, 2 when it is not given; 0 calls it after every block. It is
+   * an `Error` without `onSoFar`, since alone it does nothing.
+   */
+  soFarEvery?: number;
+}
+
+/** How many seconds go by between two calls of `onSoFar` when not given. */
+const DEFAULT_SO_FAR_EVERY = 2;
+
 /** What `calcPerVarDistribs` calculates, for which populations and how. */
-export interface PerVarDistribsOptions {
+export interface PerVarDistribsOptions extends SoFarOptions<PerVarDistribs> {
   /**
    * Which of the six statistics to calculate, all of them when it is not
    * given. Asking for fewer is a saving of work and changes no value, and a
@@ -276,6 +330,9 @@ export interface PerVarDistribs {
  * `numpy.histogram` does; a value outside the range of the bins is in no bin
  * and in the mean.
  *
+ * `onSoFar` is given the distributions over the variants read so far while
+ * the pass runs, every `soFarEvery` seconds, as `SoFarOptions` says.
+ *
  * It is pyNei's `calc_per_var_distribs` under the names of this package,
  * with these differences: `expHet` of the result is the plain expected
  * heterozygosity and `unbiasedExpHet` the unbiased one, where pyNei's
@@ -289,7 +346,8 @@ export interface PerVarDistribs {
  * diploid one at every ploidy; `ploidy` is the exponent alone, where pyNei
  * also counts with it the alleles the individuals are expected to hold; a
  * duplicated name in a population, an empty population and an empty `pops`
- * are refused; the result has `passStats`; and pyNei has no missing rate.
+ * are refused; the result has `passStats`; pyNei has no missing rate; and
+ * pyNei has no `onSoFar` nor `soFarEvery`.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed; when
  * `stats` is not an array of names, when a name of it is of no statistic and
@@ -301,16 +359,19 @@ export interface PerVarDistribs {
  * none of the three, a range that does not run from a number up to a larger
  * one, no bin, a kind of bins that is neither of the two, or a logarithmic
  * range that starts at 0 or below; when `polyThreshold` is not a number from
- * 0 to 1; when the source cannot be read, a wrong line of a VCF among the
- * causes; when the pass gives no variant, whether the source holds none or
- * the steps kept none; and when `init` has not been awaited.
+ * 0 to 1; when `onSoFar` is not a function, when `soFarEvery` is not a
+ * finite number of 0 or more and when it is given without `onSoFar`; when
+ * the source cannot be read, a wrong line of a VCF among the causes; when the
+ * pass gives no variant, whether the source holds none or the steps kept
+ * none; and when `init` has not been awaited. It throws what `onSoFar`
+ * threw.
  */
 export function calcPerVarDistribs(
   variants: Variants,
   options: PerVarDistribsOptions = {},
 ): PerVarDistribs {
   theWasmHasToBeLoaded();
-  anObjectOfOptions("calcPerVarDistribs", options, ["stats", "pops", "minNumIndividuals", "histKwargs", "ploidy", "polyThreshold"]);
+  anObjectOfOptions("calcPerVarDistribs", options, ["stats", "pops", "minNumIndividuals", "histKwargs", "ploidy", "polyThreshold", "onSoFar", "soFarEvery"]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,
@@ -330,6 +391,7 @@ export function calcPerVarDistribs(
     options.polyThreshold === undefined
       ? defaultPolyThreshold()
       : aNumber("polyThreshold", options.polyThreshold);
+  const soFar = theResultSoFar(options, distribsOf);
   // The steps of the pass are a copy of the list, made after every argument
   // was checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
@@ -347,8 +409,18 @@ export function calcPerVarDistribs(
       histogram.binType,
       ploidy,
       polyThreshold,
+      soFar.told,
+      soFar.every,
     ),
   );
+  return distribsOf(distribs);
+}
+
+/**
+ * The distributions of a pass, or of its first blocks, out of what the
+ * binding crate gives, which is freed here.
+ */
+function distribsOf(distribs: PerVarDistribsOfTheCore): PerVarDistribs {
   // Every array is copied out of the memory of wasm as it is read, and the
   // result holds that memory until it is freed, which is here: what the
   // user gets are the copies.
@@ -398,6 +470,53 @@ export function calcPerVarDistribs(
   } finally {
     distribs.free();
   }
+}
+
+/**
+ * The function the binding crate calls with the result so far, which builds
+ * the result of this package out of what crosses with `built` and gives it
+ * to `onSoFar`, and the seconds between two calls; no function when the
+ * application gave no `onSoFar`.
+ *
+ * @throws {Error} When `onSoFar` is not a function, when `soFarEvery` is not
+ * a finite number of 0 or more, and when `soFarEvery` is given without
+ * `onSoFar`, which would be a value that does nothing.
+ */
+export function theResultSoFar<OfTheCore, T>(
+  options: SoFarOptions<T>,
+  built: (ofTheCore: OfTheCore) => T,
+): { told: ((ofTheCore: OfTheCore) => void) | undefined; every: number } {
+  const { onSoFar, soFarEvery } = options;
+  if (onSoFar === undefined) {
+    if (soFarEvery !== undefined) {
+      throw new Error(
+        "popnei: `soFarEvery` was given with no `onSoFar`, and it is how often " +
+          "`onSoFar` is called, so alone it does nothing",
+      );
+    }
+    return { told: undefined, every: DEFAULT_SO_FAR_EVERY };
+  }
+  if (typeof onSoFar !== "function") {
+    throw new Error(
+      "popnei: `onSoFar` is a function that is given the result so far, and " +
+        `${whatWasGiven(onSoFar)} was given`,
+    );
+  }
+  let every = DEFAULT_SO_FAR_EVERY;
+  if (soFarEvery !== undefined) {
+    if (
+      typeof soFarEvery !== "number" ||
+      !Number.isFinite(soFarEvery) ||
+      soFarEvery < 0
+    ) {
+      throw new Error(
+        "popnei: `soFarEvery` is a number of seconds, finite and 0 or more, " +
+          `and ${whatWasGiven(soFarEvery)} was given`,
+      );
+    }
+    every = soFarEvery;
+  }
+  return { told: (ofTheCore) => onSoFar(built(ofTheCore)), every };
 }
 
 /**
@@ -605,6 +724,9 @@ export interface PerIndividualStats {
   passStats: PassStats;
 }
 
+/** The options of `calcPerIndividualStats`, the two of the result so far. */
+export type PerIndividualStatsOptions = SoFarOptions<PerIndividualStats>;
+
 /**
  * The missing rate and the heterozygosity rate of every individual of
  * `variants`, in one pass over them.
@@ -623,33 +745,58 @@ export interface PerIndividualStats {
  * is as it was afterwards. The individuals are the ones that pass gives,
  * which a `filterIndividuals` kept, in the order the user named them there.
  *
+ * `onSoFar` is given the rates over the variants read so far while the pass
+ * runs, every `soFarEvery` seconds, as `SoFarOptions` says.
+ *
  * It is pyNei's `calc_per_sample_stats` under the names of this package,
  * with these differences: the heterozygosity rate divides by the called
  * genotypes of the individual, where pyNei divides by every variant, so an
  * individual with more missing data looks less heterozygous there, and
  * popnei's number is what plink2's `--het` gives, with the missing rate
  * beside it saying what pyNei's one number said; pyNei's sample is popnei's
- * individual; there is no `num_threads`, since wasm has one thread; and the
- * result has `passStats`.
+ * individual; there is no `num_threads`, since wasm has one thread; the
+ * result has `passStats`; and pyNei has no `onSoFar` nor `soFarEvery`.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed; when the
- * source cannot be read, a wrong line of a VCF among the causes; when the
- * pass gives no variant, whether the source holds none or the steps kept
- * none; and when `init` has not been awaited.
+ * options are not an object or hold a key that is not one of the two; when
+ * `onSoFar` is not a function, when `soFarEvery` is not a finite number of 0
+ * or more and when it is given without `onSoFar`; when the source cannot be
+ * read, a wrong line of a VCF among the causes; when the pass gives no
+ * variant, whether the source holds none or the steps kept none; and when
+ * `init` has not been awaited. It throws what `onSoFar` threw.
  */
 export function calcPerIndividualStats(
   variants: Variants,
+  options: PerIndividualStatsOptions = {},
 ): PerIndividualStats {
   theWasmHasToBeLoaded();
+  anObjectOfOptions("calcPerIndividualStats", options, [
+    "onSoFar",
+    "soFarEvery",
+  ]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,
   );
-  // The steps of the pass are a copy of the list: the call takes it over and
-  // frees it.
+  const soFar = theResultSoFar(options, ratesOf);
+  // The steps of the pass are a copy of the list, made after every argument
+  // was checked so that nothing refused here leaves one behind: the call
+  // takes it over and frees it.
   const stats = whileTheRunReads(() =>
-    source.calc_per_individual_stats(steps.of_a_pass()),
+    source.calc_per_individual_stats(
+      steps.of_a_pass(),
+      soFar.told,
+      soFar.every,
+    ),
   );
+  return ratesOf(stats);
+}
+
+/**
+ * The rates of a pass, or of its first blocks, out of what the binding crate
+ * gives, which is freed here.
+ */
+function ratesOf(stats: PerIndividualStatsOfTheCore): PerIndividualStats {
   // Every array is copied out of the memory of wasm as it is read, and the
   // result holds that memory until it is freed, which is here: what the user
   // gets are the copies.
@@ -666,7 +813,7 @@ export function calcPerIndividualStats(
 }
 
 /** The options of `calcVarDensity`. */
-export interface VarDensityOptions {
+export interface VarDensityOptions extends SoFarOptions<VarDensity> {
   /**
    * The length of each chromosome, an object of chromosome name to length,
    * which replaces the lengths of the source for every chromosome: one it
@@ -728,6 +875,12 @@ export interface VarDensity {
  * the variants; the result is the columns of the frame of Python, one array
  * each.
  *
+ * `onSoFar` is given the density over the variants read so far while the
+ * pass runs, every `soFarEvery` seconds, as `SoFarOptions` says: a
+ * chromosome with a length has all its windows from the first call, and one
+ * with none has them up to its last variant read so far. Python has neither
+ * option.
+ *
  * @throws {Error} When `windowSize` or a length of `chromLengths` is not a
  * whole number from 1 to 2^53 - 1; when `chromLengths` is not a plain
  * object, a `Map` among the rest; when a variant is past the length of its
@@ -735,8 +888,11 @@ export interface VarDensity {
  * source, or at the position 0; when the density would have more than 10
  * million windows; when a window ends past 2^53, which a number of
  * JavaScript would round; when the arrays of the windows do not fit in the
- * memory the page has left; when the source cannot be read; when the pass
- * gives no variant; and when `init` has not been awaited.
+ * memory the page has left; when `onSoFar` is not a function, when
+ * `soFarEvery` is not a finite number of 0 or more and when it is given
+ * without `onSoFar`; when the source cannot be read; when the pass gives no
+ * variant; and when `init` has not been awaited. It throws what `onSoFar`
+ * threw.
  */
 export function calcVarDensity(
   variants: Variants,
@@ -744,13 +900,18 @@ export function calcVarDensity(
   options: VarDensityOptions = {},
 ): VarDensity {
   theWasmHasToBeLoaded();
-  anObjectOfOptions("calcVarDensity", options, ["chromLengths"]);
+  anObjectOfOptions("calcVarDensity", options, [
+    "chromLengths",
+    "onSoFar",
+    "soFarEvery",
+  ]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,
   );
   const width = distanceInBasePairs("windowSize", windowSize, 1);
   const lengths = theChromLengths(options.chromLengths);
+  const soFar = theResultSoFar(options, windowsOf);
   // The steps of the pass are a copy of the list, made after every argument
   // was checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
@@ -760,8 +921,18 @@ export function calcVarDensity(
       width,
       lengths?.names,
       lengths?.lengths ?? new Float64Array(0),
+      soFar.told,
+      soFar.every,
     ),
   );
+  return windowsOf(density);
+}
+
+/**
+ * The windows of a pass, or of its first blocks, out of what the binding
+ * crate gives, which is freed here.
+ */
+function windowsOf(density: VarDensityOfAPass): VarDensity {
   // Every array is copied out of the memory of wasm as it is read, and the
   // result holds that memory until it is freed, which is here: what the user
   // gets are the copies.
