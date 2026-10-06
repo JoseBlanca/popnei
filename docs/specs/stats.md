@@ -1723,7 +1723,8 @@ of the reader.
 The result so far and the three in one pass, which the TypeScript package
 gives and `docs/specs/js_sources.md` specifies, "The result so far" and
 "The three statistics of a file in one pass". They were added on 7 October
-2026, from issue 10, and there is no code of them. Each of the three
+2026, from issue 10, and built that day in work package 1 of
+`docs/plans/stats-so-far.md`. Each of the three
 calculations above is split into what it adds up from a block and what it
 gives from what it added up, which is the step each of them already takes
 at the end of its pass, so that the result can be given before the end and
@@ -1761,8 +1762,17 @@ pub fn calc_var_density_with<R: BlockReader + ?Sized>(
 pub struct VariantsSummaryConfig {
     pub per_var: Option<PerVarDistribsConfig>,
     pub per_individual: bool,
-    pub density: Option<(u64, Option<Vec<(String, u64)>>)>,
+    pub density: Option<VarDensityConfig>,
 }
+/// The two arguments of `calc_var_density` beside its reader.
+pub struct VarDensityConfig {
+    pub window_size: u64,
+    pub chrom_lengths: Option<Vec<(String, u64)>>,
+}
+/// The function that does nothing after a block, which the three
+/// functions above give their `_with` and a caller of the summary that
+/// wants no result so far gives it.
+pub fn nothing_after_a_block<T>(so_far: &dyn SoFar<T>) -> Result<()>;
 /// Each one that was asked for, the same to the bit as its own function
 /// gives over the same reader.
 pub struct VariantsSummary {
@@ -1777,8 +1787,11 @@ pub fn calc_variants_summary<R: BlockReader + ?Sized>(
 ) -> Result<VariantsSummary>;
 ```
 
-The counts of `filtering_stats` are those of the chain after the block
-the pass has just added: natively the reader one block ahead answers with
+A block of no variants from the source is the error of a defect of its
+reader for the three, the density among them, as it already is for the
+other two through the genotypes they check. The counts of
+`filtering_stats` are those of the chain after the block the pass has
+just added: natively the reader one block ahead answers with
 the counts as they were when it gave that block, and in wasm there is no
 such thread. The error this adds is a summary asked for none of the three,
 which only the wasm crate can reach.
