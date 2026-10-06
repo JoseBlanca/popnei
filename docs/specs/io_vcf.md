@@ -145,9 +145,12 @@ REF and ALT do not declare and a column of individuals too few. A
 genotype the search counted wrongly would give a wrong ploidy that no error
 follows in a pass that reads the positions alone, the failure this change
 is there to end, so the search counts only what the reader would read as a
-genotype. A genotype it can read of more than `MAX_PLOIDY` alleles gives
-the error of a ploidy out of range, whose words become "the ploidy of the
-VCF is {ploidy}, and a genotype holds one allele at least and {largest} at
+genotype, and it does so with the reader's own code: the cut of a line
+into its columns, the place of `GT` and the reading of a genotype into its
+alleles are one function each, which the reader and the search both call.
+A genotype it can read of more than `MAX_PLOIDY` alleles gives the error
+of a ploidy out of range, whose words become "the ploidy {ploidy} is not
+one popnei reads: a genotype holds one allele at least and {largest} at
 most", which hold for a ploidy that was read and for one that was given.
 
 The search stops at the first genotype with alleles, so in nearly every
@@ -156,11 +159,11 @@ again for the reader that reads the individuals, and once more for each
 pass, as it is today. It looks at 4096 data lines at most,
 `NUM_LINES_FOR_THE_PLOIDY`, a line it skipped among them, and when none
 of them holds a genotype with alleles the opening fails with a
-`ValueError` that says to give the ploidy: "none of the first {n} data
-lines of the VCF holds a genotype with alleles, so its ploidy cannot be
-read from the file; give the ploidy", with n 4096. A file whose data lines
-end before 4096 and hold none gives the same words, with n the number of
-lines it had. It is refused and not opened with the ploidy 2 because that
+`ValueError` that says to give the ploidy: "the first 4096 data lines of
+the VCF hold no genotype with alleles, so its ploidy cannot be read from
+the file; give the ploidy". A file whose data lines end before 4096 and
+hold none gives the same words with the number of lines it had, and "the
+one data line of the VCF holds" when it had one. It is refused and not opened with the ploidy 2 because that
 2 would reach a result: a filter by missing data and the counts of a
 statistic count the missing alleles of a missing genotype, one for each
 allele of the ploidy.
@@ -828,7 +831,7 @@ returns:
 | `. . .`, and then a line `0\|1 . .` | 2 |
 | `./. . .` | 2 |
 | `/0/1/1 . .` | 3 |
-| `/. 1 .` | 1 |
+| `/. 0/1 .` | 2 |
 | an empty line, and then `0/1 0/0 1/1` | 2 |
 | `0/0/0/0` and the others, under the FILTER `q10` | 4 |
 | `3:0/1/1` and the others, under the FORMAT `DP:GT` | 3 |
@@ -840,6 +843,7 @@ returns:
 | a line of eight columns, and then `0/1 0/0 1/1` | 2 |
 | 3 lines of `. . .` and no more | the error, with 3 |
 | a genotype of 256 alleles first | the error of a ploidy out of range, with 256 |
+| a genotype of 255 alleles first | 255 |
 | bytes that are not a VCF | the error of a source that is not a VCF |
 
 And these, on the files of the repository: `cases.vcf.gz` gives 2,
@@ -1245,8 +1249,10 @@ impl Default for VcfOptions { /* 2, true, None */ }
 The ploidy read from the file. The core keeps a ploidy in `VcfOptions`,
 always a number, and `DEFAULT_PLOIDY` for its tests and its benchmarks;
 it is the two binding crates that leave the ploidy out when the caller
-did. When they get none, each calls `ploidy_of_vcf` on a source of its
-own, opened as a pass is, from the first byte, and builds the reader of
+did. When they get none, each reads the ploidy from a source of its
+own, opened as a pass is, from the first byte: the Python crate with
+`ploidy_of_vcf_at` and the path, the wasm crate with `ploidy_of_vcf` and
+an opening pass of its file. Each then builds the reader of
 the opening and the readers of every pass with the ploidy it returns, as
 if the caller had given it. So `VcfReader::new` does not change, and a
 file is read once more, up to its first genotype with alleles, when it is
@@ -1263,6 +1269,11 @@ pub const NUM_LINES_FOR_THE_PLOIDY: usize = 4096;
 /// alleles of the first genotype of its data lines that is not a single
 /// dot, as "What it gives" says.
 pub fn ploidy_of_vcf<R: BufRead + Send>(source: R) -> Result<usize>;
+
+/// The same, of the VCF at `path`, opened as `VcfReader::from_path` opens
+/// it, with its buffer and with the error of a file that could not be
+/// opened, which carries the path.
+pub fn ploidy_of_vcf_at(path: &Path) -> Result<usize>;
 ```
 
 Where in a data line something is wrong, which the error of a data line
