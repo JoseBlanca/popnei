@@ -425,7 +425,7 @@ test("the ploidy from the file: 4096 lines of missing genotypes are refused at t
   assert.throws(() => openVcf(vcfOf(lines)), {
     name: "Error",
     message:
-      /none of the first 4096 data lines of the VCF holds a genotype with alleles, so its ploidy cannot be read from the file; give the ploidy/,
+      /the first 4096 data lines of the VCF hold no genotype with alleles, so its ploidy cannot be read from the file; give the ploidy/,
   });
 });
 

@@ -6738,21 +6738,27 @@ mod tests {
             let error = error_of_the_search(&after_lines_of_dots(4096, &[]));
             assert_eq!(
                 error.to_string(),
-                "none of the first 4096 data lines of the VCF holds a genotype with alleles, \
-                 so its ploidy cannot be read from the file; give the ploidy"
+                "the first 4096 data lines of the VCF hold no genotype with alleles, so its \
+                 ploidy cannot be read from the file; give the ploidy"
             );
             let error = error_of_the_search(&after_lines_of_dots(3, &[]));
             assert_eq!(
                 error.to_string(),
-                "none of the first 3 data lines of the VCF holds a genotype with alleles, \
-                 so its ploidy cannot be read from the file; give the ploidy"
+                "the first 3 data lines of the VCF hold no genotype with alleles, so its \
+                 ploidy cannot be read from the file; give the ploidy"
+            );
+            let error = error_of_the_search(&after_lines_of_dots(1, &[]));
+            assert_eq!(
+                error.to_string(),
+                "the one data line of the VCF holds no genotype with alleles, so its ploidy \
+                 cannot be read from the file; give the ploidy"
             );
         }
 
         #[test]
         fn the_error_of_a_ploidy_out_of_range_has_the_same_words_read_and_given() {
-            let words = "the ploidy of the VCF is 256, and a genotype holds one allele at least \
-                         and 255 at most";
+            let words = "the ploidy 256 is not one popnei reads: a genotype holds one allele at \
+                         least and 255 at most";
             let genotype = vec!["1"; 256].join("/");
             let read = error_of_the_search(&vcf_of(&[&line_of(&format!(". {genotype} ."))]));
             assert_eq!(read.to_string(), words);

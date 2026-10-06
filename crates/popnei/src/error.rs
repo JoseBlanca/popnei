@@ -2543,7 +2543,7 @@ pub enum Error {
     /// number of alleles of the genotype `ploidy_of_vcf` read the ploidy
     /// from.
     #[error(
-        "the ploidy of the VCF is {ploidy}, and a genotype holds one allele at least and {largest} at most"
+        "the ploidy {ploidy} is not one popnei reads: a genotype holds one allele at least and {largest} at most"
     )]
     VcfPloidyOutOfRange {
         /// The ploidy that was asked for or read.
@@ -3359,7 +3359,8 @@ pub enum Error {
     /// the missing alleles of a missing genotype, one for each allele of
     /// the ploidy, and so the caller gives it.
     #[error(
-        "none of the first {num_lines} data lines of the VCF holds a genotype with alleles, so its ploidy cannot be read from the file; give the ploidy"
+        "{lines} no genotype with alleles, so its ploidy cannot be read from the file; give the ploidy",
+        lines = the_data_lines_looked_at(*num_lines)
     )]
     VcfPloidyNotRead {
         /// How many data lines were looked at.
@@ -3937,6 +3938,17 @@ fn the_remedies_of_a_fit_that_did_not_settle(model: crate::gwas::GwasModel) -> &
         crate::gwas::GwasModel::Glmm => {
             "Three things do that and they have different remedies: a covariate that separates the individuals that have the condition from the ones that have not has no finite effect for a fit to reach, and the fit walks towards an infinite one, so take that covariate out; or two covariates carry so nearly the same thing that the system of a round can no longer be factored, although they are independent enough for the study to have been accepted, so take one of the two out; or the kinship asks for a random effect that the trait cannot fit, which a kinship that relates every pair alike does, its effect being one number for every individual that the intercept already holds, and then it is the kinship to look at and not a covariate"
         }
+    }
+}
+
+/// The data lines `ploidy_of_vcf` looked at, as the subject of the sentence
+/// that says they hold no genotype with alleles: "the first 4096 data lines
+/// of the VCF hold", and "the one data line of the VCF holds" for one.
+fn the_data_lines_looked_at(num_lines: usize) -> String {
+    if num_lines == 1 {
+        "the one data line of the VCF holds".to_string()
+    } else {
+        format!("the first {num_lines} data lines of the VCF hold")
     }
 }
 

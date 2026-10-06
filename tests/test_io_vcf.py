@@ -377,7 +377,7 @@ def test_the_ploidy_from_the_file_is_not_read_past_4096_lines_of_single_dots(
         open_vcf(path)
     message = str(refusal.value)
     assert message.startswith(f"{path}: ")
-    assert "none of the first 4096 data lines" in message
+    assert "the first 4096 data lines of the VCF hold no genotype" in message
     assert "give the ploidy" in message
 
 
@@ -406,13 +406,13 @@ def test_the_ploidy_from_the_file_of_256_alleles_names_the_file(
     with pytest.raises(ValueError) as refusal:
         open_vcf(path)
     assert str(refusal.value) == (
-        f"{path}: the ploidy of the VCF is 256, and a genotype holds one allele "
-        "at least and 255 at most"
+        f"{path}: the ploidy 256 is not one popnei reads: a genotype holds one "
+        "allele at least and 255 at most"
     )
     with pytest.raises(ValueError) as refusal:
         open_vcf(path, ploidy=256)
     assert str(refusal.value) == (
-        "the ploidy of the VCF is 256, and a genotype holds one allele "
+        "the ploidy 256 is not one popnei reads: a genotype holds one allele "
         "at least and 255 at most"
     )
 
