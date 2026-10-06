@@ -1728,7 +1728,8 @@ calculations above is split into what it adds up from a block and what it
 gives from what it added up, which is the step each of them already takes
 at the end of its pass, so that the result can be given before the end and
 the three can share one pass. The three functions above become these with
-a function that does nothing, and give what they gave.
+a function that does nothing, stay public under their names, and give
+what they gave.
 
 ```rust
 /// What a pass has added up after a block: how many variants it has read,
@@ -1740,8 +1741,8 @@ pub trait SoFar<T> {
     fn result(&self) -> Result<T>;
 }
 
-/// The function a pass calls after each block but the last. An error it
-/// returns ends the pass and is what the calculation returns.
+/// The function a pass calls after each block, the last one too. An error
+/// it returns ends the pass and is what the calculation returns.
 pub type AfterABlock<'a, T> = &'a mut dyn FnMut(&dyn SoFar<T>) -> Result<()>;
 
 pub fn calc_per_var_distribs_with<R: BlockReader + ?Sized>(
@@ -1776,13 +1777,11 @@ pub fn calc_variants_summary<R: BlockReader + ?Sized>(
 ) -> Result<VariantsSummary>;
 ```
 
-Natively a pass reads one block ahead on a thread of its own, and the
-counts of its filters are those of the chain that thread holds; what
-`filtering_stats` of `SoFar` gives there may be of a block more than the
-pass has added up. Only the wasm crate calls these with a function that
-does something, and in wasm there is no such thread. The error this adds
-is a summary asked for none of the three, a `ValueError` were Python to
-reach it, which it does not.
+The counts of `filtering_stats` are those of the chain after the block
+the pass has just added: natively the reader one block ahead answers with
+the counts as they were when it gave that block, and in wasm there is no
+such thread. The error this adds is a summary asked for none of the three,
+which only the wasm crate can reach.
 
 ## Speed
 
