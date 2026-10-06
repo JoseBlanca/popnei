@@ -314,6 +314,24 @@ for (const calculation of THE_CALCULATIONS) {
 }
 
 for (const calculation of THE_CALCULATIONS) {
+  test(`${calculation.name} with no soFarEvery, which is 2 seconds, never calls onSoFar over a file of milliseconds`, () => {
+    const variants = openVars(IN_FIVE_BLOCKS);
+    try {
+      let calls = 0;
+      const result = calculation.run(variants, {
+        onSoFar: () => {
+          calls += 1;
+        },
+      });
+      assert.equal(calls, 0);
+      assert.equal(result.passStats.numVars, VARIANTS_OF_MANY_VCF);
+    } finally {
+      variants.free();
+    }
+  });
+}
+
+for (const calculation of THE_CALCULATIONS) {
   test(`${calculation.name} throws the value onSoFar threw at its second call, and the next call runs whole`, () => {
     const variants = openVars(IN_FIVE_BLOCKS);
     try {
