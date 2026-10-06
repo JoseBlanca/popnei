@@ -47,7 +47,7 @@ REFERENCE_VCF_DIR = Path(__file__).parent / "reference" / "vcf"
 # the schema a reader of another version looks at first.
 POPNEI_KEY = b"popnei"
 POPNEI_BATCHES_KEY = b"popnei_batches"
-FORMAT_VERSION = "1.1"
+FORMAT_VERSION = "1.2"
 
 # An allele that was not called, which bcftools prints as a dot.
 MISSING_ALLELE = -1
@@ -87,7 +87,13 @@ def _columns_of(alleles_per_var: int) -> list[tuple[str, pyarrow.DataType, bool]
         ("alleles", pyarrow.list_(allele), False),
         ("qual", pyarrow.float32(), True),
         ("gts", pyarrow.list_(genotype, alleles_per_var), False),
+        ("passed", pyarrow.bool_(), False),
     ]
+
+
+def _gts_column(alleles_per_var: int) -> tuple[str, pyarrow.DataType, bool]:
+    """The one column every vars file has, the genotypes."""
+    return next(column for column in _columns_of(alleles_per_var) if column[0] == "gts")
 
 
 # The regions of the five batches of `many.vcf` written with 100 variants in
@@ -218,6 +224,7 @@ def _rows_of_bcftools(path: Path, only_passed: bool) -> list[dict[str, Any]]:
                     for genotype in columns[COLUMNS_BEFORE_THE_GENOTYPES:]
                     for allele in _alleles_of(genotype)
                 ],
+                "passed": kept in ("PASS", MISSING_VALUE),
             }
         )
     return rows
@@ -231,10 +238,11 @@ def _rows_of_bcftools(path: Path, only_passed: bool) -> list[dict[str, Any]]:
         "regions",
         "size_of_the_key",
         "nulls",
+        "num_failed",
     ),
     [
-        (False, 100, [100] * 5, REGIONS_OF_EVERY_VARIANT, 100, (167, 100)),
-        (True, 100, [100, 100, 100, 100, 75], REGIONS_OF_THE_PASSED, 100, None),
+        (False, 100, [100] * 5, REGIONS_OF_EVERY_VARIANT, 100, (167, 100), 25),
+        (True, 100, [100, 100, 100, 100, 75], REGIONS_OF_THE_PASSED, 100, None, 0),
         (
             False,
             None,
@@ -242,6 +250,7 @@ def _rows_of_bcftools(path: Path, only_passed: bool) -> list[dict[str, Any]]:
             REGIONS_OF_ONE_BATCH,
             LARGEST_NUM_VARS_PER_BLOCK,
             (167, 100),
+            25,
         ),
     ],
     ids=["every variant in batches of 100", "by default", "the size popnei chooses"],
@@ -255,13 +264,16 @@ def test_write_vars_writes_many_vcf_as_pyarrow_reads_it_back(
     regions: list[list[tuple[str, int, int]]],
     size_of_the_key: int,
     nulls: tuple[int, int] | None,
+    num_failed: int,
 ) -> None:
     """The 500 variants of 50 individuals of `many.vcf`, written and opened.
 
     `nulls` is how many null ids and how many null qualities the file has,
     the variants with a dot in those columns of `many.bcftools.tsv`, which
     the spec counts for the 500 variants of the file and not for the 475
-    that passed a filter.
+    that passed a filter. `num_failed` is how many false the `passed` column
+    holds: the 25 variants whose FILTER is `q10`, and none of the 475 that
+    `open_vcf` gives by default.
     """
     variants = open_vcf(reference_vcf_dir / "many.vcf", only_passed=only_passed)
     path = tmp_path / "many.vars"
@@ -284,6 +296,9 @@ def test_write_vars_writes_many_vcf_as_pyarrow_reads_it_back(
         null_ids, null_qualities = nulls
         assert read.table.column("id").null_count == null_ids
         assert read.table.column("qual").null_count == null_qualities
+    passed = read.table.column("passed")
+    assert passed.null_count == 0
+    assert passed.to_pylist().count(False) == num_failed
 
     expected = _rows_of_bcftools(reference_vcf_dir / "many.bcftools.tsv", only_passed)
     columns = read.table.to_pydict()
@@ -323,7 +338,7 @@ def test_write_vars_writes_a_file_of_no_batch_for_a_source_with_no_variants(
     write_vars(variants, path)
 
     read = _pyarrow_reads(path)
-    assert _columns_found(read) == [_columns_of(6)[-1]]
+    assert _columns_found(read) == [_gts_column(6)]
     assert read.popnei == {
         "format_version": FORMAT_VERSION,
         "individuals": ["ind1", "ind2", "ind3"],

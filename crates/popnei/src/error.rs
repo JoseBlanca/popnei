@@ -2699,8 +2699,9 @@ pub enum Error {
 
     /// A column of the vars file has no value for one of its variants,
     /// where every variant has one: the chromosome, the position, the
-    /// alleles and the genotypes. A null `id` is the empty id and a null
-    /// `qual` is a variant with no quality, and neither is an error.
+    /// alleles, the genotypes and whether it passed its FILTER. A null `id`
+    /// is the empty id and a null `qual` is a variant with no quality, and
+    /// neither is an error.
     #[error(
         "the `{column}` column of the vars file has no value for its variant {var}, and every variant has one"
     )]
