@@ -651,8 +651,11 @@ call equals, field by field but for `passStats`, that of
 number of variants, which reads the same first variants and whose
 `passStats` has a filter more, so of `passStats` only `numVars` is
 compared; the last call equals what the consumer returns. The same for
-`calcPerIndividualStats`, and for `calcVarDensity` with the lengths of the
-file and with `chromLengths: {}`, which takes none and has the windows grow.
+`calcPerIndividualStats`, and for `calcVarDensity` with `chromLengths`
+`{chr1: 30000, chr2: 25000}`, whose windows are all there from the first
+call, and with `chromLengths: {}`, which takes none and has the windows
+grow; `many.vcf` has no `##contig` length, so its own lengths would give
+the second case again.
 With a `soFarEvery` of 3600 the function is never called over that file.
 The tests of the item above for `onProgress` that stop a pass, in
 `test/stop.test.ts`, are made again for `onSoFar`: a value thrown at the
