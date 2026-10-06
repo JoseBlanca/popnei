@@ -13,7 +13,7 @@ from, said that they passed. It also
 tells the user how many variants each filter was given and how many it
 kept. And it keeps, of every variant, the genotypes of the individuals a
 user names and drops those of the rest. There is code for every item but
-the filter that keeps variants at random. This spec
+the filter of the variants that passed their FILTER. This spec
 develops the row `filters` of the table in section 9
 of `docs/architecture.md`, and it covers the three filters that compare one
 number of a variant with a threshold, the counts, the filter of
@@ -1645,7 +1645,7 @@ filter then keeps them all. The two are for two uses. `only_passed` drops a
 failed line before it is parsed, which is the faster when a user never
 wants the failed variants; this filter is for a user who opens a VCF with
 every variant, `only_passed=False`, and wants the failed ones taken out
-with the other filters and counted, as popnei_web does. The options not
+with the other filters and counted, as popnei_web, the web application of popnei, does. The options not
 taken were to change the default of `only_passed` to false, which changes
 what every caller who gave none gets, and to drop it.
 
@@ -1673,9 +1673,13 @@ It is a step: it adds itself to the `Variants`, reads no variant and
 returns nothing. Its kind is `"passed"`, and its `args` are `{}`. A second
 filter of this kind is refused, and so is this one after the filter of the
 first n, since it takes variants out. It reads no genotype and no other
-filter depends on it, so it can come anywhere among the steps; the
-docstring says to add it first, so that the counts of the filters after it
-are of the variants that passed. In TypeScript, `variants.filterPassed()`.
+filter depends on it, so it can come anywhere among the steps. Like every
+filter of variants it answers no to `skip_outside`, so a filter by regions
+after it no longer has the source skip what is outside the regions: on
+`big.vcf`, plain, that skip makes a pass 0.039 s against about 0.58 s for
+the whole read, by "Speed" of the filter by regions. So the docstring says
+to add it first, after the filter by regions when there is one, so that
+the counts of the filters after it are of the variants that passed. In TypeScript, `variants.filterPassed()`.
 
 pyNei has no such filter: it reads every variant whatever its FILTER, as
 "The VCF reader" of `docs/specs/io_vcf.md` says.
@@ -1702,19 +1706,25 @@ The cargo tests, made at `next_block` of the reader of this filter over a
 the default size: the 475 positions are those of `many.bcftools.tsv`
 whose FILTER is `PASS` or `.`, the first ten the ones above; the counts are
 500 given and 475 kept; with the MAF filter of 0.8 after it, the MAF filter
-is given 475 and keeps 364; and the blocks are the same as those of a
-`VcfReader` with `only_passed` true. Over a vars file written in the test
-from that reader, the same 475. Over `tests/reference/vars/zstd.vars`, a
-file of format 1.0, and over a vars file written from it, the error of a
-source with no record, at the first block. Over `cases.vcf` with
+is given 475 and keeps 364; and the variants of all its blocks taken
+together are those of a `VcfReader` with `only_passed` true, which cuts its
+blocks elsewhere, since it drops a failed line before the line is in a
+block. Over a vars file written in the test from that reader, the same 475.
+Over a vars file written in the test from a reader built for it whose
+blocks have no `passed` column, which is what a file of 1.0 or 1.1 holds,
+the error of a source with no record, at the first block. The blocks of the
+VCF reader with `PASSED` asked for and `only_passed` false have `passed`
+false at the 25 variants whose FILTER is `q10`, and with `only_passed` true
+none; `retain_vars` and `reblock` carry the column with the others. Over `cases.vcf` with
 `only_passed` false, the variants at 100, 300 and 400, as the table of
 `docs/specs/io_vcf.md` has them.
 
 The pytest tests, made at `filter_passed`: on `many.vcf` opened with
 `only_passed=False`, the 475 positions and a `pass_stats` of the kind
 `"passed"` with 500 and 475; the same opened with the default, 475 given
-and 475 kept; through `write_vars` and `open_vars`, the same 475; on
-`zstd.vars`, a `ValueError` whose message starts with its path; a second
+and 475 kept; through `write_vars` and `open_vars`, the same 475; on a
+vars file that pyarrow rewrote without the `passed` column and with the
+version 1.1, a `ValueError` whose message starts with its path; a second
 filter of this kind, and this one after `filter_first_n`, refused. The
 TypeScript test asserts the 475 positions, the counts, and the error of a
 second filter of this kind.
@@ -2196,9 +2206,11 @@ The cases the two filters add to the error of the crate, each a
 `ValueError` in Python: a keep rate out of range, with the value; a
 `num_vars` of 0; a step after the filter of the first n, with the kind of
 the step; and a second filter of either kind, with the kind. The filter of
-the variants that passed adds one, a block with no `passed` column, a
-`ValueError` that names the file of the source in Python, as the errors of
-a vars file do.
+the variants that passed adds two: a block with no `passed` column, of its
+own case and among those that name the file, so that in Python its message
+starts with the path of the source, as the errors of a vars file do; and a
+second filter of this kind, as for the filter that keeps variants at
+random. Both are a `ValueError` in Python.
 
 ## Speed
 

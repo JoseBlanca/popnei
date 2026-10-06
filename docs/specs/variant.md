@@ -37,8 +37,11 @@ column of a VCF, phred scaled: minus ten times the base ten logarithm of
 the probability that there is no variant at that site, so 30 is one in a
 thousand. A sixth flag, `VCF_TEXT`, added on 26 September 2026, asks the
 VCF reader for the text of each line, which only the VCF writer of
-`docs/specs/io_vcf.md` wants; it is not in `ALL`, the five that
+`docs/specs/io_vcf.md` wants; it is not in `ALL`, the six that
 `write_vars` asks for, because the vars file has no place for it.
+`PASSED` was added on 6 October 2026 and is in `ALL`; the tests that
+compare a set of fields with `ALL`, or a vars file with format 1.1 or six
+columns, change with it.
 
 The chromosome of a variant is a number, an index into the table of
 chromosome names that its reader keeps, the `ChromTable`, so that a block

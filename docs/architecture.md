@@ -71,7 +71,7 @@ What this gives:
   and a count, to which it adds what rayon reduced over the rows of each
   block.
 - **Only what is asked for is filled.** `Needs` is a bit set, `GTS`,
-  `CHROM_POS`, `ID`, `ALLELES`, `QUAL`, and `VCF_TEXT` for the VCF writer, and a column that nobody asked for
+  `CHROM_POS`, `ID`, `ALLELES`, `QUAL`, `PASSED`, and `VCF_TEXT` for the VCF writer, and a column that nobody asked for
   is `None` in the block. Most consumers ask for the genotypes alone. The
   VCF reader then does not parse the other columns, and the vars file
   reader does not decompress them. A change of `Needs` holds from the next
@@ -123,7 +123,7 @@ pub struct Block {
     pub gts: Vec<i8>,                        // vars x individuals x ploidy, C order
     pub chrom: Option<Vec<u32>>, pub pos: Option<Vec<u64>>,
     pub id: Option<Vec<String>>, pub alleles: Option<AllelesColumn>,
-    pub qual: Option<Vec<f32>>,
+    pub qual: Option<Vec<f32>>, pub passed: Option<Vec<bool>>,
 }
 impl Block {
     pub fn variants(&self) -> impl Iterator<Item = VariantRef<'_>>;  // slices, no allocation
@@ -228,7 +228,9 @@ and, for each chromosome in it, the smallest and the largest position, so
 that a reader asked for a region skips the batches outside it; the columns
 are `chrom`, `pos`, `id`, `alleles` as a list of strings per variant,
 `qual`, and `gts` as a fixed size list of `num_individuals * ploidy` int8
-per variant, whose flat buffer is the genotype array itself. Any program
+per variant, whose flat buffer is the genotype array itself, and from
+format 1.2 `passed`, whether the FILTER of the variant was PASS or a dot.
+Any program
 with an arrow library opens it as a table. Written and read with arrow-rs.
 
 ## 7. Errors
@@ -280,7 +282,7 @@ inputs where they overlap.
 | `io::vcf` | the reader, which parses the lines of a block in parallel, gzip, and keeps the header and, for the writer, the text of the lines; the writer, plain or bgzip, which writes a line of a VCF as it was read | `vars_from_vcf`, and a writer pyNei does not have |
 | `io::bgzf` | the reader of the members of a file that bgzip wrote, which `io::vcf` reads such a source through: it cuts each member by the size the member states and checks it | none; pyNei reads a bgzipped VCF with Python's `gzip` |
 | `io::vars` | the arrow file reader, projection by `Needs`, a batch of the file as a block; the writer; a format of popnei's own | `load_vars`, `write_vars` |
-| `filters` | readers over readers, which compact the blocks in place: missing data, maf, observed het, individuals; the LD filter; the regions of a BED file, kept or excluded, which the source skips; each variant kept at random with a probability; the first n variants, after which the pass ends | `filter_by_missing_data`, `filter_by_maf`, `filter_by_obs_het`, `filter_samples`, `filter_by_ld_and_maf`, `gather_filtering_stats` |
+| `filters` | readers over readers, which compact the blocks in place: missing data, maf, observed het, individuals; the LD filter; the regions of a BED file, kept or excluded, which the source skips; each variant kept at random with a probability; the first n variants, after which the pass ends; the variants whose FILTER was PASS or a dot | `filter_by_missing_data`, `filter_by_maf`, `filter_by_obs_het`, `filter_samples`, `filter_by_ld_and_maf`, `gather_filtering_stats` |
 | `block` | `Block`, the `BlockReader` trait, `AllelesColumn`, `reblock` | the chunks and `_resize_chunks` |
 | `stats` | allele counts and frequencies per pop, per variant distributions with histograms, per individual stats, expected het, the polymorphism ratio, the missing rate per variant, the count of variants in windows along each chromosome | `calc_per_var_distribs`, `calc_per_sample_stats`, `diversity` |
 | `diversity` | out of one pass, per population: the alleles it called and the private ones among them, as a total and a mean, the variants that vary in it, each of the three also taken down to a common number of called alleles, the folded site frequency spectrum projected to that number, and F_IS | none; pyNei has none of them |
