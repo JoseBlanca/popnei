@@ -97,6 +97,7 @@ export type {
   PerIndividualStatsOptions,
   PerVarDistribs,
   PerVarDistribsOptions,
+  PerVarOptionsOfASummary,
   PerVarStat,
   PolyVarsStats,
   SoFarOptions,

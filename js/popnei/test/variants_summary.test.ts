@@ -242,17 +242,17 @@ const REFUSED: readonly [string, object, RegExp][] = [
   [
     "a perIndividual with a key",
     { perIndividual: { pops: THE_POPS } },
-    /`pops` is not an option of `calcVariantsSummary.perIndividual`, whose options are none/,
+    /`pops` is not an option of `calcVariantsSummary.perIndividual`, which takes no option/,
   ],
   [
     "a density with no windowSize",
     { density: {} },
-    /`windowSize`/,
+    /`density.windowSize`/,
   ],
   [
     "a density with a windowSize of 0",
     { density: { windowSize: 0 } },
-    /`windowSize`/,
+    /`density.windowSize`/,
   ],
   [
     "a density with chromLengths that are a Map",
