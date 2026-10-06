@@ -23,8 +23,10 @@ both binding crates and both packages; the docstrings of `open_vcf` and
 **Open 1** of `docs/specs/io_vcf.md`, what the VCF writer writes in FILTER
 for a variant that failed, is not answered. Task 1.3 builds its
 "meanwhile", `FAIL` with its `##FILTER` line. When the owner chooses `.`,
-1.3 is undone by a new task that takes out the `FAIL` and the line and its
-test.
+the spec is changed first, and a new task takes out of the writer the
+`FAIL` and the `##FILTER` line, with the tests of 1.3 that assert them and
+the `##FILTER` line that 1.3 added to the expected header of the vars file
+written to a VCF; 1.1 and 1.2 do not change.
 
 Not built: the column among the fields that `iter_blocks` names
 (`docs/specs/block.md`).
@@ -44,8 +46,9 @@ Not built: the column among the fields that `iter_blocks` names
   `filters.ts`; `docs/architecture.md`.
 - bcftools 1.24 at `/opt/homebrew/bin/bcftools`, which gave the numbers of
   the spec on 6 October 2026.
-- The checks of the `coding` skill on 5987cc5, whose tree is that of
-  6abacd1 on `main`, run on 6 October 2026: `cargo test --workspace` 1453
+- The checks of the `coding` skill on the code of `main` at 6abacd1, run
+  on 6 October 2026 on the commit before that merge, 5987cc5, which has the
+  same tree: `cargo test --workspace` 1453
   passed and 2 ignored, summed over its `test result` lines; `cargo test -p
   popnei --no-default-features` 1303 passed; `uv run pytest` 741 passed;
   `npm test` in `js/popnei` 551 tests, 550 pass and 1 fails, `a kinship that
@@ -73,11 +76,12 @@ Deliverables:
    `##FILTER` line, and no line for a vars file without the column.
    `cargo test -p popnei --lib passed_column -- --list` counts them, and
    counts 0 on 6abacd1.
-2. Every existing test passes, no fewer than the baseline. The only tests
-   of before that change are those the spec names in `docs/specs/variant.md`
+2. Every existing test passes, no fewer than the baseline. A test of
+   before that changes is one of those the spec names in `docs/specs/variant.md`
    (a set compared with `ALL`, a version of 1.1, six columns), the pytest
    test of `write_vars` whose schema gains `passed`, and the expected header
-   of the vars file written to a VCF, which gains the `##FILTER` line.
+   of the vars file written to a VCF, which gains the `##FILTER` line. Any
+   other test that fails is reported to the owner and not changed.
 3. The pytest test of `write_vars` on `many.vcf` asserts the seven columns,
    `format_version` `"1.2"` and the 25 false of `passed`, and, written from
    `many.vcf` read with the default, none; it fails on 6abacd1, where the
@@ -108,10 +112,13 @@ What could go wrong: `Needs::ALL` is the default of every reader, so every
 reader of a VCF now fills the column. The cost is a comparison and a
 `bool` per variant, which the review of the spec judged not measurable
 beside the parse of the genotypes, 92% of a read, without timing it. 1.1
-times a pass over the plain 403 MB `big.vcf` with the genotypes alone and
-with `ALL`, on one thread, before and after, the median of 7 runs, and the
-orchestrator stops and asks the owner when either is slower by more than
-the noise between runs.
+times one read of the plain 403 MB `big.vcf`, 100000 variants of 1000
+individuals in `/Users/jose/devel/popnei-bench/`, with the genotypes alone
+and with `ALL`, on one thread, before and after, the median of 7 runs; the
+median was 0.616 s for the genotypes alone on 6 October 2026. When either
+is slower by more than 3%, the orchestrator stops and asks the owner
+whether to keep the column in `ALL` or to have the VCF reader fill it only
+when a filter asks for it, with the two timings.
 
 ## 2. The filter
 
