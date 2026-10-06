@@ -22,14 +22,14 @@ left out in both packages, their doc comments, and the tests the spec
 lists.
 
 The tests that open a VCF with a header and no data line and give no
-ploidy, 16 of them, now give the ploidy 2, since that file is refused at
+ploidy, 16 of them by the review of the spec and 19 in the end, now give the ploidy 2, since that file is refused at
 the opening without one and what they check is a pass with no variant: in
 pytest `test_block.py:297`, `test_dists.py:611` and `:633`,
 `test_diversity.py:824`, `test_io_vars.py:320`, `test_ld.py:561`,
 `test_pass_stats.py:152`, `test_stats.py:588` and `:1100`; in node
 `dists.test.ts:464` and `:481`, `diversity.test.ts:879`,
 `pass_stats.test.ts:212`, `pop_dists.test.ts:822`, `vcf.test.ts:375` and
-`stats.test.ts:999`, the lines at df92324.
+`stats.test.ts:999`, the lines at df92324. Tasks 1.2 and 1.3 found three more, which fail for the same reason: `test_pcoa.py::test_a_pass_that_gives_no_variant_is_refused`, "a source with no variant says so" of `ld.test.ts`, and the pass with no variant of `pcoa.test.ts`.
 
 ## What has to be in place
 
@@ -71,7 +71,7 @@ Deliverables:
    a genotype of another ploidy or of a ploidy out of range; the pytest
    test that a tetraploid file is refused when its blocks are asked for,
    which now passes `ploidy=2` to `open_vcf`; and the tests of a corrupted
-   second member, which pass the ploidy 2, as the spec says; and the 16
+   second member, which pass the ploidy 2, as the spec says; and the 19
    tests of a VCF with no data line named under "In and out", which pass
    the ploidy 2.
 3. Pytest tests whose names contain `ploidy_from_the_file`, at `open_vcf`,
@@ -117,7 +117,7 @@ Tasks:
   the table with `0/x/1`, a column with no `GT` value and a line of eight
   columns, each of which the search has to skip, are its guard, and they
   go in the same commit as the search, before 1.2 and 1.3 build on it.
-- [ ] 1.2 The Python side. In `crates/popnei-python/src/vcf.rs`, `open_vcf`
+- [x] 1.2 The Python side. In `crates/popnei-python/src/vcf.rs`, `open_vcf`
   takes a ploidy that may be `None` and then calls `ploidy_of_vcf` on the
   file opened for it, with its errors made into those of the file as the
   rest of `open_vcf`'s are; `DEFAULT_PLOIDY` goes out of `lib.rs`. The new
@@ -125,7 +125,7 @@ Tasks:
   to `ValueError`, and the subagent checks that the message starts with the
   path. In `python/popnei/io_vcf.py`, the signature and the docstring.
   The tests of deliverables 2 and 3 for Python, and 6. Needs 1.1.
-- [ ] 1.3 The TypeScript side. In `crates/popnei-js/src/vcf.rs`,
+- [x] 1.3 The TypeScript side. In `crates/popnei-js/src/vcf.rs`,
   `open_vcf` and `open_vcf_of_a_file` take an `Option<usize>` and, when it
   is `None`, `the_vcf_of` calls `ploidy_of_vcf` on an opening pass of the
   file, `the_opening_pass`, before the reader of the opening; an error of
