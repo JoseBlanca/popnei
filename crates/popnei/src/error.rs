@@ -3393,6 +3393,28 @@ pub enum Error {
     /// are his.
     #[error("the file has no variants and the ploidy can't be inferred")]
     VcfPloidyOfNoVariants,
+
+    /// A block given to the filter of the variants that passed their FILTER
+    /// that has no `passed` column, whether each of its variants passed. A
+    /// vars file written before format 1.2, or from a source that had no
+    /// such column, may hold variants that failed, and taking every variant
+    /// of it as passed would give a result with no sign that they are
+    /// there; the owner decided on 6 October 2026 that it is refused. It is
+    /// of the source, and in Python its message starts with the path of the
+    /// file.
+    #[error(
+        "the variants hold no record of whether they passed their FILTER, so the filter of the variants that passed cannot run on them: a vars file holds it from format 1.2, written from a VCF"
+    )]
+    PassedNotRecorded,
+
+    /// A second filter of the variants that passed their FILTER. It keeps
+    /// the variants the first one kept, so a second one says that the user
+    /// has lost track of the filters their variants carry, as a second
+    /// filter that keeps variants at random does.
+    #[error(
+        "the variants are filtered by passed already, and a second filter of that kind would keep the same variants as the first"
+    )]
+    PassedFilterThatIsSet,
 }
 
 /// The two arguments of a filter that keeps variants at random, which
@@ -3448,7 +3470,8 @@ impl Error {
             // filter of the first n asked for 0 variants and a step that
             // takes variants out after it; the keep rate of the filter that
             // keeps variants at random that is not a number from 0 to 1, and
-            // a second filter of that kind; the
+            // a second filter of that kind; a second filter of the variants
+            // that passed their FILTER; the
             // four of the filter of individuals and the four of the
             // populations a statistic is calculated for, a name that is of
             // nobody, a name that is there twice, a set that names nobody,
@@ -3468,6 +3491,7 @@ impl Error {
             | Self::FirstNThatIsSet { .. }
             | Self::RandomFilterKeepRateOutOfRange { .. }
             | Self::RandomFilterThatIsSet { .. }
+            | Self::PassedFilterThatIsSet
             | Self::IndividualNotInTheSource { .. }
             | Self::IndividualNamedTwice { .. }
             | Self::NoIndividualNamed
@@ -3764,10 +3788,13 @@ impl Error {
             // chromosome, which the filter by linkage disequilibrium is the
             // one reader of popnei to refuse, a pass that gave no variant,
             // the fields a consumer asked a block for and the name of a
-            // field itself, a kinship of a file whose entries are not
+            // field itself, a source that holds no record of whether its
+            // variants passed their FILTER, which the filter of the
+            // variants that passed refuses at its first block, a kinship of a file whose entries are not
             // finite, and the sizes the distances between individuals
             // cannot be calculated at over the individuals of that file.
             | Self::FieldsNotInTheBlock { .. }
+            | Self::PassedNotRecorded
             | Self::LdFilterVariantOutOfOrder { .. }
             | Self::HistRangeTooWide { .. }
             | Self::HistTooManyBins { .. }

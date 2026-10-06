@@ -53,6 +53,10 @@
 //! of one pass and [`RandomlyFilteredReader`] the reader over another
 //! reader that holds it.
 //!
+//! The filter of the variants that passed their FILTER keeps those whose
+//! FILTER, in the VCF they were read from, was `PASS` or a dot, which the
+//! `passed` column of a block says: it is [`PassedReader`].
+//!
 //! `docs/specs/filters.md` has the design, and the row `filters` of section
 //! 9 of `docs/architecture.md` where the module sits.
 
@@ -67,11 +71,14 @@ use crate::variant::{
 };
 
 mod first_n;
+mod passed;
 mod random;
 mod regions;
 use first_n::FIRST_N_KIND;
 pub(crate) use first_n::refuse_a_step_after_the_first_n;
 pub use first_n::{FirstNReader, first_n_step, stopped_early};
+use passed::PASSED_KIND;
+pub use passed::PassedReader;
 use random::RANDOM_KIND;
 pub use random::{DEFAULT_RANDOM_FILTER_SEED, RandomFilter, RandomlyFilteredReader};
 pub(crate) use regions::PlaceOfAChrom;
@@ -1730,11 +1737,16 @@ pub enum PassStep {
         /// Where the generator starts in every pass.
         seed: u64,
     },
+    /// The variants whose FILTER, in the VCF they were read from, was
+    /// `PASS` or a dot, and the others are left out of every block of the
+    /// pass.
+    Passed,
 }
 
 impl PassStep {
     /// `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`, `"individuals"`,
-    /// `"regions"`, `"excluded_regions"`, `"first_n"` or `"random"`: the name the step
+    /// `"regions"`, `"excluded_regions"`, `"first_n"`, `"random"` or
+    /// `"passed"`: the name the step
     /// has for a Python and a TypeScript user, under which the counts of a
     /// filter reach them and by which a second step of the same kind is
     /// refused.
@@ -1746,6 +1758,7 @@ impl PassStep {
             PassStep::Regions(selection) => selection.kind(),
             PassStep::FirstN(_) => FIRST_N_KIND,
             PassStep::Random { .. } => RANDOM_KIND,
+            PassStep::Passed => PASSED_KIND,
         }
     }
 }
@@ -1772,7 +1785,8 @@ pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<Strin
             PassStep::VarFilter(_)
             | PassStep::Regions(_)
             | PassStep::FirstN(_)
-            | PassStep::Random { .. } => None,
+            | PassStep::Random { .. }
+            | PassStep::Passed => None,
         })
         .unwrap_or_else(|| of_the_source.to_vec())
 }
@@ -1784,9 +1798,10 @@ pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<Strin
 /// [`LdFilteredReader`]; a [`PassStep::KeepIndividuals`] an
 /// [`IndividualsReader`]; a [`PassStep::Regions`] a [`RegionsReader`],
 /// which offers its regions to what is below it as it is built; a
-/// [`PassStep::FirstN`] a [`FirstNReader`]; and a [`PassStep::Random`] a
+/// [`PassStep::FirstN`] a [`FirstNReader`]; a [`PassStep::Random`] a
 /// [`RandomlyFilteredReader`], whose generator starts at the seed in every
-/// chain built. No step gives `reader` as it is.
+/// chain built; and a [`PassStep::Passed`] a [`PassedReader`]. No step
+/// gives `reader` as it is.
 ///
 /// Both binding crates build the chain of a pass with this, and neither
 /// writes the loop: in which order the steps go, and what comes out while
@@ -1818,7 +1833,9 @@ pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<Strin
 /// the first n over a chain that holds one. What [`RandomFilter::new`] and
 /// [`RandomlyFilteredReader::new`] refuse, a keep rate that is NaN, below 0
 /// or above 1 and a filter that keeps variants at random over a chain that
-/// holds one. No block was read when any of them comes.
+/// holds one. What [`PassedReader::new`] refuses, a filter of the variants
+/// that passed over a chain that holds one. No block was read when any of
+/// them comes.
 pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<dyn BlockReader>> {
     let mut chain = reader;
     for (index, step) in steps.iter().enumerate() {
@@ -1876,6 +1893,10 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
                     RandomFilter::new(*keep_rate, *seed)?,
                 )?);
             }
+            // And so has the filter of the variants that passed.
+            PassStep::Passed => {
+                chain = Box::new(PassedReader::new(chain)?);
+            }
         }
     }
     Ok(chain)
@@ -1907,7 +1928,9 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
 /// of `new` and the one that is set: two of them keep the first of the
 /// smaller n. For the filter that keeps variants at random it carries the
 /// keep rate and the seed of both: the second would keep a sample of the
-/// sample of the first.
+/// sample of the first. For the filter of the variants that passed it
+/// carries nothing, since the filter has no argument: the second keeps the
+/// variants the first kept.
 ///
 /// Of the crate alone since 5 October 2026: the binding crates call
 /// [`refuse_a_step`], which calls this one, so that no binding can call one
@@ -1931,7 +1954,8 @@ pub(crate) fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep)
                 PassStep::VarFilter(_)
                 | PassStep::KeepIndividuals(_)
                 | PassStep::FirstN(_)
-                | PassStep::Random { .. } => false,
+                | PassStep::Random { .. }
+                | PassStep::Passed => false,
             }) {
                 true => Err(Error::RegionFilterOfAKindThatIsSet { kind }),
                 false => Ok(()),
@@ -1943,7 +1967,8 @@ pub(crate) fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep)
                 PassStep::VarFilter(_)
                 | PassStep::KeepIndividuals(_)
                 | PassStep::Regions(_)
-                | PassStep::Random { .. } => None,
+                | PassStep::Random { .. }
+                | PassStep::Passed => None,
             });
             return match that_is_set {
                 Some(that_is_set) => Err(Error::FirstNThatIsSet {
@@ -1962,7 +1987,8 @@ pub(crate) fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep)
                 PassStep::VarFilter(_)
                 | PassStep::KeepIndividuals(_)
                 | PassStep::Regions(_)
-                | PassStep::FirstN(_) => None,
+                | PassStep::FirstN(_)
+                | PassStep::Passed => None,
             });
             return match that_is_set {
                 Some(that_is_set) => Err(Error::RandomFilterThatIsSet {
@@ -1971,6 +1997,12 @@ pub(crate) fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep)
                     keep_rate_and_seed_that_is_set: Some(that_is_set),
                 }),
                 None => Ok(()),
+            };
+        }
+        PassStep::Passed => {
+            return match set.iter().any(|step| matches!(step, PassStep::Passed)) {
+                true => Err(Error::PassedFilterThatIsSet),
+                false => Ok(()),
             };
         }
     };
@@ -1982,7 +2014,8 @@ pub(crate) fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep)
             PassStep::KeepIndividuals(_)
             | PassStep::Regions(_)
             | PassStep::FirstN(_)
-            | PassStep::Random { .. } => None,
+            | PassStep::Random { .. }
+            | PassStep::Passed => None,
         })
         .find(|of_the_step| of_the_step.kind() == kind);
     if let Some(that_is_set) = that_is_set {
