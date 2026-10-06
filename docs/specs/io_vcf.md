@@ -835,8 +835,8 @@ returns:
 | 4095 lines of `. . .`, and then a line `0/1 . .` | 2 |
 | 4096 lines of `. . .`, and then a line `0/1 . .` | the error, with 4096 |
 | a FORMAT `DP` in the first line, and then `0/1 0/0 1/1` | 2 |
-| `0/x/1 1/1/1 .` | 3 |
-| `DP:GT` with `3 0/1 .`, the first column with no `GT` value | 2 |
+| `0/x/1 0/1 .` | 2 |
+| `DP:GT` with `3 3:0/1 .`, the first column with no `GT` value | 2 |
 | a line of eight columns, and then `0/1 0/0 1/1` | 2 |
 | 3 lines of `. . .` and no more | the error, with 3 |
 | a genotype of 256 alleles first | the error of a ploidy out of range, with 256 |
