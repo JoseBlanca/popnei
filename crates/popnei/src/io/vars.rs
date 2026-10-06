@@ -8257,7 +8257,15 @@ mod tests {
     /// that one batch becomes.
     #[test]
     fn a_batch_whose_arrays_are_a_window_into_longer_ones_is_read_through_it() {
-        let parts = FileParts::of_cases();
+        let mut parts = FileParts::of_cases();
+        // The cases hold no `passed`, so the test gives them one whose
+        // window, `false, true`, is not its first two values: a reader that
+        // took the bits from the start of their buffer would give
+        // `true, false`.
+        let passed: ArrayRef = Arc::new(BooleanArray::from(vec![true, false, true, false]));
+        parts
+            .columns
+            .push((Field::new("passed", DataType::Boolean, false), passed));
         let fields: Vec<Field> = parts
             .columns
             .iter()
@@ -8279,7 +8287,7 @@ mod tests {
                 alleles: Some(3),
                 qual: Some(4),
                 gts: Some(5),
-                passed: None,
+                passed: Some(6),
             },
         );
         let mut chroms = ChromTable::new();
@@ -8299,6 +8307,7 @@ mod tests {
 
         block.check().expect("the block of the window");
         assert_eq!(block.num_vars, 2);
+        assert_eq!(block.passed, Some(vec![false, true]));
         let expected: Vec<ReadRow> = CASES[1..3].iter().map(row_read).collect();
         assert_eq!(rows_of(&[block], &chroms), expected);
     }

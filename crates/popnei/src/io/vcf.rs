@@ -6277,7 +6277,7 @@ mod tests {
     }
 
     /// The variants of `many.vcf`, each with the number its reader gave to
-    /// its chromosome, read inside a rayon pool of `threads` threads, in
+    /// its chromosome and whether it passed its FILTER, read inside a rayon pool of `threads` threads, in
     /// blocks of `num_vars_per_block` variants and in batches of
     /// `lines_per_batch` lines.
     ///
@@ -6290,7 +6290,7 @@ mod tests {
         threads: usize,
         num_vars_per_block: usize,
         lines_per_batch: usize,
-    ) -> Vec<(u32, Row)> {
+    ) -> Vec<(u32, bool, Row)> {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
@@ -6308,10 +6308,11 @@ mod tests {
                     Ok(None) => return variants,
                     Err(error) => panic!("many.vcf: the reader stopped at {error}"),
                 };
-                for view in block.variants() {
+                for (index, view) in block.variants().enumerate() {
                     let number = view.chrom().expect("the chromosome");
                     variants.push((
                         number,
+                        block.passed.as_ref().expect("the passed column")[index],
                         Row {
                             chrom: reader.chroms().name(number).unwrap_or_default().to_string(),
                             pos: view.pos().expect("the position"),
@@ -6342,14 +6343,17 @@ mod tests {
         // They are the variants bcftools read, and the numbers of the
         // chromosomes are the ones of the order of the file, whose first
         // name is `chr1`.
-        let rows: Vec<Row> = four_threads.iter().map(|(_, row)| row.clone()).collect();
+        let rows: Vec<Row> = four_threads.iter().map(|(_, _, row)| row.clone()).collect();
         let reference = reference_rows("many.bcftools.tsv");
         let expected = expected_sites(&reference, options(MANY_PLOIDY, false));
         assert_the_same_sites(&sites_of(&rows), &expected, "many.vcf in a pool of four");
-        for (number, row) in &four_threads {
+        for (number, _, row) in &four_threads {
             let expected_number = if row.chrom == "chr1" { 0 } else { 1 };
             assert_eq!(*number, expected_number, "{} {}", row.chrom, row.pos);
         }
+        // 25 of the 500 variants of `many.vcf` failed their FILTER.
+        let failed = four_threads.iter().filter(|(_, passed, _)| !passed).count();
+        assert_eq!(failed, 25);
     }
 
     #[test]
@@ -6470,7 +6474,7 @@ mod tests {
     fn parsed(
         row: &BatchRow,
         gts: &[i8],
-    ) -> (String, String, u64, Vec<i8>, String, Vec<String>, u32) {
+    ) -> (String, String, u64, Vec<i8>, String, Vec<String>, u32, bool) {
         (
             row.error
                 .as_ref()
@@ -6481,6 +6485,7 @@ mod tests {
             row.row.id.clone(),
             row.row.alleles().to_vec(),
             row.row.qual.to_bits(),
+            row.row.passed,
         )
     }
 
