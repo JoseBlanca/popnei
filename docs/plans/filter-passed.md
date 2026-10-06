@@ -75,7 +75,9 @@ Deliverables:
    before that changes is one of those the spec names in `docs/specs/variant.md`
    (a set compared with `ALL`, a version of 1.1, six columns), the pytest
    test of `write_vars` whose schema gains `passed`, and the expected header
-   of the vars file written to a VCF, which gains the `##FILTER` line. Any
+   of the vars file written to a VCF, which gains the `##FILTER` line, and
+   the two node tests of `progress.test.ts` that hold the bytes of a vars
+   file, which the column makes larger. Any
    other test that fails is reported to the owner and not changed.
 3. The pytest test of `write_vars` on `many.vcf` asserts the seven columns,
    `format_version` `"1.2"` and the 25 false of `passed`, and, written from
