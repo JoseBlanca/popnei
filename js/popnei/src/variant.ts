@@ -857,8 +857,8 @@ export class Variants {
    * filter by regions that is the first filter of the variants has the
    * source skip what is outside the regions, and one after this filter
    * does not. On a plain VCF of 100000 variants and a BED that keeps 1000
-   * of them, that skip makes a pass 0.039 s against about 0.58 s for the
-   * whole read, natively on one thread, as `docs/specs/filters.md` has it.
+   * of them, that skip made a pass 0.039 s against 0.54 s for the whole
+   * read, natively on one thread of an Apple M5 Pro on 27 September 2026.
    * The counts of the filters after this one are then of the variants that
    * passed.
    *

@@ -11,11 +11,12 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The eight methods that add a filter are here as well, one for each of the
+//! The nine methods that add a filter are here as well, one for each of the
 //! three numbers of a variant a filter compares, one for the filter by
 //! linkage disequilibrium, one for the individuals to keep, one for the
-//! regions of a BED file, one for the first n variants and one for the
-//! variants kept at random, and each of them refuses at the call what a user
+//! regions of a BED file, one for the first n variants, one for the
+//! variants kept at random and one for the variants that passed their
+//! FILTER, and each of them refuses at the call what a user
 //! cannot filter by: a threshold that is not a number from 0 to 1, under the
 //! name of the argument they wrote it in; a window of fewer than 1 base
 //! pairs; a name that is not an individual of the source, a name that is

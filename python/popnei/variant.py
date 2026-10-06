@@ -513,7 +513,8 @@ class Variants:
 
         No step that takes variants out can be added after it: a threshold
         filter, the filter by linkage disequilibrium, a filter that keeps
-        variants at random, :meth:`filter_randomly`, or a filter by regions
+        variants at random, :meth:`filter_randomly`, a filter by regions or
+        the filter of the variants that passed, :meth:`filter_passed`,
         added after it is a
         ``ValueError`` that names the kind of the step, since it would leave
         fewer than `num_vars` variants. A user who wants n variants that
@@ -607,9 +608,9 @@ class Variants:
         every variant: the source skips what is outside the regions only
         when the filter by regions is the first filter of the variants. On a
         plain VCF of 100000 variants and 1000 individuals, with regions that
-        keep 1000 of them, that skip made a pass 0.039 s against about
-        0.58 s for the whole read, on one thread of an Apple M5 Pro on 27
-        September 2026.
+        keep 1000 of them, that skip made a pass 0.039 s against 0.54 s for
+        the whole read, on one thread of an Apple M5 Pro on 27 September
+        2026.
 
         Over a vars file it reads whether each variant passed, which the
         file holds from its format 1.2 when it was written from a VCF. A

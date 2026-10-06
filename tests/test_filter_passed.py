@@ -29,7 +29,7 @@ from popnei.variant import Variants
 MANY_NUM_VARS = 500
 NUM_PASSED = 475
 # The first ten that passed, on chr1, as the spec gives them; the first that
-# failed, at 1259, is between the sixth and the seventh.
+# failed, at 1259, is between the seventh and the eighth.
 FIRST_TEN_PASSED = [1000, 1037, 1074, 1111, 1148, 1185, 1222, 1296, 1333, 1370]
 FIRST_FAILED = 1259
 # The columns of `many.bcftools.tsv` before the genotypes, the last of which
