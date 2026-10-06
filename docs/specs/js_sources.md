@@ -679,20 +679,43 @@ is shared. An error of any of the three ends the pass, and none of the
 three is returned; a page that wants the others when the density refuses a
 variant past the length of its chromosome calls them on their own.
 
-How much time it saves has not been measured; what it is made of has. The
-density asks the reader for the chromosome and the position alone, so the
-VCF reader does not parse the genotypes for it: on `big.vcf`, 403 MB plain,
-100000 variants of 1000 individuals, it took 0.041 s on one thread where a
-read with the genotypes took 0.575 s, by "Speed" of `docs/specs/stats.md`,
-measured on 27 September 2026 on the owner's Apple M5 Pro. The counting of
-each statistic is not shared, only the read: from
-`docs/reports/perf-read-ahead-2026-09-25.md`, the counting of five
-statistics over the blocks of that file in memory took 0.103 s on one
-thread. On those numbers the three passes over the VCF take about 1.39 s and
-the one about 0.78 s, 44% less, and over its vars file, whose read is
-cheaper, about 0.43 s and 0.31 s, 27% less; not the two thirds that issue
-10 guessed. The plan measures the three against the one on `big.vcf` and
-`big.vars` before a number is given to a user.
+What it saves depends on the file. Over `big.vcf`, the plain VCF of 403
+MB, 100000 variants of 1000 diploid individuals that
+`crates/popnei/benches/make_big_vcf.py` writes, the three passes took
+2.240 s and the one 1.247 s, 44% less; over `big.vars`, the vars file
+popnei writes of it, 0.400 s and 0.391 s, 2% less. Each is the median of 7
+runs, the three and the one in turn, each timed from opening the file to
+the result; the 7 runs of the three over the VCF spread from 2.176 to
+2.300 s, those of the one from 1.202 to 1.289 s, and over the vars file
+from 0.383 to 0.424 s and from 0.371 to 0.402 s. The distributions were
+of the six statistics `calcPerVarDistribs` gives when it is asked for
+none, the density in windows of 100000 base pairs, and the counting and
+the parsing of the VCF ran on one thread, rayon's pool being built with
+one. It was measured natively, with the core crate and not in wasm, on 7
+October 2026 on the owner's Apple M5 Pro, with other work running on the
+machine, a load average of 15 for its 18 cores, by
+
+```text
+cargo bench --bench variants_summary -- \
+    /Users/jose/devel/popnei-bench/big.vcf \
+    /Users/jose/devel/popnei-bench/big.vars --runs 7
+```
+
+Two sets of 7 runs of the same command just before gave 43% and 44% on the
+VCF and 3% and 2% on the vars file.
+
+The counting of each statistic is not shared, only the read. The
+distributions and the rates each work 0.19 s on the blocks in their own
+pass, and 0.38 s together in the one pass. Over the VCF each of those two
+passes also waits about 0.91 s for its blocks, the parsing of the
+genotypes, and the density, which reads no genotype, takes 0.07 s: about
+0.91 + 0.19 + 0.91 + 0.19 + 0.07 s for the three. The one pass parses the
+genotypes once, so it saves one parsing and the pass of the density. Over
+the vars file a pass waits under 0.01 s for its blocks, so there is almost
+no read to share, and a page that opens a vars file gains from
+`calcVariantsSummary` little more than calling one function instead of
+three. `crates/popnei/benches/variants_summary.rs` has these clocks of
+each pass.
 
 The owner decided on 7 October 2026 that it is one consumer of exactly these
 three, and that it is in the TypeScript API alone. The options not taken
