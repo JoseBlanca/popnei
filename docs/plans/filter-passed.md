@@ -157,7 +157,7 @@ Stands on: work package 1.
 
 Tasks:
 
-- [ ] 2.1 The core: `PassStep::Passed`, `PassedReader`, its place in
+- [x] 2.1 The core: `PassStep::Passed`, `PassedReader`, its place in
   `chain_of`, `refuse_a_second_filter_of_a_kind` and
   `refuse_a_step_after_the_first_n`, and its two error cases, the one of a
   source without the column among those that name the file, from "The

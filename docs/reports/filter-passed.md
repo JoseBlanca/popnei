@@ -100,3 +100,13 @@ owner can stop here.
   variant under a header without the column; and two node tests holding
   the bytes of a vars file. Each was found by the task and put in the spec
   before or with the code.
+
+## 2. The filter
+
+Task 2.1, the core, is 8201068: `PassStep::Passed`, `PassedReader` in
+`crates/popnei/src/filters/passed.rs`, and the error cases `PassedNotRecorded`,
+a block with no `passed`, which names the file, and `PassedFilterThatIsSet`.
+`cargo test -p popnei --lib filters::passed` runs 15 tests, which pass; 12
+of them failed against a stub that gave every block on, and the other 3
+test the refusals of a step. The words of a second filter of this kind are
+the task's, since the spec gives none.
