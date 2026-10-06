@@ -540,12 +540,12 @@ Under node: `numPassesOf("doPcaFromVariants", { numPrinComps: 10 })` is 2,
 with `numPrinComps` 0 it is 1, and with no options it is 2, which is the
 default of 10 components; `numPassesOf("calcGwas", { useGrammarGammaApprox:
 true })` is 2, with it false it is 1, and with no options it is 1, which is
-the default of the exact denominator; each of the eleven names other than
+the default of the exact denominator; each of the fifteen names other than
 `doPcaFromVariants` gives 1 when it is asked with no options, `calcGwas`
 among them; a name that is of no consumer throws, and so does a
 `numPrinComps` of -1 and a `useGrammarGammaApprox` that is not a boolean.
 The test of the item above
-runs each of the thirteen and compares the passes the calls showed with the
+runs each of the consumers and compares the passes the calls showed with the
 number this function gives, which is what would catch a consumer that grew a
 pass and did not say so.
 
