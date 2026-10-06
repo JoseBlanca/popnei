@@ -19,7 +19,7 @@ use crate::block::{
     Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of, with_one_block_ahead,
 };
 use crate::error::{Error, Result};
-use crate::filters::resolve_individuals;
+use crate::filters::{FilteringStats, resolve_individuals};
 use crate::io::vcf::MAX_PLOIDY;
 use crate::phases::{Phase, timed};
 use crate::variant::{
@@ -30,7 +30,53 @@ use crate::variant::{
 mod density;
 pub use density::{
     DensityOfChrom, DensityWindow, LengthsFrom, MAX_NUM_WINDOWS, VarDensity, calc_var_density,
+    calc_var_density_with,
 };
+
+#[cfg(test)]
+mod so_far_tests;
+
+/// What a pass of [`calc_per_var_distribs_with`],
+/// [`calc_per_individual_stats_with`] or [`calc_var_density_with`] has
+/// added up after a block: how many variants it has read, the counts of the
+/// filters of its chain as they stand after that block, and the result over
+/// those variants, `T`, which is built only when it is asked for.
+///
+/// The result is the one the calculation would return over those variants
+/// alone, since each of the three builds its result at the end from totals
+/// it adds up block by block, and this builds it from the totals as they
+/// are. Building it costs what building the final one costs.
+pub trait SoFar<T> {
+    /// The variants the pass has read, those of every block given so far.
+    fn num_vars(&self) -> u64;
+    /// The counts of the filters of the chain of the pass after the block
+    /// it has just added, by the name of each filter, the filter nearest
+    /// the consumer first, as [`BlockReader::filtering_stats`] gives them.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
+    /// The result over the variants read so far.
+    ///
+    /// # Errors
+    ///
+    /// None of the three calculations has one today: the result over the
+    /// variants of a block or more is always built, and a statistic that no
+    /// variant gave a value yet has none, as in the final result.
+    fn result(&self) -> Result<T>;
+}
+
+/// The function a pass calls after each block it has added, the last one
+/// too, with what it has added up so far.
+///
+/// An error it returns ends the pass, which reads no block more, and is
+/// what the calculation returns. It is how a caller stops a pass between
+/// two blocks, and the core reads no clock: a caller that wants the result
+/// every so many seconds reads its own.
+pub type AfterABlock<'a, T> = &'a mut dyn FnMut(&dyn SoFar<T>) -> Result<()>;
+
+/// The function after a block of the calculations that take none, which
+/// does nothing.
+fn nothing_after_a_block<T>(_: &dyn SoFar<T>) -> Result<()> {
+    Ok(())
+}
 
 /// The name of the one population of a calculation that was given no
 /// populations, inherited from pyNei's `DEF_POP_NAME`.
@@ -1299,6 +1345,28 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
     reader: &mut R,
     config: &PerVarDistribsConfig,
 ) -> Result<PerVarDistribs> {
+    calc_per_var_distribs_with(reader, config, &mut nothing_after_a_block)
+}
+
+/// [`calc_per_var_distribs`], with `after_a_block` called after each block
+/// the pass adds, the last one too, with the distributions over the
+/// variants read so far.
+///
+/// The bins of every histogram are those of `config` from the first call,
+/// so the bins of a result so far are those of the last one. The counts of
+/// the filters it gives are those of the chain after the block the pass has
+/// just added, although the chain is read one block ahead on a thread of
+/// its own: the reading thread sends them beside the block.
+///
+/// # Errors
+///
+/// Those of [`calc_per_var_distribs`], and the error `after_a_block`
+/// returns, which ends the pass there.
+pub fn calc_per_var_distribs_with<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    config: &PerVarDistribsConfig,
+    after_a_block: AfterABlock<'_, PerVarDistribs>,
+) -> Result<PerVarDistribs> {
     // A NaN is outside every range, so the comparison refuses it too.
     if !(0.0..=1.0).contains(&config.poly_threshold) {
         return Err(Error::PolyThresholdOutOfRange {
@@ -1340,6 +1408,13 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
                     num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
                 Ok(())
             })?;
+            after_a_block(&DistribsSoFar {
+                totals: &totals,
+                config,
+                asked,
+                num_vars,
+                chain: &*blocks,
+            })?;
         }
         Ok(())
     })?;
@@ -1354,6 +1429,37 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
         });
     }
     Ok(the_distribs(&totals, config, asked, num_vars))
+}
+
+/// What a pass of [`calc_per_var_distribs_with`] has added up after a
+/// block, which builds the distributions from its totals when asked.
+struct DistribsSoFar<'pass> {
+    totals: &'pass Totals,
+    config: &'pass PerVarDistribsConfig,
+    asked: Asked,
+    num_vars: u64,
+    /// The reader the pass takes its blocks from, which answers with the
+    /// counts of the filters as they were when it gave the last block.
+    chain: &'pass dyn BlockReader,
+}
+
+impl SoFar<PerVarDistribs> for DistribsSoFar<'_> {
+    fn num_vars(&self) -> u64 {
+        self.num_vars
+    }
+
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.chain.filtering_stats()
+    }
+
+    fn result(&self) -> Result<PerVarDistribs> {
+        Ok(the_distribs(
+            self.totals,
+            self.config,
+            self.asked,
+            self.num_vars,
+        ))
+    }
 }
 
 /// It adds the statistics of every row of a block into `totals`.
@@ -1783,6 +1889,26 @@ impl PerIndividualStats {
 pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
     reader: &mut R,
 ) -> Result<PerIndividualStats> {
+    calc_per_individual_stats_with(reader, &mut nothing_after_a_block)
+}
+
+/// [`calc_per_individual_stats`], with `after_a_block` called after each
+/// block the pass adds, the last one too, with the rates of every
+/// individual over the variants read so far.
+///
+/// The counts of the filters it gives are those of the chain after the
+/// block the pass has just added, although the chain is read one block
+/// ahead on a thread of its own: the reading thread sends them beside the
+/// block.
+///
+/// # Errors
+///
+/// Those of [`calc_per_individual_stats`], and the error `after_a_block`
+/// returns, which ends the pass there.
+pub fn calc_per_individual_stats_with<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    after_a_block: AfterABlock<'_, PerIndividualStats>,
+) -> Result<PerIndividualStats> {
     // The two counts of an individual follow from its genotype at each
     // variant, so no column of a block is read and the reader is asked to
     // fill none of them.
@@ -1821,6 +1947,11 @@ pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
                     num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
                 Ok(())
             })?;
+            after_a_block(&IndividualsSoFar {
+                counted: &counted,
+                num_vars,
+                chain: &*blocks,
+            })?;
         }
         Ok(())
     })?;
@@ -1838,6 +1969,33 @@ pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
         individuals: counted,
         num_vars,
     })
+}
+
+/// What a pass of [`calc_per_individual_stats_with`] has counted after a
+/// block, which builds the rates from its counts when asked.
+struct IndividualsSoFar<'pass> {
+    counted: &'pass [OfAnIndividual],
+    num_vars: u64,
+    /// The reader the pass takes its blocks from, which answers with the
+    /// counts of the filters as they were when it gave the last block.
+    chain: &'pass dyn BlockReader,
+}
+
+impl SoFar<PerIndividualStats> for IndividualsSoFar<'_> {
+    fn num_vars(&self) -> u64 {
+        self.num_vars
+    }
+
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.chain.filtering_stats()
+    }
+
+    fn result(&self) -> Result<PerIndividualStats> {
+        Ok(PerIndividualStats {
+            individuals: self.counted.to_vec(),
+            num_vars: self.num_vars,
+        })
+    }
 }
 
 /// It counts the genotypes of every row of a block into `counted`, one
