@@ -42,14 +42,15 @@ pub use summary::{
 mod so_far_tests;
 
 /// What a pass of [`calc_per_var_distribs_with`],
-/// [`calc_per_individual_stats_with`] or [`calc_var_density_with`] has
-/// added up after a block: how many variants it has read, the counts of the
-/// filters of its chain as they stand after that block, and the result over
-/// those variants, `T`, which is built only when it is asked for.
+/// [`calc_per_individual_stats_with`], [`calc_var_density_with`] or
+/// [`calc_variants_summary`] has added up after a block: how many variants
+/// it has read, the counts of the filters of its chain as they stand after
+/// that block, and the result over those variants, `T`, which is built only
+/// when it is asked for.
 ///
 /// The result is the one the calculation would return over those variants
-/// alone, since each of the three builds its result at the end from totals
-/// it adds up block by block, and this builds it from the totals as they
+/// alone, since each of them builds its result at the end from totals it
+/// adds up block by block, and this builds it from the totals as they
 /// are. Building it costs what building the final one costs.
 pub trait SoFar<T> {
     /// The variants the pass has read, those of every block given so far.
@@ -71,10 +72,13 @@ pub trait SoFar<T> {
 /// The function a pass calls after each block it has added, the last one
 /// too, with what it has added up so far.
 ///
-/// An error it returns ends the pass, which reads no block more, and is
-/// what the calculation returns. It is how a caller stops a pass between
-/// two blocks, and the core reads no clock: a caller that wants the result
-/// every so many seconds reads its own.
+/// An error it returns ends the pass, which asks its reader for no block
+/// more, and is what the calculation returns. Natively the block after the
+/// last one it was given may already have been read by the thread that
+/// reads one block ahead, and the counts of the filters of the chain
+/// include it. It is how a caller stops a pass between two blocks, and the
+/// core reads no clock: a caller that wants the result every so many
+/// seconds reads its own.
 pub type AfterABlock<'a, T> = &'a mut dyn FnMut(&dyn SoFar<T>) -> Result<()>;
 
 /// The function after a block that does nothing, which
@@ -1385,10 +1389,11 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
 /// variants read so far.
 ///
 /// The bins of every histogram are those of `config` from the first call,
-/// so the bins of a result so far are those of the last one. The counts of
-/// the filters it gives are those of the chain after the block the pass has
-/// just added, although the chain is read one block ahead on a thread of
-/// its own: the reading thread sends them beside the block.
+/// so the bins of a result so far are the same as those of the final
+/// result. The counts of the filters it gives are those of the chain after
+/// the block the pass has just added, although natively the chain is read
+/// one block ahead on a thread of its own, which sends them beside the
+/// block; in wasm it is read one block after another.
 ///
 /// # Errors
 ///
@@ -1957,9 +1962,9 @@ pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
 /// individual over the variants read so far.
 ///
 /// The counts of the filters it gives are those of the chain after the
-/// block the pass has just added, although the chain is read one block
-/// ahead on a thread of its own: the reading thread sends them beside the
-/// block.
+/// block the pass has just added, although natively the chain is read one
+/// block ahead on a thread of its own, which sends them beside the block;
+/// in wasm it is read one block after another.
 ///
 /// # Errors
 ///
