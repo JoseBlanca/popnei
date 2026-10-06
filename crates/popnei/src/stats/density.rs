@@ -193,8 +193,9 @@ fn windows_of(
 ///   without them, or variants built from an array of genotypes.
 /// - [`Error::PassGaveNoVariant`] for a pass that gave no variant, whatever
 ///   the lengths.
-/// - What [`Block::check`] refuses, [`Error::VarDensityChromNameMissing`]
-///   for a chromosome number the table of the reader has no name for, both
+/// - What [`Block::check`] refuses, [`Error::ReaderGaveABlockOfNoVariants`]
+///   for a block of no variants and [`Error::VarDensityChromNameMissing`]
+///   for a chromosome number the table of the reader has no name for, all
 ///   defects of a reader, and whatever the reader fails with.
 pub fn calc_var_density<R: BlockReader + ?Sized>(
     reader: &mut R,
@@ -398,6 +399,12 @@ impl TheDensity {
         // column of another length than the block would pair a variant with
         // the position of another.
         block.check()?;
+        // Every reader of popnei gives one variant at least in a block and
+        // no block when it has no more, so a block of none is a defect of
+        // the reader, which the other two statistics refuse too.
+        if block.num_vars == 0 {
+            return Err(Error::ReaderGaveABlockOfNoVariants);
+        }
         let missing = Needs::CHROM_POS.difference(block.fields());
         if !missing.is_empty() {
             return Err(Error::FieldsNotInTheBlock { fields: missing });

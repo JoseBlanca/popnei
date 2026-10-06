@@ -8,7 +8,8 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
 use super::{
-    DensityOfChrom, LengthsFrom, MAX_NUM_WINDOWS, VarDensity, calc_var_density, count_the_variant,
+    DensityOfChrom, LengthsFrom, MAX_NUM_WINDOWS, SoFar, VarDensity, calc_var_density,
+    calc_var_density_with, count_the_variant,
 };
 use crate::block::{Block, BlockReader, SourceHeader};
 use crate::error::{Error, Result};
@@ -846,6 +847,28 @@ fn var_density_refuses_a_chromosome_number_its_reader_has_no_name_for() {
         matches!(error, Error::VarDensityChromNameMissing { number: 3 }),
         "{error:?}"
     );
+}
+
+/// A block of no variants is refused, as the distributions and the rates
+/// refuse it: every reader of popnei gives one variant at least in a block,
+/// and gives no block when it has no more, so a block of none is a defect
+/// of the reader. Without the refusal the pass would count the variant of
+/// the block after it and give a density with nothing said.
+#[test]
+fn var_density_refuses_a_block_of_no_variants() {
+    let mut reader = Given::of(&[], &[], &[&[], &[("chr1", 1)]]);
+    let mut num_calls = 0_u32;
+    let mut count = |_: &dyn SoFar<VarDensity>| {
+        num_calls = num_calls.saturating_add(1);
+        Ok(())
+    };
+    let error = calc_var_density_with(&mut reader, 10, None, &mut count)
+        .expect_err("a block of no variants");
+    assert!(
+        matches!(error, Error::ReaderGaveABlockOfNoVariants),
+        "{error:?}"
+    );
+    assert_eq!(num_calls, 0, "no call for the block refused");
 }
 
 /// A block whose positions are fewer than its variants would pair a

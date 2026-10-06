@@ -675,3 +675,47 @@ fn variants_summary_of_a_block_refused_by_several_gives_the_error_of_the_first_i
         );
     }
 }
+
+/// The block made a block of no variants, with the chromosome and the
+/// position it was given, both empty.
+fn of_no_variants(block: &mut Block) {
+    *block = Block {
+        num_vars: 0,
+        num_individuals: block.num_individuals,
+        ploidy: block.ploidy,
+        gts: Vec::new(),
+        chrom: block.chrom.as_ref().map(|_| Vec::new()),
+        pos: block.pos.as_ref().map(|_| Vec::new()),
+        id: None,
+        alleles: None,
+        qual: None,
+        passed: None,
+        vcf_text: None,
+    };
+}
+
+/// A block of no variants, a defect of the reader that gives it, is refused
+/// by the summary of each of the three alone, the density among them, with
+/// the error each of their functions gives for it.
+#[test]
+fn variants_summary_refuses_a_block_of_no_variants() {
+    let of = |per_var, per_individual, density| Asked {
+        per_var,
+        per_individual,
+        density,
+    };
+    for asked in [
+        of(true, false, false),
+        of(false, true, false),
+        of(false, false, true),
+    ] {
+        let mut reader = Recording::of_many_vcf_altered(of_no_variants);
+        let config = summary_config_of(&reader, asked, None);
+        let error = calc_variants_summary(&mut reader, &config, &mut nothing)
+            .expect_err("a block of no variants");
+        assert!(
+            matches!(error, Error::ReaderGaveABlockOfNoVariants),
+            "{asked:?}: {error:?}"
+        );
+    }
+}
