@@ -173,8 +173,8 @@ owner decided this on 6 October 2026. The option not taken was to open it
 with the ploidy 2, as it is opened today, which no result could depend on.
 pyNei refuses such a file too, in `_parse_metadata`, with "Empty VCF file,
 it has no variants". With a ploidy given, it is opened and gives no
-variants, as the owner decided on 20 September 2026, and the 16 tests that
-open one to check the error of a pass with no variant, 9 in pytest and 7
+variants, as the owner decided on 20 September 2026, and the 19 tests that
+open one to check the error of a pass with no variant, 10 in pytest and 9
 in node, give the ploidy 2.
 
 The bound keeps the opening of a file of missing genotypes from reading it
