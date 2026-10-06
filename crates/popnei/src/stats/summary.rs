@@ -31,15 +31,20 @@ pub struct VariantsSummaryConfig {
     /// [`calc_per_individual_stats`](super::calc_per_individual_stats) are
     /// given.
     pub per_individual: bool,
-    /// The density of the variants, with the width of its windows in base
-    /// pairs and the lengths of the chromosomes of
+    /// The density of the variants, with the options of
     /// [`calc_var_density`](super::calc_var_density), or `None` for none.
-    #[expect(
-        clippy::type_complexity,
-        reason = "the type `docs/specs/stats.md` gives the field, the two arguments of \
-                  `calc_var_density` beside its reader"
-    )]
-    pub density: Option<(u64, Option<Vec<(String, u64)>>)>,
+    pub density: Option<VarDensityConfig>,
+}
+
+/// The two arguments of [`calc_var_density`](super::calc_var_density)
+/// beside its reader, for the density of a [`calc_variants_summary`].
+#[derive(Debug)]
+pub struct VarDensityConfig {
+    /// The width of a window in base pairs, 1 or more.
+    pub window_size: u64,
+    /// The lengths of the chromosomes, which replace those of the header of
+    /// the source when they are given.
+    pub chrom_lengths: Option<Vec<(String, u64)>>,
 }
 
 /// What one pass of [`calc_variants_summary`] gives back: each of the three
@@ -112,8 +117,12 @@ pub fn calc_variants_summary<R: BlockReader + ?Sized>(
         density: config
             .density
             .as_ref()
-            .map(|(window_size, chrom_lengths)| {
-                TheDensity::before_the_pass(&*reader, *window_size, chrom_lengths.as_deref())
+            .map(|density| {
+                TheDensity::before_the_pass(
+                    &*reader,
+                    density.window_size,
+                    density.chrom_lengths.as_deref(),
+                )
             })
             .transpose()?,
     };

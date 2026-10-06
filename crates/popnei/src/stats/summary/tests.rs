@@ -16,7 +16,7 @@ use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
 use super::super::fixtures::vcf_reader_of;
-use super::{VariantsSummary, VariantsSummaryConfig, calc_variants_summary};
+use super::{VarDensityConfig, VariantsSummary, VariantsSummaryConfig, calc_variants_summary};
 use crate::block::{Block, BlockReader, SourceHeader};
 use crate::error::{Error, Result};
 use crate::filters::{FilteringStats, PassStep, RegionSelection, VarFilteringCriterion, chain_of};
@@ -112,9 +112,10 @@ fn summary_config_of(
     VariantsSummaryConfig {
         per_var: asked.per_var.then(|| per_var_config_of(reader)),
         per_individual: asked.per_individual,
-        density: asked
-            .density
-            .then(|| (WINDOW_SIZE, chrom_lengths.map(<[_]>::to_vec))),
+        density: asked.density.then(|| VarDensityConfig {
+            window_size: WINDOW_SIZE,
+            chrom_lengths: chrom_lengths.map(<[_]>::to_vec),
+        }),
     }
 }
 
@@ -561,7 +562,10 @@ fn variants_summary_of_a_threshold_and_a_window_both_refused_gives_the_threshold
     let config = VariantsSummaryConfig {
         per_var: Some(per_var),
         per_individual: true,
-        density: Some((0, None)),
+        density: Some(VarDensityConfig {
+            window_size: 0,
+            chrom_lengths: None,
+        }),
     };
     let error = calc_variants_summary(&mut reader, &config, &mut nothing)
         .expect_err("a threshold and a window refused");
@@ -609,7 +613,10 @@ fn the_error_of_a_block_refused_by_the_three(asked: Asked) -> Error {
             .per_var
             .then(|| per_var_config_beyond_the_row(&reader)),
         per_individual: asked.per_individual,
-        density: asked.density.then_some((WINDOW_SIZE, Some(lengths))),
+        density: asked.density.then_some(VarDensityConfig {
+            window_size: WINDOW_SIZE,
+            chrom_lengths: Some(lengths),
+        }),
     };
     calc_variants_summary(&mut reader, &config, &mut nothing).expect_err("a block refused")
 }

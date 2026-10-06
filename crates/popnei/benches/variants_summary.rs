@@ -112,8 +112,8 @@ use popnei::io::vcf::{VcfOptions, VcfReader};
 use popnei::stats::{
     DEFAULT_HIST_RANGE, DEFAULT_MIN_NUM_INDIVIDUALS, DEFAULT_NUM_BINS, DEFAULT_POLY_THRESHOLD,
     ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops, SoFar, VarDensity,
-    VariantsSummary, VariantsSummaryConfig, calc_per_individual_stats, calc_per_var_distribs,
-    calc_var_density, calc_variants_summary,
+    VarDensityConfig, VariantsSummary, VariantsSummaryConfig, calc_per_individual_stats,
+    calc_per_var_distribs, calc_var_density, calc_variants_summary,
 };
 
 /// How many times each of the two is timed over each file when the command
@@ -308,7 +308,10 @@ fn the_one(path: &Path) -> Result<(Duration, VariantsSummary, String), popnei::E
             reader.individuals().len(),
         )?),
         per_individual: true,
-        density: Some((WINDOW_SIZE, None)),
+        density: Some(VarDensityConfig {
+            window_size: WINDOW_SIZE,
+            chrom_lengths: None,
+        }),
     };
     let summary = calc_variants_summary(&mut *reader, &config, &mut nothing)?;
     let took = started.elapsed();
