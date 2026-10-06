@@ -19,7 +19,11 @@ collector built blocks by copying the variants that a reader gave one at a
 time. The owner dropped the single variant and its collector on 20
 September 2026, for the reasons at the end of section 1 of the
 architecture. `Block`, `AllelesColumn`, the default size, the names of the
-fields and `iter_blocks` stay as they were built.
+fields and `iter_blocks` stay as they were built. The column `passed` was added
+on 6 October 2026, from issue 9, for the filter of the variants that
+passed of `docs/specs/filters.md`, and there is no code of it. It is a
+column of the core alone: it is not among the fields that `iter_blocks`
+names, and a Python or TypeScript user sees it only through that filter.
 
 ## The block, its readers and reblock
 
@@ -478,6 +482,10 @@ pub struct Block {
     pub id: Option<Vec<String>>,
     pub alleles: Option<AllelesColumn>,
     pub qual: Option<Vec<f32>>,
+    /// Whether the FILTER of each variant, in the VCF it was read from,
+    /// was `PASS` or a dot, when `PASSED` was asked for and the source
+    /// keeps it: a VCF, and a vars file of format 1.2 written from one.
+    pub passed: Option<Vec<bool>>,
     /// The text of the lines of a VCF, when `VCF_TEXT` was asked for and
     /// the source is a VCF.
     pub vcf_text: Option<VcfText>,

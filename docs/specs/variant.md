@@ -353,9 +353,14 @@ impl Needs {
     pub const ID: Needs;
     pub const ALLELES: Needs;
     pub const QUAL: Needs;
+    /// Whether each variant passed its FILTER, the `passed` column of a
+    /// block, added on 6 October 2026 for the filter of the variants that
+    /// passed of `docs/specs/filters.md`.
+    pub const PASSED: Needs;
     /// The text of the lines of a VCF, for its writer. Not in ALL.
     pub const VCF_TEXT: Needs;
-    /// GTS to QUAL, the five above VCF_TEXT, built from them.
+    /// GTS to QUAL and PASSED, the six that a vars file holds, built from
+    /// them.
     pub const ALL: Needs;
     pub fn empty() -> Needs;
     pub fn contains(self, fields: Needs) -> bool;

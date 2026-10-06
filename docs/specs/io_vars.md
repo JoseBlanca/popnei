@@ -54,6 +54,7 @@ The columns, in the order in which a `Block` has them:
 | `alleles` | `List<Utf8>` | no | one row per variant, the reference allele first |
 | `qual` | `Float32` | yes | the quality, null for a variant that has none |
 | `gts` | `FixedSizeList<Int8>[num_individuals * ploidy]` | no | the genotypes |
+| `passed` | `Boolean` | no | whether the FILTER of the variant, in the VCF it was read from, was `PASS` or `.` |
 
 A fixed size list keeps no offsets, so the `gts` column is one flat buffer of
 variants x individuals x ploidy signed bytes in that order, which is the
@@ -92,7 +93,7 @@ What is known before the first variant goes in the schema, under the key
 
 | key | value |
 |---|---|
-| `format_version` | `"1.1"` |
+| `format_version` | `"1.2"` |
 | `individuals` | the names of the individuals, in order |
 | `ploidy` | how many alleles a genotype holds |
 | `num_vars_per_block` | how many variants a batch holds, the last one aside |
@@ -110,6 +111,16 @@ pairs of a name and a whole number above 0, or when it gives one
 chromosome twice, which the VCF reader refuses too; a file without it is
 read with no lengths whatever its version says. This was decided on 26
 September 2026 with the code.
+
+`passed` was added on 6 October 2026, for the filter of the variants that
+passed of `docs/specs/filters.md`, from issue 9, and with it the version
+went from 1.1 to 1.2. The writer writes it when its source keeps it: a
+VCF, and a vars file of 1.2 that has it. A file of 1.0 or 1.1 has no such
+column and is read as before, with no `passed` in its blocks, and the
+filter of the variants that passed refuses it at the first block, naming
+the file, as the owner decided on 6 October 2026. A reader of 1.1 reads a
+file of 1.2 and ignores the column, by the rule of the version below. It costs
+one bit for each variant before compression.
 
 What is known only after the last variant goes in the footer, under the key
 `popnei_batches`: arrow-rs writes the metadata of the footer when the file is
@@ -298,7 +309,8 @@ It has the name and the first two arguments of `write_vars` of
 - A file that a failed call was writing is removed. pyNei leaves it.
 - pyNei writes whatever columns the chunks of its source happen to carry;
   popnei asks its source for every field, so a file written from a VCF has all
-  six columns, the ids, the alleles and the qualities whether or not the user
+  seven columns, the ids, the alleles, the qualities and whether each variant
+  passed its FILTER, whether or not the user
   will read them, and it can stand in for the VCF in any later analysis. The
   owner decided this on 20 September 2026. The option not taken was a `fields`
   argument like the one of `iter_blocks` of `docs/specs/block.md`, which would
@@ -335,15 +347,18 @@ of the schema alone, and pandas no key.
 
 A pytest test made at `write_vars`, on `many.vcf` of `tests/reference/vcf/`,
 the 500 variants of 50 individuals, read with `only_passed=False` and written
-with `num_vars_per_block` 100. pyarrow opens the file. Its schema is the six
+with `num_vars_per_block` 100. pyarrow opens the file. Its schema is the seven
 columns with the types and the nulls of the table above, in that order. The
-value of `popnei` parses as json and holds `format_version` `"1.1"`, the 50
+value of `popnei` parses as json and holds `format_version` `"1.2"`, the 50
 names of the individuals, `ploidy` 2, `num_vars_per_block` 100 and
 `chrom_lengths` `[]`, since the `##contig` lines of `many.vcf` have no
 length. Written from `write.vcf` of the VCF writer of `docs/specs/io_vcf.md`,
 `chrom_lengths` is `[["chr1", 2000], ["chr2", 1500]]`. There are
 five batches of 100 variants. The `id` column has 167 nulls and the `qual`
 column 100, the variants of `many.bcftools.tsv` with a dot in those columns.
+The `passed` column has 25 false, the variants whose FILTER is `q10`, and
+written from `many.vcf` read with the default `only_passed`, 475 variants,
+none.
 The chromosomes, the positions, the ids, the alleles and the genotypes of the
 table that pyarrow reads are those of `many.bcftools.tsv`, compared exactly, with the genotypes of bcftools turned
 into numbers as the tests of the VCF reader do. The value of `popnei_batches`,
@@ -778,7 +793,7 @@ What a vars file says about itself, from the `popnei` key of its schema.
 
 ```rust
 pub struct VarsMetadata {
-    /// The whole string, "1.1". Only the part before the dot is checked.
+    /// The whole string, "1.2". Only the part before the dot is checked.
     pub format_version: String,
     pub individuals: Vec<String>,
     pub ploidy: usize,

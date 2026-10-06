@@ -8,7 +8,8 @@ repeat what a variant near them on the chromosome already said, and those
 inside, or outside, the regions of a BED file. It also gives a sample of
 them, each variant kept at random with a probability the user gives, and
 the first n of them, after which the pass ends and the rest of the source
-is not read. It also
+is not read, and the variants whose FILTER column, in the VCF they came
+from, said that they passed. It also
 tells the user how many variants each filter was given and how many it
 kept. And it keeps, of every variant, the genotypes of the individuals a
 user names and drops those of the rest. There is code for every item but
@@ -18,8 +19,10 @@ of `docs/architecture.md`, and it covers the three filters that compare one
 number of a variant with a threshold, the counts, the filter of
 individuals, the filter that takes out the variants that repeat what a
 variant before them said, the filter by regions, the filter that keeps
-variants at random and the filter that keeps the first n. The last two
-were added on 5 October 2026, from issues 6 and 7 of the repository. The
+variants at random, the filter that keeps the first n and the filter of
+the variants that passed their FILTER. The last was added on 6 October
+2026, from issue 9 of the repository, and there is no code of it; the two
+before it were added on 5 October 2026, from issues 6 and 7. The
 filter by regions
 was added on 26 September 2026; the two before it were
 added on 22 September 2026: the
@@ -1623,6 +1626,99 @@ variants out added after it, and the filter of individuals accepted after
 it. The TypeScript test asserts the ten positions, `stoppedEarly`, and the
 `Error` of 0 and of the MAF filter added after it.
 
+## The filter of the variants that passed their FILTER
+
+### What it gives
+
+It keeps the variants whose FILTER column, in the VCF they were read from,
+is `PASS` or a dot, and takes out the rest, as a step of a pass like the
+other filters, so that how many variants failed their FILTER is in the
+counts beside how many each other filter took out. The rule is the one of
+`only_passed` of `docs/specs/io_vcf.md`, which reads the whole column: a
+variant passed when its FILTER is `PASS` or `.`, which in a VCF says that
+no filter was applied, and failed with anything else, `q10` or `PASS;q10`.
+The two use the one function of the VCF reader, so they never disagree.
+
+`only_passed` stays, and true by default, as the owner decided on 6
+October 2026: a VCF opened with it gives no variant that failed, and this
+filter then keeps them all. The two are for two uses. `only_passed` drops a
+failed line before it is parsed, which is the faster when a user never
+wants the failed variants; this filter is for a user who opens a VCF with
+every variant, `only_passed=False`, and wants the failed ones taken out
+with the other filters and counted, as popnei_web does. The options not
+taken were to change the default of `only_passed` to false, which changes
+what every caller who gave none gets, and to drop it.
+
+A block carries, for each variant, whether it passed, in the column
+`passed` of `docs/specs/block.md`, which the VCF reader fills from FILTER
+and the vars file of `docs/specs/io_vars.md` stores. A source that has no
+such column is refused at the first block of a pass, with an error of its
+own, and not taken as if every variant had passed: a vars file written
+before format 1.2, or from a source that had no column of it, may hold
+variants that failed, and keeping them would give a result with no sign
+that they are there. The owner decided this on 6 October 2026; the option
+not taken was to take a source with no such column as all passed. The
+error says "the variants hold no record of whether they passed their
+FILTER, so the filter of the variants that passed cannot run on them: a
+vars file holds it from format 1.2, written from a VCF", and in Python its
+message starts with the path of the file.
+
+### In Python and in TypeScript
+
+```python
+Variants.filter_passed() -> None
+```
+
+It is a step: it adds itself to the `Variants`, reads no variant and
+returns nothing. Its kind is `"passed"`, and its `args` are `{}`. A second
+filter of this kind is refused, and so is this one after the filter of the
+first n, since it takes variants out. It reads no genotype and no other
+filter depends on it, so it can come anywhere among the steps; the
+docstring says to add it first, so that the counts of the filters after it
+are of the variants that passed. In TypeScript, `variants.filterPassed()`.
+
+pyNei has no such filter: it reads every variant whatever its FILTER, as
+"The VCF reader" of `docs/specs/io_vcf.md` says.
+
+### How it runs
+
+It asks its source for what its consumer asked for and for `PASSED` of
+`docs/specs/variant.md`, keeps in place the rows whose `passed` is true,
+with `retain_vars`, and adds to its counts. A block with no `passed`
+column is the error above, with the block as it was and nothing counted.
+
+### How it is verified
+
+Against bcftools 1.24 on `many.vcf` opened with every variant:
+`bcftools view -H -f .,PASS many.vcf` gives 475 of its 500 variants, those
+whose FILTER is `PASS` or `.`, and its first ten are at 1000, 1037, 1074,
+1111, 1148, 1185, 1222, 1296, 1333 and 1370 of chr1; the first that fails
+is at chr1 1259. With `-Q 0.8:major` after it, the MAF filter of 0.8, it
+gives 364. Run on 6 October 2026. On `many.vcf` the strict rule and that of
+bcftools agree, since no FILTER there names two filters.
+
+The cargo tests, made at `next_block` of the reader of this filter over a
+`VcfReader` of `many.vcf` with `only_passed` false, in blocks of 7 and of
+the default size: the 475 positions are those of `many.bcftools.tsv`
+whose FILTER is `PASS` or `.`, the first ten the ones above; the counts are
+500 given and 475 kept; with the MAF filter of 0.8 after it, the MAF filter
+is given 475 and keeps 364; and the blocks are the same as those of a
+`VcfReader` with `only_passed` true. Over a vars file written in the test
+from that reader, the same 475. Over `tests/reference/vars/zstd.vars`, a
+file of format 1.0, and over a vars file written from it, the error of a
+source with no record, at the first block. Over `cases.vcf` with
+`only_passed` false, the variants at 100, 300 and 400, as the table of
+`docs/specs/io_vcf.md` has them.
+
+The pytest tests, made at `filter_passed`: on `many.vcf` opened with
+`only_passed=False`, the 475 positions and a `pass_stats` of the kind
+`"passed"` with 500 and 475; the same opened with the default, 475 given
+and 475 kept; through `write_vars` and `open_vars`, the same 475; on
+`zstd.vars`, a `ValueError` whose message starts with its path; a second
+filter of this kind, and this one after `filter_first_n`, refused. The
+TypeScript test asserts the 475 positions, the counts, and the error of a
+second filter of this kind.
+
 ## The Rust interface
 
 What a filter compares, with the largest value that keeps the variant.
@@ -2043,7 +2139,8 @@ pub fn stopped_early(steps: &[PassStep], filtering: &[(&'static str, FilteringSt
 ```
 
 The two steps, two more members of `PassStep`, for which `chain_of` builds a
-`RandomlyFilteredReader` and a `FirstNReader`:
+`RandomlyFilteredReader` and a `FirstNReader`, and a third, for which it
+builds a `PassedReader`:
 
 ```rust
     /// Each variant kept when the number drawn for it is below `keep_rate`;
@@ -2052,9 +2149,23 @@ The two steps, two more members of `PassStep`, for which `chain_of` builds a
     /// The first `num_vars` variants, and then the pass ends; of the kind
     /// "first_n".
     FirstN(u64),
+    /// The variants whose FILTER was `PASS` or a dot; of the kind "passed".
+    Passed,
 ```
 
-`refuse_a_second_filter_of_a_kind` refuses a second step of either kind,
+The reader of the filter of the variants that passed. It is given whole
+blocks and keeps their rows with `passed` true.
+
+```rust
+pub struct PassedReader<R: BlockReader> { /* private */ }
+impl<R: BlockReader> PassedReader<R> {
+    /// An error when `reader` already has a filter of this kind.
+    pub fn new(reader: R) -> Result<PassedReader<R>>;
+}
+impl<R: BlockReader> BlockReader for PassedReader<R> { /* ... */ }
+```
+
+`refuse_a_second_filter_of_a_kind` refuses a second step of any of the three kinds,
 with the kind, as it does for the filter by regions. A step that takes
 variants out after a `FirstN` is refused by a function of its own. Both are
 of the crate alone, and `refuse_a_step` calls them in their order: both
@@ -2084,7 +2195,10 @@ function.
 The cases the two filters add to the error of the crate, each a
 `ValueError` in Python: a keep rate out of range, with the value; a
 `num_vars` of 0; a step after the filter of the first n, with the kind of
-the step; and a second filter of either kind, with the kind.
+the step; and a second filter of either kind, with the kind. The filter of
+the variants that passed adds one, a block with no `passed` column, a
+`ValueError` that names the file of the source in Python, as the errors of
+a vars file do.
 
 ## Speed
 
