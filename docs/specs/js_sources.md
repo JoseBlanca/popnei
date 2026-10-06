@@ -664,10 +664,12 @@ With a `soFarEvery` of 3600 the function is never called over that file,
 and with none, the default of 2 seconds, it is never called either. Over
 the same `Variants` with `filterByMaf(0.95)`, each call carries the counts
 of that filter after its block, 100 to 500 given, as literals. Over the
-vars file in 500 batches of one variant, with a `soFarEvery` of 0.003 s and
-a function that waits 1 ms, the function is called far fewer times than
-there are blocks, which is what counting the interval from the last call
-gives. A density with `chromLengths: {chr1: 6000}` is called once, at 100
+vars file in 500 batches of one variant, with a `soFarEvery` of 0.0001 s,
+the function is called no more times than the time the pass took, measured
+around the call plus 1 ms, divided by that interval, plus one, which is what
+counting the interval from the last call gives on any machine; a clock that
+counted from the start of the pass would call it after nearly every one of
+the 500 blocks. A density with `chromLengths: {chr1: 6000}` is called once, at 100
 variants, and then throws the error of a variant past the length, and a
 result so far that cannot be built throws its own error.
 The tests of the item above for `onProgress` that stop a pass, in
