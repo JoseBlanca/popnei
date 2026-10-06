@@ -585,6 +585,7 @@ impl BlockReader for TheSameBlockAgain<'_> {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }))
     }

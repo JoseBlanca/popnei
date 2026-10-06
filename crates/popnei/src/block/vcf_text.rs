@@ -1156,6 +1156,7 @@ mod tests {
         block.id = None;
         block.alleles = None;
         block.qual = None;
+        block.passed = None;
         match block.check() {
             Err(Error::BlockArrayOfAnotherSize {
                 array,

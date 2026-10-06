@@ -725,6 +725,9 @@ impl<W: Write> VarsWriter<W> {
             id,
             alleles,
             qual,
+            // A vars file of format 1.1 has no column of whether each
+            // variant passed its FILTER.
+            passed: _,
             // The vars file has no place for the text of the lines of a
             // VCF, which the writer of a vars file does not ask for.
             vcf_text: _,
@@ -2720,6 +2723,7 @@ fn block_of_the_batch(
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     };
     // The texts of the alleles of one variant, written over for the next
@@ -3692,6 +3696,7 @@ mod tests {
             id: Some(id),
             alleles: Some(alleles),
             qual: Some(qual),
+            passed: None,
             vcf_text: None,
         }
     }
@@ -4231,6 +4236,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let reader = GivenBlocks {
@@ -4702,8 +4708,11 @@ mod tests {
         let Error::VarsBlockColumns { first, found } = &error else {
             panic!("the error is {error}");
         };
-        assert_eq!(*first, Needs::ALL);
-        assert_eq!(*found, Needs::ALL.difference(Needs::QUAL));
+        // The blocks of the test have no column of whether each variant
+        // passed its FILTER.
+        let every_column = Needs::ALL.difference(Needs::PASSED);
+        assert_eq!(*first, every_column);
+        assert_eq!(*found, every_column.difference(Needs::QUAL));
         let message = error.to_string();
         assert!(message.contains("differ in `qual`"), "{message}");
 
@@ -6220,7 +6229,9 @@ mod tests {
         let expected: Vec<ReadRow> = CASES.iter().map(row_read).collect();
         assert_eq!(rows_of(&blocks, &chroms), expected);
         for block in &blocks {
-            assert_eq!(block.fields(), Needs::ALL);
+            // A vars file of format 1.1 has no column of whether each
+            // variant passed its FILTER.
+            assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
             assert_eq!(block.num_individuals, CASES_INDIVIDUALS);
             assert_eq!(block.ploidy, CASES_PLOIDY);
         }
@@ -6367,6 +6378,7 @@ mod tests {
             id: Some(vec![String::new(); NUM_VARS]),
             alleles: Some(alleles),
             qual: Some(vec![30.0; NUM_VARS]),
+            passed: None,
             vcf_text: None,
         };
         let expected = block.gts.clone();
@@ -8016,6 +8028,7 @@ mod tests {
             // The second variant has no quality, which is a NaN in the block
             // and a null in the file.
             qual: Some(vec![quality, f32::NAN]),
+            passed: None,
             vcf_text: None,
         }
     }

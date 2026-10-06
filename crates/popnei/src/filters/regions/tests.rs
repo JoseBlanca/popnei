@@ -288,6 +288,7 @@ fn a_variant_on_either_edge_of_a_region_by_regions_is_on_the_side_bed_puts_it() 
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         };
         let mut filter = RegionFilter::new(selection_of(b"chr1\t10\t20\n", exclude));
@@ -515,6 +516,7 @@ fn a_source_with_no_positions_by_regions_is_the_error_of_a_field_at_its_first_bl
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }),
         chroms: ChromTable::new(),
@@ -556,6 +558,7 @@ fn a_chromosome_number_with_no_name_by_regions_is_an_error_and_the_block_is_as_i
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     };
     let mut chroms = ChromTable::new();
@@ -1187,6 +1190,7 @@ fn haploid_block(variants: &[(u32, u64)]) -> Block {
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     }
 }

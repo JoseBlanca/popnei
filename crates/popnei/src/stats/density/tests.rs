@@ -185,6 +185,7 @@ fn block_of(chrom: Vec<u32>, pos: Vec<u64>) -> Block {
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     }
 }

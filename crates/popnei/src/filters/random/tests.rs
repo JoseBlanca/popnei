@@ -79,6 +79,7 @@ fn block_at(positions: &[u64]) -> Block {
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     }
 }

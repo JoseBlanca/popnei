@@ -373,6 +373,7 @@ impl Digest {
             id,
             alleles,
             qual,
+            passed,
             vcf_text,
         } = block;
         self.number(place);
@@ -423,6 +424,13 @@ impl Digest {
                 // The bits, because a quality that no variant has is NaN and
                 // NaN is equal to nothing, itself included.
                 self.number(u64::from(quality.to_bits()));
+            }
+        }
+        self.there(passed.is_some());
+        if let Some(passed) = passed {
+            self.count(passed.len());
+            for passed_it in passed {
+                self.number(u64::from(*passed_it));
             }
         }
         self.there(vcf_text.is_some());

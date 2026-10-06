@@ -186,6 +186,7 @@ impl BlockReader for NeverEnds {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }))
     }
@@ -865,6 +866,7 @@ fn a_block_of_no_variants() -> Block {
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     }
 }

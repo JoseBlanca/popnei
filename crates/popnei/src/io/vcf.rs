@@ -1040,6 +1040,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             id: self.reserved_column(Needs::ID, num_vars)?,
             alleles,
             qual: self.reserved_column(Needs::QUAL, num_vars)?,
+            passed: self.reserved_column(Needs::PASSED, num_vars)?,
             vcf_text,
         })
     }
@@ -1236,6 +1237,9 @@ impl<R: BufRead + Send> VcfReader<R> {
             if let Some(qual) = block.qual.as_mut() {
                 qual.push(row.qual);
             }
+            if let Some(passed) = block.passed.as_mut() {
+                passed.push(row.passed);
+            }
             if let Some(vcf_text) = block.vcf_text.as_mut() {
                 let bytes = text.get(line.line.clone()).unwrap_or_default();
                 vcf_text.push(bytes, &line.text_ends)?;
@@ -1413,6 +1417,13 @@ fn filter_passed(line: &[u8]) -> bool {
     let start = sixth.saturating_add(1);
     let end = tabs.next().unwrap_or(line.len());
     let filter = line.get(start..end).unwrap_or_default();
+    is_a_pass(filter)
+}
+
+/// Whether the text of a FILTER column, the whole of it, is `PASS` or a
+/// dot. It is the one test of both `only_passed` and the `passed` column
+/// of a block, so that the two never disagree on a variant.
+fn is_a_pass(filter: &[u8]) -> bool {
     filter == b"PASS" || filter == MISSING_VALUE.as_bytes()
 }
 
@@ -2097,6 +2108,9 @@ struct ParsedRow {
     /// The quality, NaN when the variant has none and when it was not asked
     /// for.
     qual: f32,
+    /// Whether the FILTER is `PASS` or a dot, and false when it was not
+    /// asked for.
+    passed: bool,
     /// How many alleles REF and ALT declare, which is counted for every line
     /// that is parsed, whether or not the texts of the alleles are kept,
     /// because it is what says whether an allele number of a genotype is one
@@ -2121,6 +2135,7 @@ impl ParsedRow {
         self.id.clear();
         self.num_allele_texts = 0;
         self.qual = f32::NAN;
+        self.passed = false;
         self.num_alleles = 0;
     }
 
@@ -2257,7 +2272,7 @@ fn parse_row(
     let reference_text = next_column(&mut columns, "REF", number)?;
     let alternatives_text = next_column(&mut columns, "ALT", number)?;
     let quality_text = next_column(&mut columns, "QUAL", number)?;
-    next_column(&mut columns, "FILTER", number)?;
+    let filter_text = next_column(&mut columns, "FILTER", number)?;
 
     if needs.contains(Needs::CHROM_POS) {
         row.pos = parse_position(pos_text, number)?;
@@ -2275,6 +2290,9 @@ fn parse_row(
     }
     if needs.contains(Needs::QUAL) {
         row.qual = parse_quality(quality_text, number)?.unwrap_or(f32::NAN);
+    }
+    if needs.contains(Needs::PASSED) {
+        row.passed = is_a_pass(filter_text.as_bytes());
     }
     // The shape of the line is checked whatever was asked for: the nine
     // first columns are there, the FORMAT has a GT key, and one column of
@@ -3482,6 +3500,150 @@ mod tests {
         for name in ["cases.vcf", "cases.vcf.gz"] {
             assert_eq!(rows_of_file(name, VcfOptions::default()), passed, "{name}");
         }
+    }
+
+    /// The positions of the 25 variants of `many.vcf` whose FILTER is
+    /// `q10`, from `bcftools query -i 'FILTER="q10"' -f '%CHROM:%POS\n'`,
+    /// bcftools 1.24, 6 October 2026. Of the other 475, 450 have `PASS` and
+    /// 25 a dot.
+    const THE_Q10_OF_MANY_VCF: [(&str, u64); 25] = [
+        ("chr1", 1259),
+        ("chr1", 1999),
+        ("chr1", 2739),
+        ("chr1", 3479),
+        ("chr1", 4219),
+        ("chr1", 4959),
+        ("chr1", 5699),
+        ("chr1", 6439),
+        ("chr1", 7179),
+        ("chr1", 7919),
+        ("chr1", 8659),
+        ("chr1", 9399),
+        ("chr1", 10139),
+        ("chr2", 10879),
+        ("chr2", 11619),
+        ("chr2", 12359),
+        ("chr2", 13099),
+        ("chr2", 13839),
+        ("chr2", 14579),
+        ("chr2", 15319),
+        ("chr2", 16059),
+        ("chr2", 16799),
+        ("chr2", 17539),
+        ("chr2", 18279),
+        ("chr2", 19019),
+    ];
+
+    /// The chromosome, the position and whether it passed its FILTER of
+    /// every variant the reader gives, in order.
+    fn passed_of(reader: &mut impl BlockReader) -> Vec<(String, u64, bool)> {
+        let blocks = blocks_of(reader).expect("the blocks");
+        let mut variants = Vec::new();
+        for block in &blocks {
+            let chrom = block.chrom.as_ref().expect("the chromosomes");
+            let pos = block.pos.as_ref().expect("the positions");
+            let passed = block.passed.as_ref().expect("the column passed");
+            for ((chrom, pos), passed) in chrom.iter().zip(pos).zip(passed) {
+                let name = reader.chroms().name(*chrom).expect("the name");
+                variants.push((name.to_string(), *pos, *passed));
+            }
+        }
+        variants
+    }
+
+    #[test]
+    fn passed_column_of_many_vcf_with_every_variant_is_false_for_its_25_q10() {
+        for name in ["many.vcf", "many.vcf.gz"] {
+            for num_vars_per_block in [Some(7), None] {
+                let options = VcfOptions {
+                    num_vars_per_block,
+                    ..options(2, false)
+                };
+                let mut reader = reader_of_file(name, options);
+                reader.set_needs(Needs::CHROM_POS | Needs::PASSED);
+                let variants = passed_of(&mut reader);
+                let failed: Vec<(&str, u64)> = variants
+                    .iter()
+                    .filter(|(_, _, passed)| !passed)
+                    .map(|(chrom, pos, _)| (chrom.as_str(), *pos))
+                    .collect();
+                let place = format!("{name}, blocks of {num_vars_per_block:?}");
+                assert_eq!(variants.len(), 500, "{place}");
+                assert_eq!(failed, THE_Q10_OF_MANY_VCF, "{place}");
+            }
+        }
+    }
+
+    #[test]
+    fn passed_column_of_many_vcf_with_only_passed_is_true_for_its_475_variants() {
+        let mut reader = reader_of_file("many.vcf", in_blocks_of(VcfOptions::default(), 7));
+        reader.set_needs(Needs::ALL);
+        let variants = passed_of(&mut reader);
+        assert_eq!(variants.len(), 475);
+        assert!(variants.iter().all(|(_, _, passed)| *passed));
+    }
+
+    #[test]
+    fn passed_column_is_there_only_when_it_is_asked_for() {
+        for needs in [Needs::GTS, Needs::ALL.difference(Needs::PASSED)] {
+            let mut reader = reader_of_file("many.vcf", options(2, false));
+            reader.set_needs(needs);
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+            assert!(!blocks.is_empty());
+            for block in &blocks {
+                assert_eq!(block.passed, None, "{needs}");
+                assert!(!block.fields().contains(Needs::PASSED), "{needs}");
+            }
+        }
+        // The default of a reader is every field, this one among them.
+        let mut reader = reader_of_file("many.vcf", options(2, false));
+        let blocks = blocks_of(&mut reader).expect("the blocks");
+        assert!(
+            blocks
+                .iter()
+                .all(|block| block.fields().contains(Needs::PASSED))
+        );
+    }
+
+    /// The column takes the whole FILTER, as `only_passed` does: of the
+    /// seven columns of "When `PASSED` is asked for" of
+    /// `docs/specs/io_vcf.md`, the first two passed, and they are the two
+    /// that `only_passed` gives.
+    #[test]
+    fn passed_column_agrees_with_only_passed_on_a_filter_of_several_names() {
+        let vcf = vcf_of(&[
+            "chr1 1 . A T . PASS . GT 0/0 0/1 1/1",
+            "chr1 2 . A T . . . GT 0/0 0/1 1/1",
+            "chr1 3 . A T . q10 . GT 0/0 0/1 1/1",
+            "chr1 4 . A T . PASS;q10 . GT 0/0 0/1 1/1",
+            "chr1 5 . A T . pass . GT 0/0 0/1 1/1",
+            "chr1 6 . A T . q10;PASS . GT 0/0 0/1 1/1",
+            "chr1 7 . A T .  . GT 0/0 0/1 1/1",
+        ]);
+        let mut reader = reader_over(&vcf, options(2, false));
+        let passed: Vec<(u64, bool)> = passed_of(&mut reader)
+            .into_iter()
+            .map(|(_, pos, passed)| (pos, passed))
+            .collect();
+        assert_eq!(
+            passed,
+            [
+                (1, true),
+                (2, true),
+                (3, false),
+                (4, false),
+                (5, false),
+                (6, false),
+                (7, false)
+            ]
+        );
+
+        let mut reader = reader_over(&vcf, VcfOptions::default());
+        let given: Vec<(u64, bool)> = passed_of(&mut reader)
+            .into_iter()
+            .map(|(_, pos, passed)| (pos, passed))
+            .collect();
+        assert_eq!(given, [(1, true), (2, true)]);
     }
 
     #[test]

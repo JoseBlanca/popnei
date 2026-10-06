@@ -3127,6 +3127,7 @@ mod tests {
                     id: None,
                     alleles: None,
                     qual: None,
+                    passed: None,
                     vcf_text: None,
                 }),
                 needs: Needs::ALL,

@@ -1018,6 +1018,7 @@ fn the_dosages_of(
         id: None,
         alleles: None,
         qual: None,
+        passed: None,
         vcf_text: None,
     };
     let dosages = LdDosages::of_block(&block, &[]);
@@ -2457,6 +2458,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }
     }
@@ -4022,6 +4024,7 @@ mod tests {
             id: None,
             alleles: None,
             qual: None,
+            passed: None,
             vcf_text: None,
         }
     }
