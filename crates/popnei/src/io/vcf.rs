@@ -75,6 +75,9 @@ pub const MAX_PLOIDY: usize = 255;
 /// calls does not reach with every genotype missing; nothing has measured
 /// it. It is a number of lines and not a block, because the size of a
 /// block is computed from the ploidy.
+// The docstring of `open_vcf` in `python/popnei/io_vcf.py` and the doc
+// comment of `openVcf` in `js/popnei/src/io_vcf.ts` write its value, 4096,
+// and change with it.
 pub const NUM_LINES_FOR_THE_PLOIDY: usize = 4096;
 
 /// The two bytes every gzipped file starts with.

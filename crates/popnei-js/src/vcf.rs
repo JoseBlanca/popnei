@@ -632,8 +632,9 @@ impl OpenSource for VcfSource {
 /// When the bytes are not a VCF that popnei can read, and when the ploidy is
 /// out of the range the core takes. With no ploidy, those of
 /// [`ploidy_of_vcf`] as well: a file with no data line, one whose first
-/// 4096 data lines hold no genotype with alleles, and bytes that cannot be
-/// read up to its first genotype with alleles.
+/// [`NUM_LINES_FOR_THE_PLOIDY`](popnei::io::vcf::NUM_LINES_FOR_THE_PLOIDY) data
+/// lines hold no genotype with alleles, and bytes that cannot be read up to its
+/// first genotype with alleles.
 #[wasm_bindgen]
 pub fn open_vcf(
     bytes: Vec<u8>,
@@ -666,8 +667,9 @@ pub fn open_vcf(
 /// file by; when the file is not a VCF that popnei can read; and when the
 /// ploidy is out of the range the core takes. With no ploidy, those of
 /// [`ploidy_of_vcf`] as well: a file with no data line, one whose first
-/// 4096 data lines hold no genotype with alleles, and a file that cannot be
-/// read up to its first genotype with alleles.
+/// [`NUM_LINES_FOR_THE_PLOIDY`](popnei::io::vcf::NUM_LINES_FOR_THE_PLOIDY) data
+/// lines hold no genotype with alleles, and a file that cannot be read up to
+/// its first genotype with alleles.
 #[wasm_bindgen]
 pub fn open_vcf_of_a_file(
     file: Blob,

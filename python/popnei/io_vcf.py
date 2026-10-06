@@ -53,10 +53,10 @@ def open_vcf(
     a genotype with alleles, and the ploidy then has to be given; the file
     has a header and no data line, which with a ploidy given is opened and
     gives no variants; and the first genotype with alleles holds more than
-    255. A file whose
-    genotypes are all missing is refused and not read as diploid because a
-    filter by missing data and the statistics count the missing alleles of
-    a missing genotype, one for each allele of the ploidy.
+    255. A file whose genotypes are all missing is refused and not read as
+    diploid because a filter by missing data and the statistics count the
+    missing alleles of a missing genotype, one for each allele of the
+    ploidy.
 
     `only_passed` leaves out the variants that failed a filter, those whose
     FILTER column is neither ``PASS`` nor a dot; a dot says that no filter

@@ -73,8 +73,9 @@ export interface OpenVcfOptions {
  * file before it returns: it is the number of alleles of the first genotype,
  * in the order of the lines and of the individuals, that is not a single
  * dot, which is a missing genotype of any ploidy. A file whose first 4096
- * data lines hold no such genotype, and a file with a header and no data
- * line, are then an `Error` here, which says to give the ploidy. That
+ * data lines hold no such genotype is then an `Error` here, which says to
+ * give the ploidy, and so is a file with a header and no data line, which
+ * says that the file has no variants and its ploidy cannot be inferred. That
  * search reads the file from its start, so a file damaged before its first
  * genotype with alleles, a corrupted member of a bgzipped file among the
  * causes, is an `Error` here as well, and not at the first pass.

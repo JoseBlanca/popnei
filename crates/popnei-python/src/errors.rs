@@ -811,16 +811,19 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // and how many alleles a genotype of the file has, which the reader
         // is given when the file is opened because it needs it to read the
         // first genotype; a ploidy read from a genotype of the file and not
-        // given names the file, through `ReadFromTheFile` above. The three
-        // of `docs/specs/filters.md` are of the same kind: the threshold of a filter that is not a number from 0
-        // to 1, a second filter of a kind the variants are filtered by
-        // already, and a window of the filter by linkage disequilibrium
-        // that is no base pairs wide, all three of which a user gets at the
-        // call that adds the filter. The four of the filter of individuals
-        // are of it too: a name that is
-        // not an individual of the variants, a name that is there twice, a
-        // call that names none, and a second filter of individuals, all of
-        // them what a user wrote in the call that adds the step. The four
+        // given names the file, through `ReadFromTheFile` above. Three of
+        // the cases of `docs/specs/filters.md` are of the same kind: the
+        // threshold of a filter that is not a number from 0 to 1, a second
+        // filter of a kind the variants are filtered by already, and a
+        // window of the filter by linkage disequilibrium that is no base
+        // pairs wide, all three of which a user gets at the call that adds
+        // the filter; the others of that spec, of the filters by regions,
+        // of the first n and at random, are the `ValueError` of the last
+        // arm. The four of the filter of individuals are of it too: a name
+        // that is not an individual of the variants, a name that is there
+        // twice, a call that names none, and a second filter of
+        // individuals, all of them what a user wrote in the call that adds
+        // the step. The four
         // of `pops`, the populations a statistic is calculated for, are the
         // same kind of thing in the argument of the call that calculates
         // it: a name that is not an individual of the variants, a name

@@ -429,6 +429,16 @@ test("the ploidy from the file: 4096 lines of missing genotypes are refused at t
   });
 });
 
+test("the ploidy from the file: a genotype of 256 alleles is refused at the call", () => {
+  const genotype = Array.from({ length: 256 }, () => "0").join("/");
+  const line = `chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t${genotype}\t.\t.`;
+  assert.throws(() => openVcf(vcfOf([line])), {
+    name: "Error",
+    message:
+      /^the ploidy 256 is not one popnei reads: a genotype holds one allele at least and 255 at most$/,
+  });
+});
+
 test("the ploidy from the file: the first genotype with alleles after missing ones gives it", () => {
   const variants = openVcf(
     vcfOf([
