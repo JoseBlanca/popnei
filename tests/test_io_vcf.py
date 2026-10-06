@@ -9,6 +9,7 @@ reader read through the blocks.
 """
 
 import copy
+import inspect
 import pickle
 from pathlib import Path
 
@@ -172,14 +173,19 @@ def test_a_file_that_is_not_a_vcf_is_refused_when_it_is_opened(
 def test_a_genotype_of_another_ploidy_is_refused_when_the_blocks_are_asked_for(
     vcf_of_lines,
 ) -> None:
-    """The line is read when the blocks are, and it names the individual."""
+    """The line is read when the blocks are, and it names the individual.
+
+    The ploidy 2 is given, so the error is that of a ploidy the caller
+    gave; with none, it would be read from the first genotype, `0/0`, and
+    be 2 as well.
+    """
     path = vcf_of_lines(
         [
             "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
             "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/0/1/1\t1/1",
         ]
     )
-    variants = open_vcf(path)
+    variants = open_vcf(path, ploidy=2)
     with pytest.raises(ValueError, match="ind2") as refusal:
         list(variants.iter_blocks())
     # The header of the fixture is three lines, so the wrong genotype is in
@@ -332,3 +338,87 @@ def test_a_ploidy_of_zero_is_refused(reference_vcf_dir: Path) -> None:
     """The one thing `open_vcf` refuses that does not come from the file."""
     with pytest.raises(ValueError, match="ploidy"):
         open_vcf(reference_vcf_dir / "cases.vcf", ploidy=0)
+
+
+# The VCFs of the distances, one tetraploid and one haploid, which
+# `tests/reference/dists/make_reference.py` writes.
+REFERENCE_DISTS_DIR = Path(__file__).parent / "reference" / "dists"
+
+
+def test_the_ploidy_from_the_file_of_a_tetraploid_vcf_is_4() -> None:
+    """With no ploidy, the 200 variants of the file have four alleles each.
+
+    Before the ploidy was read from the file, this file was opened as a
+    diploid one and refused only at the first pass that read a genotype.
+    """
+    variants = open_vcf(REFERENCE_DISTS_DIR / "tetraploid.vcf.gz")
+    assert variants.ploidy == 4
+    gts = numpy.concatenate([block.gts for block in variants.iter_blocks()])
+    assert gts.shape[0] == 200
+    assert gts.shape[2] == 4
+
+
+def test_the_ploidy_from_the_file_of_a_haploid_vcf_is_1() -> None:
+    variants = open_vcf(REFERENCE_DISTS_DIR / "haploid.vcf.gz")
+    assert variants.ploidy == 1
+
+
+def test_the_ploidy_from_the_file_is_not_read_past_4096_lines_of_single_dots(
+    vcf_of_lines,
+) -> None:
+    """Every genotype of the first 4096 data lines is missing, a single dot
+    that says no ploidy, and the call is refused with words that say to give
+    it, after the path. The line after them holds a genotype with alleles,
+    which the search does not reach: it looks at 4096 lines and no more.
+    """
+    dots = [f"chr1\t{pos}\t.\tA\tT\t.\tPASS\t.\tGT\t.\t.\t." for pos in range(1, 4097)]
+    path = vcf_of_lines([*dots, "chr1\t5000\t.\tA\tT\t.\tPASS\t.\tGT\t0/1\t.\t."])
+    with pytest.raises(ValueError) as refusal:
+        open_vcf(path)
+    message = str(refusal.value)
+    assert message.startswith(f"{path}: ")
+    assert "none of the first 4096 data lines" in message
+    assert "give the ploidy" in message
+
+
+def test_the_ploidy_from_the_file_of_a_vcf_of_no_data_line_is_refused(
+    vcf_of_lines,
+) -> None:
+    """The owner's words, after the path; with a ploidy it is opened."""
+    path = vcf_of_lines([])
+    with pytest.raises(ValueError) as refusal:
+        open_vcf(path)
+    assert str(refusal.value) == (
+        f"{path}: the file has no variants and the ploidy can't be inferred"
+    )
+    assert open_vcf(path, ploidy=2).ploidy == 2
+
+
+def test_the_ploidy_from_the_file_of_256_alleles_names_the_file(
+    vcf_of_lines,
+) -> None:
+    """A genotype of more alleles than popnei reads, which is an error of
+    the file and names it, where the same ploidy given by the caller is an
+    error of the argument and names no file.
+    """
+    genotype = "/".join(["0"] * 256)
+    path = vcf_of_lines([f"chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t{genotype}\t.\t."])
+    with pytest.raises(ValueError) as refusal:
+        open_vcf(path)
+    assert str(refusal.value) == (
+        f"{path}: the ploidy of the VCF is 256, and a genotype holds one allele "
+        "at least and 255 at most"
+    )
+    with pytest.raises(ValueError) as refusal:
+        open_vcf(path, ploidy=256)
+    assert str(refusal.value) == (
+        "the ploidy of the VCF is 256, and a genotype holds one allele "
+        "at least and 255 at most"
+    )
+
+
+def test_the_ploidy_from_the_file_is_what_a_ploidy_left_out_gives() -> None:
+    """The signature says it, and no default ploidy is left in `_core`."""
+    signature = inspect.signature(open_vcf)
+    assert str(signature.parameters["ploidy"]) == "ploidy: int | None = None"
+    assert not hasattr(_core, "DEFAULT_PLOIDY")

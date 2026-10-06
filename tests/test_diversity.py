@@ -821,7 +821,7 @@ def test_a_pass_that_gives_no_variant_is_refused(vcf_of_lines) -> None:
     assert "the `maf` filter was given 1200 and kept 0" in str(refusal.value)
 
     with pytest.raises(ValueError, match="its source holds none"):
-        calc_pop_diversity(open_vcf(vcf_of_lines([])), stats=WITH_NO_SPECTRUM)
+        calc_pop_diversity(open_vcf(vcf_of_lines([]), ploidy=2), stats=WITH_NO_SPECTRUM)
 
 
 def test_the_pass_stats_count_the_variants_the_pass_gave() -> None:

@@ -121,6 +121,18 @@ pub(crate) enum PyPopneiError {
         /// the caller asked for.
         path: PathBuf,
     },
+    /// Something the core refused in what it read from a file, with the
+    /// file, where the same case can also be an argument a caller wrote and
+    /// then names no file: the ploidy out of range that `ploidy_of_vcf`
+    /// read from a genotype of 256 alleles, which is the case of a ploidy
+    /// of 256 given to `open_vcf`. `popnei::Error::names_the_file` cannot
+    /// tell the two apart, and the call that met it can.
+    ReadFromTheFile {
+        /// What the core refused.
+        error: popnei::Error,
+        /// The file it was read from, as in [`PyPopneiError::OfTheFile`].
+        path: PathBuf,
+    },
     /// An argument that says how many of something there are, the ploidy or
     /// the variants of a block, and holds a number that counts nothing: a
     /// negative one, one above what this machine counts, which in wasm is
@@ -267,6 +279,16 @@ impl PyPopneiError {
         }
     }
 
+    /// The error of the core that was met in what was read from `path`,
+    /// which names that file whatever the case, as
+    /// [`PyPopneiError::ReadFromTheFile`] says.
+    pub(crate) fn read_from_the_file(error: popnei::Error, path: &Path) -> PyPopneiError {
+        PyPopneiError::ReadFromTheFile {
+            error,
+            path: path.to_path_buf(),
+        }
+    }
+
     /// A defect of this crate that was found while `path` was being read,
     /// which the message names as every error of a file does.
     pub(crate) fn broken_of_the_file(message: String, path: &Path) -> PyPopneiError {
@@ -317,6 +339,16 @@ impl From<PyPopneiError> for PyErr {
         match error {
             PyPopneiError::Core(error) => exception_of(error, None),
             PyPopneiError::OfTheFile { error, path } => exception_of(error, Some(path)),
+            // A case that names no file is one a caller can also write, and
+            // here it was read from the file: it is the `ValueError` it is
+            // as an argument, with the path before its message.
+            PyPopneiError::ReadFromTheFile { error, path } => {
+                if error.names_the_file() {
+                    exception_of(error, Some(path))
+                } else {
+                    PyValueError::new_err(of_the_file(error.to_string(), Some(path)))
+                }
+            }
             // No largest number is named here. What the largest is depends
             // on the argument, 255 for a ploidy, and the core says it of
             // each: a bound of this crate beside it would give a user two
@@ -775,8 +807,9 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // The arguments a user writes: how many variants a block holds,
         // and how many alleles a genotype of the file has, which the reader
         // is given when the file is opened because it needs it to read the
-        // first genotype. The three of `docs/specs/filters.md` are of the
-        // same kind: the threshold of a filter that is not a number from 0
+        // first genotype; a ploidy read from a genotype of the file and not
+        // given names the file, through `ReadFromTheFile` above. The three
+        // of `docs/specs/filters.md` are of the same kind: the threshold of a filter that is not a number from 0
         // to 1, a second filter of a kind the variants are filtered by
         // already, and a window of the filter by linkage disequilibrium
         // that is no base pairs wide, all three of which a user gets at the

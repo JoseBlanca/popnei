@@ -7,6 +7,8 @@
 //! the pass and the columns of its blocks are the same for a VCF and for a
 //! vars file.
 
+use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use pyo3::prelude::*;
@@ -14,6 +16,7 @@ use pyo3::prelude::*;
 use popnei::block::BlockReader;
 use popnei::io::vcf::{
     VcfOptions, VcfReader, VcfWriteOptions, WriterSource, num_vars_per_block_of_write_vcf,
+    ploidy_of_vcf,
 };
 
 use crate::errors::PyPopneiError;
@@ -103,18 +106,35 @@ impl OpenSource for VcfSource {
     }
 }
 
-// The VCF at `path`, read with `ploidy` alleles in every genotype and, when
-// `only_passed` is true, without the variants that failed a filter. It
-// reads the header, so the individuals are known when it returns.
+// The VCF at `path`, read with `ploidy` alleles in every genotype, or with
+// the ploidy `ploidy_of_vcf` reads from the file when `ploidy` is `None`,
+// and, when `only_passed` is true, without the variants that failed a
+// filter. It reads the header, so the individuals are known when it
+// returns.
 #[pyfunction]
 pub(crate) fn open_vcf(
     py: Python<'_>,
     path: PathBuf,
-    ploidy: &Bound<'_, PyAny>,
+    ploidy: Option<&Bound<'_, PyAny>>,
     only_passed: bool,
 ) -> Result<VcfSource, PyPopneiError> {
+    let ploidy = match ploidy {
+        Some(ploidy) => count_of("ploidy", ploidy)?,
+        None => py
+            .detach(|| -> Result<_, popnei::Error> {
+                let file = File::open(&path).map_err(|source| popnei::Error::FileNotOpened {
+                    path: path.clone(),
+                    source,
+                })?;
+                ploidy_of_vcf(BufReader::new(file))
+            })
+            // Every error of the search is of the file, a ploidy out of
+            // range among them: it is the number of alleles of a genotype
+            // the file holds, and not one the caller wrote.
+            .map_err(|error| PyPopneiError::read_from_the_file(error, &path))?,
+    };
     let options = VcfOptions {
-        ploidy: count_of("ploidy", ploidy)?,
+        ploidy,
         only_passed,
         num_vars_per_block: None,
     };

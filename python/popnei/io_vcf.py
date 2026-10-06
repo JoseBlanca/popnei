@@ -18,7 +18,7 @@ class VcfWritten:
 
 def open_vcf(
     vcf_path: str | Path,
-    ploidy: int = _core.DEFAULT_PLOIDY,
+    ploidy: int | None = None,
     only_passed: bool = _core.DEFAULT_ONLY_PASSED,
 ) -> Variants:
     """The variants of the VCF at `vcf_path`, plain or gzipped.
@@ -30,10 +30,12 @@ def open_vcf(
     at every pass over what it returns.
 
     A file that was cut short, and one that bgzip wrote and whose bytes were
-    damaged, are found where the variants are read and not here: the header
-    of such a file reads, and :meth:`Variants.iter_blocks` raises the
-    ``OSError`` of a file that popnei cannot read to its end, with the path
-    in ``filename`` and no ``errno``, after the variants it could give.
+    damaged, are found where the variants are read: the header of such a
+    file reads, and :meth:`Variants.iter_blocks` raises the ``OSError`` of a
+    file that popnei cannot read to its end, with the path in ``filename``
+    and no ``errno``, after the variants it could give. When `ploidy` is
+    left out, the damage can be found here instead, if it comes before the
+    first genotype the ploidy is read from.
 
     `ploidy` is how many alleles every genotype of the file holds, the same
     for every individual and every variant, and a genotype of any other
@@ -42,14 +44,30 @@ def open_vcf(
     for one. It is 1 or more and at most 255, and a ploidy outside that is a
     ``ValueError`` at this call, before anything is read.
 
+    When `ploidy` is ``None``, the default, it is read from the file here:
+    it is the number of alleles of the first genotype that is not a single
+    dot, which is a missing genotype of any ploidy, so ``./.`` says 2. The
+    data lines are looked at in their order, those that failed their filter
+    among them, up to 4096 of them. The call is a ``ValueError`` whose
+    message starts with the path in three cases: none of those lines holds
+    a genotype with alleles, and the ploidy then has to be given; the file
+    has a header and no data line, which with a ploidy given is opened and
+    gives no variants; and the first genotype with alleles holds more than
+    255. A file whose
+    genotypes are all missing is refused and not read as diploid because a
+    filter by missing data and the statistics count the missing alleles of
+    a missing genotype, one for each allele of the ploidy.
+
     `only_passed` leaves out the variants that failed a filter, those whose
     FILTER column is neither ``PASS`` nor a dot; a dot says that no filter
     was applied. With it false every variant of the file is given, and
     nothing then says which ones had failed.
 
     It is pyNei's ``vars_from_vcf`` under another name, with the ploidy and
-    the filter as arguments, which pyNei has not; pyNei takes the ploidy
-    from the first genotype of the file and gives every variant.
+    the filter as arguments, which pyNei has not. pyNei gives every variant,
+    and it takes the ploidy from the genotype of the first individual in the
+    first data line, a single dot among them, where popnei looks on to the
+    first genotype with alleles.
     """
     return Variants(_core.open_vcf(vcf_path, ploidy, only_passed))
 

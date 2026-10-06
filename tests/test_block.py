@@ -294,6 +294,6 @@ def test_blocks_of_no_variant_are_refused(reference_vcf_dir: Path) -> None:
 
 
 def test_a_vcf_with_no_variant_gives_no_block(vcf_of_lines) -> None:
-    variants = open_vcf(vcf_of_lines([]))
+    variants = open_vcf(vcf_of_lines([]), ploidy=2)
     assert list(variants.iter_blocks()) == []
     assert variants.individuals == ("ind1", "ind2", "ind3")

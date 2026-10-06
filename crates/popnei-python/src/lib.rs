@@ -36,11 +36,10 @@ fn version() -> &'static str {
 
 #[pymodule]
 mod _core {
-    // The defaults of `open_vcf` are the constants of the core crate, so
-    // that the number a user gets when they say nothing is written in one
-    // place. The Python package puts them in its signature.
-    #[pymodule_export]
-    const DEFAULT_PLOIDY: usize = popnei::io::vcf::DEFAULT_PLOIDY;
+    // The default of `only_passed` of `open_vcf` is the constant of the
+    // core crate, so that what a user gets when they say nothing is written
+    // in one place. The Python package puts it in its signature. A ploidy
+    // left out has no default: it is read from the file.
     #[pymodule_export]
     const DEFAULT_ONLY_PASSED: bool = popnei::io::vcf::DEFAULT_ONLY_PASSED;
 
