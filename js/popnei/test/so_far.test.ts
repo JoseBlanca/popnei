@@ -563,3 +563,49 @@ test("calcVarDensity throws the error its result so far could not be built with"
     variants.free();
   }
 });
+
+/** The bytes of the vars file of `many.vcf`, in 500 batches of one variant. */
+const IN_500_BLOCKS = await (async () => {
+  const variants = openVcf(await referenceVcf("many.vcf"), {
+    onlyPassed: false,
+  });
+  try {
+    return writeVars(variants, { numVarsPerBlock: 1 }).bytes;
+  } finally {
+    variants.free();
+  }
+})();
+
+/** The `soFarEvery` of the test of the interval, 0.1 ms. */
+const A_TENTH_OF_A_MS = 0.0001;
+
+for (const calculation of THE_CALCULATIONS.filter(
+  (calculation) => !calculation.name.startsWith("calcVarDensity"),
+)) {
+  test(`${calculation.name} counts soFarEvery from the last call of onSoFar`, () => {
+    // Each call comes at least an interval after the one before it, so there
+    // are no more calls than intervals in the time the pass took, measured
+    // around it, with 1 ms more for the clocks of the two sides. A clock that
+    // counted from the start of the pass would call the function after nearly
+    // every one of the 500 blocks once the first interval had gone by.
+    const variants = openVars(IN_500_BLOCKS);
+    try {
+      let calls = 0;
+      const startedAt = performance.now();
+      calculation.run(variants, {
+        onSoFar: () => {
+          calls += 1;
+        },
+        soFarEvery: A_TENTH_OF_A_MS,
+      });
+      const tookMs = performance.now() - startedAt;
+      const intervalMs = A_TENTH_OF_A_MS * 1000;
+      assert.ok(
+        calls <= (tookMs + 1) / intervalMs + 1,
+        `${calls} calls in a pass of ${tookMs} ms`,
+      );
+    } finally {
+      variants.free();
+    }
+  });
+}
