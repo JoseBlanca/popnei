@@ -564,7 +564,9 @@ A line of a VCF source is written as the source had it, INFO, FILTER, the
 phase and every value of each individual among them; the filter of
 individuals keeps the columns of the individuals it keeps and takes AC and
 AN out when it took individuals out. A vars file source gives lines of
-what the file holds, with FILTER and INFO a dot.
+what the file holds, with INFO a dot and FILTER a dot, or `FAIL` for a
+variant that failed its FILTER in the VCF the vars file was written from,
+with a `##FILTER` line for `FAIL` in the header.
 
 The first calculation over such a handle is the Kosman distance of every
 pair of individuals, `docs/specs/dists.md`:

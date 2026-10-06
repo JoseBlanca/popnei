@@ -95,10 +95,12 @@ def write_vcf(variants: Variants, path: str | Path) -> VcfWritten:
 
     When the source is a vars file, the lines hold what the file holds:
     the chromosome, the position, the id, the alleles, the quality and the
-    genotypes, with FILTER and INFO a dot, FORMAT ``GT`` and the alleles of
-    each genotype joined by ``/``, since a vars file keeps no phase. The
-    header has one ``##contig`` line for each chromosome whose length the
-    vars file keeps.
+    genotypes, with INFO a dot, FORMAT ``GT`` and the alleles of each
+    genotype joined by ``/``, since a vars file keeps no phase. FILTER is a
+    dot, or ``FAIL`` for a variant that failed its FILTER in the VCF the vars
+    file was written from, and then the header has a ``##FILTER`` line for
+    ``FAIL``. The header also has one ``##contig`` line for each chromosome
+    whose length the vars file keeps.
 
     The lines are written in the order the source gives them, so a source
     that is not sorted gives a file that tabix refuses to index. A VCF read

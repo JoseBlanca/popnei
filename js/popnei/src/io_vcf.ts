@@ -166,9 +166,11 @@ export interface WriteVcfOptions {
  * individual, in any order, leaves them.
  *
  * When the source is a vars file, the lines hold what the file holds, with
- * FILTER and INFO a dot, FORMAT `GT` and the alleles of each genotype
- * joined by `/`, since a vars file keeps no phase, under a header with one
- * `##contig` line for each chromosome whose length the vars file keeps.
+ * INFO a dot, FORMAT `GT` and the alleles of each genotype joined by `/`,
+ * since a vars file keeps no phase, under a header with one `##contig` line
+ * for each chromosome whose length the vars file keeps. FILTER is a dot, or
+ * `FAIL` for a variant that failed its FILTER in the VCF the vars file was
+ * written from, and then the header has a `##FILTER` line for `FAIL`.
  *
  * The lines are written in the order the source gives them. A VCF opened
  * with `onlyPassed` false and written with no step and `{bgzip: false}` is

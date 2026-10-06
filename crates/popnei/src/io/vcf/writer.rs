@@ -150,9 +150,11 @@ pub fn num_vars_per_block_of_write_vcf(source: WriterSource) -> Option<usize> {
 /// individuals and the ploidy of the pass; when a source that is not a VCF
 /// has no column of the chromosome, the position, the alleles or the
 /// genotypes, [`Error::VcfWriterColumnMissing`]; when a block of a VCF holds
-/// no text, a block a chromosome number its reader has no name for, or a
-/// variant whose `passed` is false when the header of the source says it
-/// keeps no `passed`, [`Error::VcfWriterPassedNotInTheHeader`], which are
+/// no text, [`Error::VcfWriterFieldsMissing`], when a block holds a
+/// chromosome number its reader has no name for,
+/// [`Error::VcfWriterChromNameMissing`], and when a block holds a variant
+/// whose `passed` is false while the header of the source says it keeps no
+/// `passed`, [`Error::VcfWriterPassedNotInTheHeader`], the three of them
 /// defects of the reader; and when the sink fails, [`Error::FileNotWritten`]. The bytes
 /// written before the error are on the sink, and it is the caller that
 /// removes the file.
