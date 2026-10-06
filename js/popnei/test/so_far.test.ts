@@ -448,3 +448,42 @@ for (const calculation of THE_CALCULATIONS) {
     });
   }
 }
+
+/**
+ * Options `calcPerIndividualStats` refuses, which took none before it took
+ * the two of the result so far, with what the message names: a misspelt
+ * `onSoFar` would otherwise be a function that is never called, and `pops`,
+ * which `calcPerVarDistribs` takes, rates that are not per population.
+ */
+const REFUSED_BY_PER_INDIVIDUAL: readonly [string, unknown, RegExp][] = [
+  [
+    "an onSofar, a misspelt onSoFar",
+    { onSofar: () => {} },
+    /`onSofar` is not an option of `calcPerIndividualStats`/,
+  ],
+  [
+    "pops",
+    { pops: { pop1: ["ind1"] } },
+    /`pops` is not an option of `calcPerIndividualStats`/,
+  ],
+  ["options of 5", 5, /options of `calcPerIndividualStats` are an object/],
+];
+
+for (const [what, options, message] of REFUSED_BY_PER_INDIVIDUAL) {
+  test(`calcPerIndividualStats refuses ${what} before the pass starts`, () => {
+    const variants = openVars(IN_FIVE_BLOCKS);
+    try {
+      const told: Progress[] = [];
+      variants.onProgress((progress) => {
+        told.push(progress);
+      });
+      assert.throws(
+        () => calcPerIndividualStats(variants, options as never),
+        message,
+      );
+      assert.equal(told.length, 0);
+    } finally {
+      variants.free();
+    }
+  });
+}
