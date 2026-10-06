@@ -100,7 +100,7 @@ Tasks:
   many variants is its guard, and it goes in the commit of the split.
 - [x] 1.2 `calc_variants_summary`, `VariantsSummaryConfig` and
   `VariantsSummary`, from the same part. Deliverables 2, 3. Needs 1.1.
-- [ ] 1.3 The measurement of deliverable 4, and the spec's sentence of the
+- [x] 1.3 The measurement of deliverable 4, and the spec's sentence of the
   saving replaced with its numbers, in a commit of its own before the code
   of work package 2. Needs 1.2.
 
