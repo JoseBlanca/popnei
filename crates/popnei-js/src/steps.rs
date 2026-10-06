@@ -630,6 +630,23 @@ impl Steps {
         })
     }
 
+    /// The variants whose FILTER, in the VCF they were read from, was
+    /// `PASS` or a dot, and every pass leaves the others out. It takes no
+    /// argument.
+    ///
+    /// # Errors
+    ///
+    /// When a filter of this kind is set already and after a filter of the
+    /// first n, the two of [`Steps::add`]. A source that holds no record of
+    /// whether its variants passed is refused at the first block of a pass,
+    /// and not here.
+    pub fn filter_passed(&mut self) -> Result<(), JsPopneiError> {
+        self.add(Step {
+            pass_step: PassStep::Passed,
+            args: Vec::new(),
+        })
+    }
+
     /// The names of the individuals the next pass gives, in its order: the
     /// ones a filter of individuals among the steps keeps, and those of the
     /// source when no step is that filter.

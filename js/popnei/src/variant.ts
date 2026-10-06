@@ -84,8 +84,9 @@ export interface PassStats {
   /**
    * How many variants each filter of the pass was given and kept, under the
    * kind of the filter, `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`,
-   * `"regions"`, `"excluded_regions"`, `"first_n"` or `"random"`, in the
-   * order of the steps. It is empty for a pass with no filter.
+   * `"regions"`, `"excluded_regions"`, `"first_n"`, `"random"` or
+   * `"passed"`, in the order of the steps. It is empty for a pass with no
+   * filter.
    */
   filtering: Record<string, FilteringStats>;
 
@@ -836,6 +837,48 @@ export class Variants {
       aNumber("keepRate", keepRate),
       seed,
     );
+  }
+
+  /**
+   * Keeps the variants that passed their FILTER, those whose FILTER column,
+   * in the VCF they were read from, is `PASS` or a dot, which says that no
+   * filter was applied, and takes out the rest, `q10` or `PASS;q10`. The
+   * rule is the one of the `onlyPassed` of `openVcf`, which uses the same
+   * function of the reader, so the two never disagree.
+   *
+   * It is for a VCF opened with `{onlyPassed: false}`, when the variants
+   * that failed are to be taken out with the other filters and counted
+   * beside them. A user who never wants the failed variants opens the VCF
+   * with the default of `onlyPassed`, which drops a failed line before it
+   * is parsed and is the faster; over such a VCF this filter keeps every
+   * variant.
+   *
+   * Add it first, or right after `filterByRegions` when there is one. A
+   * filter by regions that is the first filter of the variants has the
+   * source skip what is outside the regions, and one after this filter
+   * does not. On a plain VCF of 100000 variants and a BED that keeps 1000
+   * of them, that skip makes a pass 0.039 s against about 0.58 s for the
+   * whole read, natively on one thread, as `docs/specs/filters.md` has it.
+   * The counts of the filters after this one are then of the variants that
+   * passed.
+   *
+   * Its kind is `"passed"`, under which its counts reach the counts of a
+   * pass, and its `args` are `{}`. The variants of a vars file hold whether
+   * they passed when the file was written from a VCF in format 1.2 or
+   * later; over one that does not, an older file or one written from a
+   * source with no such record, the pass throws at its first block, rather
+   * than taking every variant as passed.
+   *
+   * The call adds a step and gives nothing back.
+   *
+   * @throws {Error} When a filter of this kind is set already, since it
+   * would keep the same variants as the first, and after `filterFirstN`.
+   * After either the steps are as they were. It also throws when the
+   * variants were freed and when `init` has not been awaited.
+   */
+  filterPassed(): void {
+    theWasmHasToBeLoaded();
+    this.#stepsThatWereNotFreed().filter_passed();
   }
 
   /**

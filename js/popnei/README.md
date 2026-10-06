@@ -120,16 +120,21 @@ Each of the fifteen consumers of a `Variants`, `iterBlocks`, `writeVars`,
 source, in a `passStats`: how many variants it
 took, and how many each filter of the `Variants` was given and kept. A
 filter is a step, a method of the `Variants` that `steps` then lists, and
-there are five of them. Four take variants out: `filterByMissingData`,
+there are nine of them. Eight take variants out: `filterByMissingData`,
 which keeps the variants whose missing genotypes divided by all the
 individuals are at most the threshold it is given, `filterByMaf`, over the
 count of the commonest allele of a variant divided by its called alleles,
 `filterByObsHet`, over its heterozygous genotypes divided by its called
-ones, and `filterByLd`, which keeps the variants whose r² against every
+ones, `filterByLd`, which keeps the variants whose r² against every
 variant kept within a window behind them on their chromosome is at most the
 threshold, so that what is left does not repeat what a variant near it
-already said. The fifth, `filterIndividuals`, keeps individuals and not
-variants: it takes the genotypes of the individuals a user names, at every
+already said, `filterByRegions`, which keeps the variants inside the
+regions of a BED file or those outside them, `filterFirstN`, which keeps
+the first n variants and ends the pass there, `filterRandomly`, which
+keeps each variant with a probability, the same ones in every pass for one
+seed, and `filterPassed`, which keeps the variants whose FILTER column is
+`PASS` or a dot, for a VCF opened with `onlyPassed` false. The ninth,
+`filterIndividuals`, keeps individuals and not variants: it takes the genotypes of the individuals a user names, at every
 variant, in the order they named them, and after it `individuals` and
 `numIndividuals` are the kept ones.
 

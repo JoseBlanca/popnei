@@ -15,6 +15,8 @@
  * `filterFirstN` keeps the first n variants and ends the pass there.
  * `filterRandomly` keeps each variant with a probability, the same variants
  * in every pass for one seed.
+ * `filterPassed` keeps the variants whose FILTER column, in the VCF they
+ * were read from, is `PASS` or a dot.
  * `filterIndividuals` keeps individuals and not variants: it takes the
  * genotypes of the individuals a user names, at every variant, and drops
  * those of the rest.
@@ -51,15 +53,16 @@ export interface FilteringStats {
  * A filter is the only kind of step there is: one of the three over a number
  * of a variant, the one by linkage disequilibrium, the one by the regions of
  * a BED file, the one that keeps the first n variants, the one that keeps
- * variants at random, or the one that keeps the individuals a user names.
+ * variants at random, the one that keeps the variants that passed their
+ * FILTER, or the one that keeps the individuals a user names.
  */
 export interface Step {
   /**
    * What the step does: `"missing_data"`, `"maf"`, `"obs_het"`, `"ld"`,
-   * `"individuals"`, `"regions"`, `"excluded_regions"`, `"first_n"` or
-   * `"random"`. The kind of a filter of the variants is the name its counts
-   * have in the counts of a pass, where the filter of individuals has no
-   * entry, since it takes no variant away.
+   * `"individuals"`, `"regions"`, `"excluded_regions"`, `"first_n"`,
+   * `"random"` or `"passed"`. The kind of a filter of the variants is the
+   * name its counts have in the counts of a pass, where the filter of
+   * individuals has no entry, since it takes no variant away.
    */
   kind: string;
 
@@ -71,9 +74,10 @@ export interface Step {
    * for the filter of individuals, whose names are in the order they were
    * given, `{numRegions: 412}` for the filter by regions, the number of
    * regions of its BED once those that overlap or touch are joined,
-   * `{numVars: 1000}` for the filter of the first n, and `{keepRate: 0.1,
+   * `{numVars: 1000}` for the filter of the first n, `{keepRate: 0.1,
    * seed: 42}` for the filter that keeps variants at random, whose seed is
-   * there when it was not given too.
+   * there when it was not given too, and `{}` for the filter of the
+   * variants that passed their FILTER, which takes no argument.
    *
    * The values are what the arguments of that method take, a number for a
    * threshold, for a window, for a count, for a keep rate and for a seed,
