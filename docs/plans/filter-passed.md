@@ -95,7 +95,7 @@ Tasks:
   compile with the new field and change nothing else. From the `passed`
   field of `docs/specs/block.md`, `PASSED` of `docs/specs/variant.md` and
   "When `PASSED` is asked for" of `docs/specs/io_vcf.md`. Deliverables 1, 2.
-- [ ] 1.2 The vars file of format 1.2, in `crates/popnei/src/io/vars.rs`:
+- [x] 1.2 The vars file of format 1.2, in `crates/popnei/src/io/vars.rs`:
   the column written when the source has it and read when the file has it,
   from "What it holds" of `docs/specs/io_vars.md`. The pytest test of
   `write_vars`. Deliverables 1, 2, 3. Needs 1.1.
