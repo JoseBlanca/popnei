@@ -111,9 +111,9 @@ use popnei::io::vars::VarsReader;
 use popnei::io::vcf::{VcfOptions, VcfReader};
 use popnei::stats::{
     DEFAULT_HIST_RANGE, DEFAULT_MIN_NUM_INDIVIDUALS, DEFAULT_NUM_BINS, DEFAULT_POLY_THRESHOLD,
-    ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops, SoFar, VarDensity,
+    ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops, VarDensity,
     VarDensityConfig, VariantsSummary, VariantsSummaryConfig, calc_per_individual_stats,
-    calc_per_var_distribs, calc_var_density, calc_variants_summary,
+    calc_per_var_distribs, calc_var_density, calc_variants_summary, nothing_after_a_block,
 };
 
 /// How many times each of the two is timed over each file when the command
@@ -290,12 +290,6 @@ fn the_three(path: &Path) -> Result<(Duration, Gave, String), popnei::Error> {
     ))
 }
 
-/// Nothing, which is what the one pass is given to call after each block,
-/// as the three call nothing.
-fn nothing(_: &dyn SoFar<VariantsSummary>) -> popnei::Result<()> {
-    Ok(())
-}
-
 /// The same three in the one pass of `calc_variants_summary`, timed from
 /// building its reader to its result.
 fn the_one(path: &Path) -> Result<(Duration, VariantsSummary, String), popnei::Error> {
@@ -313,7 +307,7 @@ fn the_one(path: &Path) -> Result<(Duration, VariantsSummary, String), popnei::E
             chrom_lengths: None,
         }),
     };
-    let summary = calc_variants_summary(&mut *reader, &config, &mut nothing)?;
+    let summary = calc_variants_summary(&mut *reader, &config, &mut nothing_after_a_block)?;
     let took = started.elapsed();
     Ok((took, summary, the_phases_of_the_pass()))
 }

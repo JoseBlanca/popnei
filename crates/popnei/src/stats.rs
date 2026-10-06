@@ -77,9 +77,16 @@ pub trait SoFar<T> {
 /// every so many seconds reads its own.
 pub type AfterABlock<'a, T> = &'a mut dyn FnMut(&dyn SoFar<T>) -> Result<()>;
 
-/// The function after a block of the calculations that take none, which
-/// does nothing.
-fn nothing_after_a_block<T>(_: &dyn SoFar<T>) -> Result<()> {
+/// The function after a block that does nothing, which
+/// [`calc_per_var_distribs`], [`calc_per_individual_stats`] and
+/// [`calc_var_density`] give their function `_with`, and which a caller of
+/// [`calc_variants_summary`] that wants no result so far gives it:
+/// `&mut nothing_after_a_block`.
+///
+/// # Errors
+///
+/// None: it returns `Ok(())`.
+pub fn nothing_after_a_block<T>(_: &dyn SoFar<T>) -> Result<()> {
     Ok(())
 }
 

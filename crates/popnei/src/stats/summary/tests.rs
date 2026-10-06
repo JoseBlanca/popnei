@@ -23,7 +23,7 @@ use crate::filters::{FilteringStats, PassStep, RegionSelection, VarFilteringCrit
 use crate::io::vcf::VcfReader;
 use crate::stats::{
     ExpHet, HistBins, LengthsFrom, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pop, Pops, SoFar,
-    calc_per_individual_stats, calc_per_var_distribs, calc_var_density,
+    calc_per_individual_stats, calc_per_var_distribs, calc_var_density, nothing_after_a_block,
 };
 use crate::variant::{ChromTable, Needs};
 
@@ -119,11 +119,6 @@ fn summary_config_of(
     }
 }
 
-/// The function after a block that does nothing.
-fn nothing(_: &dyn SoFar<VariantsSummary>) -> Result<()> {
-    Ok(())
-}
-
 /// A reader of `many.vcf` with blocks of `num_vars_per_block`, through
 /// `steps`.
 fn many_vcf_through(num_vars_per_block: Option<usize>, steps: &[PassStep]) -> Box<dyn BlockReader> {
@@ -185,7 +180,8 @@ fn of_the_summary(
 ) -> [Option<String>; 3] {
     let mut reader = many_vcf_through(num_vars_per_block, steps);
     let config = summary_config_of(&*reader, asked, chrom_lengths);
-    let summary = calc_variants_summary(&mut *reader, &config, &mut nothing).expect("the summary");
+    let summary = calc_variants_summary(&mut *reader, &config, &mut nothing_after_a_block)
+        .expect("the summary");
     written(&summary)
 }
 
@@ -221,7 +217,7 @@ fn variants_summary_of_none_of_the_three_is_refused_before_the_pass() {
         per_individual: false,
         density: None,
     };
-    let error = calc_variants_summary(&mut reader, &config, &mut nothing)
+    let error = calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
         .expect_err("a summary of nothing");
     assert!(
         matches!(error, Error::VariantsSummaryOfNoStatistic),
@@ -334,8 +330,8 @@ fn variants_summary_asks_the_reader_for_what_the_statistics_asked_for_read() {
         let mut reader = Recording::of_many_vcf();
         let recorded = Arc::clone(&reader.asked);
         let config = summary_config_of(&reader, asked, None);
-        let summary =
-            calc_variants_summary(&mut reader, &config, &mut nothing).expect("the summary");
+        let summary = calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
+            .expect("the summary");
         let mut expected = vec![AnAsk::Needs(needs)];
         expected.extend((0..5).map(|_| AnAsk::Block));
         assert_eq!(
@@ -456,7 +452,7 @@ fn variants_summary_of_a_pass_with_no_variant_is_the_error_the_three_give() {
             density: true,
         };
         let config = summary_config_of(reader, all_three, None);
-        let error = calc_variants_summary(reader, &config, &mut nothing)
+        let error = calc_variants_summary(reader, &config, &mut nothing_after_a_block)
             .expect_err("a summary with no variant");
         assert!(
             matches!(&error, Error::PassGaveNoVariant { num_vars_of_the_source, filters }
@@ -567,7 +563,7 @@ fn variants_summary_of_a_threshold_and_a_window_both_refused_gives_the_threshold
             chrom_lengths: None,
         }),
     };
-    let error = calc_variants_summary(&mut reader, &config, &mut nothing)
+    let error = calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
         .expect_err("a threshold and a window refused");
 
     assert!(
@@ -618,7 +614,8 @@ fn the_error_of_a_block_refused_by_the_three(asked: Asked) -> Error {
             chrom_lengths: Some(lengths),
         }),
     };
-    calc_variants_summary(&mut reader, &config, &mut nothing).expect_err("a block refused")
+    calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
+        .expect_err("a block refused")
 }
 
 /// A block that more than one statistic refuses ends the pass with the
@@ -718,7 +715,7 @@ fn variants_summary_refuses_a_block_of_no_variants() {
     ] {
         let mut reader = Recording::of_many_vcf_altered(of_no_variants);
         let config = summary_config_of(&reader, asked, None);
-        let error = calc_variants_summary(&mut reader, &config, &mut nothing)
+        let error = calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
             .expect_err("a block of no variants");
         assert!(
             matches!(error, Error::ReaderGaveABlockOfNoVariants),
