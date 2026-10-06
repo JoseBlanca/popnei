@@ -32,6 +32,7 @@ pub mod pop_dists;
 pub mod source;
 pub mod stats;
 pub mod steps;
+pub mod summary;
 pub mod vars;
 pub mod vcf;
 

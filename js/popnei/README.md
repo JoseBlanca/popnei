@@ -63,7 +63,12 @@ missing, `missingGtRate`, and the share of its called genotypes at which it
 is heterozygous, `obsHetRate`. The second says which individuals are more
 heterozygous than the rest, a sign of a mixed sample or of an outcrossed
 individual among inbred ones, and it is NaN for an individual that called
-no genotype. `calcPopDiversity` gives, in a `PopDiversity` and for each
+no genotype. `calcVariantsSummary` gives what `calcPerVarDistribs`,
+`calcPerIndividualStats` and `calcVarDensity` give, in one pass where the
+three take three, each of the three asked for under `perVar`,
+`perIndividual` and `density` with the options of its own call and each the
+same to the bit as that call gives it; Python has no such function.
+`calcPopDiversity` gives, in a `PopDiversity` and for each
 population a user names in `pops`, how much variety it holds: how many
 alleles its individuals called, how many of those no other population
 called at the same variant, how many of the variants vary in it, and F_IS,
@@ -111,12 +116,12 @@ coordinates in a `PcoaResult` and refuses distances that are not Euclidean,
 and the second corrects such distances by Lingoes into a new `Distances`,
 with the constant it added.
 
-Each of the fifteen consumers of a `Variants`, `iterBlocks`, `writeVars`,
+Each of the sixteen consumers of a `Variants`, `iterBlocks`, `writeVars`,
 `writeVcf`,
 `calcPairwiseKosmanDists`, `calcPopDists`, `calcPopDiversity`,
 `calcRogersHuffR2Matrix`, `calcLdAndDistPerPop`, `calcKinship`,
 `doPcaFromVariants`, `doPcoaFromVariants`, `calcGwas`, `calcPerVarDistribs`,
-`calcPerIndividualStats` and `calcVarDensity`, gives back the counts of the pass it made over the
+`calcPerIndividualStats`, `calcVarDensity` and `calcVariantsSummary`, gives back the counts of the pass it made over the
 source, in a `passStats`: how many variants it
 took, and how many each filter of the `Variants` was given and kept. A
 filter is a step, a method of the `Variants` that `steps` then lists, and

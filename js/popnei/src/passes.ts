@@ -29,6 +29,7 @@ export type ConsumerName =
   | "calcPerVarDistribs"
   | "calcPerIndividualStats"
   | "calcVarDensity"
+  | "calcVariantsSummary"
   | "calcPairwiseKosmanDists"
   | "calcPopDists"
   | "calcPopDiversity"

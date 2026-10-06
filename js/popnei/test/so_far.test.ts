@@ -1,7 +1,8 @@
 /**
  * The result so far of the three calculations whose results add up over the
  * blocks of a pass: `calcPerVarDistribs`, `calcPerIndividualStats` and
- * `calcVarDensity`, given to the function `onSoFar` while their pass runs.
+ * `calcVarDensity`, and of `calcVariantsSummary`, which gives the three in
+ * one pass, given to the function `onSoFar` while their pass runs.
  *
  * "The result so far" of `docs/specs/js_sources.md` has the design. The
  * function is called after a block, the last one too, when `soFarEvery`
@@ -27,6 +28,7 @@ import {
   calcPerIndividualStats,
   calcPerVarDistribs,
   calcVarDensity,
+  calcVariantsSummary,
   init,
   openVars,
   openVcf,
@@ -64,18 +66,18 @@ const WINDOW_SIZE = 1000;
  */
 const CHROM_LENGTHS = { chr1: 30000, chr2: 25000 };
 
-/** What every result of the three carries. */
+/** What every result of the four carries. */
 interface WithPassStats {
   passStats: PassStats;
 }
 
-/** The two options of the result so far, as every one of the three takes them. */
+/** The two options of the result so far, as every one of the four takes them. */
 interface SoFarOptions {
   onSoFar?: unknown;
   soFarEvery?: unknown;
 }
 
-/** One of the three calculations, with a call of it over `variants`. */
+/** One of the four calculations, with a call of it over `variants`. */
 interface TheCalculation {
   /** What the names of the tests call it. */
   name: string;
@@ -84,11 +86,13 @@ interface TheCalculation {
 }
 
 /**
- * The three calculations, the density twice: with lengths, whose windows are
+ * The four calculations, the density twice: with lengths, whose windows are
  * all there from the first call, and with `chromLengths: {}`, which takes no
  * length and has the windows grow up to the last variant read so far.
  * `many.vcf` has no `##contig` length, so its own lengths would give the
- * second case again.
+ * second case again. `calcVariantsSummary` gives the three, the density with
+ * lengths; `variants_summary.test.ts` compares its result so far with those
+ * of the three calls.
  *
  * The options cross as `never`: the tests of the arguments give values that
  * the types of the package refuse, which is what a user of JavaScript does.
@@ -119,12 +123,32 @@ const THE_CALCULATIONS: readonly TheCalculation[] = [
         ...(options as object),
       }),
   },
+  {
+    name: "calcVariantsSummary",
+    run: (variants, options) =>
+      calcVariantsSummary(variants, {
+        perVar: {},
+        perIndividual: {},
+        density: { windowSize: WINDOW_SIZE, chromLengths: CHROM_LENGTHS },
+        ...(options as object),
+      }),
+  },
 ];
 
-/** `result` without its `passStats`, the fields that are compared whole. */
+/**
+ * `result` without its `passStats`, the fields that are compared whole, and
+ * without those of the three results a `calcVariantsSummary` holds.
+ */
 function withoutPassStats(result: WithPassStats): object {
   const { passStats: _passStats, ...theRest } = result;
-  return theRest;
+  return Object.fromEntries(
+    Object.entries(theRest).map(([key, value]) => [
+      key,
+      typeof value === "object" && value !== null && "passStats" in value
+        ? withoutPassStats(value as WithPassStats)
+        : value,
+    ]),
+  );
 }
 
 /** What `calculation` gives over the first `numVars` variants of the file. */
@@ -329,7 +353,7 @@ for (const calculation of THE_CALCULATIONS) {
 }
 
 /**
- * The options each of the three refuses at the call, with what the message
+ * The options each of the four refuses at the call, with what the message
  * names.
  */
 const REFUSED: readonly [string, SoFarOptions, RegExp][] = [

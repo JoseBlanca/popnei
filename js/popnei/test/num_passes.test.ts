@@ -26,9 +26,9 @@ import { theConsumersTheCrateNames } from "./consumers.ts";
 /**
  * How many passes each consumer makes when it is asked with no options.
  *
- * Fourteen of the fifteen read the source once, the principal components of the
+ * Fifteen of the sixteen read the source once, the principal components of the
  * variants being the one that reads it twice for the weights its ten
- * components ask for. The association study is among the fourteen: it reads
+ * components ask for. The association study is among the fifteen: it reads
  * the source twice only when it is asked for the GRAMMAR-Gamma
  * approximation, which the default does not ask for, and the two tests
  * below are of that option.
@@ -44,6 +44,7 @@ const THE_PASSES_OF_EACH_CONSUMER: Record<ConsumerName, number> = {
   calcPerVarDistribs: 1,
   calcPerIndividualStats: 1,
   calcVarDensity: 1,
+  calcVariantsSummary: 1,
   calcPairwiseKosmanDists: 1,
   calcPopDists: 1,
   calcPopDiversity: 1,
@@ -58,7 +59,7 @@ const THE_PASSES_OF_EACH_CONSUMER: Record<ConsumerName, number> = {
   doPcoaFromVariants: 1,
 };
 
-/** The fifteen consumers of the package, which are the keys of that table. */
+/** The sixteen consumers of the package, which are the keys of that table. */
 const THE_CONSUMERS = Object.keys(
   THE_PASSES_OF_EACH_CONSUMER,
 ) as ConsumerName[];
@@ -112,12 +113,12 @@ test("a name that is of no consumer is refused, with the names that are", async 
 
 test("every name the refusal gives is a name numPassesOf takes", async () => {
   await init();
-  // The fifteen names live twice in the binding crate, in the function that
+  // The sixteen names live twice in the binding crate, in the function that
   // takes a name and in the list the message of a refused name is built
   // from, and nothing else holds the two together. A name that the message
   // gives and the function refuses fails the loop below; a name the
   // function takes and the message leaves out fails the comparison with the
-  // fifteen of this file, which are the fifteen of
+  // sixteen of this file, which are the sixteen of
   // `docs/specs/js_sources.md`.
   const names = theConsumersTheCrateNames();
   assert.deepEqual([...names].sort(), [...THE_CONSUMERS].sort());

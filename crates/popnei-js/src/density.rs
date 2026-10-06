@@ -20,7 +20,7 @@
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::stats::{SoFar, VarDensity};
+use popnei::stats::{SoFar, VarDensity, VarDensityConfig};
 
 use crate::errors::JsPopneiError;
 use crate::source::{
@@ -29,8 +29,10 @@ use crate::source::{
 use crate::stats::TheResultSoFarAsked;
 use crate::steps::{Steps, chain_of};
 
-/// The arguments of one pass, as they crossed from TypeScript.
-pub(crate) struct ArgumentsOfTheDensity {
+/// The arguments of the density of a pass, as they crossed from TypeScript,
+/// which `calcVarDensity` and `calcVariantsSummary` give.
+#[wasm_bindgen]
+pub struct ArgumentsOfTheDensity {
     /// The width of a window in base pairs.
     pub(crate) window_size: f64,
     /// The names of the chromosomes of `chromLengths`, in the order the
@@ -39,6 +41,66 @@ pub(crate) struct ArgumentsOfTheDensity {
     pub(crate) chrom_names: Option<Vec<String>>,
     /// The length of each chromosome of `chrom_names`, at the same place.
     pub(crate) chrom_lengths: Vec<f64>,
+}
+
+#[wasm_bindgen]
+impl ArgumentsOfTheDensity {
+    /// Windows of `window_size` base pairs, with the lengths of
+    /// `chrom_lengths` for the chromosomes of `chrom_names` when it is not
+    /// nothing, and those of the source otherwise.
+    #[wasm_bindgen(constructor)]
+    #[must_use]
+    pub fn new(
+        window_size: f64,
+        chrom_names: Option<Vec<String>>,
+        chrom_lengths: Vec<f64>,
+    ) -> ArgumentsOfTheDensity {
+        ArgumentsOfTheDensity {
+            window_size,
+            chrom_names,
+            chrom_lengths,
+        }
+    }
+}
+
+/// The width of the windows and the lengths of the chromosomes that
+/// `asked` gives, as the core takes them.
+///
+/// # Errors
+///
+/// A width or a length that is not a whole number from 1 to 2^53 - 1, and
+/// names and lengths of two sizes, each a defect of the package, which
+/// refuses them before the call.
+pub(crate) fn density_config_of(
+    asked: &ArgumentsOfTheDensity,
+) -> Result<VarDensityConfig, JsPopneiError> {
+    let window_size = the_base_pairs_of("windowSize", asked.window_size)?;
+    let chrom_lengths = asked
+        .chrom_names
+        .as_ref()
+        .map(|names| {
+            if names.len() != asked.chrom_lengths.len() {
+                return Err(JsPopneiError::Broken(format!(
+                    "`chromLengths` arrived as {names} names and {lengths} lengths, and \
+                     it is one length for each name, which is a defect of popnei; please \
+                     report it",
+                    names = names.len(),
+                    lengths = asked.chrom_lengths.len()
+                )));
+            }
+            names
+                .iter()
+                .zip(&asked.chrom_lengths)
+                .map(|(name, length)| {
+                    Ok((name.clone(), the_base_pairs_of("chromLengths", *length)?))
+                })
+                .collect::<Result<Vec<(String, u64)>, JsPopneiError>>()
+        })
+        .transpose()?;
+    Ok(VarDensityConfig {
+        window_size,
+        chrom_lengths,
+    })
 }
 
 /// The number of variants in each window along each chromosome over one pass
@@ -63,29 +125,10 @@ pub(crate) fn var_density_of(
     asked: &ArgumentsOfTheDensity,
     so_far: TheResultSoFarAsked,
 ) -> Result<VarDensityOfAPass, JsPopneiError> {
-    let window_size = the_base_pairs_of("windowSize", asked.window_size)?;
-    let chrom_lengths = asked
-        .chrom_names
-        .as_ref()
-        .map(|names| {
-            if names.len() != asked.chrom_lengths.len() {
-                return Err(JsPopneiError::Broken(format!(
-                    "`chromLengths` arrived as {names} names and {lengths} lengths, and \
-                     it is one length for each name, which is a defect of popnei; please \
-                     report it",
-                    names = names.len(),
-                    lengths = asked.chrom_lengths.len()
-                )));
-            }
-            names
-                .iter()
-                .zip(&asked.chrom_lengths)
-                .map(|(name, length)| {
-                    Ok((name.clone(), the_base_pairs_of("chromLengths", *length)?))
-                })
-                .collect::<Result<Vec<(String, u64)>, JsPopneiError>>()
-        })
-        .transpose()?;
+    let VarDensityConfig {
+        window_size,
+        chrom_lengths,
+    } = density_config_of(asked)?;
     the_run_of(source, &Consumer::VarDensity, |run| {
         let reader = source.reader(run, None)?;
         let mut chain = chain_of(reader, steps.steps())?;
@@ -123,7 +166,7 @@ pub(crate) fn var_density_of(
 ///
 /// When the memory of a page cannot hold the arrays of the windows, and when
 /// a window ends past 2^53, which a number of JavaScript would round.
-fn windows_of(
+pub(crate) fn windows_of(
     density: &VarDensity,
     counts: PassCounts,
 ) -> Result<VarDensityOfAPass, JsPopneiError> {

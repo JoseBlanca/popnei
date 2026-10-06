@@ -27,6 +27,7 @@ import {
   calcPopDiversity,
   calcRogersHuffR2Matrix,
   calcVarDensity,
+  calcVariantsSummary,
   doPcaFromVariants,
   doPcoaFromVariants,
   init,
@@ -308,6 +309,12 @@ const THE_COUNTS_OF_EACH_CONSUMER: Record<
   calcPerIndividualStats: (variants) =>
     calcPerIndividualStats(variants).passStats,
   calcVarDensity: (variants) => calcVarDensity(variants, 1000).passStats,
+  calcVariantsSummary: (variants) =>
+    calcVariantsSummary(variants, {
+      perVar: {},
+      perIndividual: {},
+      density: { windowSize: 1000 },
+    }).passStats,
   calcPairwiseKosmanDists: (variants) =>
     calcPairwiseKosmanDists(variants).passStats,
   calcPopDists: (variants) =>

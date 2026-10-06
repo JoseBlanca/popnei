@@ -86,6 +86,7 @@ export {
   calcPerIndividualStats,
   calcPerVarDistribs,
   calcVarDensity,
+  calcVariantsSummary,
 } from "./stats.js";
 export type {
   BinType,
@@ -100,6 +101,8 @@ export type {
   StatsDistrib,
   VarDensity,
   VarDensityOptions,
+  VariantsSummary,
+  VariantsSummaryOptions,
 } from "./stats.js";
 export { Variants } from "./variant.js";
 export type {
