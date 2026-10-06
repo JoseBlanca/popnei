@@ -60,8 +60,18 @@ def open_vcf(
 
     `only_passed` leaves out the variants that failed a filter, those whose
     FILTER column is neither ``PASS`` nor a dot; a dot says that no filter
-    was applied. With it false every variant of the file is given, and
-    nothing then says which ones had failed.
+    was applied. A FILTER of ``PASS;q10`` failed: popnei reads the whole
+    column. With it false every variant of the file is given, and each
+    carries whether it passed, which :meth:`Variants.filter_passed` reads
+    and :func:`popnei.write_vars` keeps.
+
+    The two are for two uses. `only_passed`, the default, drops a line that
+    failed before its genotypes are read, which is the faster when the
+    variants that failed are never wanted. ``only_passed=False`` and
+    :meth:`Variants.filter_passed` take out the same variants as a step of
+    every pass, so that how many failed is in the counts of the pass beside
+    what each other filter took out, and the variants that failed are still
+    there for a pass without that filter.
 
     It is pyNei's ``vars_from_vcf`` under another name, with the ploidy and
     the filter as arguments, which pyNei has not. pyNei gives every variant,
