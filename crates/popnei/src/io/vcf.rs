@@ -6549,8 +6549,8 @@ mod tests {
         }
 
         #[test]
-        fn a_dot_after_a_separator_is_a_single_dot_and_the_genotype_after_it_gives_1() {
-            assert_eq!(read_ploidy(&vcf_of(&[&line_of("/. 1 .")])), 1);
+        fn a_dot_after_a_separator_is_a_single_dot_and_the_genotype_after_it_gives_2() {
+            assert_eq!(read_ploidy(&vcf_of(&[&line_of("/. 0/1 .")])), 2);
         }
 
         #[test]
@@ -6661,6 +6661,13 @@ mod tests {
                 panic!("the error is {error}");
             };
             assert_eq!((ploidy, largest), (256, MAX_PLOIDY));
+        }
+
+        #[test]
+        fn a_genotype_of_255_alleles_first_gives_255() {
+            let genotype = vec!["0"; 255].join("/");
+            let vcf = vcf_of(&[&line_of(&format!("{genotype} . ."))]);
+            assert_eq!(read_ploidy(&vcf), 255);
         }
 
         #[test]
