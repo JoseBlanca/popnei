@@ -14,6 +14,7 @@ use crate::block::{
     MIN_NUM_VARS_PER_BLOCK, VcfText,
 };
 use crate::error::{Error, Result};
+use crate::filters::TheChromOfTheVariant;
 use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
 /// What a line takes out of INFO, and a `##INFO` line out of the header,
@@ -193,17 +194,12 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
                 found_ploidy: block.ploidy,
             });
         }
+        let how = LinesOf::block(&block, reader.chroms(), without_counts, from)?;
         // The header went out before this block, with the `##FILTER` line
         // of `FAIL` only when the source said it keeps `passed`.
-        if !keeps_passed
-            && block
-                .passed
-                .as_ref()
-                .is_some_and(|passed| passed.contains(&false))
-        {
-            return Err(Error::VcfWriterPassedNotInTheHeader);
+        if !keeps_passed {
+            refuse_a_failed_variant(&block, reader.chroms())?;
         }
-        let how = LinesOf::block(&block, reader.chroms(), without_counts, from)?;
         format_rows(&how, block.num_vars, &mut buffers)?;
         let text: Vec<&[u8]> = buffers.iter().map(Vec::as_slice).collect();
         out.write_the_text(&text)?;
@@ -214,6 +210,44 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
         num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
     }
     Ok((out.finish()?, num_vars))
+}
+
+/// Nothing when no variant of `block` failed its FILTER, and otherwise the
+/// error of a source whose header keeps no `passed`, which names the first
+/// variant that failed.
+///
+/// # Errors
+///
+/// [`Error::VcfWriterPassedNotInTheHeader`] for a variant that failed, and
+/// [`Error::VcfWriterColumnMissing`] when the block has no column of the
+/// chromosome or of the position to name it by, which [`LinesOf::block`]
+/// refused before.
+fn refuse_a_failed_variant(block: &Block, chroms: &ChromTable) -> Result<()> {
+    let Some(var) = block
+        .passed
+        .as_ref()
+        .and_then(|passed| passed.iter().position(|passed| !passed))
+    else {
+        return Ok(());
+    };
+    let number = block
+        .chrom
+        .as_ref()
+        .and_then(|chrom| chrom.get(var))
+        .copied()
+        .ok_or(Error::VcfWriterColumnMissing { column: "chrom" })?;
+    let pos = block
+        .pos
+        .as_ref()
+        .and_then(|pos| pos.get(var))
+        .copied()
+        .ok_or(Error::VcfWriterColumnMissing { column: "pos" })?;
+    let chrom = chroms
+        .name(number)
+        .map_or(TheChromOfTheVariant::Numbered(number), |name| {
+            TheChromOfTheVariant::Named(name.to_owned())
+        });
+    Err(Error::VcfWriterPassedNotInTheHeader { chrom, pos })
 }
 
 /// Where the bytes of the file go, in the order of the file: to the sink as
@@ -653,7 +687,8 @@ mod tests {
     use crate::block::{Block, BlockReader, SourceHeader};
     use crate::error::{Error, Result};
     use crate::filters::{
-        FilteringStats, PassStep, RegionSelection, VarFilteringCriterion, chain_of,
+        FilteringStats, PassStep, RegionSelection, TheChromOfTheVariant, VarFilteringCriterion,
+        chain_of,
     };
     use crate::io::vars::{VarsReader, write_vars};
     use crate::io::vcf::{VcfOptions, VcfPlace, VcfReader};
@@ -1381,17 +1416,45 @@ mod tests {
     /// A source of columns whose header says it keeps no `passed` and
     /// whose block holds a variant that failed, chr1 250 of `write.vcf`, is
     /// a reader with a defect: its `FAIL` would have no `##FILTER` line.
+    /// The error names that variant, by the name of its chromosome when
+    /// the table of the reader has it and by its number when it does not.
     #[test]
     fn write_vcf_refuses_a_variant_that_failed_from_a_source_whose_header_keeps_no_passed_column() {
-        let mut reader = OneBlock::of_write_vcf(Needs::ALL);
-        reader.header.vcf_meta_lines = None;
-        reader.header.keeps_passed = false;
-        match write_vcf(&mut reader, Vec::new(), PLAIN) {
-            Err(error @ Error::VcfWriterPassedNotInTheHeader) => {
-                assert!(error.to_string().contains("##FILTER"), "{error}");
+        for (chroms, expected_chrom, in_the_message) in [
+            (
+                None,
+                TheChromOfTheVariant::Named("chr1".to_owned()),
+                "the chromosome chr1",
+            ),
+            (
+                Some(ChromTable::new()),
+                TheChromOfTheVariant::Numbered(0),
+                "the chromosome numbered 0",
+            ),
+        ] {
+            let mut reader = OneBlock::of_write_vcf(Needs::ALL);
+            reader.header.vcf_meta_lines = None;
+            reader.header.keeps_passed = false;
+            if let Some(chroms) = chroms {
+                reader.chroms = chroms;
             }
-            other => {
-                panic!("not the error of a failed variant the header has no line for: {other:?}")
+            match write_vcf(&mut reader, Vec::new(), PLAIN) {
+                Err(error @ Error::VcfWriterPassedNotInTheHeader { .. }) => {
+                    let message = error.to_string();
+                    assert!(message.contains("##FILTER"), "{message}");
+                    assert!(message.contains(in_the_message), "{message}");
+                    assert!(message.contains("position 250"), "{message}");
+                    let Error::VcfWriterPassedNotInTheHeader { chrom, pos } = error else {
+                        unreachable!("matched above");
+                    };
+                    assert_eq!(chrom, expected_chrom);
+                    assert_eq!(pos, 250);
+                }
+                other => {
+                    panic!(
+                        "not the error of a failed variant the header has no line for: {other:?}"
+                    )
+                }
             }
         }
     }

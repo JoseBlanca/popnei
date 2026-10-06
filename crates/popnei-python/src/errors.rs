@@ -583,7 +583,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // reader with a defect.
         | popnei::Error::VcfWriterFieldsMissing { .. }
         | popnei::Error::VcfWriterChromNameMissing { .. }
-        | popnei::Error::VcfWriterPassedNotInTheHeader
+        | popnei::Error::VcfWriterPassedNotInTheHeader { .. }
         // The one of the filter by regions, which is of the same kind: a
         // block whose chromosome number the table of its reader has no name
         // for, which the filter looks the regions up by.

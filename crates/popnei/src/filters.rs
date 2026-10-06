@@ -394,8 +394,10 @@ impl fmt::Display for TheOrderOfTheVariants {
     }
 }
 
-/// The chromosome of a variant that the filter by linkage disequilibrium
-/// refused for not coming after the variant before it.
+/// The chromosome of a variant that an error names: one that the filter by
+/// linkage disequilibrium refused for not coming after the variant before
+/// it, and one that failed its FILTER in a block the VCF writer was given
+/// from a source whose header keeps no `passed`.
 ///
 /// A block holds the number each of its chromosomes has in the table of the
 /// reader that gave it and not its name, so [`LdFilter::filter_block`],

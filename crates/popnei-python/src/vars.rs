@@ -306,7 +306,7 @@ fn of_the_file_it_is_about(error: popnei::Error, read: &Path, written: &Path) ->
             | popnei::Error::VarsBlockColumns { .. }
             | popnei::Error::VcfWriterFieldsMissing { .. }
             | popnei::Error::VcfWriterChromNameMissing { .. }
-            | popnei::Error::VcfWriterPassedNotInTheHeader
+            | popnei::Error::VcfWriterPassedNotInTheHeader { .. }
             | popnei::Error::VcfWriterMemberNotBuilt { .. }
     );
     PyPopneiError::of_the_file(error, if of_the_write { written } else { read })

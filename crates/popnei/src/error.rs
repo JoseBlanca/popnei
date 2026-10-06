@@ -2968,9 +2968,16 @@ pub enum Error {
     /// reader says it keeps `passed` when the file has that column, so a
     /// user reaches this only through a reader with a defect.
     #[error(
-        "a block given to the VCF writer holds a variant that failed its FILTER, and the header of its source says that it keeps no `passed`, so the `##FILTER` line of its `FAIL` was not written"
+        "a block given to the VCF writer holds a variant that failed its FILTER, on {chrom} at the position {pos}, and the header of its source says that it keeps no `passed`, so the `##FILTER` line of its `FAIL` was not written"
     )]
-    VcfWriterPassedNotInTheHeader,
+    VcfWriterPassedNotInTheHeader {
+        /// The chromosome of the first variant of the block that failed:
+        /// its name in the table of the reader, or its number in that table
+        /// when the table has no name for it.
+        chrom: crate::filters::TheChromOfTheVariant,
+        /// The position of that variant.
+        pos: u64,
+    },
 
     /// The vars file or the VCF could not be written: the sink refused the
     /// bytes, a disc that filled up among them, or arrow-rs could not write
@@ -3714,7 +3721,7 @@ impl Error {
             | Self::VarsChromNameMissing { .. }
             | Self::VcfWriterFieldsMissing { .. }
             | Self::VcfWriterChromNameMissing { .. }
-            | Self::VcfWriterPassedNotInTheHeader
+            | Self::VcfWriterPassedNotInTheHeader { .. }
             | Self::VcfWriterMemberNotBuilt { .. }
             | Self::RegionFilterChromNameMissing { .. }
             | Self::PcaTableOfAnotherSize { .. }
