@@ -424,18 +424,14 @@ impl TheDensity {
                 &mut self.num_windows,
             )?;
         }
-        // A `usize` is 64 bits on the targets popnei builds natively for and
-        // 32 in wasm, so every one of them is a `u64`; and a pass of more
-        // than 18446744073709551615 variants reads more rows than any source
-        // holds.
-        self.num_vars = self
-            .num_vars
-            .saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+        // A pass of more than 18446744073709551615 variants reads more rows
+        // than any source holds.
+        self.num_vars = self.num_vars.saturating_add(super::num_vars_of(block));
         Ok(())
     }
 
     /// The density of the pass when it ends, which takes the counts.
-    fn into_the_result(self) -> VarDensity {
+    pub(super) fn into_the_result(self) -> VarDensity {
         let num_windows = self.num_windows_of_the_result();
         VarDensity {
             window_size: self.window_size,

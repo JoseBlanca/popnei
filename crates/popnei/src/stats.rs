@@ -2001,7 +2001,7 @@ pub fn calc_per_individual_stats_with<R: BlockReader + ?Sized>(
     if individuals.num_vars == 0 {
         return Err(no_variant_in_the_pass(reader));
     }
-    Ok(individuals.the_result())
+    Ok(individuals.into_the_result())
 }
 
 /// What a pass of [`calc_per_individual_stats_with`] counts from block to
@@ -2041,7 +2041,17 @@ impl IndividualsCounted {
         Ok(())
     }
 
-    /// The rates of every individual over the variants counted so far.
+    /// The rates of every individual when the pass ends, which takes the
+    /// counts.
+    fn into_the_result(self) -> PerIndividualStats {
+        PerIndividualStats {
+            individuals: self.counted,
+            num_vars: self.num_vars,
+        }
+    }
+
+    /// The rates of every individual over the variants counted so far,
+    /// which copies the counts and leaves them to the pass.
     fn the_result(&self) -> PerIndividualStats {
         PerIndividualStats {
             individuals: self.counted.clone(),

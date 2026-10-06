@@ -152,7 +152,7 @@ pub fn calc_variants_summary<R: BlockReader + ?Sized>(
     if added_up.num_vars() == 0 {
         return Err(no_variant_in_the_pass(reader));
     }
-    Ok(added_up.the_result())
+    Ok(added_up.into_the_result())
 }
 
 /// What a pass of [`calc_variants_summary`] adds up from block to
@@ -191,6 +191,17 @@ impl AddedUp<'_> {
             (None, Some(per_individual), _) => per_individual.num_vars,
             (None, None, Some(density)) => density.num_vars,
             (None, None, None) => 0,
+        }
+    }
+
+    /// Each statistic when the pass ends, which takes what the rates and
+    /// the density counted; the distributions are built from their totals
+    /// as they are for a result so far.
+    fn into_the_result(self) -> VariantsSummary {
+        VariantsSummary {
+            per_var: self.per_var.as_ref().map(DistribsAddedUp::the_result),
+            per_individual: self.per_individual.map(IndividualsCounted::into_the_result),
+            density: self.density.map(TheDensity::into_the_result),
         }
     }
 
