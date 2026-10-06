@@ -147,7 +147,7 @@ Tasks:
   path a throw of `onProgress` takes; in `js/popnei`, the two options, their
   checks and their doc comments. From "The result so far" of
   `docs/specs/js_sources.md`. Deliverables 1, 4.
-- [ ] 2.2 `calcVariantsSummary` in both, with `onSoFar`, `numPassesOf`, the
+- [x] 2.2 `calcVariantsSummary` in both, with `onSoFar`, `numPassesOf`, the
   list of consumers and its doc comment, from "The three statistics of a
   file in one pass". Deliverables 2, 3, 4. Needs 2.1, whose files it
   shares.
