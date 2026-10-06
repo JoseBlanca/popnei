@@ -90,7 +90,7 @@ Stands on: nothing of this plan.
 
 Tasks:
 
-- [ ] 1.1 The three calculations split into what they add up and what they
+- [x] 1.1 The three calculations split into what they add up and what they
   give, with `SoFar`, `AfterABlock` and the three `_with` functions, in
   `crates/popnei/src/stats.rs` and `stats/density.rs`, from the part of
   "The Rust interface" of `docs/specs/stats.md` named in the opening. The
