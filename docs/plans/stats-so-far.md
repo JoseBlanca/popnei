@@ -141,7 +141,7 @@ Stands on: work package 1.
 
 Tasks:
 
-- [ ] 2.1 `onSoFar` and `soFarEvery` on the three calculations: in
+- [x] 2.1 `onSoFar` and `soFarEvery` on the three calculations: in
   `crates/popnei-js`, the clock, the call between blocks with the result as
   the package builds it, and the end of a pass whose function threw, by the
   path a throw of `onProgress` takes; in `js/popnei`, the two options, their
