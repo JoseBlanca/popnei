@@ -604,9 +604,13 @@ the page nothing more of how far it read, and what a page can call from
 inside the function, `free()` of the variants being read, another consumer,
 the counts, gets the answers it gets from inside the function of
 `onProgress`. An error of the pass, a variant past the length of its
-chromosome among them, is thrown as it is today. The time is read with the
-clock of JavaScript in the binding crate, and the core crate reads no
-clock.
+chromosome among them, is thrown as it is today, and so is an error in
+building the result so far, which is the error the page gets and not one
+that says the pass was stopped. The function is called and not awaited: a
+function that returns a promise is called, and what its promise rejects
+with does not stop the pass. The time is read with `performance.now()` in
+the binding crate, a clock that never goes back, and the core crate reads
+no clock.
 
 The owner decided on 7 October 2026 that the function is a function the
 consumer calls, that every one of the four takes it, and that it is in the
@@ -656,7 +660,16 @@ compared; the last call equals what the consumer returns. The same for
 call, and with `chromLengths: {}`, which takes none and has the windows
 grow; `many.vcf` has no `##contig` length, so its own lengths would give
 the second case again.
-With a `soFarEvery` of 3600 the function is never called over that file.
+With a `soFarEvery` of 3600 the function is never called over that file,
+and with none, the default of 2 seconds, it is never called either. Over
+the same `Variants` with `filterByMaf(0.95)`, each call carries the counts
+of that filter after its block, 100 to 500 given, as literals. Over the
+vars file in 500 batches of one variant, with a `soFarEvery` of 0.003 s and
+a function that waits 1 ms, the function is called far fewer times than
+there are blocks, which is what counting the interval from the last call
+gives. A density with `chromLengths: {chr1: 6000}` is called once, at 100
+variants, and then throws the error of a variant past the length, and a
+result so far that cannot be built throws its own error.
 The tests of the item above for `onProgress` that stop a pass, in
 `test/stop.test.ts`, are made again for `onSoFar`: a value thrown at the
 second call is what the consumer throws, the next call over the same
@@ -735,10 +748,12 @@ calcVariantsSummary(variants, {
 }): VariantsSummary
 ```
 
-A statistic is given when its key is there and left out when it is not;
-`perVar` and `density` are checked as the options of `calcPerVarDistribs`
-and the `windowSize` and `chromLengths` of `calcVarDensity` are, and
-`perIndividual` is an empty object. A call with none of the three is an
+A statistic is given when its key is there with a value that is not
+`undefined`, and left out otherwise; `perVar` is checked as the options of
+`calcPerVarDistribs` are, but for `onSoFar` and `soFarEvery`, which are
+options of the summary and are refused inside it; `density` as the
+`windowSize` and `chromLengths` of `calcVarDensity` are, with the errors
+naming `density.windowSize`; and `perIndividual` is an empty object. A call with none of the three is an
 `Error` that says to ask for one. `VariantsSummary` has `perVar`, a
 `PerVarDistribs` or `null`, `perIndividual`, a `PerIndividualStats` or
 `null`, `density`, a `VarDensity` or `null`, each of the type its consumer
