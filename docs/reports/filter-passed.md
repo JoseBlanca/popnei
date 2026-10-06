@@ -20,6 +20,24 @@ which failed in the same way on `main` before the plan. No decision is
 left open. What is asked of you is the order to merge the branch into
 `main`, and with it issue 9 can be closed.
 
+What a user gets. A VCF opened with `only_passed=False` gives every
+variant, and `filter_passed()` takes out those whose FILTER is neither
+`PASS` nor a dot, with their count beside those of the other filters; a VCF
+opened with the default has none to take out, and the filter keeps all. A
+vars file written before this branch, format 1.0 or 1.1, has no record of
+which variants passed, and a calculation with the filter on it stops at its
+first block with a `ValueError` that starts with the path of the file and
+says "the variants hold no record of whether they passed their FILTER, so
+the filter of the variants that passed cannot run on them: a vars file
+holds it from format 1.2, written from a VCF".
+
+What it costs. Every read of a VCF now records, for each variant, whether
+it passed. The architecture reviewer read the plain 403 MB `big.vcf` on one
+thread with every field, with and without that record, 15 runs of each on a
+busy machine: medians of 1.029 s and 1.032 s, no difference that can be
+measured. A vars file grows by a bit for each variant before compression,
+232 bytes for the 500 variants of `many.vcf`.
+
 ## 1. The column of whether each variant passed
 
 Task 1.1, the column in the core, is 53e8b64: `Needs::PASSED` in `ALL`,
@@ -173,7 +191,9 @@ say what happened.
 
 ### What the owner should know
 
-- A vars file marked 1.1 that has a `passed` column is read with it, by
-  the rule of the version, which reads any column of a later minor version.
+- A vars file marked 1.1 that has a `passed` column, which only another
+  program could write, is read with it and filtered: the reader of the vars
+  file reads a column it knows whatever the minor version of the file
+  says.
 - Issues 6 and 7 are closed, with their merge, df92324, and the release
   js-v0.2.0. This plan is not in a release yet.
