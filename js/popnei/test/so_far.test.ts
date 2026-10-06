@@ -487,3 +487,79 @@ for (const [what, options, message] of REFUSED_BY_PER_INDIVIDUAL) {
     }
   });
 }
+
+/**
+ * The density and the summary with a length for chr1 that its second block
+ * passes: the first 100 variants of `many.vcf` are at positions up to 6000,
+ * and the next one at 6032.
+ */
+const PAST_THE_LENGTH: readonly TheCalculation[] = [
+  {
+    name: "calcVarDensity",
+    run: (variants, options) =>
+      calcVarDensity(variants, WINDOW_SIZE, {
+        chromLengths: { chr1: 6000 },
+        ...(options as object),
+      }),
+  },
+  {
+    name: "calcVariantsSummary",
+    run: (variants, options) =>
+      calcVariantsSummary(variants, {
+        density: { windowSize: WINDOW_SIZE, chromLengths: { chr1: 6000 } },
+        ...(options as object),
+      }),
+  },
+];
+
+for (const calculation of PAST_THE_LENGTH) {
+  test(`${calculation.name} calls onSoFar at the block before a variant past the length of its chromosome, and throws the error of that variant`, () => {
+    const variants = openVars(IN_FIVE_BLOCKS);
+    try {
+      const calls: number[] = [];
+      assert.throws(
+        () =>
+          calculation.run(variants, {
+            onSoFar: (soFar: WithPassStats) => {
+              calls.push(soFar.passStats.numVars);
+            },
+            soFarEvery: 0,
+          }),
+        /chr1 is at the position 6032, past the length of the chromosome, 6000/,
+      );
+      assert.deepEqual(calls, [100]);
+    } finally {
+      variants.free();
+    }
+  });
+}
+
+test("calcVarDensity throws the error its result so far could not be built with", async () => {
+  // The last variant of many.vcf moved to a position whose window of 5e15
+  // base pairs, from 5000000000000001 to 10000000000000000, ends past 2^53,
+  // the last whole number a number of JavaScript holds, so the result over
+  // the one block of the VCF cannot be given to onSoFar.
+  const text = new TextDecoder()
+    .decode(await referenceVcf("many.vcf"))
+    .replace("chr2\t19463\t", "chr2\t9007199254740000\t");
+  const variants = openVcf(new TextEncoder().encode(text), {
+    onlyPassed: false,
+  });
+  try {
+    let calls = 0;
+    assert.throws(
+      () =>
+        calcVarDensity(variants, 5e15, {
+          chromLengths: {},
+          onSoFar: () => {
+            calls += 1;
+          },
+          soFarEvery: 0,
+        }),
+      /the window 5000000000000001 to 10000000000000000 of the chromosome chr2 ends past 9007199254740992/,
+    );
+    assert.equal(calls, 0);
+  } finally {
+    variants.free();
+  }
+});
