@@ -73,11 +73,11 @@ pass passed their FILTER, `PASS` or a dot in the VCF they were read from,
 and how many failed, without taking any out, so a page that opens a VCF
 with `onlyPassed: false` and draws the histograms of every variant can say
 how many of those failed. The counts are of the variants that reach the
-summary, after every step, so after `filterPassed` none failed. A source that did not record the FILTER of its
-variants, a vars file written before format 1.2 or from such a file, or
-one that holds no variant, cannot give them, and the call is an `Error`;
-`keepsPassed` of the `Variants` says beforehand whether they can be asked
-for.
+summary, after every step, so after `filterPassed` none failed. A source
+that did not record the FILTER of its variants, a vars file written before
+format 1.2 or from such a file, or one that holds no variant, cannot give
+them, and the call is an `Error`; `keepsPassed` of the `Variants` says
+beforehand whether they can be asked for.
 `calcPopDiversity` gives, in a `PopDiversity` and for each
 population a user names in `pops`, how much variety it holds: how many
 alleles its individuals called, how many of those no other population

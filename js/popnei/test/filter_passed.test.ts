@@ -19,7 +19,8 @@
  * `keepsPassed` of a `Variants`, which says beforehand whether the filter can
  * run, is here too, from the paragraph "A `Variants` also has
  * `keeps_passed`" of `docs/specs/variant.md`: true for `many.vcf` and for the
- * vars file written from it, false for `of_1_1.vars`.
+ * vars file written from it, false for `of_1_1.vars` and for a vars file
+ * that holds no variant, which popnei writes with the genotypes alone.
  */
 
 import assert from "node:assert/strict";
@@ -151,13 +152,15 @@ test("filterPassed over a vars file of 1.1, which has no record of whether its v
   variants.free();
 });
 
-test("keepsPassed is true for a VCF, whichever way it was opened", () => {
+test("keepsPassed is true for a VCF, whichever way it was opened, and answers after free", () => {
   const every = many();
   const passedAlone = openVcf(MANY_VCF);
   assert.equal(every.keepsPassed, true);
   assert.equal(passedAlone.keepsPassed, true);
   every.free();
   passedAlone.free();
+  assert.equal(every.keepsPassed, true);
+  assert.equal(passedAlone.keepsPassed, true);
 });
 
 test("keepsPassed is true for a vars file written from a VCF", () => {
@@ -174,4 +177,18 @@ test("keepsPassed is false for a vars file of 1.1, and a filter does not change 
   variants.filterPassed();
   assert.equal(variants.keepsPassed, false);
   variants.free();
+  assert.equal(variants.keepsPassed, false);
+});
+
+test("keepsPassed is false for a vars file that holds no variant, which popnei writes with the genotypes alone", () => {
+  // A MAF of at most 0 keeps the variants with one allele alone, and many.vcf
+  // has none: the file is written from a pass of no variant.
+  const variants = many();
+  variants.filterByMaf(0);
+  const written = writeVars(variants);
+  assert.equal(written.passStats.numVars, 0);
+  const empty = openVars(written.bytes);
+  assert.equal(empty.keepsPassed, false);
+  variants.free();
+  empty.free();
 });

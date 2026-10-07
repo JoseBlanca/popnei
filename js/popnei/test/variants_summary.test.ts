@@ -455,15 +455,17 @@ test("calcVariantsSummary with filterColumn over a vars file of 1.1 gives the er
           density: { windowSize: 1000 },
           filterColumn: {},
         }),
-      /polyThreshold/,
+      /`polyThreshold` is 2, and a threshold is a number from 0 to 1/,
     );
+    // Windows of 1 base pair over 20000000 base pairs are more than the
+    // 10000000 the core gives at most, which only the core refuses.
     assert.throws(
       () =>
         calcVariantsSummary(variants, {
-          density: { windowSize: 0 },
+          density: { windowSize: 1, chromLengths: { chr1: 20_000_000 } },
           filterColumn: {},
         }),
-      /`density.windowSize`/,
+      /the density of the variants in windows of 1 base pairs has 20000000 windows at least/,
     );
   } finally {
     variants.free();

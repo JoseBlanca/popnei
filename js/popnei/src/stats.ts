@@ -345,19 +345,6 @@ export interface PerVarDistribs {
  * at every variant, whatever `minNumIndividuals` is, and a variant with
  * nothing called in a population has a rate of 1 there.
  *
- * With `filterColumn`, it also counts how many of the variants of the pass
- * passed their FILTER and how many failed, without taking any out: a page
- * that opens a VCF with `onlyPassed: false` and draws the histograms of
- * every variant says beside them how many of those failed. The counts are
- * of the variants that reach the summary, after every step, so after
- * `filterPassed` none failed. A source that did not record the FILTER of
- * its variants, a vars file written before format 1.2 or from such a file,
- * or one that holds no variant, cannot give them: the call is an `Error`
- * before the pass reads a block, and `keepsPassed` of the `Variants` says
- * beforehand whether they can be asked for. `filterColumn` alone is a pass
- * that reads whether each variant passed and nothing else, and gives the
- * counts and no statistic.
- *
  * It is a consumer of the `variants`: it makes one pass over the source
  * through the steps the `Variants` has when it is called, and the `Variants`
  * is as it was afterwards. The populations are resolved against the
@@ -825,19 +812,6 @@ export type PerIndividualStatsOptions = SoFarOptions<PerIndividualStats>;
  * inbred ones. An individual that called no genotype has a missing rate of 1
  * and no heterozygosity rate, NaN.
  *
- * With `filterColumn`, it also counts how many of the variants of the pass
- * passed their FILTER and how many failed, without taking any out: a page
- * that opens a VCF with `onlyPassed: false` and draws the histograms of
- * every variant says beside them how many of those failed. The counts are
- * of the variants that reach the summary, after every step, so after
- * `filterPassed` none failed. A source that did not record the FILTER of
- * its variants, a vars file written before format 1.2 or from such a file,
- * or one that holds no variant, cannot give them: the call is an `Error`
- * before the pass reads a block, and `keepsPassed` of the `Variants` says
- * beforehand whether they can be asked for. `filterColumn` alone is a pass
- * that reads whether each variant passed and nothing else, and gives the
- * counts and no statistic.
- *
  * It is a consumer of the `variants`: it makes one pass over the source
  * through the steps the `Variants` has when it is called, and the `Variants`
  * is as it was afterwards. The individuals are the ones that pass gives,
@@ -966,19 +940,6 @@ export interface VarDensity {
  * puts the keys that are whole numbers first, in ascending order, and then
  * the others in the order they were written: `{X: 1, "10": 1, "2": 1}` gives
  * 2, 10 and X, where the same dict in Python gives X, 10 and 2.
- *
- * With `filterColumn`, it also counts how many of the variants of the pass
- * passed their FILTER and how many failed, without taking any out: a page
- * that opens a VCF with `onlyPassed: false` and draws the histograms of
- * every variant says beside them how many of those failed. The counts are
- * of the variants that reach the summary, after every step, so after
- * `filterPassed` none failed. A source that did not record the FILTER of
- * its variants, a vars file written before format 1.2 or from such a file,
- * or one that holds no variant, cannot give them: the call is an `Error`
- * before the pass reads a block, and `keepsPassed` of the `Variants` says
- * beforehand whether they can be asked for. `filterColumn` alone is a pass
- * that reads whether each variant passed and nothing else, and gives the
- * counts and no statistic.
  *
  * It is a consumer of the `variants`: it makes one pass over the source
  * through the steps the `Variants` has when it is called, reading only the
@@ -1272,28 +1233,28 @@ export interface VariantsSummary {
  * runs, every `soFarEvery` seconds, as `SoFarOptions` says, each the result
  * so far of its own call, and the counts of the FILTER column over them.
  *
- * An error of any of the three ends the pass, and none of them is given: a
- * page that wants the other two when the density refuses a variant past the
+ * An error of any of the four ends the pass, and none of them is given: a
+ * page that wants the others when the density refuses a variant past the
  * length of its chromosome calls them on their own. pyNei has no such
  * function, and neither has the Python package of popnei.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed; when
  * the options are not an object or hold a key that is none of the six;
  * when none of `perVar`, `perIndividual`, `density` and `filterColumn` is
- * given; when
- * `perVar` is not an object, holds `onSoFar`, `soFarEvery` or a key that is
- * no option of `calcPerVarDistribs`, or holds what `calcPerVarDistribs`
- * refuses; when `perIndividual` is not an object or
+ * given; when `perVar` is not an object, holds `onSoFar`, `soFarEvery` or a
+ * key that is no option of `calcPerVarDistribs`, or holds what
+ * `calcPerVarDistribs` refuses; when `perIndividual` is not an object or
  * holds a key; when `density` is not an object, holds a key that is neither
  * `windowSize` nor `chromLengths`, or holds what `calcVarDensity` refuses;
  * when `filterColumn` is not an object or holds a key; when `filterColumn`
  * is given and the source did not record the FILTER of its variants, which
- * `keepsPassed` is false for; when `onSoFar` is not a function, when `soFarEvery` is not a finite
- * number of 0 or more and when it is given without `onSoFar`; what the pass
- * of any of the three refuses, which `calcPerVarDistribs`,
- * `calcPerIndividualStats` and `calcVarDensity` name; when the pass gives
- * no variant; and when `init` has not been awaited. It throws what
- * `onSoFar` threw.
+ * `keepsPassed` is false for; when `onSoFar` is not a function, when
+ * `soFarEvery` is not a finite number of 0 or more and when it is given
+ * without `onSoFar`; what the pass of any of the four refuses, which
+ * `calcPerVarDistribs`, `calcPerIndividualStats` and `calcVarDensity` name
+ * for the three and which for the counts is a block without the column;
+ * when the pass gives no variant; and when `init` has not been awaited. It
+ * throws what `onSoFar` threw.
  */
 export function calcVariantsSummary(
   variants: Variants,

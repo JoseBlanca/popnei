@@ -33,8 +33,9 @@ use crate::steps::{Step, Steps, chain_of};
 
 // A vars file that was opened: its path, the individuals and the ploidy its
 // schema named, and whether it has the column of whether each variant passed
-// its FILTER, which the header of its reader says. A `///` here would become the `__doc__` of the class,
-// and what a Python user reads belongs to the package, which is the API.
+// its FILTER, which the header of its reader says. A `///` here would become
+// the `__doc__` of the class, and what a Python user reads belongs to the
+// package, which is the API.
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct VarsSource {
     path: PathBuf,

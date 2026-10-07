@@ -12,7 +12,8 @@ FILTER, and the test takes the 475 from there.
 `keeps_passed` of a `Variants`, which says beforehand whether the filter
 can run, is here too, from the paragraph "A `Variants` also has
 `keeps_passed`" of `docs/specs/variant.md`: true for `many.vcf` and for the
-vars file written from it, false for `of_1_1.vars`.
+vars file written from it, false for `of_1_1.vars` and for a vars file
+that holds no variant, which popnei writes with the genotypes alone.
 """
 
 from pathlib import Path
@@ -261,3 +262,19 @@ def test_keeps_passed_is_false_for_a_vars_file_of_1_1_and_a_filter_does_not_chan
     assert variants.keeps_passed is False
     variants.filter_passed()
     assert variants.keeps_passed is False
+
+
+def test_keeps_passed_is_false_for_a_vars_file_that_holds_no_variant(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """popnei writes a vars file of no variant with the genotypes alone, so
+    it holds no record of whether its variants passed. A MAF of at most 0
+    keeps the variants with one allele alone, and `many.vcf` has none."""
+    variants = _many(reference_vcf_dir)
+    variants.filter_by_maf(0.0)
+    path = tmp_path / "empty.vars"
+
+    written = write_vars(variants, path)
+
+    assert written.pass_stats.num_vars == 0
+    assert open_vars(path).keeps_passed is False

@@ -24,9 +24,9 @@ use crate::vars::write_the_pass;
 
 // A VCF that was opened: its path, the options it is read with, the
 // individuals its header named, and whether its blocks hold whether each
-// variant passed its FILTER, which the header of its reader says. A `///` here would become the `__doc__` of
-// the class, and what a Python user reads belongs to the package, which is
-// the API.
+// variant passed its FILTER, which the header of its reader says. A `///`
+// here would become the `__doc__` of the class, and what a Python user reads
+// belongs to the package, which is the API.
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct VcfSource {
     path: PathBuf,
