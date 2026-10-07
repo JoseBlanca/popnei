@@ -62,9 +62,10 @@ await init();
  * the processor has it, so the two round the same sums differently.
  *
  * No number of the example is near 0: the smallest is the `beta` of `v1`,
- * 0.3125, against an `se` of 1.3, so a share of the number and a share of
- * the scale of what is estimated are the same bound here, and the rule of
- * the spec that a `beta` is measured against its `se` changes nothing.
+ * 0.3125, against an `se` of 1.3, so under the linear model a share of the
+ * number and a share of the scale of what is estimated are close bounds.
+ * The mixed model over the identity kinship is held to its own,
+ * `OF_THE_FLAT_CRITERION`.
  */
 const OF_THE_WORKED_EXAMPLE = 7e-15;
 
@@ -849,8 +850,8 @@ function assertWithinTheScale(
   const difference = Math.abs(found - expected);
   assert.ok(
     difference <= tolerance * scale,
-    `${what} is ${found} and plink2 gives ${expected}, ${difference} away, ` +
-      `which is ${difference / scale} of the ${scale} it is uncertain by ` +
+    `${what} is ${found} and the reference gives ${expected}, ${difference} ` +
+      `away, which is ${difference / scale} of the ${scale} it is uncertain by ` +
       `against the ${tolerance} allowed`,
   );
 }
@@ -1309,6 +1310,25 @@ test("the kinship is read in the order the source has the individuals", () => {
   assert.deepEqual([...backwards.stats.se], [...inTheSourcesOrder.stats.se]);
 });
 
+/**
+ * How far a number of the worked example may be from pyNei's when the
+ * kinship is the identity: 1e-14, of its `se` for a `beta` and of itself for
+ * a p-value.
+ *
+ * The mixed model reaches those numbers through the Cholesky factor of a
+ * covariance whose scale is whichever point of the flat search won, which
+ * rounds more than the linear model of `OF_THE_WORKED_EXAMPLE` does. Under
+ * node on 7 October 2026 the worst of the four numbers was the `beta` of
+ * `v0`, 3.70e-15 of its `se`; the `beta` of `v1` was 2.72e-15 of its `se`
+ * and 1.14e-14 of itself, which is why a `beta` is measured against its
+ * `se` here, the rule of the spec, and the p-values at most 2.55e-15 of
+ * themselves. So this is 2.7 times the worst measured. It was 7e-15 of each
+ * number itself until the two mixed models solved a variant against that
+ * factor, in commit 19a0f3c of 25 September 2026, after which the `beta` of
+ * `v1` failed it.
+ */
+const OF_THE_FLAT_CRITERION = 1e-14;
+
 test("a kinship that does not tell the two variances apart gives none of them", () => {
   // The identity is what a user passes to mean no relatedness, and with it
   // the model is the ordinary linear one whatever the split between the
@@ -1330,22 +1350,23 @@ test("a kinship that does not tell the two variances apart gives none of them", 
   assert.equal(result.nullModel.residualVariance, undefined);
   assert.equal(result.nullModel.heritability, undefined);
   assert.equal(result.nullModel.numIndividuals, 6);
-  for (const { id, beta, pValue } of THE_ROWS) {
+  for (const { id, beta, se, pValue } of THE_ROWS) {
     const at = rowOf(result, id);
     if (Number.isNaN(beta)) {
       assert.ok(Number.isNaN(result.stats.beta[at] as number), `beta of ${id}`);
       continue;
     }
-    assertWithin(
+    assertWithinTheScale(
       result.stats.beta[at] as number,
       beta,
-      OF_THE_WORKED_EXAMPLE,
+      se,
+      OF_THE_FLAT_CRITERION,
       `the effect of ${id}`,
     );
     assertWithin(
       result.stats.pValue[at] as number,
       pValue,
-      OF_THE_WORKED_EXAMPLE,
+      OF_THE_FLAT_CRITERION,
       `the p-value of ${id}`,
     );
   }
