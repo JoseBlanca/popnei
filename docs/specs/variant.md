@@ -123,8 +123,24 @@ their own and for the tests. The owner decided this on 20 September 2026;
 the option not taken was an iterator of single variants, each copied into
 a Python object.
 
-In TypeScript, `Variants` is a class with `individuals`, `numIndividuals`
-and `ploidy`, the steps as methods, `steps`, and `iterBlocks`. It lives in the memory of wasm, which the
+A `Variants` also has `keeps_passed`, whether its source recorded, for
+each variant, whether it passed its FILTER: true for a VCF and for a vars
+file of format 1.2 written from a source that had the record and holding
+one variant at least, false for a vars file of format 1.0 or 1.1, for one
+written from such a file and for one that holds no variant, which popnei
+writes with the genotypes alone. A `Variants` built from an array of
+genotypes, when it is built, has it false. It is the
+`keeps_passed` of the header of the source, read when the source is
+opened, and no step changes it. It tells a user beforehand whether
+`filter_passed` of `docs/specs/filters.md`, and in TypeScript the counts of
+the FILTER column of `calcVariantsSummary` of `docs/specs/js_sources.md`,
+can run, since both refuse a source without the record. It was added on 7
+October 2026 from issue 12. The tests of both packages check it on
+`tests/reference/vcf/many.vcf`, on the vars file written from it and on
+`tests/reference/vars/of_1_1.vars`: true, true and false.
+
+In TypeScript, `Variants` is a class with `individuals`, `numIndividuals`,
+`ploidy` and `keepsPassed`, the steps as methods, `steps`, and `iterBlocks`. It lives in the memory of wasm, which the
 garbage collector of JavaScript does not see, so it has a `free()` method
 that the application calls when it is done with it, and
 `[Symbol.dispose]`, which does the same for an application that declares

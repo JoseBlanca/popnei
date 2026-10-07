@@ -24,7 +24,9 @@
  * along each chromosome, and reads no genotype.
  *
  * `calcVariantsSummary` gives the three in one pass, where they take three,
- * each the same to the bit as its own call gives it.
+ * each the same to the bit as its own call gives it, and beside them, when
+ * asked, how many of the variants of the pass passed their FILTER and how
+ * many failed.
  *
  * The three build their results at the end of the pass from totals they add
  * up block by block, so each of them, and `calcVariantsSummary`, can give,
@@ -1151,9 +1153,10 @@ export type PerVarOptionsOfASummary = Omit<
 
 /**
  * The options of `calcVariantsSummary`: which of the three statistics it
- * gives, each with the options of its own call, and the two of the result
- * so far. A statistic whose key is not there, or is `undefined`, is not
- * given.
+ * gives, each with the options of its own call, whether it gives the counts
+ * of the FILTER column, and the two of the result so far. A statistic whose
+ * key is not there, or is `undefined`, is not given, and the counts as
+ * well.
  */
 export interface VariantsSummaryOptions extends SoFarOptions<VariantsSummary> {
   /**
@@ -1178,11 +1181,20 @@ export interface VariantsSummaryOptions extends SoFarOptions<VariantsSummary> {
     windowSize: number;
     chromLengths?: Record<string, number>;
   };
+
+  /**
+   * `{}` for the counts of the FILTER column: how many of the variants of
+   * the pass passed their FILTER and how many failed, which takes no
+   * option. The source has to have recorded the FILTER of its variants,
+   * which `keepsPassed` of the `Variants` says.
+   */
+  filterColumn?: Record<string, never>;
 }
 
 /**
  * What `calcVariantsSummary` gives back: each of the three statistics of
- * the type its own call returns, or `null` when it was not asked for, and
+ * the type its own call returns, or `null` when it was not asked for, the
+ * counts of the FILTER column, or `null` when they were not asked for, and
  * the counts of the one pass.
  */
 export interface VariantsSummary {
@@ -1194,6 +1206,15 @@ export interface VariantsSummary {
 
   /** The number of variants in each window along each chromosome. */
   density: VarDensity | null;
+
+  /**
+   * Of the variants of the pass, after every step of the `Variants`, how
+   * many passed their FILTER, whose column in the VCF they were read from
+   * was `PASS` or a dot, and how many failed; the two add up to
+   * `passStats.numVars`. With `filterPassed` among the steps `failed` is 0,
+   * and the variants it took out are in its counts in `passStats`.
+   */
+  filterColumn: { passed: number; failed: number } | null;
 
   /**
    * How many variants the pass gave, after the steps of the `Variants`, and
@@ -1212,8 +1233,9 @@ export interface VariantsSummary {
  * the bit: the three are added up from the same blocks by the same code,
  * and only the pass is shared, so the code of a page that draws one from
  * its own call draws it from here unchanged. The pass reads the genotypes
- * when `perVar` or `perIndividual` is asked for, and the chromosome and the
- * position when `density` is. What it saves depends on the file: over a
+ * when `perVar` or `perIndividual` is asked for, the chromosome and the
+ * position when `density` is, and whether each variant passed when
+ * `filterColumn` is. What it saves depends on the file: over a
  * plain VCF of 403 MB, 100000 variants of 1000 diploid individuals, one
  * pass took 44% less than the three, 1.247 s against 2.240 s, since the
  * genotypes are parsed once; over the vars file of the same variants, whose
@@ -1222,33 +1244,49 @@ export interface VariantsSummary {
  * "The three statistics of a file in one pass" of
  * `docs/specs/js_sources.md` has it.
  *
+ * With `filterColumn`, it also counts how many of the variants of the pass
+ * passed their FILTER and how many failed, without taking any out: a page
+ * that opens a VCF with `onlyPassed: false` and draws the histograms of
+ * every variant says beside them how many of those failed. The counts are
+ * of the variants that reach the summary, after every step, so after
+ * `filterPassed` none failed. A source that did not record the FILTER of
+ * its variants, a vars file written before format 1.2 or from such a file,
+ * or one that holds no variant, cannot give them: the call is an `Error`
+ * before the pass reads a block, and `keepsPassed` of the `Variants` says
+ * beforehand whether they can be asked for. `filterColumn` alone is a pass
+ * that reads whether each variant passed and nothing else, and gives the
+ * counts and no statistic.
+ *
  * It is a consumer of the `variants`: it makes one pass over the source
  * through the steps the `Variants` has when it is called, and the
  * `Variants` is as it was afterwards.
  *
  * `onSoFar` is given the three over the variants read so far while the pass
  * runs, every `soFarEvery` seconds, as `SoFarOptions` says, each the result
- * so far of its own call.
+ * so far of its own call, and the counts of the FILTER column over them.
  *
- * An error of any of the three ends the pass, and none of them is given: a
- * page that wants the other two when the density refuses a variant past the
+ * An error of any of the four ends the pass, and none of them is given: a
+ * page that wants the others when the density refuses a variant past the
  * length of its chromosome calls them on their own. pyNei has no such
  * function, and neither has the Python package of popnei.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed; when
- * the options are not an object or hold a key that is none of the five;
- * when none of `perVar`, `perIndividual` and `density` is given; when
- * `perVar` is not an object, holds `onSoFar`, `soFarEvery` or a key that is
- * no option of `calcPerVarDistribs`, or holds what `calcPerVarDistribs`
- * refuses; when `perIndividual` is not an object or
+ * the options are not an object or hold a key that is none of the six;
+ * when none of `perVar`, `perIndividual`, `density` and `filterColumn` is
+ * given; when `perVar` is not an object, holds `onSoFar`, `soFarEvery` or a
+ * key that is no option of `calcPerVarDistribs`, or holds what
+ * `calcPerVarDistribs` refuses; when `perIndividual` is not an object or
  * holds a key; when `density` is not an object, holds a key that is neither
  * `windowSize` nor `chromLengths`, or holds what `calcVarDensity` refuses;
- * when `onSoFar` is not a function, when `soFarEvery` is not a finite
- * number of 0 or more and when it is given without `onSoFar`; what the pass
- * of any of the three refuses, which `calcPerVarDistribs`,
- * `calcPerIndividualStats` and `calcVarDensity` name; when the pass gives
- * no variant; and when `init` has not been awaited. It throws what
- * `onSoFar` threw.
+ * when `filterColumn` is not an object or holds a key; when `filterColumn`
+ * is given and the source did not record the FILTER of its variants, which
+ * `keepsPassed` is false for; when `onSoFar` is not a function, when
+ * `soFarEvery` is not a finite number of 0 or more and when it is given
+ * without `onSoFar`; what the pass of any of the four refuses, which
+ * `calcPerVarDistribs`, `calcPerIndividualStats` and `calcVarDensity` name
+ * for the three and which for the counts is a block without the column;
+ * when the pass gives no variant; and when `init` has not been awaited. It
+ * throws what `onSoFar` threw.
  */
 export function calcVariantsSummary(
   variants: Variants,
@@ -1259,24 +1297,27 @@ export function calcVariantsSummary(
     "perVar",
     "perIndividual",
     "density",
+    "filterColumn",
     ...SO_FAR_KEYS,
   ]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,
   );
-  const { perVar, perIndividual, density } = options;
+  const { perVar, perIndividual, density, filterColumn } = options;
   if (
     perVar === undefined &&
     perIndividual === undefined &&
-    density === undefined
+    density === undefined &&
+    filterColumn === undefined
   ) {
     throw new Error(
-      "popnei: `calcVariantsSummary` was asked for none of its three " +
+      "popnei: `calcVariantsSummary` was asked for none of its four " +
         "statistics: give `perVar: {}` for the distributions of the " +
         "statistics of each variant, `perIndividual: {}` for the rates of " +
-        "each individual, or `density: {windowSize}` for the density of the " +
-        "variants",
+        "each individual, `density: {windowSize}` for the density of the " +
+        "variants, or `filterColumn: {}` for how many of the variants " +
+        "passed their FILTER and how many failed",
     );
   }
   let perVarAsked: PerVarArguments | undefined;
@@ -1298,6 +1339,9 @@ export function calcVariantsSummary(
       density.windowSize,
       density.chromLengths,
     );
+  }
+  if (filterColumn !== undefined) {
+    anObjectOfOptions("calcVariantsSummary.filterColumn", filterColumn, []);
   }
   const soFar = theResultSoFar(options, summaryOf);
   // The steps of the pass and the arguments of each statistic are objects
@@ -1324,6 +1368,7 @@ export function calcVariantsSummary(
       perVarOfThePass,
       perIndividual !== undefined,
       densityOfThePass,
+      filterColumn !== undefined,
       soFar.told,
       soFar.every,
     );
@@ -1332,8 +1377,9 @@ export function calcVariantsSummary(
 }
 
 /**
- * The three statistics of a pass, or of its first blocks, out of what the
- * binding crate gives, which is freed here with each of the three.
+ * The three statistics of a pass, or of its first blocks, and the counts of
+ * the FILTER column, out of what the binding crate gives, which is freed
+ * here with each of them.
  */
 function summaryOf(summary: VariantsSummaryOfAPass): VariantsSummary {
   // Each of the three is taken out and built as its own call builds it,
@@ -1346,10 +1392,23 @@ function summaryOf(summary: VariantsSummaryOfAPass): VariantsSummary {
       perIndividual === undefined ? null : ratesOf(perIndividual);
     const density = summary.take_density();
     const densityBuilt = density === undefined ? null : windowsOf(density);
+    const filterColumn = summary.filter_column();
+    let filterColumnBuilt: { passed: number; failed: number } | null = null;
+    if (filterColumn !== undefined) {
+      try {
+        filterColumnBuilt = {
+          passed: filterColumn.passed(),
+          failed: filterColumn.failed(),
+        };
+      } finally {
+        filterColumn.free();
+      }
+    }
     return {
       perVar: perVarBuilt,
       perIndividual: perIndividualBuilt,
       density: densityBuilt,
+      filterColumn: filterColumnBuilt,
       passStats: passStatsOf(summary.pass_stats()),
     };
   } finally {

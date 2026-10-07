@@ -35,7 +35,8 @@ pub use density::{
 
 mod summary;
 pub use summary::{
-    VarDensityConfig, VariantsSummary, VariantsSummaryConfig, calc_variants_summary,
+    FilterColumnCounts, VarDensityConfig, VariantsSummary, VariantsSummaryConfig,
+    calc_variants_summary,
 };
 
 #[cfg(test)]

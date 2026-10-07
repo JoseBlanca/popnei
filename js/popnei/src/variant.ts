@@ -407,6 +407,7 @@ export class Variants {
   #steps: StepsOfTheCore | null;
   #individuals: readonly string[];
   #ploidy: number;
+  #keepsPassed: boolean;
   /**
    * How many calls of a consumer over these variants are on the stack,
    * which is what `free()` refuses to free under.
@@ -421,9 +422,10 @@ export class Variants {
    * The handle over `source`, which `openVcf` and `openVars` build, with no
    * step on it.
    *
-   * The names of the individuals and the ploidy are read here, from the
-   * header of the VCF or the schema of the vars file that was read once, so
-   * that they answer without the core. The names go to the steps as well,
+   * The names of the individuals, the ploidy and whether the source recorded
+   * whether each variant passed its FILTER are read here, from the header of
+   * the VCF or the schema of the vars file that was read once, so that they
+   * answer without the core. The names go to the steps as well,
    * which resolve the names of a filter of individuals against them.
    */
   constructor(source: SourceOfVariants) {
@@ -436,6 +438,7 @@ export class Variants {
     // after `free`.
     this.#individuals = Object.freeze(steps.individuals());
     this.#ploidy = source.ploidy();
+    this.#keepsPassed = source.keeps_passed();
   }
 
   /**
@@ -460,6 +463,23 @@ export class Variants {
   /** How many alleles the genotype of one individual holds. */
   get ploidy(): number {
     return this.#ploidy;
+  }
+
+  /**
+   * Whether the source recorded, for each variant, whether it passed its
+   * FILTER.
+   *
+   * It is true for a VCF, and for a vars file of format 1.2 written from a
+   * source that had the record and holding one variant at least. It is false
+   * for a vars file of format 1.0 or 1.1, for one written from such a file,
+   * and for one that holds no variant, which popnei writes with the genotypes
+   * alone. It is read when the source is opened and no step changes it, and
+   * it answers after `free` as well. `filterPassed` and the counts of the
+   * FILTER column of `calcVariantsSummary` refuse a source without the
+   * record, and this is how to know beforehand.
+   */
+  get keepsPassed(): boolean {
+    return this.#keepsPassed;
   }
 
   /**

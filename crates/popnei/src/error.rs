@@ -3448,16 +3448,30 @@ pub enum Error {
     )]
     PassedFilterThatIsSet,
 
-    /// A summary of the variants was asked for none of its three
+    /// A summary of the variants was asked for none of its four
     /// statistics, the distributions of the statistics of each variant, the
-    /// rates of each individual and the density of the variants. Such a pass
-    /// would read the source for nothing, so it is refused before a variant
-    /// is read. The TypeScript package is the one that reaches it, from a
-    /// call that leaves out the three; in JavaScript it is an `Error`.
+    /// rates of each individual, the density of the variants and the counts
+    /// of the FILTER column. Such a pass would read the source for nothing,
+    /// so it is refused before a variant is read. The TypeScript package is
+    /// the one that reaches it, from a call that leaves out the four; in
+    /// JavaScript it is an `Error`.
     #[error(
-        "the summary of the variants was asked for none of its three statistics: ask for one at least, the distributions of the statistics of each variant, the rates of each individual or the density of the variants"
+        "the summary of the variants was asked for none of its four statistics: ask for one at least, the distributions of the statistics of each variant, the rates of each individual, the density of the variants or the counts of the FILTER column"
     )]
     VariantsSummaryOfNoStatistic,
+
+    /// A summary of the variants asked for the counts of the FILTER column
+    /// over a source that holds no record of whether its variants passed
+    /// their FILTER, which its header says: a vars file written before
+    /// format 1.2, one written from such a file or one that holds no
+    /// variant. Counting every variant of it as passed would give a count
+    /// with no sign that it is wrong, so the pass is refused before its
+    /// first block is asked for. It is of the source, and in Python its
+    /// message starts with the path of the file.
+    #[error(
+        "the variants hold no record of whether they passed their FILTER, so the summary cannot count how many passed and how many failed: a vars file holds it from format 1.2, written from a source that had it, and not one written from a source without it or one that holds no variant"
+    )]
+    FilterColumnNotRecorded,
 }
 
 /// The two arguments of a filter that keeps variants at random, which
@@ -3681,7 +3695,7 @@ impl Error {
                 from: crate::stats::LengthsFrom::ChromLengths,
                 ..
             }
-            // A summary of the variants asked for none of its three
+            // A summary of the variants asked for none of its four
             // statistics.
             | Self::VariantsSummaryOfNoStatistic
             // The distances a user gave to a principal coordinate analysis
@@ -3836,11 +3850,14 @@ impl Error {
             // the fields a consumer asked a block for and the name of a
             // field itself, a source that holds no record of whether its
             // variants passed their FILTER, which the filter of the
-            // variants that passed refuses at its first block, a kinship of a file whose entries are not
-            // finite, and the sizes the distances between individuals
-            // cannot be calculated at over the individuals of that file.
+            // variants that passed refuses at its first block and the
+            // counts of the FILTER column of a summary before its pass, a
+            // kinship of a file whose entries are not finite, and the sizes
+            // the distances between individuals cannot be calculated at
+            // over the individuals of that file.
             | Self::FieldsNotInTheBlock { .. }
             | Self::PassedNotRecorded
+            | Self::FilterColumnNotRecorded
             | Self::LdFilterVariantOutOfOrder { .. }
             | Self::HistRangeTooWide { .. }
             | Self::HistTooManyBins { .. }

@@ -191,6 +191,22 @@ class Variants:
         return self._source.ploidy()
 
     @property
+    def keeps_passed(self) -> bool:
+        """Whether the source recorded, for each variant, whether it passed
+        its FILTER.
+
+        It is true for a VCF, and for a vars file of format 1.2 written from
+        a source that had the record and holding one variant at least. It is
+        false for a vars file of format 1.0 or 1.1, for one written from such
+        a file, and for one that holds no variant, which popnei writes with
+        the genotypes alone. It is read when the source is opened and no step
+        changes it. :meth:`filter_passed` refuses a source without the
+        record at the first block of a pass, and this is how to know
+        beforehand.
+        """
+        return self._source.keeps_passed()
+
+    @property
     def steps(self) -> tuple[Step, ...]:
         """The steps that were put on this ``Variants``, in their order.
 

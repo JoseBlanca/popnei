@@ -2,7 +2,9 @@
 //! `variants_summary` in its name, from "The result so far and the three in
 //! one pass" of "The Rust interface" of `docs/specs/stats.md` and "How it is
 //! verified" of "The three statistics of a file in one pass" of
-//! `docs/specs/js_sources.md`.
+//! `docs/specs/js_sources.md`; and those of the counts of the FILTER column,
+//! each with `filter_column` in its name, from the paragraphs on them of
+//! the same part of `docs/specs/stats.md`.
 //!
 //! Each pass reads `many.vcf`, 500 variants of 50 diploid individuals on two
 //! chromosomes, and each statistic of the summary is compared with what its
@@ -12,14 +14,18 @@
 //! the bit.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor};
 use std::sync::{Arc, Mutex};
 
 use super::super::fixtures::vcf_reader_of;
-use super::{VarDensityConfig, VariantsSummary, VariantsSummaryConfig, calc_variants_summary};
+use super::{
+    FilterColumnCounts, VarDensityConfig, VariantsSummary, VariantsSummaryConfig,
+    calc_variants_summary,
+};
 use crate::block::{Block, BlockReader, SourceHeader};
 use crate::error::{Error, Result};
 use crate::filters::{FilteringStats, PassStep, RegionSelection, VarFilteringCriterion, chain_of};
+use crate::io::vars::{VarsReader, write_vars};
 use crate::io::vcf::VcfReader;
 use crate::stats::{
     ExpHet, HistBins, LengthsFrom, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pop, Pops, SoFar,
@@ -116,6 +122,7 @@ fn summary_config_of(
             window_size: WINDOW_SIZE,
             chrom_lengths: chrom_lengths.map(<[_]>::to_vec),
         }),
+        filter_column: false,
     }
 }
 
@@ -206,22 +213,30 @@ fn variants_summary_gives_each_statistic_asked_for_as_its_own_function_and_none_
     }
 }
 
-/// A summary of none of the three is refused before the reader is asked
-/// for anything.
+/// A summary of none of the four, the three and the counts of the FILTER
+/// column, is refused before the reader is asked for anything, with a
+/// message that names the four.
 #[test]
-fn variants_summary_of_none_of_the_three_is_refused_before_the_pass() {
+fn variants_summary_of_none_of_the_four_is_refused_before_the_pass() {
     let mut reader = Recording::of_many_vcf();
     let asked = Arc::clone(&reader.asked);
     let config = VariantsSummaryConfig {
         per_var: None,
         per_individual: false,
         density: None,
+        filter_column: false,
     };
     let error = calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
         .expect_err("a summary of nothing");
     assert!(
         matches!(error, Error::VariantsSummaryOfNoStatistic),
         "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "the summary of the variants was asked for none of its four statistics: ask for one at \
+         least, the distributions of the statistics of each variant, the rates of each \
+         individual, the density of the variants or the counts of the FILTER column"
     );
     assert_eq!(*asked.lock().expect("what was asked"), Vec::new());
 }
@@ -235,12 +250,14 @@ enum AnAsk {
 }
 
 /// A reader over `many.vcf` in blocks of 100 that records what it is asked
-/// for, which the pass moves to the thread that reads one block ahead, and
-/// gives each block as `alter` leaves it.
+/// for, which the pass moves to the thread that reads one block ahead, gives
+/// each block as `alter` leaves it, and answers with a header of its own,
+/// that of the VCF unless it is made without the record of FILTER.
 struct Recording {
     reader: VcfReader<BufReader<File>>,
     asked: Arc<Mutex<Vec<AnAsk>>>,
     alter: fn(&mut Block),
+    header: SourceHeader,
 }
 
 impl Recording {
@@ -249,11 +266,23 @@ impl Recording {
     }
 
     fn of_many_vcf_altered(alter: fn(&mut Block)) -> Recording {
+        let reader = vcf_reader_of("vcf/many.vcf", Some(100));
+        let header = reader.header().clone();
         Recording {
-            reader: vcf_reader_of("vcf/many.vcf", Some(100)),
+            reader,
             asked: Arc::new(Mutex::new(Vec::new())),
             alter,
+            header,
         }
+    }
+
+    /// The reader with a header that says the source keeps no record of
+    /// whether its variants passed their FILTER, as a vars file of format
+    /// 1.1 says; its blocks are those of the VCF, with the column.
+    fn of_many_vcf_without_the_record() -> Recording {
+        let mut reader = Recording::of_many_vcf();
+        reader.header.keeps_passed = false;
+        reader
     }
 
     /// How many blocks it has given.
@@ -297,7 +326,7 @@ impl BlockReader for Recording {
         self.reader.filtering_stats()
     }
     fn header(&self) -> &SourceHeader {
-        self.reader.header()
+        &self.header
     }
     fn skip_outside(&mut self, selection: RegionSelection) -> bool {
         self.reader.skip_outside(selection)
@@ -562,6 +591,7 @@ fn variants_summary_of_a_threshold_and_a_window_both_refused_gives_the_threshold
             window_size: 0,
             chrom_lengths: None,
         }),
+        filter_column: false,
     };
     let error = calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
         .expect_err("a threshold and a window refused");
@@ -613,6 +643,7 @@ fn the_error_of_a_block_refused_by_the_three(asked: Asked) -> Error {
             window_size: WINDOW_SIZE,
             chrom_lengths: Some(lengths),
         }),
+        filter_column: false,
     };
     calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
         .expect_err("a block refused")
@@ -680,8 +711,8 @@ fn variants_summary_of_a_block_refused_by_several_gives_the_error_of_the_first_i
     }
 }
 
-/// The block made a block of no variants, with the chromosome and the
-/// position it was given, both empty.
+/// The block made a block of no variants, with the chromosome, the
+/// position and whether each variant passed it was given, all empty.
 fn of_no_variants(block: &mut Block) {
     *block = Block {
         num_vars: 0,
@@ -693,7 +724,7 @@ fn of_no_variants(block: &mut Block) {
         id: None,
         alleles: None,
         qual: None,
-        passed: None,
+        passed: block.passed.as_ref().map(|_| Vec::new()),
         vcf_text: None,
     };
 }
@@ -720,6 +751,410 @@ fn variants_summary_refuses_a_block_of_no_variants() {
         assert!(
             matches!(error, Error::ReaderGaveABlockOfNoVariants),
             "{asked:?}: {error:?}"
+        );
+    }
+}
+
+/// The counts of the FILTER column of `many.vcf` read with every variant:
+/// 450 variants with `PASS` and 25 with a dot passed, and 25 with `q10`
+/// failed, counted with `grep -v '^#' many.vcf | cut -f7 | sort | uniq -c`.
+const COUNTS_OF_MANY_VCF: FilterColumnCounts = FilterColumnCounts {
+    passed: 475,
+    failed: 25,
+};
+
+/// The configuration of the counts of the FILTER column and nothing else.
+fn filter_column_alone() -> VariantsSummaryConfig {
+    VariantsSummaryConfig {
+        per_var: None,
+        per_individual: false,
+        density: None,
+        filter_column: true,
+    }
+}
+
+/// The summary of `config` over `reader`, with nothing after a block.
+fn summary_of(reader: &mut dyn BlockReader, config: &VariantsSummaryConfig) -> VariantsSummary {
+    calc_variants_summary(reader, config, &mut nothing_after_a_block).expect("the summary")
+}
+
+/// The vars file written from `many.vcf` read with every variant, in
+/// batches of 100.
+fn vars_file_of_many_vcf() -> Vec<u8> {
+    let (bytes, num_vars) = write_vars(
+        vcf_reader_of("vcf/many.vcf", None),
+        Vec::new(),
+        Some(usize::try_from(NUM_VARS_PER_BLOCK).expect("100")),
+    )
+    .expect("the vars file of many.vcf");
+    assert_eq!(num_vars, NUM_VARS_OF_MANY_VCF);
+    bytes
+}
+
+/// A reader of the vars file `bytes` through `steps`.
+fn vars_file_through(bytes: &[u8], steps: &[PassStep]) -> Box<dyn BlockReader> {
+    let source = VarsReader::new(Cursor::new(bytes.to_vec())).expect("the reader of the vars file");
+    chain_of(Box::new(source), steps).expect("the chain over the vars file")
+}
+
+/// The counts alone over `many.vcf`, in blocks of 100 and of the size
+/// popnei chooses, are 475 passed and 25 failed, and the three are `None`.
+#[test]
+fn filter_column_alone_of_many_vcf_is_475_passed_and_25_failed() {
+    for num_vars_per_block in BLOCK_SIZES {
+        let mut reader = many_vcf_through(num_vars_per_block, &[]);
+        let summary = summary_of(&mut *reader, &filter_column_alone());
+        assert_eq!(
+            summary.filter_column,
+            Some(COUNTS_OF_MANY_VCF),
+            "{num_vars_per_block:?}"
+        );
+        assert_eq!(
+            written(&summary),
+            [None, None, None],
+            "{num_vars_per_block:?}"
+        );
+    }
+}
+
+/// The counts beside each of the seven summaries of the three are 475 and
+/// 25, and each statistic of the three is still what its own function
+/// gives.
+#[test]
+fn filter_column_beside_the_three_is_the_same_and_leaves_them_as_they_were() {
+    for asked in every_summary() {
+        let mut reader = many_vcf_through(Some(100), &[]);
+        let mut config = summary_config_of(&*reader, asked, None);
+        config.filter_column = true;
+        let summary = summary_of(&mut *reader, &config);
+        assert_eq!(summary.filter_column, Some(COUNTS_OF_MANY_VCF), "{asked:?}");
+        assert_eq!(
+            written(&summary),
+            of_their_own_functions(Some(100), &[], asked, None),
+            "{asked:?}"
+        );
+    }
+}
+
+/// After the filter of the variants that passed, the counts are of the 475
+/// it kept, none of which failed: they are of the variants that reach the
+/// summary.
+#[test]
+fn filter_column_after_the_filter_of_the_variants_that_passed_is_475_and_none_failed() {
+    for num_vars_per_block in BLOCK_SIZES {
+        let mut reader = many_vcf_through(num_vars_per_block, &[PassStep::Passed]);
+        let summary = summary_of(&mut *reader, &filter_column_alone());
+        assert_eq!(
+            summary.filter_column,
+            Some(FilterColumnCounts {
+                passed: 475,
+                failed: 0
+            }),
+            "{num_vars_per_block:?}"
+        );
+    }
+}
+
+/// The vars file written from `many.vcf` with every variant gives the
+/// counts the VCF gives.
+#[test]
+fn filter_column_of_the_vars_file_of_many_vcf_is_that_of_the_vcf() {
+    let bytes = vars_file_of_many_vcf();
+    let mut reader = vars_file_through(&bytes, &[]);
+    let summary = summary_of(&mut *reader, &filter_column_alone());
+    assert_eq!(summary.filter_column, Some(COUNTS_OF_MANY_VCF));
+}
+
+/// The counts alone ask the reader for whether each variant passed and for
+/// nothing else, once, before the first block, and make a pass of the 500
+/// variants: the variants so far after each block of 100 are those read.
+#[test]
+fn filter_column_alone_asks_for_passed_alone_and_gives_a_pass_of_500() {
+    let mut reader = Recording::of_many_vcf();
+    let recorded = Arc::clone(&reader.asked);
+    let mut num_vars_so_far = Vec::new();
+    let mut keep = |so_far: &dyn SoFar<VariantsSummary>| {
+        num_vars_so_far.push(so_far.num_vars());
+        Ok(())
+    };
+    let summary = calc_variants_summary(&mut reader, &filter_column_alone(), &mut keep)
+        .expect("the counts alone");
+
+    let mut expected = vec![AnAsk::Needs(Needs::PASSED)];
+    expected.extend((0..5).map(|_| AnAsk::Block));
+    assert_eq!(*recorded.lock().expect("what was asked"), expected);
+    assert_eq!(num_vars_so_far, [100, 200, 300, 400, 500]);
+    assert_eq!(summary.filter_column, Some(COUNTS_OF_MANY_VCF));
+}
+
+/// What a call of the function after a block was given by a pass of the
+/// counts alone.
+#[derive(Debug, PartialEq)]
+struct ACallOfTheCounts {
+    num_vars: u64,
+    counts: Option<FilterColumnCounts>,
+}
+
+/// Over the vars file of `many.vcf` in batches of 100, the counts so far
+/// after each block are those of a pass over the first n variants, n the
+/// variants read so far, and they add up to n; the last ones are what the
+/// pass returns, 475 and 25.
+#[test]
+fn filter_column_so_far_over_the_vars_file_is_that_of_the_first_n() {
+    let bytes = vars_file_of_many_vcf();
+    let mut reader = vars_file_through(&bytes, &[]);
+    let mut calls = Vec::new();
+    let mut keep = |so_far: &dyn SoFar<VariantsSummary>| {
+        calls.push(ACallOfTheCounts {
+            num_vars: so_far.num_vars(),
+            counts: so_far.result()?.filter_column,
+        });
+        Ok(())
+    };
+    let returned = calc_variants_summary(&mut *reader, &filter_column_alone(), &mut keep)
+        .expect("the counts alone");
+
+    let num_vars_read: Vec<u64> = calls.iter().map(|call| call.num_vars).collect();
+    assert_eq!(num_vars_read, [100, 200, 300, 400, 500]);
+    for call in &calls {
+        let mut first_n = vars_file_through(&bytes, &[PassStep::FirstN(call.num_vars)]);
+        let of_the_first_n = summary_of(&mut *first_n, &filter_column_alone());
+        assert_eq!(call.counts, of_the_first_n.filter_column, "{call:?}");
+        let counts = call.counts.expect("the counts so far");
+        assert_eq!(
+            counts.passed.checked_add(counts.failed),
+            Some(call.num_vars),
+            "{call:?}"
+        );
+    }
+    assert_eq!(returned.filter_column, Some(COUNTS_OF_MANY_VCF));
+    assert_eq!(
+        calls.last().and_then(|call| call.counts),
+        returned.filter_column
+    );
+}
+
+/// The error of a source with no record of whether its variants passed,
+/// asked for the counts: its words are those of the spec, and it names the
+/// file, as the error of the filter of the variants that passed over such a
+/// source does.
+fn assert_is_the_error_of_no_record(error: &Error) {
+    assert!(matches!(error, Error::FilterColumnNotRecorded), "{error:?}");
+    assert_eq!(
+        error.to_string(),
+        "the variants hold no record of whether they passed their FILTER, so the summary cannot \
+         count how many passed and how many failed: a vars file holds it from format 1.2, \
+         written from a source that had it, and not one written from a source without it or one \
+         that holds no variant"
+    );
+    assert!(error.names_the_file());
+}
+
+/// A source whose header says it keeps no record of whether its variants
+/// passed is refused, alone and beside the three, before the reader is
+/// asked for anything, a block among them.
+#[test]
+fn filter_column_of_a_source_without_the_record_is_refused_before_any_block() {
+    for asked in [
+        None,
+        Some(ALL_THREE),
+        Some(Asked {
+            per_var: false,
+            per_individual: true,
+            density: false,
+        }),
+    ] {
+        let mut reader = Recording::of_many_vcf_without_the_record();
+        let mut config = match asked {
+            Some(asked) => summary_config_of(&reader, asked, None),
+            None => filter_column_alone(),
+        };
+        config.filter_column = true;
+        let error = calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
+            .expect_err("a source without the record");
+        assert_is_the_error_of_no_record(&error);
+        assert_eq!(
+            *reader.asked.lock().expect("what was asked"),
+            Vec::new(),
+            "{asked:?}"
+        );
+    }
+}
+
+/// The block with no `passed` column, as a source whose header wrongly
+/// says it keeps one would give it.
+fn without_the_passed_column(block: &mut Block) {
+    block.passed = None;
+}
+
+/// A block that comes without the column from a source whose header says
+/// it keeps it is refused with the field that is not there.
+#[test]
+fn filter_column_of_a_block_without_the_column_is_refused_with_the_field() {
+    let mut reader = Recording::of_many_vcf_altered(without_the_passed_column);
+    let error = calc_variants_summary(
+        &mut reader,
+        &filter_column_alone(),
+        &mut nothing_after_a_block,
+    )
+    .expect_err("a block without the column");
+    assert!(
+        matches!(error, Error::FieldsNotInTheBlock { fields } if fields == Needs::PASSED),
+        "{error:?}"
+    );
+}
+
+/// Over a source without the record, the errors the three give before the
+/// pass come before that of the counts, in the order of the fields of the
+/// configuration: a threshold of NaN before a window of 0 base pairs, and a
+/// window of 0 base pairs before the source without the record.
+#[test]
+fn filter_column_without_the_record_comes_after_the_errors_of_the_three_before_the_pass() {
+    let window_of_zero = || {
+        Some(VarDensityConfig {
+            window_size: 0,
+            chrom_lengths: None,
+        })
+    };
+    let mut reader = Recording::of_many_vcf_without_the_record();
+    let mut per_var = per_var_config_of(&reader);
+    per_var.poly_threshold = f64::NAN;
+    let config = VariantsSummaryConfig {
+        per_var: Some(per_var),
+        per_individual: true,
+        density: window_of_zero(),
+        filter_column: true,
+    };
+    let error = calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
+        .expect_err("a threshold refused");
+    assert!(
+        matches!(&error, Error::PolyThresholdOutOfRange { value } if value.is_nan()),
+        "{error:?}"
+    );
+    assert_eq!(*reader.asked.lock().expect("what was asked"), Vec::new());
+
+    let mut reader = Recording::of_many_vcf_without_the_record();
+    let config = VariantsSummaryConfig {
+        per_var: None,
+        per_individual: true,
+        density: window_of_zero(),
+        filter_column: true,
+    };
+    let error = calc_variants_summary(&mut reader, &config, &mut nothing_after_a_block)
+        .expect_err("a window refused");
+    assert!(
+        matches!(error, Error::VarDensityWindowSizeZero),
+        "{error:?}"
+    );
+    assert_eq!(*reader.asked.lock().expect("what was asked"), Vec::new());
+}
+
+/// A block of no variants, which keeps an empty `passed` column so that
+/// only the refusal of a block of none can refuse it, is refused by the
+/// counts alone with the error the three give for it.
+#[test]
+fn filter_column_alone_refuses_a_block_of_no_variants() {
+    let mut reader = Recording::of_many_vcf_altered(of_no_variants);
+    let error = calc_variants_summary(
+        &mut reader,
+        &filter_column_alone(),
+        &mut nothing_after_a_block,
+    )
+    .expect_err("a block of no variants");
+    assert!(
+        matches!(error, Error::ReaderGaveABlockOfNoVariants),
+        "{error:?}"
+    );
+}
+
+/// The `passed` column of the block cut to its first 50 entries, a column
+/// of another size than its block of 100.
+fn with_half_the_passed_column(block: &mut Block) {
+    if let Some(passed) = &mut block.passed {
+        passed.truncate(50);
+    }
+}
+
+/// A block whose `passed` column is shorter than the block is refused, and
+/// not counted over the entries it has.
+#[test]
+fn filter_column_of_a_block_whose_column_is_of_another_size_is_refused() {
+    let mut reader = Recording::of_many_vcf_altered(with_half_the_passed_column);
+    let error = calc_variants_summary(
+        &mut reader,
+        &filter_column_alone(),
+        &mut nothing_after_a_block,
+    )
+    .expect_err("a column of another size");
+    assert!(
+        matches!(
+            error,
+            Error::BlockArrayOfAnotherSize {
+                array: "passed",
+                found: 50,
+                expected: 100
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+/// A pass of the counts alone whose filter kept no variant is the error the
+/// three give for it, with the counts of the filter: the threshold of 0 of
+/// the major allele frequency keeps none of `many.vcf`.
+#[test]
+fn filter_column_alone_of_a_pass_with_no_variant_is_the_error_the_three_give() {
+    let steps = [maf_filter(0.0)];
+    let mut reader = many_vcf_through(Some(100), &steps);
+    let error = calc_variants_summary(
+        &mut *reader,
+        &filter_column_alone(),
+        &mut nothing_after_a_block,
+    )
+    .expect_err("a pass with no variant");
+    assert!(
+        matches!(&error, Error::PassGaveNoVariant { num_vars_of_the_source, filters }
+            if *num_vars_of_the_source == NUM_VARS_OF_MANY_VCF && filters.len() == 1),
+        "{error:?}"
+    );
+    let mut reader = many_vcf_through(Some(100), &steps);
+    let of_the_rates = calc_per_individual_stats(&mut *reader).expect_err("the rates");
+    assert_eq!(format!("{error:?}"), format!("{of_the_rates:?}"));
+}
+
+/// The block without its chromosome, its position and its `passed` column,
+/// which the density and the counts both refuse.
+fn without_the_chrom_and_the_passed_column(block: &mut Block) {
+    block.chrom = None;
+    block.pos = None;
+    block.passed = None;
+}
+
+/// A block that the density and the counts both refuse ends the pass with
+/// the error of the density, which comes before the counts; the counts
+/// alone give their own.
+#[test]
+fn filter_column_of_a_block_refused_by_the_density_too_gives_the_error_of_the_density() {
+    let density_and_counts = |density: bool| VariantsSummaryConfig {
+        per_var: None,
+        per_individual: false,
+        density: density.then_some(VarDensityConfig {
+            window_size: WINDOW_SIZE,
+            chrom_lengths: None,
+        }),
+        filter_column: true,
+    };
+    for (density, expected) in [(true, Needs::CHROM_POS), (false, Needs::PASSED)] {
+        let mut reader = Recording::of_many_vcf_altered(without_the_chrom_and_the_passed_column);
+        let error = calc_variants_summary(
+            &mut reader,
+            &density_and_counts(density),
+            &mut nothing_after_a_block,
+        )
+        .expect_err("a block without the columns");
+        assert!(
+            matches!(error, Error::FieldsNotInTheBlock { fields } if fields == expected),
+            "density {density}: {error:?}"
         );
     }
 }

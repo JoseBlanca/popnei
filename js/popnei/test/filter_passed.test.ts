@@ -15,13 +15,19 @@
  * tested on `tests/reference/vars/of_1_1.vars`, a vars file of format 1.1
  * that `tests/reference/vars/make_of_1_1.py` writes, which the Python tests
  * read too.
+ *
+ * `keepsPassed` of a `Variants`, which says beforehand whether the filter can
+ * run, is here too, from the paragraph "A `Variants` also has
+ * `keeps_passed`" of `docs/specs/variant.md`: true for `many.vcf` and for the
+ * vars file written from it, false for `of_1_1.vars` and for a vars file
+ * that holds no variant, which popnei writes with the genotypes alone.
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { PassStats, Variants } from "popnei";
-import { calcPairwiseKosmanDists, init, openVars, openVcf } from "popnei";
+import { calcPairwiseKosmanDists, init, openVars, openVcf, writeVars } from "popnei";
 
 import { referenceVars, referenceVcf } from "./reference.ts";
 
@@ -144,4 +150,45 @@ test("filterPassed over a vars file of 1.1, which has no record of whether its v
       /the variants hold no record of whether they passed their FILTER, so the filter of the variants that passed cannot run on them: a vars file holds it from format 1.2, written from a VCF/,
   });
   variants.free();
+});
+
+test("keepsPassed is true for a VCF, whichever way it was opened, and answers after free", () => {
+  const every = many();
+  const passedAlone = openVcf(MANY_VCF);
+  assert.equal(every.keepsPassed, true);
+  assert.equal(passedAlone.keepsPassed, true);
+  every.free();
+  passedAlone.free();
+  assert.equal(every.keepsPassed, true);
+  assert.equal(passedAlone.keepsPassed, true);
+});
+
+test("keepsPassed is true for a vars file written from a VCF", () => {
+  const variants = many();
+  const written = openVars(writeVars(variants).bytes);
+  assert.equal(written.keepsPassed, true);
+  variants.free();
+  written.free();
+});
+
+test("keepsPassed is false for a vars file of 1.1, and a filter does not change it", async () => {
+  const variants = openVars(await referenceVars("of_1_1.vars"));
+  assert.equal(variants.keepsPassed, false);
+  variants.filterPassed();
+  assert.equal(variants.keepsPassed, false);
+  variants.free();
+  assert.equal(variants.keepsPassed, false);
+});
+
+test("keepsPassed is false for a vars file that holds no variant, which popnei writes with the genotypes alone", () => {
+  // A MAF of at most 0 keeps the variants with one allele alone, and many.vcf
+  // has none: the file is written from a pass of no variant.
+  const variants = many();
+  variants.filterByMaf(0);
+  const written = writeVars(variants);
+  assert.equal(written.passStats.numVars, 0);
+  const empty = openVars(written.bytes);
+  assert.equal(empty.keepsPassed, false);
+  variants.free();
+  empty.free();
 });

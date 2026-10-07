@@ -562,7 +562,9 @@ pub struct SourceHeader {
     /// Whether the blocks of the source can carry `passed`: true for a
     /// VCF and for a vars file with that column, false for any other
     /// source. The VCF writer writes the `##FILTER` line of `FAIL` from it,
-    /// before the first block. Added on 6 October 2026.
+    /// before the first block, and the counts of the FILTER column of
+    /// `calc_variants_summary` refuse a source without it before theirs.
+    /// `Variants` gives it as `keeps_passed`. Added on 6 October 2026.
     pub keeps_passed: bool,
 }
 ```

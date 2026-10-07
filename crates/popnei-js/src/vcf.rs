@@ -38,7 +38,8 @@ use crate::steps::Steps;
 use crate::summary::{TheStatisticsAsked, VariantsSummaryOfAPass, variants_summary_of};
 
 /// A VCF that was opened: where its file is, the options it is read with,
-/// and the individuals its header named.
+/// the individuals its header named, and whether its blocks hold whether
+/// each variant passed its FILTER, which the header of its reader says.
 #[wasm_bindgen]
 pub struct VcfSource {
     /// Where the file is, a copy of the whole of it in the memory of wasm or
@@ -47,6 +48,7 @@ pub struct VcfSource {
     file: TheFileOfASource,
     options: VcfOptions,
     individuals: Vec<String>,
+    keeps_passed: bool,
     /// The number of what this source keeps in JavaScript, the file it reads
     /// the ranges from and the function the page is told the progress with,
     /// which `free()` gives back.
@@ -72,6 +74,14 @@ impl VcfSource {
     #[must_use]
     pub fn ploidy(&self) -> usize {
         self.options.ploidy
+    }
+
+    /// Whether the source recorded, for each variant, whether it passed its
+    /// FILTER, which `filterPassed` and the counts of the FILTER column
+    /// need: read from the header of the reader when the source was opened.
+    #[must_use]
+    pub fn keeps_passed(&self) -> bool {
+        self.keeps_passed
     }
 
     /// The function the page is told how far every pass over this source has
@@ -237,21 +247,28 @@ impl VcfSource {
     /// over the VCF, through the steps of `steps`: the distributions with
     /// the arguments of `per_var`, the rates when `per_individual` is true
     /// and the density with the arguments of `density`, each nothing when it
-    /// is not asked for. `on_so_far` is given the three over the variants
-    /// read so far while the pass runs, every `so_far_every` seconds, when it
-    /// is not nothing.
+    /// is not asked for; and the counts of the FILTER column when
+    /// `filter_column` is true. `on_so_far` is given the four over the
+    /// variants read so far while the pass runs, every `so_far_every`
+    /// seconds, when it is not nothing.
     ///
     /// # Errors
     ///
     /// Those of [`variants_summary_of`]: a call that asks for none of the
-    /// three, what the call of each of the three refuses, any of which ends
-    /// the pass with none of them, and the value `on_so_far` threw.
+    /// four, what the call of each of the three refuses, any of which ends
+    /// the pass with none of them, the counts of the FILTER column over a
+    /// source without the record, and the value `on_so_far` threw.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments of the four statistics and of the result so far, as the package passes them"
+    )]
     pub fn calc_variants_summary(
         &self,
         steps: Steps,
         per_var: Option<ArgumentsOfThePass>,
         per_individual: bool,
         density: Option<ArgumentsOfTheDensity>,
+        filter_column: bool,
         on_so_far: Option<Function>,
         so_far_every: f64,
     ) -> Result<VariantsSummaryOfAPass, JsPopneiError> {
@@ -262,6 +279,7 @@ impl VcfSource {
                 per_var,
                 per_individual,
                 density,
+                filter_column,
             },
             TheResultSoFarAsked {
                 told: on_so_far,
@@ -759,10 +777,12 @@ fn the_vcf_of(
         }
     };
     let individuals = reader.individuals().to_vec();
+    let keeps_passed = reader.header().keeps_passed;
     Ok(VcfSource {
         file,
         options,
         individuals,
+        keeps_passed,
         in_javascript,
     })
 }
