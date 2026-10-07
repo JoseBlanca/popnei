@@ -20,3 +20,12 @@ on the branch `spec/summary-filter-column`. State: under way.
   1.3 replaces.
 - 1.1 and 1.2 ran side by side in one tree, each committing by path, and
   neither took the other's files.
+- 1.3, dc40240: the option and the field in TypeScript. 11 node tests
+  with `filterColumn` in their names; the check of deliverable 3 prints
+  14, those and the 3 of `keepsPassed`. `npm test` 664 tests, 663 pass,
+  and the one that fails is the one that fails on `main`. With
+  `num_vars_of` set back to 0 for the counts alone, the two tests of the
+  500 variants failed. `calc_variants_summary` of the JS binding took one
+  argument more and with it `#[expect(clippy::too_many_arguments)]`, as
+  its neighbours have. Two checks of the option that the spec implies
+  were added: a `filterColumn` with a key and one that is not an object.

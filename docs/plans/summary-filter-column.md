@@ -124,7 +124,7 @@ Tasks:
   on the counts of the FILTER column of "The Rust interface" of
   `docs/specs/stats.md`. Deliverables 1, 4. A wrong count is silent, and
   deliverable 1 guards it.
-- [ ] 1.3 The option in TypeScript: `filterColumn` in
+- [x] 1.3 The option in TypeScript: `filterColumn` in
   `crates/popnei-js/src/summary.rs` and its `num_vars_of`, which today
   gives 0 when none of the three is there, the result so far and the final
   result; the check and the message of a call of none in
