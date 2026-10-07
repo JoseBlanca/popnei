@@ -925,14 +925,15 @@ Under node, in `test/write_in_pieces.test.ts`. The pieces joined are, byte
 for byte, the bytes of the same call without `onBytes`, and the result is
 `{passStats}` with the counts of that call. Each of `cases.vcf` and
 `many.vcf` is written with `writeVars` and `numVarsPerBlock` 3, with
-`writeVcf` bgzipped and with it plain, and the vars file of `many.vcf` with
-`writeVcf` plain; each of those files is under 1 MiB, so each is one piece.
+`writeVcf` bgzipped and with it plain, and so is the vars file of
+`many.vcf`; each of those files is under 1 MiB, so each is one piece.
 The VCF of 14000 variants of 600 individuals of `vars_memory.test.ts`, 34.0
 MB of text, is written the same three ways in several pieces, every one but
 the last of 1048576 bytes; and a plain VCF whose header is padded to make
 it 2097152 bytes is two pieces of 1048576 bytes, with no empty one after
-them. The pieces of one write are compared again after a second write of
-the whole file, and have not changed. For each of the three writes, a value thrown at the second piece is
+them. No piece has the buffer of the memory of wasm, and the pieces of one
+write are compared again after a second write of the whole file and have
+not changed. For each of the three writes, a value thrown at the second piece is
 what the writer throws, after two calls, and the next call over the same
 `Variants` gives the whole file; and a `free()` from inside the function is
 refused with the error of a run that is reading. That VCF of 14000 variants
