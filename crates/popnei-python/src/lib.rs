@@ -58,6 +58,8 @@ mod _core {
     const DEFAULT_NUM_BINS: usize = popnei::stats::DEFAULT_NUM_BINS;
     #[pymodule_export]
     const DEFAULT_BIN_TYPE: &str = popnei::stats::DEFAULT_BIN_TYPE;
+    #[pymodule_export]
+    const DEFAULT_CLOSED: &str = popnei::stats::DEFAULT_CLOSED;
 
     // The two of `do_pca`, which are the constants of the core crate for
     // the same reason.

@@ -35,8 +35,8 @@ use pyo3::types::PyBool;
 
 use popnei::block::BlockReader;
 use popnei::stats::{
-    ExpHet, HistBins, Maf, ObsHet, PerVarDistribs, PerVarDistribsConfig, PerVarStat, PolyVarsStats,
-    Pops, StatsDistrib,
+    ClosedSide, ExpHet, HistBins, Maf, ObsHet, PerVarDistribs, PerVarDistribsConfig, PerVarStat,
+    PolyVarsStats, Pops, StatsDistrib,
 };
 
 use crate::errors::PyPopneiError;
@@ -98,7 +98,7 @@ type DistribsOfAPass<'py> = (
 #[pyfunction]
 #[pyo3(signature = (
     source, steps, stats, pops, min_num_individuals, hist_range, num_bins, bin_type,
-    ploidy, poly_threshold,
+    closed, ploidy, poly_threshold,
 ))]
 #[expect(
     clippy::too_many_arguments,
@@ -116,6 +116,7 @@ pub(crate) fn calc_per_var_distribs<'py>(
     hist_range: (f64, f64),
     num_bins: &Bound<'py, PyAny>,
     bin_type: &str,
+    closed: &str,
     ploidy: Option<&Bound<'py, PyAny>>,
     poly_threshold: &Bound<'py, PyAny>,
 ) -> Result<DistribsOfAPass<'py>, PyPopneiError> {
@@ -123,7 +124,8 @@ pub(crate) fn calc_per_var_distribs<'py>(
     let stats = the_stats(&stats)?;
     let min_num_individuals = the_min_num_individuals(min_num_individuals)?;
     let (start, end) = hist_range;
-    let bins = HistBins::of_kind(bin_type, start, end, count_of("num_bins", num_bins)?)?;
+    let bins = HistBins::of_kind(bin_type, start, end, count_of("num_bins", num_bins)?)?
+        .closed_on(ClosedSide::of_name(closed)?);
     // The ploidy of the variants turns the alleles a population called into
     // called genotypes, for the `min_num_individuals` test, and it is also
     // the exponent of the two expected heterozygosities when the user asks

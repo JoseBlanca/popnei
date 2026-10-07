@@ -207,16 +207,33 @@ def calc_per_var_distribs(
     with no value in a population is out of the mean and in no bin of the
     histogram of that population.
 
-    `hist_kwargs` is the histogram, under three keys: ``range``, the two
+    `hist_kwargs` is the histogram, under four keys: ``range``, the two
     ends, ``(0, 1)`` by default, which is where the statistics live;
-    ``num_bins``, 40 by default; and ``bin_type``, ``"linear"`` for bins of
+    ``num_bins``, 40 by default; ``bin_type``, ``"linear"`` for bins of
     equal width or ``"logarithmic"`` for bins of equal ratio, whose
-    ``range`` has to start above 0. The dict is read and not changed, and a
-    key that is none of the three is a ``ValueError``, since it would leave
-    the default in its place with nothing said. A value falls in the bin
-    whose left edge is at most the value and whose right edge is above it,
-    and the last bin takes its right edge too, as :func:`numpy.histogram`
-    does; a value outside the range is in no bin and in the mean.
+    ``range`` has to start above 0; and ``closed``, the edge each bin holds,
+    ``"left"`` by default or ``"right"``. The dict is read and not changed,
+    and a key that is none of the four is a ``ValueError``, since it would
+    leave the default in its place with nothing said.
+
+    The k-th of the n + 1 edges of bins of equal width is (start · (n − k)
+    + end · k) / n, which is the float64 of the decimal k / n when the two
+    ends are whole numbers or halves: of 1000 bins from 0 to 1 the edge 7 is
+    the number ``0.007`` is read as. :func:`numpy.linspace`, which pyNei's
+    edges are, gives some of them one unit in the last place away. Edges
+    that do not go up, as those of very many bins over a range narrower
+    than the rounding of a float64, are a ``ValueError``.
+
+    With ``closed`` ``"left"`` a value falls in the bin whose left edge is
+    at most the value and whose right edge is above it, and the last bin
+    takes its right edge too, as :func:`numpy.histogram` does. With
+    ``"right"`` a value falls in the bin whose left edge is below it and
+    whose right edge is at least the value, and the first bin takes its left
+    edge too, as :func:`pandas.cut` with ``right=True,
+    include_lowest=True``: the bins below an edge t then count the variants
+    whose value is at most t, which is what ``filter_by_missing_data(t)``,
+    ``filter_by_maf(t)`` and ``filter_by_obs_het(t)`` keep. A value outside
+    the range is in no bin and in the mean.
 
     `ploidy` is the two expected heterozygosities' alone: the number the
     allele frequencies are raised to, and how many copies the unbiased one
@@ -262,7 +279,7 @@ def calc_per_var_distribs(
         )
     asked_for = _the_stats(stats)
     named = _the_pops(pops)
-    hist_range, num_bins, bin_type = _the_histogram(hist_kwargs)
+    hist_range, num_bins, bin_type, closed = _the_histogram(hist_kwargs)
     (
         pop_names,
         hist_bin_edges,
@@ -282,6 +299,7 @@ def calc_per_var_distribs(
         hist_range,
         num_bins,
         bin_type,
+        closed,
         ploidy,
         poly_threshold,
     )
@@ -401,14 +419,16 @@ def _the_pops(
     return named
 
 
-# The three keys the histogram of a statistic is given under, which are the
-# ones pyNei's `_prepare_bins` reads.
-_HIST_KEYS = ("range", "num_bins", "bin_type")
+# The four keys the histogram of a statistic is given under: the three
+# pyNei's `_prepare_bins` reads, and the edge each bin holds.
+_HIST_KEYS = ("range", "num_bins", "bin_type", "closed")
 
 
-def _the_histogram(hist_kwargs: dict | None) -> tuple[tuple[float, float], int, str]:
-    """The range, the number of bins and the kind of bins of the histogram,
-    out of the dict a user gave, which is read and not changed."""
+def _the_histogram(
+    hist_kwargs: dict | None,
+) -> tuple[tuple[float, float], int, str, str]:
+    """The range, the number of bins, the kind of bins and the edge each bin
+    holds, out of the dict a user gave, which is read and not changed."""
     if hist_kwargs is None:
         hist_kwargs = {}
     if not isinstance(hist_kwargs, Mapping):
@@ -417,19 +437,21 @@ def _the_histogram(hist_kwargs: dict | None) -> tuple[tuple[float, float], int, 
         # says of either names neither the argument nor the histogram.
         raise TypeError(
             f"`hist_kwargs` is {hist_kwargs!r}, a {type(hist_kwargs).__name__}, "
-            f"and the histogram is a dict of `range`, the two ends, `num_bins` "
-            f'and `bin_type`, {{"num_bins": 10}}'
+            f"and the histogram is a dict of `range`, the two ends, `num_bins`, "
+            f'`bin_type` and `closed`, {{"num_bins": 10}}'
         )
     unknown = [key for key in hist_kwargs if key not in _HIST_KEYS]
     if unknown:
         raise ValueError(
             f"{unknown[0]!r} is not a key of `hist_kwargs`, whose keys are "
-            f"`range`, the two ends of the histogram, `num_bins` and `bin_type`"
+            f"`range`, the two ends of the histogram, `num_bins`, `bin_type` and "
+            f"`closed`"
         )
     hist_range = _the_range(hist_kwargs.get("range", _core.DEFAULT_HIST_RANGE))
     num_bins = hist_kwargs.get("num_bins", _core.DEFAULT_NUM_BINS)
     bin_type = hist_kwargs.get("bin_type", _core.DEFAULT_BIN_TYPE)
-    return hist_range, num_bins, bin_type
+    closed = hist_kwargs.get("closed", _core.DEFAULT_CLOSED)
+    return hist_range, num_bins, bin_type, closed
 
 
 def _the_range(hist_range: Sequence[float]) -> tuple[float, float]:
