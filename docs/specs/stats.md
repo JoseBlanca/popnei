@@ -1802,21 +1802,35 @@ other two through the genotypes they check. The counts of
 `filtering_stats` are those of the chain after the block the pass has
 just added: natively the reader one block ahead answers with
 the counts as they were when it gave that block, and in wasm there is no
-such thread. The error this adds is a summary asked for none of the three,
-which only the wasm crate can reach.
+such thread. The error this adds is a summary asked for none of the
+four, the three and the counts of the FILTER column below, whose message
+names the four and which only the wasm crate can reach.
 
 The counts of the FILTER column were added on 7 October 2026, from issue
 12; `docs/specs/js_sources.md` has what they are for, the owner's decision
 and their checks. They count the `passed` column of each block, which the
 pass asks for with `Needs::PASSED`, and keep nothing else from one block to
-the next. A source whose `header().keeps_passed` is false cannot give them,
-and the pass is refused before its first block with
-`Error::FilterColumnNotRecorded`, whose message says that the variants hold
-no record of whether they passed their FILTER, as a vars file written
-before format 1.2 or variants built from an array of genotypes, so the
-summary cannot count them. A block of a source whose header says it keeps
-the column and that comes without it is a defect of its reader, and an
-error of that kind.
+the next; with the counts alone, the variants of the pass are
+`passed + failed`, which is what the result so far and the error of a pass
+of no variant read. A source whose `header().keeps_passed` is false cannot
+give them, and the pass is refused before its first block is asked for
+with `Error::FilterColumnNotRecorded`. Its message says that the variants
+hold no record of whether they passed their FILTER, as a vars file written
+before format 1.2, one written from such a file or one that holds no
+variant, so the summary cannot count them. It is checked after the errors
+the three give before their pass, in the order of the fields of the
+config. A block that comes without the column from a source whose header
+says it keeps it is `Error::FieldsNotInTheBlock` with `Needs::PASSED`, as
+the density gives for a block without its chromosome. The two errors go
+in the category of the binding crates that holds `PassedNotRecorded`.
+
+The cargo tests of the counts are those of "The three statistics of a file
+in one pass" of `docs/specs/js_sources.md`, at `calc_variants_summary`.
+The reader built for those tests forwards the header of a `VcfReader`, so
+for the two errors it gets a header of its own, with `keeps_passed` false
+for the first, and a block with no `passed` column for the second; and it
+records each block that is asked for, so that the first test checks that
+none was.
 
 ## Speed
 

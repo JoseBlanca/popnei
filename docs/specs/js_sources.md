@@ -711,9 +711,11 @@ application that runs the wasm package in the browser.
 
 Only a source that recorded the FILTER of its variants can give them. A
 VCF has, and so has a vars file of format 1.2 written from a source that
-had the record; a vars file of format 1.0 or 1.1 has not, nor variants
-built from an array of genotypes, nor a vars file written from those. Asked of such a source, the counts are an
-`Error`, before the first variant is read, and `variants.keepsPassed` of
+had the record and holding one variant at least; a vars file of format 1.0
+or 1.1 has not, nor one written from such a file, nor one that holds no
+variant, which popnei writes with the genotypes alone. Asked of such a
+source, the counts are an `Error` thrown by `calcVariantsSummary` before
+its first block is read, and `variants.keepsPassed` of
 `docs/specs/variant.md` tells the page beforehand whether it can ask. The
 owner decided on 7 October 2026 that the counts are asked for, as each of
 the other three is, and that a source without the record is an error. The
@@ -759,7 +761,8 @@ three. `crates/popnei/benches/variants_summary.rs` has these clocks of
 each pass.
 
 The owner decided on 7 October 2026 that it is one consumer of exactly these
-three, and that it is in the TypeScript API alone. The options not taken
+three, to which issue 12 added the counts of the FILTER column the same
+day, and that it is in the TypeScript API alone. The options not taken
 were a way to run any set of consumers in one pass, which would split every
 one of the fifteen into what it adds up and what it gives at the end and
 cannot hold the PCA, which reads the file twice; and a Python function of
@@ -778,15 +781,18 @@ calcVariantsSummary(variants, {
 ```
 
 A statistic is given when its key is there with a value that is not
-`undefined`, and left out otherwise. In this paragraph the counts of the
-FILTER column are a fourth statistic. `perVar` is checked as the options of
+`undefined`, and left out otherwise, the counts of the FILTER column as
+the three. `perVar` is checked as the options of
 `calcPerVarDistribs` are, but for `onSoFar` and `soFarEvery`, which are
 options of the summary and are refused inside it; `density` as the
 `windowSize` and `chromLengths` of `calcVarDensity` are, with the errors
 naming `density.windowSize`; and `perIndividual` and `filterColumn` are
 empty objects. A call with none of the four is an `Error` that says to ask
-for one, and `filterColumn` alone is a call that gives the counts and
-nothing else. `VariantsSummary` has `perVar`, a `PerVarDistribs` or `null`,
+for one and names the four; `filterColumn` alone is a call that gives the
+counts and nothing else, and its pass has `passed + failed` variants. The
+errors that refuse a call before its pass come in this order: none of the
+four, then those of `perVar`, then those of `density`, then a source
+without the record of FILTER. `VariantsSummary` has `perVar`, a `PerVarDistribs` or `null`,
 `perIndividual`, a `PerIndividualStats` or `null`, `density`, a
 `VarDensity` or `null`, each of the type its consumer returns so that the
 code of a page that draws one draws it from here unchanged;
@@ -825,15 +831,18 @@ in the cargo tests, at `calc_variants_summary`, exactly, since they are
 counts. `many.vcf` has 500 variants: 450 with `PASS`, 25 with a dot and 25
 with `q10`, counted with `grep -v '^#' many.vcf | cut -f7 | sort | uniq -c`.
 So, read with `onlyPassed: false`, it gives `{ passed: 475, failed: 25 }`,
-alone and beside the three, which are then what they are without it; with
-`filterPassed` it gives `{ passed: 475, failed: 0 }`; and the vars file of
-`many.vcf` written with every variant gives the same as the VCF. With
-`onSoFar` and `soFarEvery` 0, the counts of each call equal those of a call
-over `filterFirstN` of that number of variants. `tests/reference/vars/of_1_1.vars`,
-a vars file of format 1.1, and variants built with `Variants.fromGtArray`
-have `keepsPassed` false, and asked for the counts they give the `Error`
-of a source without the record. The cargo test of that error checks, with
-the reader built for the test, that no block was asked for.
+alone, with a `passStats.numVars` of 500, and beside the three, which are
+then what they are without it; with `filterPassed` it gives
+`{ passed: 475, failed: 0 }`; and the vars file of `many.vcf` written with
+every variant gives the same as the VCF. On that vars file in batches of
+100, with `onSoFar` and `soFarEvery` 0, the counts of each call equal those
+of a call over `filterFirstN` of that number of variants.
+`tests/reference/vars/of_1_1.vars`, a vars file of format 1.1, has
+`keepsPassed` false, and asked for the counts it gives the `Error` of a
+source without the record. The cargo tests of the core, in "The Rust
+interface" of `docs/specs/stats.md`, check that this error comes before
+the first block is asked for, and the error of a block that comes without
+the column.
 
 ## The Rust interface
 
