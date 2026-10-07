@@ -138,7 +138,7 @@ export function openVcf(
 export interface VcfWritten {
   /**
    * The bytes of the whole file, which a page offers as a download: a tab
-   * has no filesystem.
+   * has no file a path names.
    */
   bytes: Uint8Array;
 
@@ -166,12 +166,13 @@ export interface WriteVcfOptions {
    * at a time, instead of the call giving it back whole, as `onBytes` of
    * `writeVars` is.
    */
-  onBytes?: OnBytes;
+  onBytes?: OnBytes | undefined;
 }
 
 /**
  * Every variant of `variants`, after its steps, as the bytes of a VCF,
- * which a page offers as a download: a tab has no filesystem.
+ * which a page offers as a download, or given to `onBytes` in pieces as
+ * they are written.
  *
  * It is how the variants popnei kept, filtered by missing data, by
  * individual or by any other step, reach plink2, bcftools or a program of
@@ -195,8 +196,9 @@ export interface WriteVcfOptions {
  * The lines are written in the order the source gives them. A VCF opened
  * with `onlyPassed` false and written with no step and `{bgzip: false}` is
  * the same bytes, when its lines end in `\n` and none is empty. The call
- * reads the source once, and the whole file is built in the memory of wasm
- * before it crosses, in pieces, into the array that is returned.
+ * reads the source once, and without `onBytes` the whole file is built in
+ * the memory of wasm before it crosses, in pieces, into the array that is
+ * returned.
  *
  * With `onBytes`, the file goes to that function in pieces of 1 MiB while
  * the pass writes it, as `writeVars` gives its file, and the call gives
@@ -209,7 +211,8 @@ export interface WriteVcfOptions {
  * `options` is not an object, when `bgzip` is not a boolean, when `onBytes`
  * is not a function, when the source cannot be read, a wrong line of
  * a VCF among the causes, when the memory of the tab does not take the
- * file, and when `init` has not been awaited.
+ * file, when `onBytes` returns a promise, and when `init` has not been
+ * awaited; and it throws what `onBytes` threw.
  */
 export function writeVcf(
   variants: Variants,

@@ -1861,6 +1861,9 @@ const BYTES_PER_PIECE: usize = 1024 * 1024;
 /// Every piece leaves the memory of wasm as it is read, which is where the
 /// copy that crosses is made, and the package puts them together into the
 /// `Uint8Array` the user gets, in the heap of JavaScript.
+///
+/// A file whose pieces went to `onBytes` as they were written gives back one
+/// of these with no piece and 0 bytes, and only its counts are read.
 #[wasm_bindgen]
 pub struct WrittenFile {
     /// The pieces in the order they were written, each of them empty once
@@ -1982,10 +1985,13 @@ impl Write for PiecesOfTheFile {
 /// [`PiecesToThePage::the_last_piece`] when the core has finished the file,
 /// and while the run is still open, so that what the function throws there
 /// is what the writer throws and a `free()` from inside it is refused.
+///
+/// It counts no bytes: nothing reads the count, and a count in a `usize`,
+/// 32 bits in wasm, would refuse a file of 4 GiB, which is what the pieces
+/// are for.
 struct PiecesToThePage {
     run: u32,
     piece: Vec<u8>,
-    num_bytes: usize,
 }
 
 impl PiecesToThePage {
@@ -2005,11 +2011,7 @@ impl PiecesToThePage {
                 source: None,
             })
         })?;
-        Ok(PiecesToThePage {
-            run: run.0,
-            piece,
-            num_bytes: 0,
-        })
+        Ok(PiecesToThePage { run: run.0, piece })
     }
 
     /// Gives the piece to the function of the run, as a new `Uint8Array` of
@@ -2022,8 +2024,10 @@ impl PiecesToThePage {
     ///
     /// # Errors
     ///
-    /// When the function throws, which stops the run with the value it
-    /// threw, and when the run holds no function, a defect of this crate.
+    /// When the function throws, or returns a promise, or the heap of
+    /// JavaScript has no room for the copy of the piece, each of which stops
+    /// the run with a value the writer throws; and when the run holds no
+    /// function, a defect of this crate.
     fn give(&mut self) -> std::io::Result<()> {
         if self.piece.is_empty() {
             return Ok(());
@@ -2036,37 +2040,97 @@ impl PiecesToThePage {
                      which is a defect of popnei; please report it",
                 )
             })?;
-        let piece = Uint8Array::from(self.piece.as_slice());
+        let piece = a_copy_of(&self.piece);
         self.piece.clear();
-        on_bytes
+        let piece = piece.map_err(|thrown| self.stopped_with(thrown))?;
+        let returned = on_bytes
             .call1(&JsValue::NULL, &piece)
-            // What the function returns is not looked at: a promise it gives
-            // is not awaited, and what that rejects with stops nothing.
-            .map(|_returned| ())
-            .map_err(|thrown| {
-                the_run_was_stopped_by_its_consumer(self.run, thrown);
-                // No user reads it: the writer throws the value the function
-                // threw in its place. `other` and not `Interrupted`, which
-                // `write_all` would try again.
-                std::io::Error::other("the function `onBytes` threw, and the pass ended")
-            })
+            .map_err(|thrown| self.stopped_with(thrown))?;
+        if is_a_promise(&returned) {
+            return Err(self.stopped_with(
+                js_sys::Error::new(
+                    "popnei: `onBytes` returned a promise, and the writer cannot wait \
+                     for it, so a piece it failed to keep would be missing from a file \
+                     the call said was written; it has to keep each piece before it \
+                     returns, with a `FileSystemSyncAccessHandle` or in an array",
+                )
+                .into(),
+            ));
+        }
+        Ok(())
     }
 
-    /// Gives the last piece, once the core has finished the file, and says
-    /// how many bytes the file held.
+    /// Stops the run with `thrown`, which the writer throws, and gives the
+    /// error that ends the pass.
+    ///
+    /// No user reads that error: the consumer throws `thrown` in its place.
+    /// It is of the kind `Other` and not `Interrupted`, which `write_all`
+    /// would try again.
+    fn stopped_with(&self, thrown: JsValue) -> std::io::Error {
+        the_run_was_stopped_by_its_consumer(self.run, thrown);
+        std::io::Error::other(
+            "the function `onBytes` threw or returned a promise, or a piece had no \
+             room in the heap of JavaScript, and the pass ended",
+        )
+    }
+
+    /// Gives the last piece, once the core has finished the file.
     ///
     /// # Errors
     ///
     /// Those of [`PiecesToThePage::give`].
-    fn the_last_piece(mut self) -> Result<usize, JsPopneiError> {
+    fn the_last_piece(mut self) -> Result<(), JsPopneiError> {
         self.give().map_err(|failure| {
             JsPopneiError::Core(popnei::Error::FileNotWritten {
                 problem: failure.to_string(),
                 source: Some(failure),
             })
-        })?;
-        Ok(self.num_bytes)
+        })
     }
+}
+
+/// A new `Uint8Array` in the heap of JavaScript with the bytes of `piece`.
+///
+/// It is built through `Reflect.construct`, which gives back what the
+/// constructor throws, a `RangeError` when the heap has no room for it: the
+/// constructor js-sys binds would let that throw unwind the stack of wasm
+/// past the code that closes the run, and the variants could then never be
+/// freed.
+///
+/// # Errors
+///
+/// What the constructor threw, and an `Error` when the global object has no
+/// `Uint8Array` that builds an array of the length asked for.
+fn a_copy_of(piece: &[u8]) -> Result<Uint8Array, JsValue> {
+    let no_constructor = || -> JsValue {
+        js_sys::Error::new(
+            "popnei: the JavaScript that runs popnei has no `Uint8Array` that builds \
+             an array of the length it is given",
+        )
+        .into()
+    };
+    let constructor = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Uint8Array"))?
+        .dyn_into::<Function>()
+        .map_err(|_not_a_function| no_constructor())?;
+    let length = u32::try_from(piece.len()).map_err(|_too_long| no_constructor())?;
+    let array: Uint8Array =
+        js_sys::Reflect::construct(&constructor, &Array::of1(&JsValue::from(length)))?
+            .unchecked_into();
+    // `copy_from` panics on arrays of two lengths.
+    if array.length() != length {
+        return Err(no_constructor());
+    }
+    array.copy_from(piece);
+    Ok(array)
+}
+
+/// Whether `returned` is a promise, or anything else with a `then` that is a
+/// function, which is what `await` treats as one.
+fn is_a_promise(returned: &JsValue) -> bool {
+    if !(returned.is_object() || returned.is_function()) {
+        return false;
+    }
+    js_sys::Reflect::get(returned, &JsValue::from_str("then")).is_ok_and(|then| then.is_function())
 }
 
 impl Write for PiecesToThePage {
@@ -2079,9 +2143,6 @@ impl Write for PiecesToThePage {
             ));
         };
         self.piece.extend_from_slice(head);
-        self.num_bytes = self.num_bytes.checked_add(taken).ok_or_else(|| {
-            std::io::Error::other("the file holds more bytes than this machine counts")
-        })?;
         if self.piece.len() >= BYTES_PER_PIECE {
             self.give()?;
         }
@@ -2147,7 +2208,8 @@ pub(crate) fn bytes_of_a_vars_file(
                     PiecesToThePage::of(run)?,
                     num_vars_per_block,
                 )?;
-                (Vec::new(), written.the_last_piece()?, num_vars)
+                written.the_last_piece()?;
+                (Vec::new(), 0, num_vars)
             }
         };
         Ok(WrittenFile {
@@ -2191,7 +2253,8 @@ pub(crate) fn bytes_of_a_vcf(
                 run.gives_the_pieces_to(on_bytes)?;
                 let (written, num_vars) =
                     popnei::io::vcf::write_vcf(&mut chain, PiecesToThePage::of(run)?, options)?;
-                (Vec::new(), written.the_last_piece()?, num_vars)
+                written.the_last_piece()?;
+                (Vec::new(), 0, num_vars)
             }
         };
         Ok(WrittenFile {

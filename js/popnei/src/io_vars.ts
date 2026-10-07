@@ -21,7 +21,7 @@ import { Variants, passStatsOf, sourceOfTheVariants } from "./variant.js";
 export interface VarsWritten {
   /**
    * The bytes of the whole file, which a page offers as a download: a tab
-   * has no filesystem.
+   * has no file a path names.
    */
   bytes: Uint8Array;
 
@@ -66,9 +66,11 @@ export interface WriteVarsOptions {
    * at a time, instead of the call giving it back whole. Every piece holds
    * 1048576 bytes, 1 MiB, the last one from 1 byte to that, and the pieces
    * in the order they are given are the bytes of the file. Each piece is a
-   * new array of the caller's, which it can keep.
+   * new array of the caller's, which it can keep. The function keeps each
+   * piece before it returns: one that returns a promise ends the pass with
+   * an `Error`, since the writer cannot wait for it.
    */
-  onBytes?: OnBytes;
+  onBytes?: OnBytes | undefined;
 }
 
 /**
@@ -135,7 +137,7 @@ export function openVars(source: BytesOrFile): Variants {
 
 /**
  * Every variant of `variants` as the bytes of a vars file, which a page
- * offers as a download: a tab has no filesystem.
+ * offers as a download, or given to `onBytes` in pieces as they are written.
  *
  * The source is a VCF or a vars file, whichever `Variants` holds, so a file
  * read with `openVars` is written again with another size of batch, and the
@@ -149,9 +151,9 @@ export function openVars(source: BytesOrFile): Variants {
  * column, and one that does not keep whether its variants passed, a vars
  * file written before that column existed, gives one without it.
  *
- * The whole file is built in the memory of wasm, which grows and never
- * shrinks, so what the tab holds while the call runs is the source and the
- * file together, and `numVarsPerBlock` is what an application that runs out
+ * Without `onBytes`, the whole file is built in the memory of wasm, which
+ * grows and never shrinks, so what the tab holds while the call runs is the
+ * source and the file together, and `numVarsPerBlock` is what an application that runs out
  * of memory lowers: it is the size of the block that is read and written at
  * a time. What comes back is the caller's own array, in the heap of
  * JavaScript, which nothing has to free and which the memory of wasm does
@@ -161,19 +163,21 @@ export function openVars(source: BytesOrFile): Variants {
  * how many variants were written and what each filter was given and kept.
  *
  * With `onBytes`, the file goes to that function in pieces of 1 MiB while
- * the pass writes it, and the memory of wasm holds one piece of it and not
+ * the pass writes it, and the memory of wasm holds one block of it and not
  * the whole file; the call then gives back the counts alone. Where the
  * pieces go is the application's: a worker can write each one to the
- * private file system of the browser, or keep them and make a `Blob` of
- * them. When `onBytes` throws, the pass ends and the call throws what it
- * threw; when the pass fails after some pieces were given, the call throws
+ * private file system of the browser with a `FileSystemSyncAccessHandle`,
+ * or keep them and make a `Blob` of them. When `onBytes` throws, the pass
+ * ends and the call throws what it threw, and one that returns a promise
+ * ends it with an `Error`; when the pass fails after some pieces were given, the call throws
  * its error, and the pieces given are the start of a file that has no end.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
  * `options` is not an object, when `numVarsPerBlock` is not a whole number of 1 or more and at most
  * 4294967295, when `onBytes` is not a function, when the source cannot be read, a wrong line of a VCF among
- * the causes, when the memory of the tab does not take the file, and when
- * `init` has not been awaited.
+ * the causes, when the memory of the tab does not take the file, when
+ * `onBytes` returns a promise, and when `init` has not been awaited; and
+ * it throws what `onBytes` threw.
  */
 export function writeVars(
   variants: Variants,
