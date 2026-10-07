@@ -13,7 +13,8 @@ import {
   wholeNumberOfOneOrMore,
 } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
-import { theBytesAndTheCountsOf } from "./io_vars.js";
+import type { OnBytes, WrittenInPieces } from "./io_vars.js";
+import { theFileOrTheCountsOf, theFunctionOfThePieces } from "./io_vars.js";
 import type { PassStats } from "./variant.js";
 import { Variants, sourceOfTheVariants } from "./variant.js";
 
@@ -137,7 +138,7 @@ export function openVcf(
 export interface VcfWritten {
   /**
    * The bytes of the whole file, which a page offers as a download: a tab
-   * has no filesystem.
+   * has no file a path names.
    */
   bytes: Uint8Array;
 
@@ -148,7 +149,10 @@ export interface VcfWritten {
   passStats: PassStats;
 }
 
-/** How a VCF is written: bgzipped or as plain text. */
+/**
+ * How a VCF is written: bgzipped or as plain text, and whether its bytes go
+ * to a function of the application as they are written.
+ */
 export interface WriteVcfOptions {
   /**
    * Whether the file is compressed with bgzip, which tabix indexes and
@@ -156,11 +160,19 @@ export interface WriteVcfOptions {
    * to read the compression from.
    */
   bgzip?: boolean;
+
+  /**
+   * The function the file is given to while the pass writes it, one piece
+   * at a time, instead of the call giving it back whole, as `onBytes` of
+   * `writeVars` is.
+   */
+  onBytes?: OnBytes | undefined;
 }
 
 /**
  * Every variant of `variants`, after its steps, as the bytes of a VCF,
- * which a page offers as a download: a tab has no filesystem.
+ * which a page offers as a download, or given to `onBytes` in pieces as
+ * they are written.
  *
  * It is how the variants popnei kept, filtered by missing data, by
  * individual or by any other step, reach plink2, bcftools or a program of
@@ -184,31 +196,51 @@ export interface WriteVcfOptions {
  * The lines are written in the order the source gives them. A VCF opened
  * with `onlyPassed` false and written with no step and `{bgzip: false}` is
  * the same bytes, when its lines end in `\n` and none is empty. The call
- * reads the source once, and the whole file is built in the memory of wasm
- * before it crosses, in pieces, into the array that is returned.
+ * reads the source once, and without `onBytes` the whole file is built in
+ * the memory of wasm before it crosses, in pieces, into the array that is
+ * returned.
+ *
+ * With `onBytes`, the file goes to that function in pieces of 1 MiB while
+ * the pass writes it, as `writeVars` gives its file, and the call gives
+ * back the counts alone.
  *
  * pyNei has no VCF writer, so nothing is mirrored; the name follows
  * `writeVars`.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
- * `options` is not an object, when `bgzip` is not a boolean, when the source cannot be read, a wrong line of
+ * `options` is not an object, when `bgzip` is not a boolean, when `onBytes`
+ * is not a function, when the source cannot be read, a wrong line of
  * a VCF among the causes, when the memory of the tab does not take the
- * file, and when `init` has not been awaited.
+ * file, when `onBytes` returns a promise, and when `init` has not been
+ * awaited; and it throws what `onBytes` threw.
  */
 export function writeVcf(
   variants: Variants,
+  options: WriteVcfOptions & { onBytes: OnBytes },
+): WrittenInPieces;
+export function writeVcf(
+  variants: Variants,
+  options?: WriteVcfOptions & { onBytes?: undefined },
+): VcfWritten;
+export function writeVcf(
+  variants: Variants,
+  options?: WriteVcfOptions,
+): VcfWritten | WrittenInPieces;
+export function writeVcf(
+  variants: Variants,
   options: WriteVcfOptions = {},
-): VcfWritten {
+): VcfWritten | WrittenInPieces {
   theWasmHasToBeLoaded();
-  anObjectOfOptions("writeVcf", options, ["bgzip"]);
+  anObjectOfOptions("writeVcf", options, ["bgzip", "onBytes"]);
   const bgzip =
     options.bgzip === undefined ? true : aBoolean("bgzip", options.bgzip);
+  const onBytes = theFunctionOfThePieces(options.onBytes);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,
   );
   const file = whileTheRunReads(() =>
-    source.write_vcf(bgzip, steps.of_a_pass()),
+    source.write_vcf(bgzip, steps.of_a_pass(), onBytes),
   );
-  return theBytesAndTheCountsOf(file, "VCF");
+  return theFileOrTheCountsOf(file, onBytes, "VCF");
 }

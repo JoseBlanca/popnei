@@ -297,7 +297,10 @@ with the default size of block gives its batches as they are.
 In TypeScript, `writeVars(variants, {numVarsPerBlock})` gives back an
 object with `bytes`, a `Uint8Array` with the bytes of the file, and
 `passStats`. The page offers the bytes as a download:
-a tab has no filesystem, as section 11 of the architecture says.
+a tab has no file a path names, as section 11 of the architecture says. With the
+option `onBytes` it gives the file in pieces to a function of the page and
+no `bytes`, as "The file of a writer in pieces" of
+`docs/specs/js_sources.md` says.
 
 It has the name and the first two arguments of `write_vars` of
 `pynei/io_vars.py`. The differences from pyNei:
