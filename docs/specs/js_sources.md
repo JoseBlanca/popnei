@@ -15,7 +15,9 @@ application of popnei, that shows the statistics of a file as soon as it is
 opened: "The result so far", which a calculation gives the page while its
 pass runs, and "The three statistics of a file in one pass", a consumer that
 reads the file once for what three consumers read it three times for. There
-is no code of either.
+is no code of either. Later that day it gained "The file of a writer in
+pieces", from issue 13, an option of `writeVars` and `writeVcf` that gives
+the file to the page as it is written.
 
 It changes the JavaScript binding crate, `crates/popnei-js`, and the
 TypeScript package, `js/popnei`, both of which are written and read a file
@@ -787,6 +789,148 @@ and check with a reader built for the test that records what it is asked
 for that the density alone asks for the chromosome and the position and
 no genotypes.
 
+## The file of a writer in pieces
+
+### What it gives
+
+`writeVars` and `writeVcf` build the whole file in the memory of wasm and
+then copy it into the array they return, so while the call returns the tab
+holds the file twice, and the memory of wasm, which never shrinks, keeps the
+room of the file until the worker ends. popnei_web offers the variants that a
+user's filters keep as a download, written from its worker. Its largest case
+is `big.vars`, the vars file of `big.vcf` of "The three statistics of a file
+in one pass", 100000 variants of 1000 diploid individuals: written as a plain
+VCF of 403572916 bytes, the write grew the memory of wasm by 441974784 bytes,
+and the array it returned held the 403572916 bytes again, 846 MB for one
+download beside the 83 MB of the open vars file. That was measured under
+node 24 on the owner's Apple M5 Pro on 7 October 2026, with
+`memory.buffer.byteLength` of the wasm module before and after the call. A
+tab runs out of memory somewhere between 2 and 4 GB, by the browser and the
+machine, which issue 13 says and nobody has measured here.
+
+With the option `onBytes`, the writer gives the file to a function of the
+application while its pass runs, one piece at a time, and keeps none of it in
+wasm: a piece is copied out as soon as it is full. What the memory of wasm
+holds then is what the pass holds for one block, the block the reader gave
+and the text or the batch the writer made of it, and one piece. The same
+write of `big.vars` with `onBytes` grew the memory of wasm by 59703296
+bytes, in 385 pieces. Two runs of each took 3.4 and 5.5 s whole and 3.1
+and 6.0 s in pieces, which does not tell the two apart. Where the pieces go is the
+application's choice. A worker can write each one to the origin private file
+system, the file system the browser gives each site, through its
+`FileSystemSyncAccessHandle`, which writes synchronously as the function has
+to, and then the tab holds no copy of the file; or it can keep them in an
+array and build a `Blob` of them, which the browser may keep out of the
+memory of the page, and then the heap of JavaScript holds the file once
+until the `Blob` is built.
+
+A piece is 1048576 bytes, 1 MiB, the size the writers already cut the file
+into in wasm, and popnei chooses it as it chooses the size of a range
+(**Open 3**, below). A piece is given as soon as it is full, which can be in
+the middle of a block, and the last one when the writer has finished the
+file, so every piece but the last holds 1 MiB and the last from 1 byte to 1
+MiB; no piece is empty, and every file has at least its header, so the
+function is called at least once. The pieces, in the order they are given,
+are the bytes the same call gives without `onBytes`. Each piece is a new
+`Uint8Array` of the application's, which it can keep: a view into the
+memory of wasm would stop being valid the next time that memory grows.
+
+When the function throws, the pass ends and the writer throws the value it
+threw, as when the function of `onProgress` or of `onSoFar` throws, which
+is the "meanwhile" of **Open 2** below. Every piece is given while the run
+is open, the last one too, so a `free()` of the variants from inside the
+function is refused, as it is from inside those two, because a run is
+reading them. A function that returns a promise is called and not awaited.
+When the pass fails after some pieces were given, a wrong line of a VCF
+among the causes, the writer throws that error, and the pieces given are
+the start of a file that has no end: the application drops them, as the
+Python writers remove the file of a call that failed. Without `onBytes` the
+two writers are as they were.
+
+The owner decided on 7 October 2026 that the pieces go to a function given
+as an option, which the writer calls. The options not taken were an
+iterator of pieces, which would need the loop of the core's writers to stop
+between two pieces and go on when asked, where today it runs to the end of
+the file in one call; and a writer that always gives pieces and no `bytes`,
+which changes what every caller of the two writers gets.
+
+### Its TypeScript function
+
+```ts
+export type OnBytes = (piece: Uint8Array) => void;
+
+export interface WrittenInPieces {
+  passStats: PassStats;
+}
+
+writeVars(variants, options: WriteVarsOptions & {onBytes: OnBytes}): WrittenInPieces
+writeVars(variants, options?: WriteVarsOptions & {onBytes?: undefined}): VarsWritten
+writeVars(variants, options?: WriteVarsOptions): VarsWritten | WrittenInPieces
+```
+
+`writeVcf` has the same three, with `WriteVcfOptions` and `VcfWritten`.
+`WriteVarsOptions` and `WriteVcfOptions` each gain `onBytes?: OnBytes`.
+With `onBytes` the result has the counts of the pass alone, `passStats`, as
+every consumer gives them; without it, it is `VarsWritten` or `VcfWritten`
+as it was, the bytes and the same counts. The third signature is for a
+caller whose `onBytes` may or may not be there. An `onBytes` that is not a
+function is an `Error` at the call, before the pass starts, and an
+`onBytes` of `undefined` is one not given.
+
+This is a difference between the two APIs that goal 2 of
+`docs/objectives.md` asks to be written down. The Python writers take a path
+and write each piece to the file as it comes, so a Python user has no use
+for the option, which is the reason the owner gave for keeping `onSoFar` out
+of Python.
+
+### How it runs
+
+The function is kept in the entry of the run in `RUNS`, and the sink the
+core writes into holds the number of that run, as a pass holds the number
+of its source: `write_vcf` of the core asks its sink to be `Send`, and no
+handle of JavaScript is. The sink fills one buffer of 1 MiB, reserved once,
+and when it is full copies it into a new `Uint8Array`, empties it and calls
+the function, cloned out of the table so that no table is borrowed while it
+runs. It gives nothing at a `flush`. The last piece is given after the
+core's writer returns and before the run closes. A throw is recorded in the
+run as a throw of `onSoFar` is, and the write that called the function
+fails with an `io::Error` of the kind `Other`, which no user reads, because
+the consumer throws the recorded value in its place; `Interrupted` would be
+written again by `write_all`. A run with no entry in `RUNS`, which no tab
+reaches, would leave the file nowhere, so the writer refuses it with an
+`Error`.
+
+### How it is verified
+
+Under node, in `test/write_in_pieces.test.ts`. The pieces joined are, byte
+for byte, the bytes of the same call without `onBytes`, and the result is
+`{passStats}` with the counts of that call. Each of `cases.vcf` and
+`many.vcf` is written with `writeVars` and `numVarsPerBlock` 3, with
+`writeVcf` bgzipped and with it plain, and the vars file of `many.vcf` with
+`writeVcf` plain; each of those files is under 1 MiB, so each is one piece.
+The VCF of 14000 variants of 600 individuals of `vars_memory.test.ts`, 34.0
+MB of text, is written the same three ways in several pieces, every one but
+the last of 1048576 bytes. The pieces of one write are compared again after
+a second write of the whole file has grown the memory of wasm, and have not
+changed. For each of the three writes, a value thrown at the second piece is
+what the writer throws, after two calls, and the next call over the same
+`Variants` gives the whole file; and a `free()` from inside the function is
+refused with the error of a run that is reading. That VCF of 14000 variants
+with a line after them whose genotype is not a number gives at least one
+piece, written plain, and then throws the error of line 14003. An `onBytes`
+of 3 is an `Error` at the call that names `onBytes`, before the page is told
+of any read, and an `onBytes` of `undefined` gives the bytes.
+
+The memory is measured in `test/write_in_pieces_memory.test.ts`, alone in
+its file, over a VCF of 30000 variants of 600 individuals, which is large
+enough that a block is well under half the file. Measured when it was
+built: the vars file of 26236330 bytes, written in pieces in batches of
+100, grew the memory of wasm by 2293760 bytes; the plain VCF of 72923053
+bytes by 18415616 in pieces, and by 73465856 written whole after them. The
+test asserts that each write in pieces grows it by less than half its file
+and the whole write by more than half, a bound that holds for any block a
+reader gives at that size and fails for a writer that keeps the file.
+
 ## The Rust interface
 
 In the binding crate. Nothing of this is in the core crate, and nothing of
@@ -1023,10 +1167,9 @@ writes popnei's number.
   inference of the types of the columns, which the applications also ask of
   popnei: each is its own request, and none of them is about how a file is
   read.
-- Writing a file that does not fit in memory. `writeVars` builds the whole
-  file in the memory of wasm and gives it as an array of bytes, which
-  section 11 of the architecture leaves until an application needs the
-  private filesystem of the browser.
+- Writing to the private file system of the browser. A writer gives its
+  file in pieces, as "The file of a writer in pieces" says, and where they
+  go is the application's.
 - Reading a file by ranges in Python. Python opens a file by its path, and
   under pyodide it reads the filesystem that emscripten gives it.
 - The wheel for pyodide, which is built for the other wasm target and has no

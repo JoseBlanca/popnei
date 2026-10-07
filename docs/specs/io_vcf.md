@@ -1005,7 +1005,9 @@ In TypeScript, `writeVcf(variants, {bgzip = true})` gives back an object
 with `bytes`, a `Uint8Array` with the bytes of the file, and `passStats`.
 There is no path to read the compression from, so it is an option, and
 bgzip is the default for the reason above. A `bgzip` that is not a
-boolean is an `Error` at the call.
+boolean is an `Error` at the call. With the option `onBytes` it gives
+the file in pieces to a function of the page and no `bytes`, as "The file
+of a writer in pieces" of `docs/specs/js_sources.md` says.
 
 pyNei has no VCF writer, so nothing is mirrored and nothing differs. The
 name follows `write_vars`.
