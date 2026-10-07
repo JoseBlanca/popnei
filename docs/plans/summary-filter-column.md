@@ -1,6 +1,6 @@
 # Plan: the counts of the FILTER column in the summary of a file
 
-7 October 2026. State: **draft**. It builds what the specs gained on 7
+7 October 2026. State: **under way**, approved by the owner that day. It builds what the specs gained on 7
 October 2026 from issue 12 of the repository: a fourth option of
 `calcVariantsSummary`, `filterColumn`, that counts how many of the variants
 of its pass passed their FILTER and how many failed, without taking any
