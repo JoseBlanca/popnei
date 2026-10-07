@@ -38,7 +38,9 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
-use popnei::stats::{ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops, SoFar};
+use popnei::stats::{
+    ClosedSide, ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops, SoFar,
+};
 
 use crate::errors::JsPopneiError;
 use crate::source::{Consumer, OpenSource, PassCounts, TheResultSoFar, the_run_of};
@@ -87,11 +89,12 @@ pub struct ArgumentsOfThePass {
     /// How many called genotypes a population needs at a variant to have a
     /// value there.
     pub(crate) min_num_individuals: u32,
-    /// The two ends of the histogram, the number of its bins and whether
-    /// they are of equal width or of equal ratio.
+    /// The two ends of the histogram, the number of its bins, whether they
+    /// are of equal width or of equal ratio, and the edge each bin holds.
     pub(crate) hist_range: (f64, f64),
     pub(crate) num_bins: usize,
     pub(crate) bin_type: String,
+    pub(crate) closed: String,
     /// The exponent of the two expected heterozygosities, and the ploidy of
     /// the variants when the user asked for no other.
     pub(crate) ploidy: Option<usize>,
@@ -109,8 +112,8 @@ impl ArgumentsOfThePass {
     /// user named no population, which is one population of every individual
     /// of the pass; `min_num_individuals` is how many called genotypes a
     /// population needs at a variant to have a value there; `hist_start`,
-    /// `hist_end`, `num_bins` and `bin_type` are the histogram every
-    /// statistic is counted in; `ploidy` is the exponent of the two expected
+    /// `hist_end`, `num_bins`, `bin_type` and `closed` are the histogram
+    /// every statistic is counted in; `ploidy` is the exponent of the two expected
     /// heterozygosities, and nothing for the ploidy of the variants; and
     /// `poly_threshold` is the major allele frequency below which a variant
     /// is polymorphic in a population.
@@ -132,6 +135,7 @@ impl ArgumentsOfThePass {
         hist_end: f64,
         num_bins: usize,
         bin_type: String,
+        closed: String,
         ploidy: Option<usize>,
         poly_threshold: f64,
     ) -> ArgumentsOfThePass {
@@ -144,6 +148,7 @@ impl ArgumentsOfThePass {
             hist_range: (hist_start, hist_end),
             num_bins,
             bin_type,
+            closed,
             ploidy,
             poly_threshold,
         }
@@ -270,7 +275,8 @@ impl DistribsBeforeThePass {
         let stats = the_stats(&asked.stats)?;
         let (start, end) = asked.hist_range;
         let bins = HistBins::of_kind(&asked.bin_type, start, end, asked.num_bins)
-            .map_err(under_its_name)?;
+            .map_err(under_its_name)?
+            .closed_on(ClosedSide::of_name(&asked.closed)?);
         let named = the_pops_given(asked)?;
         // The ploidy of the variants turns the alleles a population called
         // into called genotypes, for the `min_num_individuals` test, and it
@@ -971,6 +977,14 @@ pub fn default_num_bins() -> usize {
 #[must_use]
 pub fn default_bin_type() -> String {
     popnei::stats::DEFAULT_BIN_TYPE.to_owned()
+}
+
+/// Which edge each bin of the histogram holds when the caller says
+/// nothing, the left one, as `numpy.histogram` does.
+#[wasm_bindgen]
+#[must_use]
+pub fn default_closed() -> String {
+    popnei::stats::DEFAULT_CLOSED.to_owned()
 }
 
 /// The major allele frequency below which a variant is polymorphic in a

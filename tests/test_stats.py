@@ -61,6 +61,11 @@ from pynei import calc_per_sample_stats as pynei_calc_per_sample_stats
 from pynei import calc_per_var_distribs as pynei_calc_per_var_distribs
 from pynei import vars_from_vcf
 from pynei.diversity import _calc_unbiased_exp_het_per_var
+from pynei.per_var_stats import (
+    _calc_exp_het_per_var,
+    _calc_maf_per_var,
+    _calc_obs_het_per_var,
+)
 from pynei.utils_pop import _calc_pops_idxs
 
 STATS_REFERENCE_DIR = Path(__file__).parent / "reference" / "stats"
@@ -129,39 +134,64 @@ def _the_same_number(ours, theirs) -> bool:
     return math.isclose(ours, theirs, rel_tol=1e-12, abs_tol=0)
 
 
-def _on_each_bin_edge(path: Path, pops, min_num_individuals: int, edges):
-    """How many variants of each population have an unbiased expected
-    heterozygosity that lies on each edge of the histogram, from pyNei's own
-    per variant values: one count per edge, per population.
+def _pyneis_values_per_var(chunk, of_each_pop, min_num_individuals: int):
+    """pyNei's per variant values of the four statistics of one chunk, the
+    frames that its `calc_per_var_distribs` puts in its histograms: the
+    observed heterozygosity with no threshold, which pyNei holds it to."""
+    return {
+        "obs_het": _calc_obs_het_per_var(chunk, pops=of_each_pop)["obs_het_per_var"],
+        "maf": _calc_maf_per_var(
+            chunk, pops=of_each_pop, min_num_samples=min_num_individuals
+        )["major_allele_freqs_per_var"],
+        "exp_het": _calc_exp_het_per_var(
+            chunk, pops=of_each_pop, min_num_samples=min_num_individuals
+        )["exp_het"],
+        "unbiased_exp_het": _calc_unbiased_exp_het_per_var(
+            chunk, pops=of_each_pop, min_num_samples=min_num_individuals
+        )["exp_het"],
+    }
 
-    The two libraries reach that value by different arithmetic, popnei by
-    multiplying the factors of each of its terms one over another and pyNei
-    by multiplying the plain value by `c / (c - 1)`, so the two differ in
-    the last bit and such a variant is counted in either of the two bins
-    that share the edge, which "How it is verified" of the pass gives with
-    the two variants of these datasets that it happens to.
+
+def _on_each_bin_edge(path: Path, pops, min_num_individuals: int, edges):
+    """How many variants of each population have a value of each statistic
+    that lies on each edge of the histogram, from pyNei's own per variant
+    values: one count per edge, per statistic and population.
+
+    Such a variant can be counted in either of the two bins that share the
+    edge, for two reasons that "How it is verified" of the pass gives.
+    popnei's edges are the decimals k / n and pyNei's are `linspace`'s, 15
+    of the 41 default ones a unit in the last place away, so a value that is
+    exactly such a decimal, 3 of 20 = 0.15, is on popnei's edge and below
+    pyNei's. And the unbiased expected heterozygosity is reached by
+    different arithmetic, popnei multiplying the factors of each of its
+    terms one over another and pyNei the plain value by `c / (c - 1)`, so
+    the two differ in the last bit.
     """
     theirs = vars_from_vcf(path)
     of_each_pop = _calc_pops_idxs(pops, theirs.samples)
     edges = numpy.asarray(edges)
-    on_each_edge = {pop: numpy.zeros(len(edges), dtype=int) for pop in of_each_pop}
+    on_each_edge = {
+        stat: {pop: numpy.zeros(len(edges), dtype=int) for pop in of_each_pop}
+        for stat in DISTRIBS
+    }
     for chunk in theirs.iter_vars_chunks():
-        values = _calc_unbiased_exp_het_per_var(
-            chunk, pops=of_each_pop, min_num_samples=min_num_individuals
-        )["exp_het"]
-        for pop in of_each_pop:
-            of_the_pop = values[pop].to_numpy()
-            of_the_pop = of_the_pop[~numpy.isnan(of_the_pop)]
-            on_each_edge[pop] += numpy.isclose(
-                of_the_pop[:, numpy.newaxis], edges[numpy.newaxis, :], rtol=0, atol=1e-9
-            ).sum(axis=0)
+        of_each_stat = _pyneis_values_per_var(chunk, of_each_pop, min_num_individuals)
+        for stat, values in of_each_stat.items():
+            for pop in of_each_pop:
+                of_the_pop = values[pop].to_numpy()
+                of_the_pop = of_the_pop[~numpy.isnan(of_the_pop)]
+                on_each_edge[stat][pop] += numpy.isclose(
+                    of_the_pop[:, numpy.newaxis],
+                    edges[numpy.newaxis, :],
+                    rtol=0,
+                    atol=1e-9,
+                ).sum(axis=0)
     return on_each_edge
 
 
-def _compare_the_unbiased_histogram(our_counts, their_counts, on_each_edge) -> None:
-    """The histogram of the unbiased expected heterozygosity of one
-    population, which agrees with pyNei's but for the variants that lie on
-    an edge.
+def _compare_a_histogram(our_counts, their_counts, on_each_edge) -> None:
+    """The histogram of a statistic of one population, which agrees with
+    pyNei's but for the variants that lie on an edge.
 
     Each of them moves one count from one of the two bins that share its
     edge to the other, and nothing else does, so the variants below each
@@ -184,13 +214,12 @@ def _compare_with_pynei(ours, plain, unbiased, pop_names, on_each_edge) -> None:
 
     `plain` is pyNei's result with `unbiased_exp_het=False`, whose `exp_het`
     is popnei's `exp_het`, and `unbiased` its result with the argument true,
-    whose `exp_het` is popnei's `unbiased_exp_het`. The histogram counts and
-    the three counts of the polymorphism ratio have to be equal, and the
-    means and the two ratios equal within 1e-12 relative.
-
-    The unbiased expected heterozygosity is the one exception, and
-    `on_each_edge` is how many variants of each population lie on each edge
-    of its histogram, which is what its counts are allowed to differ by.
+    whose `exp_het` is popnei's `unbiased_exp_het`. The three counts of the
+    polymorphism ratio have to be equal, the means and the two ratios equal
+    within 1e-12 relative, the edges within 1e-15 relative, which holds the
+    unit in the last place popnei's decimals and `linspace` differ by, and
+    the histogram counts equal but for the variants that lie on an edge,
+    which `on_each_edge` counts for each statistic and population.
     """
     theirs_of = {
         "obs_het": plain.obs_het,
@@ -201,8 +230,11 @@ def _compare_with_pynei(ours, plain, unbiased, pop_names, on_each_edge) -> None:
     for stat in DISTRIBS:
         ours_of_the_stat = getattr(ours, stat)
         theirs_of_the_stat = theirs_of[stat]
-        numpy.testing.assert_array_equal(
-            ours_of_the_stat.hist_bin_edges, theirs_of_the_stat.hist_bin_edges
+        numpy.testing.assert_allclose(
+            ours_of_the_stat.hist_bin_edges,
+            theirs_of_the_stat.hist_bin_edges,
+            rtol=1e-15,
+            atol=0,
         )
         for pop in pop_names:
             assert _the_same_number(
@@ -212,14 +244,7 @@ def _compare_with_pynei(ours, plain, unbiased, pop_names, on_each_edge) -> None:
             their_counts = numpy.asarray(theirs_of_the_stat.hist_counts[pop]).astype(
                 int
             )
-            if stat == "unbiased_exp_het":
-                _compare_the_unbiased_histogram(
-                    our_counts, their_counts, on_each_edge[pop]
-                )
-            else:
-                numpy.testing.assert_array_equal(
-                    our_counts, their_counts, err_msg=f"{stat} of {pop}"
-                )
+            _compare_a_histogram(our_counts, their_counts, on_each_edge[stat][pop])
     ours_poly, theirs_poly = ours.poly_vars_ratio, plain.poly_vars_ratio
     for pop in pop_names:
         for count in ("num_poly", "num_variable", "tot_num_variants_with_data"):
@@ -489,22 +514,43 @@ def _plink2s_missing_rates(path: Path) -> numpy.ndarray:
     )
 
 
+# The 41 edges of the default histogram, the decimals k / 40 as float64.
+_FORTY_BINS_EDGES = numpy.arange(41) / 40
+
+
+def _bins_that_hold_their_right_edge(values, edges):
+    """How many of `values` fall in each bin of `edges` when each bin holds
+    its right edge and the first its left one too, which is what pandas'
+    `cut` does with `right=True, include_lowest=True`."""
+    values = numpy.asarray(values)
+    inside = values[(values >= edges[0]) & (values <= edges[-1])]
+    bins = numpy.maximum(numpy.searchsorted(edges, inside, side="left") - 1, 0)
+    return numpy.bincount(bins, minlength=len(edges) - 1)
+
+
+@pytest.mark.parametrize("closed", ["left", "right"])
 @pytest.mark.parametrize("pops", [MANY_POPS, None], ids=["two_pops", "no_pops"])
-def test_per_var_missing_rate_of_many_vcf_is_plink2s(pops) -> None:
+def test_per_var_missing_rate_of_many_vcf_is_plink2s(pops, closed) -> None:
     """The missing rate of the 500 variants of `many.vcf`, over `popA` and
     `popB` and over every individual, against plink2's `--missing
     variant-only` with a half called genotype read as missing: the default
-    40 bins from 0 to 1 count what numpy's histogram counts of plink2's
-    rates, exactly, and the means agree within 1e-12 relative.
+    40 bins from 0 to 1, whose edges are the decimals k / 40, count what
+    numpy's histogram over those edges counts of plink2's rates with bins
+    that hold their left edge, and what the bins that hold their right edge
+    count with the other side, exactly, and the means agree within 1e-12
+    relative.
 
     The first five missing genotypes of each population, through the rates
-    they give, and the 51 variants of `popA` in bin 5 are the literals of
-    the spec. 3 missing genotypes of 20 are 0.1499999999999999944 as a
-    float64, below the edge 6 x 0.025 = 0.15000000000000002, so they are in
-    bin 5 and not in bin 6.
+    they give, and the 51 variants of `popA` with 3 missing genotypes of 20
+    are the literals of the spec: 3/20 is the float64 of 0.15, which is the
+    edge 6 / 40, so they are in bin 6 with the left edge and in bin 5 with
+    the right one.
     """
     ours = calc_per_var_distribs(
-        _many(), stats=(PerVarStat.MISSING_RATE,), pops=pops
+        _many(),
+        stats=(PerVarStat.MISSING_RATE,),
+        pops=pops,
+        hist_kwargs={"closed": closed},
     ).missing_rate
     first_five = {
         "pop": ([4, 3, 3, 1, 3], 50),
@@ -512,13 +558,16 @@ def test_per_var_missing_rate_of_many_vcf_is_plink2s(pops) -> None:
         "popB": ([2, 2, 3, 0, 1], 30),
     }
 
+    numpy.testing.assert_array_equal(ours.hist_bin_edges, _FORTY_BINS_EDGES)
     for pop in ["popA", "popB"] if pops else ["pop"]:
         theirs = _plink2s_missing_rates(_VMISS_OF[pop])
         assert len(theirs) == MANY_NUM_VARS
         missing, num_individuals = first_five[pop]
         assert list(theirs[:5]) == [count / num_individuals for count in missing]
-        their_counts, their_edges = numpy.histogram(theirs, bins=40, range=(0, 1))
-        numpy.testing.assert_array_equal(ours.hist_bin_edges, their_edges)
+        if closed == "left":
+            their_counts, _ = numpy.histogram(theirs, bins=_FORTY_BINS_EDGES)
+        else:
+            their_counts = _bins_that_hold_their_right_edge(theirs, _FORTY_BINS_EDGES)
         numpy.testing.assert_array_equal(
             numpy.asarray(ours.hist_counts[pop]), their_counts, err_msg=pop
         )
@@ -528,7 +577,85 @@ def test_per_var_missing_rate_of_many_vcf_is_plink2s(pops) -> None:
             theirs.mean(),
         )
     if pops:
-        assert int(ours.hist_counts["popA"].iloc[5]) == 51
+        bin_of_the_51 = 6 if closed == "left" else 5
+        assert int(ours.hist_counts["popA"].iloc[bin_of_the_51]) == 51
+
+
+def test_per_var_distribs_give_edges_that_are_the_decimals() -> None:
+    """Of 1000 bins from 0 to 1 the k-th edge is the float64 of k / 1000,
+    the number a threshold of three decimals typed by a user is read as;
+    `numpy.linspace(0, 1, 1001)` gives 144 of them one unit in the last
+    place away, 0.009 the first."""
+    ours = calc_per_var_distribs(
+        _many(),
+        stats=(PerVarStat.MAF,),
+        min_num_individuals=MANY_MIN_NUM_INDIVIDUALS,
+        hist_kwargs={"num_bins": 1000},
+    ).maf
+    numpy.testing.assert_array_equal(ours.hist_bin_edges, numpy.arange(1001) / 1000)
+    assert ours.hist_bin_edges[9] == 0.009
+    assert numpy.linspace(0, 1, 1001)[9] != 0.009
+
+
+@pytest.mark.parametrize(
+    ("stat", "filter_of_the_stat", "thresholds"),
+    [
+        (
+            PerVarStat.MISSING_RATE,
+            "filter_by_missing_data",
+            (0.02, 0.05, 0.1, 0.15, 0.3, 0.777),
+        ),
+        (PerVarStat.OBS_HET, "filter_by_obs_het", (0.05, 0.1, 0.2, 0.3, 0.45, 0.5)),
+        (PerVarStat.MAF, "filter_by_maf", (0.5, 0.55, 0.6, 0.75, 0.8, 0.9, 0.95)),
+    ],
+)
+def test_per_var_distribs_with_the_right_edge_count_below_a_threshold_what_its_filter_keeps(
+    stat: PerVarStat, filter_of_the_stat: str, thresholds: tuple[float, ...]
+) -> None:
+    """With bins that hold their right edge, and 1000 bins from 0 to 1, the
+    bins below a threshold of three decimals count the variants whose value
+    is at most it, which is what the filter of that statistic keeps: issue
+    11, the page of popnei_web that tells how many variants a threshold
+    keeps without a pass over the file. `many.vcf` over every individual has
+    50 variants with 5 missing genotypes of 50, 0.1, a value on an edge
+    among the thresholds tried. With bins that hold their left edge such
+    variants are left out of the bins below the threshold, and the test
+    asserts that this happens at one threshold at least, so that it would
+    fail on the default side."""
+    of_each_side = {
+        closed: getattr(
+            calc_per_var_distribs(
+                _many(),
+                stats=(stat,),
+                min_num_individuals=0,
+                hist_kwargs={"num_bins": 1000, "closed": closed},
+            ),
+            stat.value,
+        )
+        for closed in ("left", "right")
+    }
+    differ_somewhere = False
+    for threshold in thresholds:
+        variants = _many()
+        getattr(variants, filter_of_the_stat)(threshold)
+        blocks = variants.iter_blocks()
+        for _ in blocks:
+            pass
+        kept = blocks.pass_stats.num_vars
+        k = round(threshold * 1000)
+        right = of_each_side["right"]
+        assert right.hist_bin_edges[k] == threshold
+        assert int(right.hist_counts["pop"].iloc[:k].sum()) == kept, (threshold, kept)
+        left_below = int(of_each_side["left"].hist_counts["pop"].iloc[:k].sum())
+        differ_somewhere |= left_below != kept
+    assert differ_somewhere
+
+
+def test_per_var_distribs_refuse_an_unknown_side_of_the_bins() -> None:
+    """The bins hold their `left` edge or their `right` one."""
+    for closed in ("both", "Right", ""):
+        with pytest.raises(ValueError, match="`right`"):
+            calc_per_var_distribs(_many(), hist_kwargs={"closed": closed})
 
 
 def test_per_var_distribs_arguments_of_one_statistic_change_no_other() -> None:
@@ -701,13 +828,13 @@ def test_per_var_distribs_refuse_a_logarithmic_range_that_starts_at_zero_or_belo
             )
 
 
-def test_per_var_distribs_refuse_a_key_of_hist_kwargs_that_is_not_one_of_the_three() -> (
+def test_per_var_distribs_refuse_a_key_of_hist_kwargs_that_is_not_one_of_the_four() -> (
     None
 ):
-    """`range`, `num_bins` and `bin_type` are the histogram, and a key that
-    is none of them is a name with a typo in it, which would leave the
-    default silently in its place."""
-    with pytest.raises(ValueError, match="num_bins"):
+    """`range`, `num_bins`, `bin_type` and `closed` are the histogram, and a
+    key that is none of them is a name with a typo in it, which would leave
+    the default silently in its place."""
+    with pytest.raises(ValueError, match="num_bins.*closed"):
         calc_per_var_distribs(_many(), hist_kwargs={"nbins": 4})
 
 

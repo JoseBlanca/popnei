@@ -1041,7 +1041,17 @@ struct Run {
     /// reading between two of its blocks. The page is told nothing more of
     /// that run, the call that would say how far its pass read among it, as
     /// when the function of `onProgress` stops a pass.
+    ///
+    /// The function of `onBytes`, which a writer gives the pieces of its
+    /// file to, stops a run in the same way.
     stopped_between_blocks: bool,
+    /// The function of `onBytes` of a writer, which is given each piece of
+    /// the file as it fills, and nothing for every other run.
+    ///
+    /// It is here and not in the sink the core writes into because the
+    /// VCF writer asks its sink to be `Send` and no handle of JavaScript is:
+    /// the sink holds the number of this run.
+    gives_the_pieces_to: Option<Function>,
 }
 
 /// One pass of a run that is over: which pass of the run it was, how many
@@ -1263,6 +1273,7 @@ pub(crate) fn starts_a_run_of(source: u32, consumer: &Consumer) -> RunOfAConsume
                 passes_that_ended: Vec::new(),
                 stopped_with: None,
                 stopped_between_blocks: false,
+                gives_the_pieces_to: None,
             },
         )
     });
@@ -1423,15 +1434,50 @@ impl RunOfAConsumer {
     /// A run that was stopped already keeps the first value, as
     /// [`the_run_was_stopped`] says.
     fn was_stopped_between_blocks(&self, thrown: JsValue) {
-        RUNS.with_borrow_mut(|runs| {
-            if let Some(run) = entry_to_change(runs, self.0) {
-                run.stopped_between_blocks = true;
-                if run.stopped_with.is_none() {
-                    run.stopped_with = Some(thrown);
-                }
-            }
-        });
+        the_run_was_stopped_by_its_consumer(self.0, thrown);
     }
+
+    /// Gives `on_bytes` the pieces of the file the writer of this run writes,
+    /// which [`PiecesToThePage`] calls it with.
+    ///
+    /// # Errors
+    ///
+    /// When the run has no entry of [`RUNS`] to keep the function in, which
+    /// no tab reaches: the file would otherwise go nowhere and the call
+    /// would say it was written.
+    fn gives_the_pieces_to(&self, on_bytes: Function) -> Result<(), JsPopneiError> {
+        let kept = RUNS.with_borrow_mut(|runs| {
+            let run = entry_to_change(runs, self.0)?;
+            run.gives_the_pieces_to = Some(on_bytes);
+            Some(())
+        });
+        kept.ok_or_else(|| {
+            JsPopneiError::Broken(
+                "the writer has no entry of the table of runs to keep `onBytes` in, \
+                 so its file would go nowhere; please report it"
+                    .to_owned(),
+            )
+        })
+    }
+}
+
+/// A function the consumer of the run numbered `run` calls, the one of
+/// `onSoFar` between two blocks or the one of `onBytes` with a piece of the
+/// file, threw `thrown`: that is what the consumer throws in place of the
+/// error the core gives back for the pass, as for a throw of the function of
+/// `onProgress`, and the page is told nothing more of this run.
+///
+/// A run that was stopped already keeps the first value, as
+/// [`the_run_was_stopped`] says.
+fn the_run_was_stopped_by_its_consumer(run: u32, thrown: JsValue) {
+    RUNS.with_borrow_mut(|runs| {
+        if let Some(run) = entry_to_change(runs, run) {
+            run.stopped_between_blocks = true;
+            if run.stopped_with.is_none() {
+                run.stopped_with = Some(thrown);
+            }
+        }
+    });
 }
 
 impl Drop for RunOfAConsumer {
@@ -1815,6 +1861,9 @@ const BYTES_PER_PIECE: usize = 1024 * 1024;
 /// Every piece leaves the memory of wasm as it is read, which is where the
 /// copy that crosses is made, and the package puts them together into the
 /// `Uint8Array` the user gets, in the heap of JavaScript.
+///
+/// A file whose pieces went to `onBytes` as they were written gives back one
+/// of these with no piece and 0 bytes, and only its counts are read.
 #[wasm_bindgen]
 pub struct WrittenFile {
     /// The pieces in the order they were written, each of them empty once
@@ -1925,6 +1974,188 @@ impl Write for PiecesOfTheFile {
     }
 }
 
+/// The sink the core writes a vars file or a VCF into when the application
+/// gave `onBytes`: it fills one piece of [`BYTES_PER_PIECE`] and gives it to
+/// that function as soon as it is full, so the memory of wasm holds one
+/// piece of the file and not the file.
+///
+/// What it holds of JavaScript is the number of its run, whose entry of
+/// [`RUNS`] keeps the function: the VCF writer asks its sink to be `Send`.
+/// The last piece, which is shorter or full, is given by
+/// [`PiecesToThePage::the_last_piece`] when the core has finished the file,
+/// and while the run is still open, so that what the function throws there
+/// is what the writer throws and a `free()` from inside it is refused.
+///
+/// It counts no bytes: nothing reads the count, and a count in a `usize`,
+/// 32 bits in wasm, would refuse a file of 4 GiB, which is what the pieces
+/// are for.
+struct PiecesToThePage {
+    run: u32,
+    piece: Vec<u8>,
+}
+
+impl PiecesToThePage {
+    /// The sink of the run `run`, with the room of its one piece.
+    ///
+    /// # Errors
+    ///
+    /// When the memory of wasm cannot take a piece.
+    fn of(run: &RunOfAConsumer) -> Result<PiecesToThePage, JsPopneiError> {
+        let mut piece: Vec<u8> = Vec::new();
+        piece.try_reserve_exact(BYTES_PER_PIECE).map_err(|_| {
+            JsPopneiError::Core(popnei::Error::FileNotWritten {
+                problem: format!(
+                    "the memory of this tab does not take the {BYTES_PER_PIECE} bytes \
+                     of a piece of the file"
+                ),
+                source: None,
+            })
+        })?;
+        Ok(PiecesToThePage { run: run.0, piece })
+    }
+
+    /// Gives the piece to the function of the run, as a new `Uint8Array` of
+    /// the application's, and empties it; a piece that holds nothing is not
+    /// given.
+    ///
+    /// The function is cloned out of [`RUNS`], so that no table is borrowed
+    /// while it runs and an application that calls popnei from inside it
+    /// does not trap.
+    ///
+    /// # Errors
+    ///
+    /// When the function throws, or returns a promise, or the heap of
+    /// JavaScript has no room for the copy of the piece, each of which stops
+    /// the run with a value the writer throws; and when the run holds no
+    /// function, a defect of this crate.
+    fn give(&mut self) -> std::io::Result<()> {
+        if self.piece.is_empty() {
+            return Ok(());
+        }
+        let on_bytes = RUNS
+            .with_borrow(|runs| entry_of(runs, self.run)?.gives_the_pieces_to.clone())
+            .ok_or_else(|| {
+                std::io::Error::other(
+                    "the run of the writer holds no `onBytes` to give the file to, \
+                     which is a defect of popnei; please report it",
+                )
+            })?;
+        let piece = a_copy_of(&self.piece);
+        self.piece.clear();
+        let piece = piece.map_err(|thrown| self.stopped_with(thrown))?;
+        let returned = on_bytes
+            .call1(&JsValue::NULL, &piece)
+            .map_err(|thrown| self.stopped_with(thrown))?;
+        if is_a_promise(&returned) {
+            return Err(self.stopped_with(
+                js_sys::Error::new(
+                    "popnei: `onBytes` returned a promise, and the writer cannot wait \
+                     for it, so a piece it failed to keep would be missing from a file \
+                     the call said was written; it has to keep each piece before it \
+                     returns, with a `FileSystemSyncAccessHandle` or in an array",
+                )
+                .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Stops the run with `thrown`, which the writer throws, and gives the
+    /// error that ends the pass.
+    ///
+    /// No user reads that error: the consumer throws `thrown` in its place.
+    /// It is of the kind `Other` and not `Interrupted`, which `write_all`
+    /// would try again.
+    fn stopped_with(&self, thrown: JsValue) -> std::io::Error {
+        the_run_was_stopped_by_its_consumer(self.run, thrown);
+        std::io::Error::other(
+            "the function `onBytes` threw or returned a promise, or a piece had no \
+             room in the heap of JavaScript, and the pass ended",
+        )
+    }
+
+    /// Gives the last piece, once the core has finished the file.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`PiecesToThePage::give`].
+    fn the_last_piece(mut self) -> Result<(), JsPopneiError> {
+        self.give().map_err(|failure| {
+            JsPopneiError::Core(popnei::Error::FileNotWritten {
+                problem: failure.to_string(),
+                source: Some(failure),
+            })
+        })
+    }
+}
+
+/// A new `Uint8Array` in the heap of JavaScript with the bytes of `piece`.
+///
+/// It is built through `Reflect.construct`, which gives back what the
+/// constructor throws, a `RangeError` when the heap has no room for it: the
+/// constructor js-sys binds would let that throw unwind the stack of wasm
+/// past the code that closes the run, and the variants could then never be
+/// freed.
+///
+/// # Errors
+///
+/// What the constructor threw, and an `Error` when the global object has no
+/// `Uint8Array` that builds an array of the length asked for.
+fn a_copy_of(piece: &[u8]) -> Result<Uint8Array, JsValue> {
+    let no_constructor = || -> JsValue {
+        js_sys::Error::new(
+            "popnei: the JavaScript that runs popnei has no `Uint8Array` that builds \
+             an array of the length it is given",
+        )
+        .into()
+    };
+    let constructor = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Uint8Array"))?
+        .dyn_into::<Function>()
+        .map_err(|_not_a_function| no_constructor())?;
+    let length = u32::try_from(piece.len()).map_err(|_too_long| no_constructor())?;
+    let array: Uint8Array =
+        js_sys::Reflect::construct(&constructor, &Array::of1(&JsValue::from(length)))?
+            .unchecked_into();
+    // `copy_from` panics on arrays of two lengths.
+    if array.length() != length {
+        return Err(no_constructor());
+    }
+    array.copy_from(piece);
+    Ok(array)
+}
+
+/// Whether `returned` is a promise, or anything else with a `then` that is a
+/// function, which is what `await` treats as one.
+fn is_a_promise(returned: &JsValue) -> bool {
+    if !(returned.is_object() || returned.is_function()) {
+        return false;
+    }
+    js_sys::Reflect::get(returned, &JsValue::from_str("then")).is_ok_and(|then| then.is_function())
+}
+
+impl Write for PiecesToThePage {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let room = BYTES_PER_PIECE.saturating_sub(self.piece.len());
+        let taken = room.min(bytes.len());
+        let Some(head) = bytes.get(..taken) else {
+            return Err(std::io::Error::other(
+                "the bytes of the file are fewer than what is being taken from them",
+            ));
+        };
+        self.piece.extend_from_slice(head);
+        if self.piece.len() >= BYTES_PER_PIECE {
+            self.give()?;
+        }
+        Ok(taken)
+    }
+
+    /// Gives nothing: a piece goes when it is full, or at the end of the
+    /// file, so that every piece but the last holds [`BYTES_PER_PIECE`].
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Every variant of `source`, through the steps of `steps`, as a vars
 /// file, one batch of `num_vars_per_block` variants after another, and
 /// `None` for the size popnei chooses for the individuals of the source.
@@ -1932,17 +2163,20 @@ impl Write for PiecesOfTheFile {
 /// The file is built in the memory of wasm, in pieces that cross one by one:
 /// a `Uint8Array` that were a view into that memory would stop being valid
 /// the next time it grows. A tab holds the source and the file at once, so
-/// the memory it needs is the two together.
+/// the memory it needs is the two together. With `on_bytes`, the file goes
+/// to that function in pieces through [`PiecesToThePage`] and nothing of it
+/// is kept here.
 ///
 /// # Errors
 ///
 /// When `num_vars_per_block` is 0, when the source cannot be read, when a
-/// block of it is not one a vars file holds, and when the memory of the tab
-/// does not take the file.
+/// block of it is not one a vars file holds, when the memory of the tab
+/// does not take the file, and the value `on_bytes` threw.
 pub(crate) fn bytes_of_a_vars_file(
     source: &dyn OpenSource,
     num_vars_per_block: Option<usize>,
     steps: Steps,
+    on_bytes: Option<Function>,
 ) -> Result<WrittenFile, JsPopneiError> {
     // The source is asked for the size the batches will have, as a pass is,
     // so that the `reblock` the core puts over it has nothing to cut or to
@@ -1958,11 +2192,29 @@ pub(crate) fn bytes_of_a_vars_file(
         // over the blocks is the core's, and so is the count of the variants
         // it wrote, which no loop of this crate sees.
         let mut chain = chain_of(reader, steps.steps())?;
-        let (written, num_vars) =
-            popnei::io::vars::write_vars(&mut chain, PiecesOfTheFile::new(), num_vars_per_block)?;
+        let (pieces, num_bytes, num_vars) = match on_bytes {
+            None => {
+                let (written, num_vars) = popnei::io::vars::write_vars(
+                    &mut chain,
+                    PiecesOfTheFile::new(),
+                    num_vars_per_block,
+                )?;
+                (written.pieces, written.num_bytes, num_vars)
+            }
+            Some(on_bytes) => {
+                run.gives_the_pieces_to(on_bytes)?;
+                let (written, num_vars) = popnei::io::vars::write_vars(
+                    &mut chain,
+                    PiecesToThePage::of(run)?,
+                    num_vars_per_block,
+                )?;
+                written.the_last_piece()?;
+                (Vec::new(), 0, num_vars)
+            }
+        };
         Ok(WrittenFile {
-            pieces: written.pieces,
-            num_bytes: written.num_bytes,
+            pieces,
+            num_bytes,
             next: 0,
             counts: PassCounts::of(num_vars, steps.steps(), &*chain),
         })
@@ -1977,26 +2229,37 @@ pub(crate) fn bytes_of_a_vars_file(
 /// # Errors
 ///
 /// When the source cannot be read, when a block of it is not one the
-/// writer can write, which is a defect of a reader, and when the memory of
-/// the tab does not take the file.
+/// writer can write, which is a defect of a reader, when the memory of the
+/// tab does not take the file, and the value `on_bytes` threw.
 pub(crate) fn bytes_of_a_vcf(
     source: &dyn OpenSource,
     bgzip: bool,
     steps: Steps,
+    on_bytes: Option<Function>,
 ) -> Result<WrittenFile, JsPopneiError> {
     the_run_of(source, &Consumer::WriteVcf, |run| {
         let reader = source.reader(run, source.num_vars_per_block_of_the_vcf_writer())?;
         // The chain stays here, lent to the core, so that the counts of its
         // filters are read when the call is over.
         let mut chain = chain_of(reader, steps.steps())?;
-        let (written, num_vars) = popnei::io::vcf::write_vcf(
-            &mut chain,
-            PiecesOfTheFile::new(),
-            popnei::io::vcf::VcfWriteOptions { bgzip },
-        )?;
+        let options = popnei::io::vcf::VcfWriteOptions { bgzip };
+        let (pieces, num_bytes, num_vars) = match on_bytes {
+            None => {
+                let (written, num_vars) =
+                    popnei::io::vcf::write_vcf(&mut chain, PiecesOfTheFile::new(), options)?;
+                (written.pieces, written.num_bytes, num_vars)
+            }
+            Some(on_bytes) => {
+                run.gives_the_pieces_to(on_bytes)?;
+                let (written, num_vars) =
+                    popnei::io::vcf::write_vcf(&mut chain, PiecesToThePage::of(run)?, options)?;
+                written.the_last_piece()?;
+                (Vec::new(), 0, num_vars)
+            }
+        };
         Ok(WrittenFile {
-            pieces: written.pieces,
-            num_bytes: written.num_bytes,
+            pieces,
+            num_bytes,
             next: 0,
             counts: PassCounts::of(num_vars, steps.steps(), &*chain),
         })

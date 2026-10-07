@@ -46,6 +46,7 @@ import {
   ArgumentsOfTheDensity,
   ArgumentsOfThePass,
   default_bin_type as defaultBinType,
+  default_closed as defaultClosed,
   default_hist_range as defaultHistRange,
   default_min_num_individuals as defaultMinNumIndividuals,
   default_num_bins as defaultNumBins,
@@ -96,6 +97,9 @@ export type PerVarStat = (typeof THE_STATISTICS)[number];
 /** The two kinds of bins a histogram is made of. */
 export type BinType = "linear" | "logarithmic";
 
+/** The two edges a bin of a histogram can hold besides its inside. */
+export type Closed = "left" | "right";
+
 /** The histogram the values of every statistic are counted in. */
 export interface HistKwargs {
   /**
@@ -113,6 +117,17 @@ export interface HistKwargs {
    * given. pyNei spells the first one `lineal`, the Spanish word.
    */
   binType?: BinType;
+
+  /**
+   * The edge each bin holds, `"left"` when it is not given. With `"left"` a
+   * value on an edge is in the bin that starts there and the last bin holds
+   * its right edge too, as `numpy.histogram` does. With `"right"` a value on
+   * an edge is in the bin that ends there and the first bin holds its left
+   * edge too, so the bins below an edge t count the variants whose value is
+   * at most t, which is what `filterByMissingData(t)`, `filterByMaf(t)` and
+   * `filterByObsHet(t)` keep.
+   */
+  closed?: Closed;
 }
 
 /**
@@ -351,10 +366,15 @@ export interface PerVarDistribs {
  * individuals that pass gives, which are the ones a `filterIndividuals` kept
  * when the `Variants` carries one.
  *
- * A value falls in the bin whose left edge is at most the value and whose
- * right edge is above it, and the last bin takes its right edge too, as
- * `numpy.histogram` does; a value outside the range of the bins is in no bin
- * and in the mean.
+ * The k-th of the n + 1 edges of bins of equal width is (start · (n − k) +
+ * end · k) / n, which is the number the decimal k / n is read as when the two
+ * ends are whole numbers or halves: of 1000 bins from 0 to 1 the edge 7 is
+ * `0.007`. With `histKwargs.closed` `"left"`, the default, a value falls in
+ * the bin whose left edge is at most the value and whose right edge is above
+ * it, and the last bin takes its right edge too, as `numpy.histogram` does;
+ * with `"right"` it falls in the bin whose left edge is below it and whose
+ * right edge is at least the value, and the first bin takes its left edge
+ * too. A value outside the range of the bins is in no bin and in the mean.
  *
  * `onSoFar` is given the distributions over the variants read so far while
  * the pass runs, every `soFarEvery` seconds, as `SoFarOptions` says.
@@ -372,7 +392,9 @@ export interface PerVarDistribs {
  * diploid one at every ploidy; `ploidy` is the exponent alone, where pyNei
  * also counts with it the alleles the individuals are expected to hold; a
  * duplicated name in a population, an empty population and an empty `pops`
- * are refused; the result has `passStats`; pyNei has no missing rate; and
+ * are refused; the edges of equal width are the decimals and not those of
+ * `numpy.linspace`, and `histKwargs.closed` is new; the result has
+ * `passStats`; pyNei has no missing rate; and
  * neither pyNei nor the Python package has `onSoFar` or `soFarEvery`.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed; when
@@ -382,9 +404,11 @@ export interface PerVarDistribs {
  * names one twice or names none, and when it holds no population; when
  * `minNumIndividuals` or `ploidy` is not a whole number of 0 or more, and
  * when the ploidy is 0 or above 255; when `histKwargs` holds a key that is
- * none of the three, a range that does not run from a number up to a larger
- * one, no bin, a kind of bins that is neither of the two, or a logarithmic
- * range that starts at 0 or below; when `polyThreshold` is not a number from
+ * none of the four, a range that does not run from a number up to a larger
+ * one, no bin, a kind of bins that is neither of the two, a logarithmic
+ * range that starts at 0 or below, a side that is neither `"left"` nor
+ * `"right"`, or so many bins over so narrow a range that their edges do not
+ * go up; when `polyThreshold` is not a number from
  * 0 to 1; when `onSoFar` is not a function, when `soFarEvery` is not a
  * finite number of 0 or more and when it is given without `onSoFar`; when
  * the source cannot be read, a wrong line of a VCF among the causes; when the
@@ -483,6 +507,7 @@ function argumentsOfThePassOf(asked: PerVarArguments): ArgumentsOfThePass {
     asked.histogram.end,
     asked.histogram.numBins,
     asked.histogram.binType,
+    asked.histogram.closed,
     asked.ploidy,
     asked.polyThreshold,
   );
@@ -642,14 +667,15 @@ function thePops(pops: Record<string, readonly string[]> | undefined): {
   return popsOfTheObject(pops);
 }
 
-/** The three keys the histogram is given under. */
-const HIST_KEYS = ["range", "numBins", "binType"];
+/** The four keys the histogram is given under. */
+const HIST_KEYS = ["range", "numBins", "binType", "closed"];
 
 /**
- * The two ends of the histogram, how many bins it holds and of which kind,
- * out of the object a user gave, which is read and not changed.
+ * The two ends of the histogram, how many bins it holds, of which kind and
+ * which edge each bin holds, out of the object a user gave, which is read and
+ * not changed.
  *
- * A key that is none of the three is refused: pyNei ignores such a key, so a
+ * A key that is none of the four is refused: pyNei ignores such a key, so a
  * user who writes `nbins` gets the 40 bins of the default with nothing said,
  * which is a result that is not the one they asked for and that says so
  * nowhere.
@@ -659,12 +685,14 @@ function theHistogram(histKwargs: HistKwargs | undefined): {
   end: number;
   numBins: number;
   binType: string;
+  closed: string;
 } {
   for (const key of Object.keys(histKwargs ?? {})) {
     if (!HIST_KEYS.includes(key)) {
       throw new Error(
         `popnei: \`${key}\` is not a key of \`histKwargs\`, whose keys are ` +
-          "`range`, the two ends of the histogram, `numBins` and `binType`",
+          "`range`, the two ends of the histogram, `numBins`, `binType` and " +
+          "`closed`",
       );
     }
   }
@@ -699,7 +727,11 @@ function theHistogram(histKwargs: HistKwargs | undefined): {
     histKwargs?.binType === undefined
       ? defaultBinType()
       : aString("histKwargs.binType", histKwargs.binType);
-  return { start, end, numBins, binType };
+  const closed =
+    histKwargs?.closed === undefined
+      ? defaultClosed()
+      : aString("histKwargs.closed", histKwargs.closed);
+  return { start, end, numBins, binType, closed };
 }
 
 /**

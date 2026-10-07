@@ -116,33 +116,43 @@ impl VcfSource {
     /// file of batches of `num_vars_per_block` variants, and of the size
     /// popnei chooses for these individuals when it is not given, which the
     /// package reads out of the memory of wasm piece by piece, with the
-    /// counts of the pass that wrote them.
+    /// counts of the pass that wrote them. With `on_bytes`, the file is
+    /// given to that function in pieces while the pass writes it, and what
+    /// comes back holds the counts and no piece.
     ///
     /// # Errors
     ///
     /// When `num_vars_per_block` is 0, when the VCF cannot be read, when a
     /// block of it is not one a vars file holds, and when the memory of the
-    /// tab does not take the file.
+    /// tab does not take the file; and the value `on_bytes` threw.
     pub fn write_vars(
         &self,
         num_vars_per_block: Option<usize>,
         steps: Steps,
+        on_bytes: Option<Function>,
     ) -> Result<WrittenFile, JsPopneiError> {
-        bytes_of_a_vars_file(self, num_vars_per_block, steps)
+        bytes_of_a_vars_file(self, num_vars_per_block, steps, on_bytes)
     }
 
     /// The variants of the VCF, through the steps of `steps`, as a VCF,
     /// bgzipped when `bgzip` is true and plain text otherwise, which the
     /// package reads out of the memory of wasm piece by piece, with the
-    /// counts of the pass that wrote it.
+    /// counts of the pass that wrote it. With `on_bytes`, the file is given
+    /// to that function in pieces while the pass writes it, and what comes
+    /// back holds the counts and no piece.
     ///
     /// # Errors
     ///
     /// When the source cannot be read, when a block of it is not one the
     /// writer can write, and when the memory of the tab does not take the
-    /// file.
-    pub fn write_vcf(&self, bgzip: bool, steps: Steps) -> Result<WrittenFile, JsPopneiError> {
-        bytes_of_a_vcf(self, bgzip, steps)
+    /// file; and the value `on_bytes` threw.
+    pub fn write_vcf(
+        &self,
+        bgzip: bool,
+        steps: Steps,
+        on_bytes: Option<Function>,
+    ) -> Result<WrittenFile, JsPopneiError> {
+        bytes_of_a_vcf(self, bgzip, steps, on_bytes)
     }
 
     /// The five per variant statistics of one pass over the VCF, through

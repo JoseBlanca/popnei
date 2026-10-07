@@ -368,11 +368,12 @@ with the compiled core inside, and that is the wasm package.
   of strings, `pops` as an object of population name to the names of its
   individuals, and the result
   objects are built in TypeScript.
-- **A writer writes into memory.** The vars file writer fills a buffer
-  that the page offers as a download. A file that does not fit in memory
-  would need the private filesystem that the browser gives each site,
-  which a worker can write synchronously; that is left until an
-  application needs it.
+- **A writer gives its file to the page.** Either whole, as an array of
+  bytes that the page offers as a download, or in pieces of 1 MiB as it is
+  written, to a function of the page, which keeps them where it chooses:
+  the private file system that the browser gives each site, which a worker
+  can write synchronously, takes a file that does not fit in memory
+  (`docs/specs/js_sources.md`).
 - **An error of the core is thrown as a JavaScript `Error`** with the
   message it has in Rust, from one place in the binding crate.
 - **The tests** of the TypeScript package run under node, the JavaScript

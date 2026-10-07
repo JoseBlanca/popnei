@@ -308,15 +308,25 @@ def check_the_density_of_many():
 def check_the_missing_rate_of_many():
     """The table of "How it is verified" of the missing rate: the individuals,
     the mean and the bins with a count of the 40 from 0 to 1 over every
-    individual, popA and popB, and the first five missing genotypes of each."""
+    individual, popA and popB, with bins that hold their left edge and with
+    bins that hold their right one, and the first five missing genotypes of
+    each. The edges are popnei's, the decimals k / 40."""
     expected = {
-        "all": ("many.vmiss", 50, "0.06044", {0: 101, 1: 114, 2: 102, 3: 88, 4: 77, 5: 10, 6: 6, 7: 1, 8: 1},
+        "all": ("many.vmiss", 50, "0.06044",
+                {0: 101, 1: 114, 2: 102, 3: 88, 4: 77, 5: 10, 6: 6, 7: 1, 8: 1},
+                {0: 101, 1: 114, 2: 102, 3: 138, 4: 27, 5: 10, 6: 6, 7: 1, 8: 1},
                 [4, 3, 3, 1, 3]),
-        "popA": ("many.popA.vmiss", 20, "0.0602", {0: 144, 2: 180, 4: 116, 5: 51, 8: 8, 10: 1}, [2, 1, 0, 1, 2]),
+        "popA": ("many.popA.vmiss", 20, "0.0602",
+                 {0: 144, 2: 180, 4: 116, 6: 51, 8: 8, 10: 1},
+                 {0: 144, 1: 180, 3: 116, 5: 51, 7: 8, 9: 1},
+                 [2, 1, 0, 1, 2]),
         "popB": ("many.popB.vmiss", 30, "0.0606",
-                 {0: 88, 1: 146, 2: 124, 4: 84, 5: 41, 6: 9, 8: 5, 9: 1, 10: 1, 11: 1}, [2, 2, 3, 0, 1]),
+                 {0: 88, 1: 146, 2: 124, 4: 84, 5: 41, 6: 9, 8: 5, 9: 1, 10: 1, 12: 1},
+                 {0: 88, 1: 146, 2: 124, 3: 84, 5: 41, 6: 9, 7: 5, 9: 1, 10: 1, 11: 1},
+                 [2, 2, 3, 0, 1]),
     }
-    for pop, (name, num_individuals, mean, bins, first_five) in expected.items():
+    edges = numpy.arange(41) / 40
+    for pop, (name, num_individuals, mean, left, right, first_five) in expected.items():
         rows = read_table(HERE / name)
         assert len(rows) == 500, (pop, len(rows))
         assert {int(row["OBS_CT"]) for row in rows} == {num_individuals}, pop
@@ -325,8 +335,13 @@ def check_the_missing_rate_of_many():
         # The mean is printed to the digits it has: a whole number of missing
         # genotypes over 500 variants of these individuals.
         assert f"{rates.mean():.12g}" == mean, (pop, rates.mean())
-        counts, _ = numpy.histogram(rates, bins=40, range=(0, 1))
-        assert {bin: int(count) for bin, count in enumerate(counts) if count} == bins, (pop, counts)
+        counts, _ = numpy.histogram(rates, bins=edges)
+        assert {bin: int(count) for bin, count in enumerate(counts) if count} == left, (pop, counts)
+        # Each rate in the bin whose right edge is the first edge at or above
+        # it, the first bin taking 0: every rate lies from 0 to 1.
+        in_bins = numpy.maximum(numpy.searchsorted(edges, rates, side="left") - 1, 0)
+        counts = numpy.bincount(in_bins, minlength=40)
+        assert {bin: int(count) for bin, count in enumerate(counts) if count} == right, (pop, counts)
 
 
 if __name__ == "__main__":

@@ -812,59 +812,137 @@ function fortyBins(withACount: readonly (readonly [number, number])[]): Uint32Ar
   return counts;
 }
 
-test("the missing rate of many.vcf over all, popA and popB is plink2's", () => {
-  // The table of the spec, from the `--missing variant-only` reports of
-  // plink2 with a half called genotype read as missing: 1511 missing
-  // genotypes of the 500 variants of 50 individuals, 602 of the 20 of
-  // `popA` and 909 of the 30 of `popB`. Each mean is a quotient of whole
-  // counts, so what is left to allow for is the last bits of the sum. The
-  // 51 variants of `popA` in bin 5 of the 40 are 3 missing genotypes of 20,
-  // whose rate is below the edge 6 x 0.025 as float64 numbers are.
-  //
-  // The two populations are asked for in one call, so a binding that gave
-  // one population the numbers of the other would be seen here.
-  const overAll = many();
-  const inTwo = many();
+/** The bins with a count of the missing rate of `many.vcf` over every
+ * individual, over `popA` and over `popB`, from the table of the spec, with
+ * bins that hold their left edge and with bins that hold their right one. */
+const MISSING_RATE_BINS_OF_MANY = {
+  left: {
+    all: [[0, 101], [1, 114], [2, 102], [3, 88], [4, 77], [5, 10], [6, 6], [7, 1], [8, 1]],
+    popA: [[0, 144], [2, 180], [4, 116], [6, 51], [8, 8], [10, 1]],
+    popB: [[0, 88], [1, 146], [2, 124], [4, 84], [5, 41], [6, 9], [8, 5], [9, 1], [10, 1], [12, 1]],
+  },
+  right: {
+    all: [[0, 101], [1, 114], [2, 102], [3, 138], [4, 27], [5, 10], [6, 6], [7, 1], [8, 1]],
+    popA: [[0, 144], [1, 180], [3, 116], [5, 51], [7, 8], [9, 1]],
+    popB: [[0, 88], [1, 146], [2, 124], [3, 84], [5, 41], [6, 9], [7, 5], [9, 1], [10, 1], [11, 1]],
+  },
+} as const;
 
-  const ofAll = calcPerVarDistribs(overAll, { stats: ["missing_rate"] });
-  const ofTwo = calcPerVarDistribs(inTwo, {
-    stats: ["missing_rate"],
-    pops: { popA: individualsOfMany(0, 20), popB: individualsOfMany(20, 50) },
-  });
+for (const closed of ["left", "right"] as const) {
+  test(`the missing rate of many.vcf over all, popA and popB is plink2's, with bins that hold their ${closed} edge`, () => {
+    // The table of the spec, from the `--missing variant-only` reports of
+    // plink2 with a half called genotype read as missing: 1511 missing
+    // genotypes of the 500 variants of 50 individuals, 602 of the 20 of
+    // `popA` and 909 of the 30 of `popB`. Each mean is a quotient of whole
+    // counts, so what is left to allow for is the last bits of the sum. The
+    // 51 variants of `popA` with 3 missing genotypes of 20 are on the edge
+    // 6 / 40, which is the number 0.15 is read as: in bin 6 with the left
+    // edge and in bin 5 with the right one.
+    //
+    // The two populations are asked for in one call, so a binding that gave
+    // one population the numbers of the other would be seen here.
+    const overAll = many();
+    const inTwo = many();
 
-  assert.deepEqual(ofTwo.pops, ["popA", "popB"]);
-  assert.equal(ofTwo.obsHet, null);
-  for (const [distribs, pop, expected] of [
-    [ofAll, "pop", 0.06044],
-    [ofTwo, "popA", 0.0602],
-    [ofTwo, "popB", 0.0606],
-  ] as const) {
-    assertValue(
-      meanOf(distribs, distribs.missingRate, "missing rate", pop),
-      expected,
-      OF_A_QUOTIENT_OF_COUNTS * expected,
-      `the mean missing rate of ${pop}`,
+    const ofAll = calcPerVarDistribs(overAll, {
+      stats: ["missing_rate"],
+      histKwargs: { closed },
+    });
+    const ofTwo = calcPerVarDistribs(inTwo, {
+      stats: ["missing_rate"],
+      pops: { popA: individualsOfMany(0, 20), popB: individualsOfMany(20, 50) },
+      histKwargs: { closed },
+    });
+
+    assert.deepEqual(ofTwo.pops, ["popA", "popB"]);
+    assert.equal(ofTwo.obsHet, null);
+    for (const [distribs, pop, expected] of [
+      [ofAll, "pop", 0.06044],
+      [ofTwo, "popA", 0.0602],
+      [ofTwo, "popB", 0.0606],
+    ] as const) {
+      assertValue(
+        meanOf(distribs, distribs.missingRate, "missing rate", pop),
+        expected,
+        OF_A_QUOTIENT_OF_COUNTS * expected,
+        `the mean missing rate of ${pop}`,
+      );
+    }
+    const bins = MISSING_RATE_BINS_OF_MANY[closed];
+    const ofAllDistrib = distribOf(ofAll.missingRate, "missing rate");
+    assert.deepEqual(
+      [...ofAllDistrib.histBinEdges],
+      Array.from({ length: DEFAULT_NUM_BINS + 1 }, (_, k) => k / DEFAULT_NUM_BINS),
     );
+    assert.deepEqual(ofAllDistrib.histCounts, fortyBins(bins.all));
+    const ofTheTwo = distribOf(ofTwo.missingRate, "missing rate").histCounts;
+    assert.deepEqual(ofTheTwo.subarray(0, DEFAULT_NUM_BINS), fortyBins(bins.popA));
+    assert.deepEqual(ofTheTwo.subarray(DEFAULT_NUM_BINS), fortyBins(bins.popB));
+    overAll.free();
+    inTwo.free();
+  });
+}
+
+test("with bins that hold their right edge, the bins below a threshold count what its filter keeps", () => {
+  // Issue 11: the page of popnei_web that tells how many variants a
+  // threshold keeps adds up the bins below it. With 1000 bins from 0 to 1
+  // every threshold of three decimals is an edge, and with bins that hold
+  // their right edge the bins below it count the variants whose value is at
+  // most it, which is what the filter keeps. Over every individual of
+  // `many.vcf` 50 variants have 5 missing genotypes of 50, 0.1, so with the
+  // left edge the bins below 0.1 leave them out, which is asserted too.
+  for (const [stat, statName, filter, thresholds] of [
+    ["missingRate", "missing_rate", "filterByMissingData", [0.02, 0.05, 0.1, 0.15, 0.3]],
+    ["obsHet", "obs_het", "filterByObsHet", [0.05, 0.1, 0.2, 0.3, 0.5]],
+    ["maf", "maf", "filterByMaf", [0.5, 0.55, 0.6, 0.75, 0.9]],
+  ] as const) {
+    const below = { left: [] as number[], right: [] as number[] };
+    for (const closed of ["left", "right"] as const) {
+      const variants = many();
+      const distribs = calcPerVarDistribs(variants, {
+        stats: [statName],
+        minNumIndividuals: 0,
+        histKwargs: { numBins: 1000, range: [0, 1], closed },
+      });
+      const distrib = distribOf(distribs[stat], stat);
+      for (const threshold of thresholds) {
+        const k = Math.round(threshold * 1000);
+        assert.equal(distrib.histBinEdges[k], threshold);
+        let inBins = 0;
+        for (let bin = 0; bin < k; bin++) {
+          inBins += distrib.histCounts[bin] ?? 0;
+        }
+        below[closed].push(inBins);
+      }
+      variants.free();
+    }
+    const kept = thresholds.map((threshold) => {
+      const variants = many();
+      variants[filter](threshold);
+      const blocks = variants.iterBlocks();
+      for (const _ of blocks) {
+        // Every block is read for the counts of the pass.
+      }
+      const numVars = blocks.passStats.numVars;
+      variants.free();
+      return numVars;
+    });
+    assert.deepEqual(below.right, kept, stat);
+    assert.notDeepEqual(below.left, kept, stat);
   }
-  assert.deepEqual(
-    distribOf(ofAll.missingRate, "missing rate").histCounts,
-    fortyBins([
-      [0, 101], [1, 114], [2, 102], [3, 88], [4, 77], [5, 10], [6, 6], [7, 1], [8, 1],
-    ]),
+});
+
+test("a side of the bins that is neither left nor right is refused", () => {
+  const variants = many();
+  assert.throws(
+    () =>
+      calcPerVarDistribs(variants, {
+        histKwargs: { closed: "both" as unknown as "left" },
+      }),
+    (error: Error) =>
+      error.message.includes("`closed` is `both`") && error.message.includes("`right`"),
   );
-  const ofTheTwo = distribOf(ofTwo.missingRate, "missing rate").histCounts;
-  assert.deepEqual(
-    ofTheTwo.subarray(0, DEFAULT_NUM_BINS),
-    fortyBins([[0, 144], [2, 180], [4, 116], [5, 51], [8, 8], [10, 1]]),
-  );
-  assert.deepEqual(
-    ofTheTwo.subarray(DEFAULT_NUM_BINS),
-    fortyBins([
-      [0, 88], [1, 146], [2, 124], [4, 84], [5, 41], [6, 9], [8, 5], [9, 1], [10, 1], [11, 1],
-    ]),
-  );
-  overAll.free();
-  inTwo.free();
+  variants.free();
 });
 
 /** The missing rate and the heterozygosity rate of the individual `name` of

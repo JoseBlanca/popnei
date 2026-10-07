@@ -282,6 +282,15 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   is what an application that runs out of memory lowers, and it is the
   size of the block that is read as well as the size of the batch that is
   written.
+- `writeVars` and `writeVcf` with `onBytes` give the file to that function
+  in pieces of 1 MiB as they write it, and the memory of wasm holds the
+  block being read and written and one piece, not the file. Writing
+  `big.vars`, 100000 variants of 1000 diploid individuals, as a plain VCF
+  of 403572916 bytes grows the memory of wasm by 59.7 MB in pieces and by
+  442.0 MB whole. The function has to keep each piece before it returns,
+  in a worker with a `FileSystemSyncAccessHandle` of the browser's private
+  file system, or in an array to make a `Blob` of; one that returns a
+  promise ends the write with an `Error`.
 - A `Blob`, which the `File` of a page is one of, crosses as a handle and
   costs no copy: what goes into the memory of wasm is the number of the
   entry of a table of the binding crate that holds the `Blob`, the
