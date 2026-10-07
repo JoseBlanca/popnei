@@ -92,6 +92,7 @@ export {
 } from "./stats.js";
 export type {
   BinType,
+  Closed,
   HistKwargs,
   PerIndividualStats,
   PerIndividualStatsOptions,
