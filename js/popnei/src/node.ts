@@ -51,7 +51,12 @@ export type {
   R2Matrix,
 } from "./ld.js";
 export { openVars, writeVars } from "./io_vars.js";
-export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
+export type {
+  OnBytes,
+  VarsWritten,
+  WriteVarsOptions,
+  WrittenInPieces,
+} from "./io_vars.js";
 export { openVcf, writeVcf } from "./io_vcf.js";
 export type {
   BytesOrFile,
