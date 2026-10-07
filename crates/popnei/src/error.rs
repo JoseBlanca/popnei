@@ -3437,7 +3437,7 @@ pub enum Error {
     /// first block is asked for. It is of the source, and in Python its
     /// message starts with the path of the file.
     #[error(
-        "the variants hold no record of whether they passed their FILTER, so the summary cannot count how many passed and how many failed: a vars file holds it from format 1.2, written from a VCF, and not one written from a file without it or one that holds no variant"
+        "the variants hold no record of whether they passed their FILTER, so the summary cannot count how many passed and how many failed: a vars file holds it from format 1.2, written from a source that had it, and not one written from a source without it or one that holds no variant"
     )]
     FilterColumnNotRecorded,
 }

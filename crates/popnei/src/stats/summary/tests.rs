@@ -711,8 +711,8 @@ fn variants_summary_of_a_block_refused_by_several_gives_the_error_of_the_first_i
     }
 }
 
-/// The block made a block of no variants, with the chromosome and the
-/// position it was given, both empty.
+/// The block made a block of no variants, with the chromosome, the
+/// position and whether each variant passed it was given, all empty.
 fn of_no_variants(block: &mut Block) {
     *block = Block {
         num_vars: 0,
@@ -724,7 +724,7 @@ fn of_no_variants(block: &mut Block) {
         id: None,
         alleles: None,
         qual: None,
-        passed: None,
+        passed: block.passed.as_ref().map(|_| Vec::new()),
         vcf_text: None,
     };
 }
@@ -944,8 +944,8 @@ fn assert_is_the_error_of_no_record(error: &Error) {
         error.to_string(),
         "the variants hold no record of whether they passed their FILTER, so the summary cannot \
          count how many passed and how many failed: a vars file holds it from format 1.2, \
-         written from a VCF, and not one written from a file without it or one that holds no \
-         variant"
+         written from a source that had it, and not one written from a source without it or one \
+         that holds no variant"
     );
     assert!(error.names_the_file());
 }
@@ -1047,4 +1047,114 @@ fn filter_column_without_the_record_comes_after_the_errors_of_the_three_before_t
         "{error:?}"
     );
     assert_eq!(*reader.asked.lock().expect("what was asked"), Vec::new());
+}
+
+/// A block of no variants, which keeps an empty `passed` column so that
+/// only the refusal of a block of none can refuse it, is refused by the
+/// counts alone with the error the three give for it.
+#[test]
+fn filter_column_alone_refuses_a_block_of_no_variants() {
+    let mut reader = Recording::of_many_vcf_altered(of_no_variants);
+    let error = calc_variants_summary(
+        &mut reader,
+        &filter_column_alone(),
+        &mut nothing_after_a_block,
+    )
+    .expect_err("a block of no variants");
+    assert!(
+        matches!(error, Error::ReaderGaveABlockOfNoVariants),
+        "{error:?}"
+    );
+}
+
+/// The `passed` column of the block cut to its first 50 entries, a column
+/// of another size than its block of 100.
+fn with_half_the_passed_column(block: &mut Block) {
+    if let Some(passed) = &mut block.passed {
+        passed.truncate(50);
+    }
+}
+
+/// A block whose `passed` column is shorter than the block is refused, and
+/// not counted over the entries it has.
+#[test]
+fn filter_column_of_a_block_whose_column_is_of_another_size_is_refused() {
+    let mut reader = Recording::of_many_vcf_altered(with_half_the_passed_column);
+    let error = calc_variants_summary(
+        &mut reader,
+        &filter_column_alone(),
+        &mut nothing_after_a_block,
+    )
+    .expect_err("a column of another size");
+    assert!(
+        matches!(
+            error,
+            Error::BlockArrayOfAnotherSize {
+                array: "passed",
+                found: 50,
+                expected: 100
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+/// A pass of the counts alone whose filter kept no variant is the error the
+/// three give for it, with the counts of the filter: the threshold of 0 of
+/// the major allele frequency keeps none of `many.vcf`.
+#[test]
+fn filter_column_alone_of_a_pass_with_no_variant_is_the_error_the_three_give() {
+    let steps = [maf_filter(0.0)];
+    let mut reader = many_vcf_through(Some(100), &steps);
+    let error = calc_variants_summary(
+        &mut *reader,
+        &filter_column_alone(),
+        &mut nothing_after_a_block,
+    )
+    .expect_err("a pass with no variant");
+    assert!(
+        matches!(&error, Error::PassGaveNoVariant { num_vars_of_the_source, filters }
+            if *num_vars_of_the_source == NUM_VARS_OF_MANY_VCF && filters.len() == 1),
+        "{error:?}"
+    );
+    let mut reader = many_vcf_through(Some(100), &steps);
+    let of_the_rates = calc_per_individual_stats(&mut *reader).expect_err("the rates");
+    assert_eq!(format!("{error:?}"), format!("{of_the_rates:?}"));
+}
+
+/// The block without its chromosome, its position and its `passed` column,
+/// which the density and the counts both refuse.
+fn without_the_chrom_and_the_passed_column(block: &mut Block) {
+    block.chrom = None;
+    block.pos = None;
+    block.passed = None;
+}
+
+/// A block that the density and the counts both refuse ends the pass with
+/// the error of the density, which comes before the counts; the counts
+/// alone give their own.
+#[test]
+fn filter_column_of_a_block_refused_by_the_density_too_gives_the_error_of_the_density() {
+    let density_and_counts = |density: bool| VariantsSummaryConfig {
+        per_var: None,
+        per_individual: false,
+        density: density.then_some(VarDensityConfig {
+            window_size: WINDOW_SIZE,
+            chrom_lengths: None,
+        }),
+        filter_column: true,
+    };
+    for (density, expected) in [(true, Needs::CHROM_POS), (false, Needs::PASSED)] {
+        let mut reader = Recording::of_many_vcf_altered(without_the_chrom_and_the_passed_column);
+        let error = calc_variants_summary(
+            &mut reader,
+            &density_and_counts(density),
+            &mut nothing_after_a_block,
+        )
+        .expect_err("a block without the columns");
+        assert!(
+            matches!(error, Error::FieldsNotInTheBlock { fields } if fields == expected),
+            "density {density}: {error:?}"
+        );
+    }
 }
