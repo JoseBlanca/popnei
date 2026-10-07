@@ -840,7 +840,21 @@ threw, as when the function of `onProgress` or of `onSoFar` throws, which
 is the "meanwhile" of **Open 2** below. Every piece is given while the run
 is open, the last one too, so a `free()` of the variants from inside the
 function is refused, as it is from inside those two, because a run is
-reading them. A function that returns a promise is called and not awaited.
+reading them.
+
+A function that returns a promise, an `async` function among them, ends
+the pass at its first piece, and the writer throws an `Error` that says
+`onBytes` has to keep each piece before it returns. The writer cannot wait
+for the promise, since the pass runs inside wasm until the file is done,
+and a promise that failed later, a write the private file system refused
+for want of room, would leave the application a file with pieces missing
+and a call that said it was written. `onSoFar` is called and not awaited,
+because what a promise of it loses is one result so far. A piece that the
+heap of JavaScript has no room to copy ends the pass with the error the
+browser gave, a `RangeError`, and the variants can be freed and read again,
+as after any other stop. Nothing counts the bytes given, so a file has no
+bound of size but the time it takes to write.
+
 When the pass fails after some pieces were given, a wrong line of a VCF
 among the causes, the writer throws that error, and the pieces given are
 the start of a file that has no end: the application drops them, as the
@@ -891,7 +905,12 @@ of its source: `write_vcf` of the core asks its sink to be `Send`, and no
 handle of JavaScript is. The sink fills one buffer of 1 MiB, reserved once,
 and when it is full copies it into a new `Uint8Array`, empties it and calls
 the function, cloned out of the table so that no table is borrowed while it
-runs. It gives nothing at a `flush`. The last piece is given after the
+runs. The array is built through `Reflect.construct`, which gives back
+what its constructor throws, where the constructor js-sys binds would let
+the throw unwind the stack of wasm past the code that closes the run. What
+the function returns is read: an object with a `then` that is a function
+stops the run with the `Error` above, as a throw would. It gives nothing at
+a `flush`. The last piece is given after the
 core's writer returns and before the run closes. A throw is recorded in the
 run as a throw of `onSoFar` is, and the write that called the function
 fails with an `io::Error` of the kind `Other`, which no user reads, because
@@ -910,16 +929,26 @@ for byte, the bytes of the same call without `onBytes`, and the result is
 `writeVcf` plain; each of those files is under 1 MiB, so each is one piece.
 The VCF of 14000 variants of 600 individuals of `vars_memory.test.ts`, 34.0
 MB of text, is written the same three ways in several pieces, every one but
-the last of 1048576 bytes. The pieces of one write are compared again after
-a second write of the whole file has grown the memory of wasm, and have not
-changed. For each of the three writes, a value thrown at the second piece is
+the last of 1048576 bytes; and a plain VCF whose header is padded to make
+it 2097152 bytes is two pieces of 1048576 bytes, with no empty one after
+them. The pieces of one write are compared again after a second write of
+the whole file, and have not changed. For each of the three writes, a value thrown at the second piece is
 what the writer throws, after two calls, and the next call over the same
 `Variants` gives the whole file; and a `free()` from inside the function is
 refused with the error of a run that is reading. That VCF of 14000 variants
 with a line after them whose genotype is not a number gives at least one
 piece, written plain, and then throws the error of line 14003. An `onBytes`
 of 3 is an `Error` at the call that names `onBytes`, before the page is told
-of any read, and an `onBytes` of `undefined` gives the bytes.
+of any read, and an `onBytes` of `undefined` gives the bytes. An `async`
+`onBytes` makes the writer throw the `Error` that names `onBytes` and a
+promise, after one call. A `Uint8Array` that throws a `RangeError` when it
+is built at the length of a piece, from the third piece on, makes the
+writer throw that `RangeError`, after which the variants are freed with no
+error. From inside `onBytes`, `writeVars` and `writeVcf` over the same
+`Variants`, with and without `onBytes` of their own, give their files, and
+the outer write gives its whole file. The test file asserts with
+`@ts-expect-error` that the result of a call with `onBytes` has no `bytes`,
+and that a call without it is a `VarsWritten`.
 
 The memory is measured in `test/write_in_pieces_memory.test.ts`, alone in
 its file, over a VCF of 30000 variants of 600 individuals, which is large
