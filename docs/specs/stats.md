@@ -1797,7 +1797,7 @@ pub fn calc_variants_summary<R: BlockReader + ?Sized>(
 ```
 
 A block of no variants from the source is the error of a defect of its
-reader for the three, the density among them, as it already is for the
+reader for the three and for the counts of the FILTER column below, the density among them, as it already is for the
 other two through the genotypes they check. The counts of
 `filtering_stats` are those of the chain after the block the pass has
 just added: natively the reader one block ahead answers with
