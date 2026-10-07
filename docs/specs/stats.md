@@ -217,25 +217,58 @@ exempts, under its item.
 
 `hist_kwargs` is the histogram: `range`, the two ends, `(0, 1)` by
 default, which is where the statistics live; `num_bins`, 40 by
-default; and `bin_type`, `"linear"` for bins of equal width or
+default; `bin_type`, `"linear"` for bins of equal width or
 `"logarithmic"` for bins of equal ratio, whose `range` has to start above
-0. The dict is read and not changed, and a key that is none of the three
-is a `ValueError` that names them: pyNei ignores such a key, and a user
-who writes `nbins` gets the 40 bins of the default with nothing said,
+0; and `closed`, the edge each bin holds, `"left"` by default or
+`"right"`. The dict is read and not changed, and a key that is none of the
+four is a `ValueError` that names them: pyNei ignores such a key, and a
+user who writes `nbins` gets the 40 bins of the default with nothing said,
 which is a result that is not the one they asked for and that says so
-nowhere. The edges are `num_bins + 1`
-numbers, computed as numpy's `linspace` computes them, the start plus i
-times the width for the i-th and the end for the last, so that a value
-that falls on an edge falls on the same side in popnei and in pyNei;
-the logarithmic ones are 10 to the power of the same over the logarithms
-of the ends. A value falls in the bin whose left edge is at most the value
-and whose right edge is above it, and the last bin takes its right edge
-too, as `numpy.histogram` does, so an observed heterozygosity of exactly 1
-is in the last bin. A value outside the range is in no bin and in the
-mean. pyNei spells the first bin type `"lineal"`, the Spanish word; the
-owner decided on 22 September 2026 that popnei spells it `"linear"` and
-refuses `"lineal"` as any other unknown name, as `docs/specs/pca.md`
-spells `standardize_data` where pyNei has `standarize_data`.
+nowhere.
+
+The edges are `num_bins + 1` numbers. Of bins of equal width, the k-th
+edge is (start · (n − k) + end · k) / n, n being `num_bins`, so the first
+is the start and the last the end. When both ends are whole numbers or
+halves, the two products and their sum are exact in float64, and the one
+rounding is that of the division, so every edge is the float64 nearest
+the decimal it stands for: from 0 to 1, the k-th edge is the number a
+user's "0.05" or "0.007" is read as. Of 1000 bins from 0 to 1 all 1001
+edges are that float64, where numpy's `linspace`, start + k · ((end −
+start) / n), gives 144 of them one unit in the last place away; of 1280 bins, 464, and
+of 10000 bins, 3241. Between two ends that are not whole numbers or
+halves, 0.1 to 0.9, neither formula gives every decimal, and of 1000 bins
+popnei's is wrong on 395 edges and `linspace` on 262. All of it was
+counted on 7 October 2026 in Python 3.14 against the exact decimal
+start + k · (end − start) / n.
+The logarithmic edges are 10 to the power of the same edges taken over
+the base 10 logarithms of the ends, as numpy's `logspace` computes them.
+
+The edges are popnei's own and not numpy's, which the owner decided on 7
+October 2026 with issue 11: a page that adds up the bins below a
+threshold to count the variants a filter keeps, without a pass over the
+file, needs the threshold a user types to be an edge, and pyNei, whose
+edges are `linspace`'s, is a reference and not a format to keep. A value
+on an edge that popnei and pyNei place one unit apart falls in different
+bins of the two, which "How it is verified" allows for.
+
+With `closed` `"left"` a value falls in the bin whose left edge is at most
+the value and whose right edge is above it, and the last bin takes its
+right edge too, as `numpy.histogram` does, so an observed heterozygosity
+of exactly 1 is in the last bin. With `"right"` a value falls in the bin
+whose left edge is below it and whose right edge is at least the value,
+and the first bin takes its left edge too, as pandas' `cut` does with
+`right=True, include_lowest=True`, so a missing rate of 0 is in the first
+bin. With `"right"`, and a threshold t that is an edge as a float64, the
+bins below t count exactly the variants whose value is at most t, which is what the filters by missing data, by
+maf and by observed heterozygosity keep at the threshold t: a value of
+exactly t is on their side of t, where with `"left"` it is in the bin
+above t with the values just above it. A value outside the range is in no
+bin and in the mean, whichever side the bins hold. pyNei spells the first
+bin type `"lineal"`, the Spanish word; the owner decided on 22 September
+2026 that popnei spells it `"linear"` and refuses `"lineal"` as any other
+unknown name, as `docs/specs/pca.md` spells `standardize_data` where pyNei
+has `standarize_data`. `closed` is new, and takes the word with which
+pandas names the side an interval holds.
 
 `ploidy` is the two expected heterozygosities' alone, and
 `poly_threshold` the polymorphism ratio's; their items say what they do.
@@ -281,6 +314,9 @@ differences:
   `pops` are refused, under "The populations".
 - The result has `pass_stats`, and the populations of every statistic are
   in the order of the keys of `pops`, under "The populations".
+- The edges of bins of equal width are popnei's and not `linspace`'s,
+  and a histogram can hold the right edge of its bins with `closed`, both
+  under `hist_kwargs` above.
 - The differences of each statistic are under its item, and the open
   points among them are in the list at the end.
 
@@ -288,8 +324,8 @@ In TypeScript it is `calcPerVarDistribs(variants, {stats, pops,
 minNumIndividuals, histKwargs, ploidy, polyThreshold})`, with `stats` an
 array of the six names as a union type of string literals,
 `"obs_het" | "maf" | ...`, which is what an enum is in TypeScript,
-`histKwargs` an object with `range`, `numBins` and `binType`, and the
-same defaults. The result has `pops`, the population names in their
+`histKwargs` an object with `range`, `numBins`, `binType` and `closed`,
+and the same defaults. The result has `pops`, the population names in their
 order; `obsHet`, `maf`, `expHet`, `unbiasedExpHet` and `missingRate`,
 each `null` or a
 `StatsDistrib` with `mean`, a `Float64Array`
@@ -387,13 +423,22 @@ with two populations, `popA` of the first 20 individuals and `popB` of
 the other 30. Both libraries are run with every statistic, pyNei twice
 for its two values of `unbiased_exp_het`, `min_num_individuals` of 20 on
 the panel and of 5 on `many.vcf`, and the default histogram; and once
-more with no `pops`. The histogram counts and the counts of the polymorphism
-ratio have to be equal, and the means and the ratios equal within 1e-12
-relative, with NaN in the same places, because numpy and the Rust loop
-add the variants of a population in different orders.
+more with no `pops`. The counts of the polymorphism ratio have to be
+equal, and the means and the ratios equal within 1e-12 relative, with NaN
+in the same places, because numpy and the Rust loop add the variants of a
+population in different orders. The histogram counts have to be equal but
+for the variants whose value lies on an edge, for two reasons.
 
-The histogram counts of the unbiased expected heterozygosity are the one
-exception. The two libraries reach that value by different arithmetic:
+The first is that the edges of the two libraries are not the same
+numbers: popnei's are those of `hist_kwargs` above and pyNei's are
+`linspace`'s, and of the 41 default edges from 0 to 1, 15 are one unit in
+the last place apart, 0.15 against 0.15000000000000002 among them. A value
+that is exactly such a decimal falls in the bin that starts at the edge in
+popnei and in the one below it in pyNei: 3 missing genotypes of 20 are
+0.15, and so is an observed heterozygosity of 3 of 20.
+
+The second is the unbiased expected heterozygosity, which the two
+libraries reach by different arithmetic:
 popnei multiplies the k factors of each of its terms one over another,
 `(c_a / c) · ((c_a - 1) / (c - 1))` at k = 2, and pyNei multiplies the
 plain value by `c / (c - 1)`. Over every split of a biallelic variant up
@@ -415,15 +460,17 @@ five are in `popA` of `many.vcf`, each with the allele counts 21 and 15
 of 36 and the same 0.5 against 0.4999999999999999: `var242`, the variant
 after it, at the position 9991 and with no id, `var422`, `var428` and
 `var466`. So the counts of
-that one statistic are compared allowing the variants whose value lies
+every statistic are compared allowing the variants whose value lies
 within 1e-9 of an edge to fall on either side of it, which the test
-counts from pyNei's own per variant values, and the counts of the other
-four are compared exactly. The default of
+counts from pyNei's own per variant values. The default of
 `min_num_individuals` is asserted by a call without it on the panel, with
 `pops` of one population of 15 individuals: every mean is NaN with an
-empty histogram and the counts of the polymorphism ratio are 0. The edges of the histogram are compared exactly for
-bins of equal width and within 1e-12 for logarithmic ones, whose powers
-of 10 two libraries need not round alike.
+empty histogram and the counts of the polymorphism ratio are 0. The edges of the histogram are compared with pyNei's within
+1e-15 relative for bins of equal width, which holds the one unit in the
+last place they differ by, and within 1e-12 for logarithmic ones, whose
+powers of 10 two libraries need not round alike; the cargo and pytest
+tests of the edges of equal width compare them exactly with the decimals
+k / n.
 
 The worked example, which becomes the first cargo tests: the six
 variants of five diploid individuals of the worked example of
@@ -991,14 +1038,16 @@ leaves it out.
 ### A rate on the edge of a bin
 
 The rate is the division of two whole numbers as `f64`, and it falls in
-the bin that `numpy.histogram` puts that `f64` in, by the edges of "In
-Python and in TypeScript" of the pass. A rate that is a fraction such as
-3/20 is not the decimal it is written as, and neither is the edge it
-seems to fall on: 3/20 is 0.1499999999999999944 as an `f64`, and the
-sixth edge of 40 bins from 0 to 1, 6 x 0.025, is 0.15000000000000002, so
-3 missing genotypes of 20 are in bin 5, counted from 0, and not in bin 6.
-In `popA` of `many.vcf`, 51 variants are there, which the test below
-asserts.
+the bin that the edges of "In Python and in TypeScript" of the pass and
+the side they hold put that `f64` in. A rate that is a fraction such as
+3/20 is not the decimal it is written as, 0.1499999999999999944 as an
+`f64`, but it is the same `f64` as the decimal 0.15 and as the seventh
+edge of 40 bins from 0 to 1, 6 / 40. So 3 missing genotypes of 20 are on
+that edge: in bin 6, counted from 0, with bins that hold their left edge,
+and in bin 5 with bins that hold their right one. In `popA` of
+`many.vcf`, 51 variants are there, which the tests below assert. pyNei's
+edge there is 0.15000000000000002, above the rate, so pyNei puts the same
+51 in bin 5 although its bins hold their left edge.
 
 ### How it runs
 
@@ -1016,21 +1065,34 @@ genotype as missing, as `docs/specs/filters.md` does for the same filter.
 On `many.vcf`, read with every variant given, over every individual and,
 with `--keep`, over `popA`, its first 20 individuals, and over `popB`, its
 other 30, of `tests/reference/stats/many_pops.txt`, run on 26 September
-2026, the missing rate being `MISSING_CT / OBS_CT` as `f64` and the
-histogram numpy's with 40 bins from 0 to 1:
+2026, the missing rate being `MISSING_CT / OBS_CT` as `f64`. The
+histograms are `numpy.histogram` over the 41 edges k / 40, which holds the
+left edge of each bin as `closed` `"left"` does, and, for `closed`
+`"right"`, the same rates each put in the bin whose right edge is the
+first edge at or above it, `numpy.searchsorted` with `side="left"` less
+one, the first bin taking 0; both were worked out on 7 October
+2026 from the reports of 26 September:
 
-| population | individuals | mean | the bins with a count, bin: count |
-|---|---|---|---|
-| all | 50 | 0.06044 | 0: 101, 1: 114, 2: 102, 3: 88, 4: 77, 5: 10, 6: 6, 7: 1, 8: 1 |
-| popA | 20 | 0.0602 | 0: 144, 2: 180, 4: 116, 5: 51, 8: 8, 10: 1 |
-| popB | 30 | 0.0606 | 0: 88, 1: 146, 2: 124, 4: 84, 5: 41, 6: 9, 8: 5, 9: 1, 10: 1, 11: 1 |
+| population | individuals | mean | bins that hold their left edge, bin: count | bins that hold their right edge, bin: count |
+|---|---|---|---|---|
+| all | 50 | 0.06044 | 0: 101, 1: 114, 2: 102, 3: 88, 4: 77, 5: 10, 6: 6, 7: 1, 8: 1 | 0: 101, 1: 114, 2: 102, 3: 138, 4: 27, 5: 10, 6: 6, 7: 1, 8: 1 |
+| popA | 20 | 0.0602 | 0: 144, 2: 180, 4: 116, 6: 51, 8: 8, 10: 1 | 0: 144, 1: 180, 3: 116, 5: 51, 7: 8, 9: 1 |
+| popB | 30 | 0.0606 | 0: 88, 1: 146, 2: 124, 4: 84, 5: 41, 6: 9, 8: 5, 9: 1, 10: 1, 12: 1 | 0: 88, 1: 146, 2: 124, 3: 84, 5: 41, 6: 9, 7: 5, 9: 1, 10: 1, 11: 1 |
+
+`linspace`'s edges, pyNei's, put the 51 variants of `popA` in bin 5 and
+the one of `popB` at 9 of 30, 0.3, in bin 11, where popnei's edge 12 / 40
+is 0.3 and its own bin 12. Over every individual the two sides differ at
+bin 3: 50 variants have 5 missing genotypes of 50, 0.1, which is the edge
+4 / 40.
 
 The script `make_reference.py` of `tests/reference/stats/` runs the
 three, keeps their `.vmiss` beside it, `many.vmiss`, `many.popA.vmiss` and
 `many.popB.vmiss`, and checks this table against them.
 The pytest test, made at `calc_per_var_distribs` with `pops` of those two
-populations and with no `pops`, compares the histograms exactly and the
-means within 1e-12 relative, the tolerance of the pass, and asserts the
+populations and with no `pops`, and with each of the two values of
+`closed`, compares the histograms exactly with the column of that side
+and the means within 1e-12 relative, the tolerance of the pass, and
+asserts that the edges are the 41 decimals k / 40, and the
 first five missing genotypes of each, 4, 3, 3, 1, 3 over all, 2, 1, 0, 1,
 2 in `popA` and 2, 2, 3, 0, 1 in `popB`, through the rates they give.
 
@@ -1447,12 +1509,29 @@ impl HistBins {
     /// which names the two, a `ValueError` in Python, and those of the
     /// constructor the name picks.
     pub fn of_kind(kind: &str, start: f64, end: f64, num_bins: usize) -> Result<HistBins>;
+    /// The same edges, with bins that hold the edge `side` names. The
+    /// constructors build bins that hold their left edge.
+    pub fn closed_on(self, side: ClosedSide) -> HistBins;
+    pub fn closed(&self) -> ClosedSide;
     pub fn edges(&self) -> &[f64];
     pub fn num_bins(&self) -> usize;
-    /// The bin of `value`, or None outside the range. The last bin takes
-    /// its right edge.
+    /// The bin of `value`, or None outside the range. With bins that hold
+    /// their left edge the last bin takes its right edge too, and with
+    /// bins that hold their right edge the first bin takes its left one.
     pub fn bin_of(&self, value: f64) -> Option<usize>;
 }
+
+/// The edge each bin of a histogram holds besides the values between its
+/// two edges.
+pub enum ClosedSide { Left, Right }
+impl ClosedSide {
+    /// The side a user named, `CLOSED_LEFT`, `"left"`, or `CLOSED_RIGHT`,
+    /// `"right"`. An error for any other name, which names the two, a
+    /// `ValueError` in Python.
+    pub fn of_name(name: &str) -> Result<ClosedSide>;
+}
+/// `CLOSED_LEFT`, the side of `numpy.histogram`, which pyNei's bins hold.
+pub const DEFAULT_CLOSED: &str = CLOSED_LEFT;
 ```
 
 How each statistic of a variant is worked out for one population, from
@@ -1937,7 +2016,12 @@ refuse a 0, under "The Rust interface"; `min_num_individuals` holds the
 observed heterozygosity too, under its item; the heterozygosity rate of
 an individual is over its called genotypes, under "What they give" of the
 per individual statistics; and the bin type of equal widths is spelt
-`"linear"`, under "In Python and in TypeScript" of the pass.
+`"linear"`, under "In Python and in TypeScript" of the pass. On 7
+October 2026, with issue 11, the owner decided that the edges of equal
+width are popnei's own, (start · (n − k) + end · k) / n, and not numpy's
+`linspace`, and that a histogram can hold the right edge of its bins,
+under the key `closed`, both under "In Python and in TypeScript" of the
+pass.
 
 ## Not in this spec
 
