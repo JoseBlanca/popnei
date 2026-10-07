@@ -306,6 +306,7 @@ fn the_one(path: &Path) -> Result<(Duration, VariantsSummary, String), popnei::E
             window_size: WINDOW_SIZE,
             chrom_lengths: None,
         }),
+        filter_column: false,
     };
     let summary = calc_variants_summary(&mut *reader, &config, &mut nothing_after_a_block)?;
     let took = started.elapsed();

@@ -96,6 +96,7 @@ pub(crate) fn variants_summary_of(
             per_var,
             per_individual: asked.per_individual,
             density,
+            filter_column: false,
         };
         let mut told = TheResultSoFar::from_now(so_far.told, so_far.every_seconds)?;
         let given = popnei::stats::calc_variants_summary(
@@ -160,6 +161,7 @@ fn summary_of(
         per_var,
         per_individual,
         density,
+        filter_column: _,
     } = summary;
     Ok(VariantsSummaryOfAPass {
         per_var: per_var
