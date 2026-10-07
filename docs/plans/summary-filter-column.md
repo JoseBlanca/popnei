@@ -104,7 +104,7 @@ Stands on: nothing of this plan.
 
 Tasks:
 
-- [ ] 1.1 `keeps_passed` of `Variants`: each source of
+- [x] 1.1 `keeps_passed` of `Variants`: each source of
   `crates/popnei-python/src` and `crates/popnei-js/src` reads it from the
   header of its reader when it is opened, as it reads the individuals and
   the ploidy, and `python/popnei/variant.py` and `js/popnei/src/variant.ts`
@@ -112,7 +112,7 @@ Tasks:
   `keeps_passed`" of `docs/specs/variant.md`. Deliverables 2, 3 (the
   `keepsPassed` tests), 4. It can run beside 1.2, whose files it does not
   touch.
-- [ ] 1.2 The counts in the core: `filter_column` of
+- [x] 1.2 The counts in the core: `filter_column` of
   `VariantsSummaryConfig`, `FilterColumnCounts` and the field of
   `VariantsSummary`, the counting in `crates/popnei/src/stats/summary.rs`
   with `Needs::PASSED`, the number of variants of a pass of the counts
