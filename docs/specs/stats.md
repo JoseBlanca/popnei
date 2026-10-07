@@ -242,6 +242,14 @@ counted on 7 October 2026 in Python 3.14 against the exact decimal
 start + k · (end − start) / n.
 The logarithmic edges are 10 to the power of the same edges taken over
 the base 10 logarithms of the ends, as numpy's `logspace` computes them.
+The edges have to go up, each above the one before it, and a histogram
+whose edges do not is a `ValueError`: the search for the bin of a value
+takes them for granted and would give a wrong bin and say nothing.
+`linspace`'s formula never gives edges that go down, and popnei's rounds
+three times and can, when a bin is narrower than the rounding of a
+float64 near its edges, 100000 bins from 1 to 1 + 1e-13, and its products
+are infinite when an end times the bins is above the largest float64,
+100000 bins from -1e305 to 1e304.
 
 The edges are popnei's own and not numpy's, which the owner decided on 7
 October 2026 with issue 11: a page that adds up the bins below a
