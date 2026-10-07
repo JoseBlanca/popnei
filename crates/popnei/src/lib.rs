@@ -101,6 +101,6 @@ mod tests {
     /// with it.
     #[test]
     fn version_is_the_one_of_the_manifest() {
-        assert_eq!(version(), "0.2.1");
+        assert_eq!(version(), "0.2.2");
     }
 }

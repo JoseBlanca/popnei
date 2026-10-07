@@ -1,6 +1,6 @@
 {
   "name": "popnei",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Population genetics over the variants of a dataset",
   "repository": "https://github.com/JoseBlanca/popnei",
   "license": "MIT",
