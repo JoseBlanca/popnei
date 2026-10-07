@@ -15,6 +15,12 @@
  * file of its 500 variants written in batches of 100, which is five blocks
  * a pass, so that the result so far is given five times.
  *
+ * The counts of the FILTER column, `filterColumn`, are checked against
+ * `many.vcf` read with every variant: 450 with `PASS`, 25 with a dot and 25
+ * with `q10`, counted with `grep -v '^#' many.vcf | cut -f7 | sort | uniq
+ * -c`, so 475 passed and 25 failed. A source without the record is
+ * `tests/reference/vars/of_1_1.vars`, a vars file of format 1.1.
+ *
  * `assert/strict` compares two `Float64Array` byte by byte, so a mean or a
  * rate that differs in its last bit, or a NaN against a number, fails it.
  */
@@ -42,7 +48,7 @@ import {
 } from "popnei";
 
 import { THE_POPS } from "./consumers.ts";
-import { referenceVcf } from "./reference.ts";
+import { referenceVars, referenceVcf } from "./reference.ts";
 
 await init();
 
@@ -197,16 +203,21 @@ test("calcVariantsSummary with soFarEvery 0 gives onSoFar the three over the var
   }
 });
 
-test("calcVariantsSummary with none of the three is an Error that says to ask for one", () => {
+test("calcVariantsSummary with none of the four is an Error that says to ask for one", () => {
   const variants = openVars(IN_FIVE_BLOCKS);
   try {
     assert.throws(() => calcVariantsSummary(variants), {
       name: "Error",
-      message: /`calcVariantsSummary` was asked for none of its three statistics/,
+      message:
+        /`calcVariantsSummary` was asked for none of its four statistics: give `perVar: \{\}`.*`perIndividual: \{\}`.*`density: \{windowSize\}`.*`filterColumn: \{\}`/,
     });
     assert.throws(
-      () => calcVariantsSummary(variants, { perVar: undefined }),
-      /none of its three statistics/,
+      () =>
+        calcVariantsSummary(variants, {
+          perVar: undefined,
+          filterColumn: undefined,
+        }),
+      /none of its four statistics/,
     );
   } finally {
     variants.free();
@@ -214,9 +225,10 @@ test("calcVariantsSummary with none of the three is an Error that says to ask fo
 });
 
 /**
- * The options of the three that are refused at the call, each with what the
+ * The options of the four that are refused at the call, each with what the
  * message names: those of `perVar` and `density` are checked as the call of
- * each checks them, and `perIndividual` is an empty object.
+ * each checks them, and `perIndividual` and `filterColumn` are empty
+ * objects.
  */
 const REFUSED: readonly [string, object, RegExp][] = [
   [
@@ -260,7 +272,17 @@ const REFUSED: readonly [string, object, RegExp][] = [
     /`chromLengths` is a plain object/,
   ],
   [
-    "an option that is none of the five",
+    "a filterColumn with a key",
+    { filterColumn: { passed: true } },
+    /`passed` is not an option of `calcVariantsSummary.filterColumn`, which takes no option/,
+  ],
+  [
+    "a filterColumn that is not an object",
+    { filterColumn: true },
+    /the options of `calcVariantsSummary.filterColumn` are an object/,
+  ],
+  [
+    "an option that is none of the six",
     { perVar: {}, perVars: {} },
     /`perVars` is not an option of `calcVariantsSummary`/,
   ],
@@ -285,3 +307,165 @@ for (const [what, options, message] of REFUSED) {
     }
   });
 }
+
+/** `many.vcf` opened with every variant, those that failed their FILTER too. */
+function everyVariantOfMany(): Variants {
+  return openVcf(MANY_VCF, { onlyPassed: false });
+}
+
+/**
+ * The two sources of every variant of `many.vcf`, each of which gives the
+ * counts of the FILTER column: the VCF itself and the vars file written
+ * from it.
+ */
+const EVERY_VARIANT: readonly { name: string; open: () => Variants }[] = [
+  { name: "many.vcf with every variant", open: everyVariantOfMany },
+  {
+    name: "the vars file of every variant of many.vcf",
+    open: () => openVars(IN_FIVE_BLOCKS),
+  },
+];
+
+for (const file of EVERY_VARIANT) {
+  test(`calcVariantsSummary with filterColumn alone over ${file.name} counts 475 passed and 25 failed in a pass of 500`, () => {
+    const variants = file.open();
+    try {
+      const summary = calcVariantsSummary(variants, { filterColumn: {} });
+      assert.deepEqual(summary.filterColumn, { passed: 475, failed: 25 });
+      assert.equal(summary.passStats.numVars, 500);
+      assert.equal(summary.perVar, null);
+      assert.equal(summary.perIndividual, null);
+      assert.equal(summary.density, null);
+    } finally {
+      variants.free();
+    }
+  });
+
+  test(`calcVariantsSummary with filterColumn beside the three over ${file.name} counts 475 and 25 and leaves the three as they are without it`, () => {
+    const variants = file.open();
+    try {
+      const withTheCounts = calcVariantsSummary(variants, {
+        ...THE_THREE,
+        filterColumn: {},
+      });
+      const without = calcVariantsSummary(variants, THE_THREE);
+      assert.deepEqual(withTheCounts.filterColumn, { passed: 475, failed: 25 });
+      assert.equal(without.filterColumn, null);
+      assert.deepEqual(withTheCounts.perVar, without.perVar);
+      assert.deepEqual(withTheCounts.perIndividual, without.perIndividual);
+      assert.deepEqual(withTheCounts.density, without.density);
+      assert.deepEqual(withTheCounts.passStats, without.passStats);
+      assert.equal(withTheCounts.passStats.numVars, 500);
+    } finally {
+      variants.free();
+    }
+  });
+
+  test(`calcVariantsSummary with filterColumn over ${file.name} after filterPassed counts 475 passed and none failed`, () => {
+    const variants = file.open();
+    try {
+      variants.filterPassed();
+      const summary = calcVariantsSummary(variants, { filterColumn: {} });
+      assert.deepEqual(summary.filterColumn, { passed: 475, failed: 0 });
+      assert.equal(summary.passStats.numVars, 475);
+      // The variants the filter took out are in its own counts.
+      assert.deepEqual(summary.passStats.filtering.passed, {
+        varsProcessed: 500,
+        varsKept: 475,
+      });
+    } finally {
+      variants.free();
+    }
+  });
+}
+
+test("calcVariantsSummary with filterColumn and soFarEvery 0 gives onSoFar the counts over the variants read after each block", () => {
+  const variants = openVars(IN_FIVE_BLOCKS);
+  try {
+    const calls: VariantsSummary[] = [];
+    const result = calcVariantsSummary(variants, {
+      filterColumn: {},
+      onSoFar: (soFar) => {
+        calls.push(soFar);
+      },
+      soFarEvery: 0,
+    });
+    assert.deepEqual(
+      calls.map((call) => call.passStats.numVars),
+      [100, 200, 300, 400, 500],
+    );
+    for (const call of calls) {
+      const numVars = call.passStats.numVars;
+      const overTheFirst = openVars(IN_FIVE_BLOCKS);
+      try {
+        overTheFirst.filterFirstN(numVars);
+        const expected = calcVariantsSummary(overTheFirst, {
+          filterColumn: {},
+        });
+        assert.ok(call.filterColumn !== null, `no counts over ${numVars}`);
+        assert.deepEqual(
+          call.filterColumn,
+          expected.filterColumn,
+          `the counts so far over ${numVars} variants`,
+        );
+        assert.equal(
+          call.filterColumn.passed + call.filterColumn.failed,
+          numVars,
+        );
+      } finally {
+        overTheFirst.free();
+      }
+    }
+    assert.deepEqual(calls.at(-1), result);
+    assert.deepEqual(result.filterColumn, { passed: 475, failed: 25 });
+  } finally {
+    variants.free();
+  }
+});
+
+/** The message of a source that holds no record of the FILTER column. */
+const NOT_RECORDED =
+  /the variants hold no record of whether they passed their FILTER, so the summary cannot count how many passed and how many failed/;
+
+test("calcVariantsSummary with filterColumn over a vars file of 1.1, which has no record of whether its variants passed, is an Error", async () => {
+  const variants = openVars(await referenceVars("of_1_1.vars"));
+  try {
+    assert.equal(variants.keepsPassed, false);
+    assert.throws(() => calcVariantsSummary(variants, { filterColumn: {} }), {
+      name: "Error",
+      message: NOT_RECORDED,
+    });
+    assert.throws(
+      () =>
+        calcVariantsSummary(variants, { perIndividual: {}, filterColumn: {} }),
+      NOT_RECORDED,
+    );
+  } finally {
+    variants.free();
+  }
+});
+
+test("calcVariantsSummary with filterColumn over a vars file of 1.1 gives the errors of perVar and density before that of the record", async () => {
+  const variants = openVars(await referenceVars("of_1_1.vars"));
+  try {
+    assert.throws(
+      () =>
+        calcVariantsSummary(variants, {
+          perVar: { polyThreshold: 2 },
+          density: { windowSize: 1000 },
+          filterColumn: {},
+        }),
+      /polyThreshold/,
+    );
+    assert.throws(
+      () =>
+        calcVariantsSummary(variants, {
+          density: { windowSize: 0 },
+          filterColumn: {},
+        }),
+      /`density.windowSize`/,
+    );
+  } finally {
+    variants.free();
+  }
+});

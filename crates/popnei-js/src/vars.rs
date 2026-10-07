@@ -245,21 +245,28 @@ impl VarsSource {
     /// over the file, through the steps of `steps`: the distributions with
     /// the arguments of `per_var`, the rates when `per_individual` is true
     /// and the density with the arguments of `density`, each nothing when it
-    /// is not asked for. `on_so_far` is given the three over the variants
-    /// read so far while the pass runs, every `so_far_every` seconds, when it
-    /// is not nothing.
+    /// is not asked for; and the counts of the FILTER column when
+    /// `filter_column` is true. `on_so_far` is given the four over the
+    /// variants read so far while the pass runs, every `so_far_every`
+    /// seconds, when it is not nothing.
     ///
     /// # Errors
     ///
     /// Those of [`variants_summary_of`]: a call that asks for none of the
-    /// three, what the call of each of the three refuses, any of which ends
-    /// the pass with none of them, and the value `on_so_far` threw.
+    /// four, what the call of each of the three refuses, any of which ends
+    /// the pass with none of them, the counts of the FILTER column over a
+    /// source without the record, and the value `on_so_far` threw.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments of the four statistics and of the result so far, as the package passes them"
+    )]
     pub fn calc_variants_summary(
         &self,
         steps: Steps,
         per_var: Option<ArgumentsOfThePass>,
         per_individual: bool,
         density: Option<ArgumentsOfTheDensity>,
+        filter_column: bool,
         on_so_far: Option<Function>,
         so_far_every: f64,
     ) -> Result<VariantsSummaryOfAPass, JsPopneiError> {
@@ -270,6 +277,7 @@ impl VarsSource {
                 per_var,
                 per_individual,
                 density,
+                filter_column,
             },
             TheResultSoFarAsked {
                 told: on_so_far,

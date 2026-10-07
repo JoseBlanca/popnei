@@ -2,14 +2,17 @@
 //! TypeScript and the core: the distributions of the statistics of each
 //! variant, the rates of each individual and the density of the variants
 //! along the chromosomes, which `calcPerVarDistribs`,
-//! `calcPerIndividualStats` and `calcVarDensity` give in three passes.
+//! `calcPerIndividualStats` and `calcVarDensity` give in three passes; and
+//! beside them, when asked, the counts of the FILTER column, how many of
+//! the variants of the pass passed their FILTER and how many failed.
 //!
 //! The arguments of each statistic are those of its own call, checked by
 //! the code of that call, and each result crosses as the result of its own
 //! call does, built by the same functions of `stats.rs` and `density.rs`,
 //! so a page draws one from here as it draws it from its own call. What
 //! goes out is [`VariantsSummaryOfAPass`]: each of the three or nothing,
-//! and the counts of the one pass, which each of the three also carries.
+//! the counts of the FILTER column or nothing, and the counts of the one
+//! pass, which each of the three also carries.
 //!
 //! "The three statistics of a file in one pass" of
 //! `docs/specs/js_sources.md` has the design.
@@ -18,7 +21,7 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
-use popnei::stats::{SoFar, VariantsSummary, VariantsSummaryConfig};
+use popnei::stats::{FilterColumnCounts, SoFar, VariantsSummary, VariantsSummaryConfig};
 
 use crate::density::{ArgumentsOfTheDensity, VarDensityOfAPass, density_config_of, windows_of};
 use crate::errors::JsPopneiError;
@@ -31,7 +34,7 @@ use crate::steps::{Steps, chain_of};
 
 /// Which of the three statistics a pass of [`variants_summary_of`] gives,
 /// each with the arguments of its own call, as they crossed from
-/// TypeScript.
+/// TypeScript, and whether it gives the counts of the FILTER column.
 pub(crate) struct TheStatisticsAsked {
     /// The distributions of the statistics of each variant, and nothing for
     /// none.
@@ -40,25 +43,30 @@ pub(crate) struct TheStatisticsAsked {
     pub(crate) per_individual: bool,
     /// The density of the variants, and nothing for none.
     pub(crate) density: Option<ArgumentsOfTheDensity>,
+    /// Whether the counts of the FILTER column are given.
+    pub(crate) filter_column: bool,
 }
 
 /// The statistics of `asked` over one pass over `source`, through the steps
-/// of `steps`.
+/// of `steps`, and the counts of the FILTER column when it asks for them.
 ///
 /// The chain of readers of the pass is built here and stays here, lent to
 /// the core, so that the counts of its filters are read when the pass is
 /// over: the loop over the blocks is the core's.
 ///
 /// The function of `so_far` is given the three over the variants read so
-/// far, each built as its own call builds its result so far, with the
-/// counts of the pass as they stand after the block.
+/// far, each built as its own call builds its result so far, and the counts
+/// of the FILTER column over them, with the counts of the pass as they
+/// stand after the block.
 ///
 /// # Errors
 ///
-/// When `asked` asks for none of the three, which the package refuses
+/// When `asked` asks for none of the four, which the package refuses
 /// before the call; those of the distributions, of the rates and of the
 /// density that their own calls give, any of which ends the pass with none
-/// of the three; and the value the function of `so_far` threw.
+/// of the three; the counts of the FILTER column over a source that holds
+/// no record of whether its variants passed, before the first block; and
+/// the value the function of `so_far` threw.
 pub(crate) fn variants_summary_of(
     source: &dyn OpenSource,
     steps: &Steps,
@@ -96,7 +104,7 @@ pub(crate) fn variants_summary_of(
             per_var,
             per_individual: asked.per_individual,
             density,
-            filter_column: false,
+            filter_column: asked.filter_column,
         };
         let mut told = TheResultSoFar::from_now(so_far.told, so_far.every_seconds)?;
         let given = popnei::stats::calc_variants_summary(
@@ -135,19 +143,30 @@ struct TheNamesOfThePass {
 }
 
 /// How many variants the pass gave, which each statistic of `summary`
-/// counted the same, and 0 for a summary of none, which the core refuses.
+/// counted the same: with the counts of the FILTER column alone, those that
+/// passed and those that failed; and 0 for a summary of none, which the
+/// core refuses.
 fn num_vars_of(summary: &VariantsSummary) -> u64 {
-    match (&summary.per_var, &summary.per_individual, &summary.density) {
-        (Some(per_var), _, _) => per_var.num_vars,
-        (None, Some(per_individual), _) => per_individual.num_vars(),
-        (None, None, Some(density)) => density.num_vars(),
-        (None, None, None) => 0,
+    match (
+        &summary.per_var,
+        &summary.per_individual,
+        &summary.density,
+        &summary.filter_column,
+    ) {
+        (Some(per_var), _, _, _) => per_var.num_vars,
+        (None, Some(per_individual), _, _) => per_individual.num_vars(),
+        (None, None, Some(density), _) => density.num_vars(),
+        // No pass reaches 18446744073709551615 variants, which is what the
+        // core says of the same sum.
+        (None, None, None, Some(counts)) => counts.passed.saturating_add(counts.failed),
+        (None, None, None, None) => 0,
     }
 }
 
 /// `summary`, the statistics the core gave over the variants of a pass or
 /// of its first blocks, on their way to JavaScript, each built as its own
-/// call builds it, under `names` and with `counts`, the counts of the pass.
+/// call builds it, under `names` and with `counts`, the counts of the pass,
+/// and the counts of the FILTER column beside them.
 ///
 /// # Errors
 ///
@@ -161,7 +180,7 @@ fn summary_of(
         per_var,
         per_individual,
         density,
-        filter_column: _,
+        filter_column,
     } = summary;
     Ok(VariantsSummaryOfAPass {
         per_var: per_var
@@ -180,13 +199,53 @@ fn summary_of(
         density: density
             .map(|density| windows_of(&density, counts.clone()))
             .transpose()?,
+        filter_column: filter_column.map(FilterColumnOfAPass::of),
         counts,
     })
 }
 
+/// The counts of the FILTER column of a pass on their way to JavaScript:
+/// how many of its variants passed their FILTER, whose column in the VCF
+/// they were read from was `PASS` or a dot, and how many failed.
+///
+/// Each crosses as a number of JavaScript, a float64, which holds every
+/// whole number up to 2^53, as the counts of [`PassCounts`] do and for
+/// their reason.
+#[wasm_bindgen]
+#[derive(Clone, Copy)]
+pub struct FilterColumnOfAPass {
+    passed: f64,
+    failed: f64,
+}
+
+#[wasm_bindgen]
+impl FilterColumnOfAPass {
+    /// The variants whose FILTER was `PASS` or a dot.
+    #[must_use]
+    pub fn passed(&self) -> f64 {
+        self.passed
+    }
+
+    /// The variants whose FILTER was anything else.
+    #[must_use]
+    pub fn failed(&self) -> f64 {
+        self.failed
+    }
+}
+
+impl FilterColumnOfAPass {
+    /// `counts`, as the core gave them, as the numbers of JavaScript.
+    fn of(counts: FilterColumnCounts) -> FilterColumnOfAPass {
+        FilterColumnOfAPass {
+            passed: counts.passed as f64,
+            failed: counts.failed as f64,
+        }
+    }
+}
+
 /// What one pass of the three statistics gives JavaScript: each of the
-/// three that was asked for, as its own call gives it, and the counts of
-/// the pass.
+/// three that was asked for, as its own call gives it, the counts of the
+/// FILTER column when they were asked for, and the counts of the pass.
 ///
 /// The package takes each of the three out once and frees it when it has
 /// read it, as it frees the result of its own call, and frees this object
@@ -196,6 +255,7 @@ pub struct VariantsSummaryOfAPass {
     per_var: Option<PerVarDistribs>,
     per_individual: Option<PerIndividualStats>,
     density: Option<VarDensityOfAPass>,
+    filter_column: Option<FilterColumnOfAPass>,
     counts: PassCounts,
 }
 
@@ -217,6 +277,13 @@ impl VariantsSummaryOfAPass {
     /// or was already taken.
     pub fn take_density(&mut self) -> Option<VarDensityOfAPass> {
         self.density.take()
+    }
+
+    /// The counts of the FILTER column, and nothing when they were not asked
+    /// for.
+    #[must_use]
+    pub fn filter_column(&self) -> Option<FilterColumnOfAPass> {
+        self.filter_column
     }
 
     /// How many variants the pass gave, and what each filter of it was

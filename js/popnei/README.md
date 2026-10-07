@@ -67,7 +67,17 @@ no genotype. `calcVariantsSummary` gives what `calcPerVarDistribs`,
 `calcPerIndividualStats` and `calcVarDensity` give, in one pass where the
 three take three, each of the three asked for under `perVar`,
 `perIndividual` and `density` with the options of its own call and each the
-same to the bit as that call gives it; Python has no such function.
+same to the bit as that call gives it; Python has no such function. Asked
+with `filterColumn: {}`, it also counts how many of the variants of its
+pass passed their FILTER, `PASS` or a dot in the VCF they were read from,
+and how many failed, without taking any out, so a page that opens a VCF
+with `onlyPassed: false` and draws the histograms of every variant can say
+how many of those failed. The counts are of the variants that reach the
+summary, after every step, so after `filterPassed` none failed. A source that did not record the FILTER of its
+variants, a vars file written before format 1.2 or from such a file, or
+one that holds no variant, cannot give them, and the call is an `Error`;
+`keepsPassed` of the `Variants` says beforehand whether they can be asked
+for.
 `calcPopDiversity` gives, in a `PopDiversity` and for each
 population a user names in `pops`, how much variety it holds: how many
 alleles its individuals called, how many of those no other population
