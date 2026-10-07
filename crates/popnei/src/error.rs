@@ -679,6 +679,38 @@ pub enum Error {
         kind: String,
     },
 
+    /// The edges of the bins of a histogram do not go up, so the search for
+    /// the bin of a value would give one that is wrong and say nothing. The
+    /// edges of equal width are (start · (n − k) + end · k) / n, which does
+    /// not go up when a bin is narrower than the rounding of a float64 near
+    /// its edges, 100000 bins from 1 to 1 + 1e-13, and is infinite when an
+    /// end times the bins is above the largest float64, 100000 bins from
+    /// -1e305 to 1e304.
+    #[error(
+        "the {num_bins} bins of the histogram from {start:?} to {end:?} have edges that do not go up as float64 numbers: each bin is narrower than the rounding of its edges, or an end times the bins is above the largest float64; fewer bins or a wider range would go up"
+    )]
+    HistEdgesNotGoingUp {
+        /// The start of the range.
+        start: f64,
+        /// The end of the range.
+        end: f64,
+        /// How many bins were asked for.
+        num_bins: usize,
+    },
+
+    /// A user named a side for the bins of a histogram to hold that is
+    /// neither of the two: the left edge, `stats::CLOSED_LEFT`, and the
+    /// right edge, `stats::CLOSED_RIGHT`.
+    #[error(
+        "`closed` is `{side}`, and the bins of a histogram hold their left edge, `{left}`, or their right edge, `{right}`",
+        left = crate::stats::CLOSED_LEFT,
+        right = crate::stats::CLOSED_RIGHT
+    )]
+    HistClosedOnAnUnknownSide {
+        /// The name the user wrote.
+        side: String,
+    },
+
     /// The threshold below which a variant counts as polymorphic in a
     /// population is not a number from 0 to 1. A major allele frequency is
     /// a count of one allele divided by the called alleles, so every value
@@ -3814,6 +3846,8 @@ impl Error {
             | Self::HistTooManyBins { .. }
             | Self::StatOfAnUnknownName { .. }
             | Self::HistBinsOfAnUnknownKind { .. }
+            | Self::HistClosedOnAnUnknownSide { .. }
+            | Self::HistEdgesNotGoingUp { .. }
             | Self::PassGaveNoVariant { .. }
             | Self::KinshipValueNotFinite { .. }
             | Self::DistancesOfTooManyIndividuals { .. }

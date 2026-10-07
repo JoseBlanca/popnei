@@ -167,6 +167,51 @@ pub const LOGARITHMIC_BINS: &str = "logarithmic";
 /// a statistic lie.
 pub const DEFAULT_BIN_TYPE: &str = LINEAR_BINS;
 
+/// The name a Python and a TypeScript user writes for bins that hold their
+/// left edge, [`ClosedSide::Left`].
+pub const CLOSED_LEFT: &str = "left";
+
+/// The name a Python and a TypeScript user writes for bins that hold their
+/// right edge, [`ClosedSide::Right`].
+pub const CLOSED_RIGHT: &str = "right";
+
+/// The edge the bins of a histogram hold when the caller names none, the
+/// left one, which is what `numpy.histogram`, and so pyNei, does.
+pub const DEFAULT_CLOSED: &str = CLOSED_LEFT;
+
+/// The edge each bin of a histogram holds besides the values between its
+/// two edges: which bin a value that lies exactly on an edge is counted in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosedSide {
+    /// A bin holds its left edge, so a value on an edge is in the bin that
+    /// starts there, and the last bin holds its right edge too, as
+    /// `numpy.histogram` does.
+    Left,
+    /// A bin holds its right edge, so a value on an edge is in the bin that
+    /// ends there, and the first bin holds its left edge too, as pandas'
+    /// `cut` does with `right=True, include_lowest=True`. The bins below an
+    /// edge t then count the values at most t, which is what a filter at
+    /// the threshold t keeps.
+    Right,
+}
+
+impl ClosedSide {
+    /// The side a user named, [`CLOSED_LEFT`] or [`CLOSED_RIGHT`].
+    ///
+    /// # Errors
+    ///
+    /// A `name` that is neither of the two, with both of them.
+    pub fn of_name(name: &str) -> Result<ClosedSide> {
+        match name {
+            CLOSED_LEFT => Ok(ClosedSide::Left),
+            CLOSED_RIGHT => Ok(ClosedSide::Right),
+            of_no_side => Err(Error::HistClosedOnAnUnknownSide {
+                side: of_no_side.to_owned(),
+            }),
+        }
+    }
+}
+
 /// One population: its name and the indices of its individuals.
 #[derive(Debug)]
 struct Pop {
@@ -347,6 +392,8 @@ pub struct HistBins {
     /// The edges, from the start of the range up to its end, one more than
     /// there are bins.
     edges: Vec<f64>,
+    /// The edge each bin holds.
+    closed: ClosedSide,
 }
 
 impl HistBins {
@@ -360,10 +407,7 @@ impl HistBins {
     /// a float64 goes, which leaves the width of a bin infinite.
     pub fn linear(start: f64, end: f64, num_bins: usize) -> Result<HistBins> {
         check_the_range(start, end, num_bins)?;
-        let width_of_a_bin = (end - start) / num_bins as f64;
-        Ok(HistBins {
-            edges: edges_of(start, width_of_a_bin, num_bins, end),
-        })
+        HistBins::going_up(edges_of(start, end, num_bins), start, end)
     }
 
     /// `num_bins` bins of equal ratio from `start` to `end`: each edge is
@@ -381,13 +425,39 @@ impl HistBins {
         // numpy's `logspace` raises 10 to the edges of equal width between
         // the two logarithms, the last of which is the logarithm of the end
         // and not the end itself.
-        let (first, last) = (start.log10(), end.log10());
-        let width_of_a_bin = (last - first) / num_bins as f64;
-        let mut edges = edges_of(first, width_of_a_bin, num_bins, last);
+        let mut edges = edges_of(start.log10(), end.log10(), num_bins);
         for edge in &mut edges {
             *edge = 10_f64.powf(*edge);
         }
-        Ok(HistBins { edges })
+        HistBins::going_up(edges, start, end)
+    }
+
+    /// Bins over `edges` that hold their left edge, when every edge is
+    /// above the one before it: the search for the bin of a value takes
+    /// that for granted.
+    ///
+    /// # Errors
+    ///
+    /// Edges that do not go up, which they do not when a bin is narrower
+    /// than the rounding of a float64 near its edges, or when an end of the
+    /// range times the bins is above the largest float64 and the edges are
+    /// infinite or NaN.
+    fn going_up(edges: Vec<f64>, start: f64, end: f64) -> Result<HistBins> {
+        // `!(a < b)` and not `a >= b`, so that a NaN edge is refused too.
+        let do_not_go_up = edges
+            .windows(2)
+            .any(|pair| !matches!(pair, [left, right] if left < right));
+        if do_not_go_up {
+            return Err(Error::HistEdgesNotGoingUp {
+                start,
+                end,
+                num_bins: edges.len().saturating_sub(1),
+            });
+        }
+        Ok(HistBins {
+            edges,
+            closed: ClosedSide::Left,
+        })
     }
 
     /// The bins of the kind a user named, [`LINEAR_BINS`] of equal width or
@@ -410,6 +480,22 @@ impl HistBins {
         }
     }
 
+    /// The same edges, with bins that hold the edge `side` names. The
+    /// constructors build bins that hold their left edge.
+    #[must_use]
+    pub fn closed_on(self, side: ClosedSide) -> HistBins {
+        HistBins {
+            closed: side,
+            ..self
+        }
+    }
+
+    /// The edge each bin holds.
+    #[must_use]
+    pub fn closed(&self) -> ClosedSide {
+        self.closed
+    }
+
     /// The edges, from the start of the range up to its end, one more than
     /// there are bins.
     #[must_use]
@@ -428,9 +514,12 @@ impl HistBins {
     /// The bin `value` falls in, or `None` when it is outside the range and
     /// in no bin.
     ///
-    /// A value falls in the bin whose left edge is at most the value and
-    /// whose right edge is above it, and the last bin takes its right edge
-    /// too, which is what `numpy.histogram` does.
+    /// With bins that hold their left edge a value falls in the bin whose
+    /// left edge is at most the value and whose right edge is above it, and
+    /// the last bin takes its right edge too, which is what
+    /// `numpy.histogram` does. With bins that hold their right edge a value
+    /// falls in the bin whose left edge is below it and whose right edge is
+    /// at least the value, and the first bin takes its left edge too.
     #[must_use]
     pub fn bin_of(&self, value: f64) -> Option<usize> {
         let first = *self.edges.first()?;
@@ -438,32 +527,54 @@ impl HistBins {
         if value.is_nan() || value < first || value > last {
             return None;
         }
-        // The value is at the first edge or above it, so one edge at least
-        // is at most the value and the count below is 1 or more: the bin
-        // that starts at the last of those edges is the one the value falls
-        // in. A value at the end of the range has every edge at or below it
-        // and falls in the last bin, which takes its right edge.
-        let edges_at_or_below = self.edges.partition_point(|edge| *edge <= value);
-        Some(
-            edges_at_or_below
-                .saturating_sub(1)
-                .min(self.num_bins().saturating_sub(1)),
-        )
+        match self.closed {
+            ClosedSide::Left => {
+                // The value is at the first edge or above it, so one edge at
+                // least is at most the value and the count below is 1 or
+                // more: the bin that starts at the last of those edges is
+                // the one the value falls in. A value at the end of the
+                // range has every edge at or below it and falls in the last
+                // bin, which takes its right edge.
+                let edges_at_or_below = self.edges.partition_point(|edge| *edge <= value);
+                Some(
+                    edges_at_or_below
+                        .saturating_sub(1)
+                        .min(self.num_bins().saturating_sub(1)),
+                )
+            }
+            ClosedSide::Right => {
+                // The value is at the last edge or below it, so the edges
+                // below it are all but the last at most: the bin that ends
+                // at the first edge at or above the value is the one it
+                // falls in. A value at the start of the range has no edge
+                // below it and falls in the first bin, which takes its left
+                // edge.
+                let edges_below = self.edges.partition_point(|edge| *edge < value);
+                Some(edges_below.saturating_sub(1))
+            }
+        }
     }
 }
 
-/// The edges of `num_bins` bins over a range: the start of the range plus
-/// i times the width of a bin for the i-th of them, and the end of the
-/// range for the last, which is what numpy's `linspace` computes.
+/// The edges of `num_bins` bins of equal width from `start` to `end`: the
+/// k-th is (`start` · (n − k) + `end` · k) / n, n being `num_bins`.
 ///
-/// The last edge is the end itself and not the start plus `num_bins` times
-/// the width, so that the range the bins cover is the one that was asked
-/// for whatever the rounding of the widths added up to.
-fn edges_of(start: f64, width_of_a_bin: f64, num_bins: usize, end: f64) -> Vec<f64> {
-    // One edge more than there are bins; a `num_bins` that saturates asks
-    // for more memory than a machine gives either way.
+/// When both ends are whole numbers or halves the two products and their
+/// sum are exact, and the division rounds once, so each edge is the float64
+/// nearest the decimal it stands for: from 0 to 1 the k-th of 1000 edges is
+/// the float64 a user's "0.007" is read as, k = 7. numpy's `linspace`,
+/// `start` + k · ((`end` − `start`) / n), rounds the width and then its
+/// multiple, and gives 144 of those 1001 edges one unit in the last place
+/// away. The first edge is `start` and the last `end`, exactly.
+fn edges_of(start: f64, end: f64, num_bins: usize) -> Vec<f64> {
+    // A count of bins is at most `MAX_NUM_BINS`, so it and every k below it
+    // are exact as float64.
+    let num_bins_as_f64 = num_bins as f64;
     let mut edges = Vec::with_capacity(num_bins.saturating_add(1));
-    edges.extend((0..num_bins).map(|bin| start + bin as f64 * width_of_a_bin));
+    edges.extend((0..num_bins).map(|bin| {
+        let bin = bin as f64;
+        (start * (num_bins_as_f64 - bin) + end * bin) / num_bins_as_f64
+    }));
     edges.push(end);
     edges
 }
@@ -2751,7 +2862,10 @@ mod fixtures {
 
 #[cfg(test)]
 mod hist {
-    use super::{HistBins, LINEAR_BINS, LOGARITHMIC_BINS, MAX_NUM_BINS};
+    use super::{
+        CLOSED_LEFT, CLOSED_RIGHT, ClosedSide, DEFAULT_CLOSED, HistBins, LINEAR_BINS,
+        LOGARITHMIC_BINS, MAX_NUM_BINS,
+    };
     use crate::error::Error;
 
     /// One unit of the last digit that numpy and pyNei print of a
@@ -2773,61 +2887,57 @@ mod hist {
     }
 
     /// The default histogram of the per variant distributions, 40 bins of
-    /// equal width from 0 to 1. The literals are what `numpy.linspace(0, 1,
-    /// 41)` gives, printed by Python at the shortest text that reads back
-    /// as the same float64, and they are compared exactly: a value that
-    /// falls on an edge has to fall on the same side of it in popnei and in
-    /// pyNei, or a count of the histogram is one out.
+    /// equal width from 0 to 1. Each edge is the float64 of the decimal k /
+    /// 40 as a literal reads it, compared exactly: a threshold a user types,
+    /// 0.15, is then an edge, and the bins below it count the values below
+    /// it. numpy's `linspace(0, 1, 41)` gives 15 of these one unit in the
+    /// last place away, 0.15000000000000002 for the seventh.
     #[test]
-    fn the_edges_of_the_forty_default_linear_bins() {
+    fn the_edges_of_the_forty_default_linear_bins_are_the_decimals() {
         let bins = HistBins::linear(0.0, 1.0, 40).unwrap();
         assert_eq!(bins.num_bins(), 40);
         assert_eq!(
             bins.edges(),
             [
-                0.0,
-                0.025,
-                0.05,
-                0.07500000000000001,
-                0.1,
-                0.125,
-                0.15000000000000002,
-                0.17500000000000002,
-                0.2,
-                0.225,
-                0.25,
-                0.275,
-                0.30000000000000004,
-                0.325,
-                0.35000000000000003,
-                0.375,
-                0.4,
-                0.42500000000000004,
-                0.45,
-                0.47500000000000003,
-                0.5,
-                0.525,
-                0.55,
-                0.5750000000000001,
-                0.6000000000000001,
-                0.625,
-                0.65,
-                0.675,
-                0.7000000000000001,
-                0.7250000000000001,
-                0.75,
-                0.775,
-                0.8,
-                0.8250000000000001,
-                0.8500000000000001,
-                0.875,
-                0.9,
-                0.925,
-                0.9500000000000001,
-                0.9750000000000001,
-                1.0,
+                0.0, 0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25, 0.275, 0.3,
+                0.325, 0.35, 0.375, 0.4, 0.425, 0.45, 0.475, 0.5, 0.525, 0.55, 0.575, 0.6, 0.625,
+                0.65, 0.675, 0.7, 0.725, 0.75, 0.775, 0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95,
+                0.975, 1.0,
             ]
         );
+    }
+
+    /// Of 1000 bins from 0 to 1 the k-th edge is the decimal k / 1000, so a
+    /// threshold of up to three decimals is an edge. 0.009, 0.013 and 0.018
+    /// are the first three that `start + k * width`, numpy's `linspace`,
+    /// gives one unit in the last place away, and 0.07 and 0.3 are among
+    /// those a filter is set at.
+    #[test]
+    fn the_edges_of_a_thousand_linear_bins_are_the_decimals_of_three_digits() {
+        let bins = HistBins::linear(0.0, 1.0, 1000).unwrap();
+        for (k, decimal) in [
+            (9, 0.009),
+            (13, 0.013),
+            (18, 0.018),
+            (50, 0.05),
+            (70, 0.07),
+            (300, 0.3),
+            (999, 0.999),
+            (1000, 1.0),
+        ] {
+            assert_eq!(bins.edges().get(k), Some(&decimal), "the edge {k}");
+        }
+    }
+
+    /// Between two whole numbers the edges are the decimals too: 1000 bins
+    /// from 1 to 3 have the edge 1.122 at k = 61, which `linspace` gives
+    /// as 1.1219999999999999.
+    #[test]
+    fn the_edges_between_two_whole_numbers_are_the_decimals() {
+        let bins = HistBins::linear(1.0, 3.0, 1000).unwrap();
+        assert_eq!(bins.edges().get(61), Some(&1.122));
+        assert_eq!(bins.edges().first(), Some(&1.0));
+        assert_eq!(bins.edges().last(), Some(&3.0));
     }
 
     /// The last edge is the end of the range itself and not the start plus
@@ -2910,6 +3020,96 @@ mod hist {
         assert_eq!(of_equal_ratio.bin_of(1000.0), None);
     }
 
+    /// The constructors build bins that hold their left edge, as
+    /// `numpy.histogram` and pyNei do, and that is the side a user who
+    /// names none gets.
+    #[test]
+    fn the_bins_hold_their_left_edge_unless_told_otherwise() {
+        assert_eq!(
+            HistBins::linear(0.0, 1.0, 4).unwrap().closed(),
+            ClosedSide::Left
+        );
+        assert_eq!(
+            HistBins::logarithmic(0.01, 100.0, 4).unwrap().closed(),
+            ClosedSide::Left
+        );
+        assert_eq!(
+            ClosedSide::of_name(DEFAULT_CLOSED).unwrap(),
+            ClosedSide::Left
+        );
+    }
+
+    /// With bins that hold their right edge, a value on an interior edge is
+    /// in the bin that ends there, the first bin takes its left edge too,
+    /// so a rate of 0 is counted, and the last bin holds its right edge as
+    /// before. The edges themselves do not move.
+    #[test]
+    fn a_value_on_an_interior_edge_is_in_the_bin_that_ends_there_when_the_bins_hold_their_right_edge()
+     {
+        let bins = HistBins::linear(0.0, 1.0, 4)
+            .unwrap()
+            .closed_on(ClosedSide::Right);
+        assert_eq!(bins.closed(), ClosedSide::Right);
+        assert_eq!(bins.edges(), [0.0, 0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(bins.bin_of(0.0), Some(0));
+        assert_eq!(bins.bin_of(0.25), Some(0));
+        assert_eq!(bins.bin_of(0.5), Some(1));
+        assert_eq!(bins.bin_of(0.75), Some(2));
+        assert_eq!(bins.bin_of(1.0), Some(3));
+        // A value between two edges is in the same bin whichever edge the
+        // bins hold.
+        assert_eq!(bins.bin_of(0.1), Some(0));
+        assert_eq!(bins.bin_of(0.3), Some(1));
+        assert_eq!(bins.bin_of(0.99), Some(3));
+        // Outside the range and NaN are in no bin, as with the left edge.
+        for outside in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(bins.bin_of(outside), None, "{outside}");
+        }
+        let of_equal_ratio = HistBins::logarithmic(0.01, 100.0, 4)
+            .unwrap()
+            .closed_on(ClosedSide::Right);
+        assert_eq!(of_equal_ratio.bin_of(0.01), Some(0));
+        assert_eq!(of_equal_ratio.bin_of(100.0), Some(3));
+        assert_eq!(of_equal_ratio.bin_of(0.0), None);
+    }
+
+    /// The bins below an edge that hold their right edge count every value
+    /// at most that edge: of the values 0.009, 0.0091 and 0.0089 in 1000
+    /// bins from 0 to 1, two are at most 0.009 and they are in the nine
+    /// bins below the edge 9, where with the left edge 0.009 is in bin 9.
+    #[test]
+    fn the_bins_below_an_edge_that_hold_their_right_edge_count_the_values_at_most_it() {
+        let right = HistBins::linear(0.0, 1.0, 1000)
+            .unwrap()
+            .closed_on(ClosedSide::Right);
+        assert_eq!(right.bin_of(0.009), Some(8));
+        assert_eq!(right.bin_of(0.0089), Some(8));
+        assert_eq!(right.bin_of(0.0091), Some(9));
+        let left = HistBins::linear(0.0, 1.0, 1000).unwrap();
+        assert_eq!(left.bin_of(0.009), Some(9));
+    }
+
+    /// The side a user writes is `left` or `right`, and anything else is
+    /// refused with both names.
+    #[test]
+    fn the_side_a_user_names_is_left_or_right() {
+        assert_eq!(ClosedSide::of_name(CLOSED_LEFT).unwrap(), ClosedSide::Left);
+        assert_eq!(
+            ClosedSide::of_name(CLOSED_RIGHT).unwrap(),
+            ClosedSide::Right
+        );
+        for side in ["both", "", "Right", "neither"] {
+            let error = ClosedSide::of_name(side).unwrap_err();
+            assert!(
+                matches!(&error, Error::HistClosedOnAnUnknownSide { side: found } if found == side),
+                "{side}: {error:?}"
+            );
+            let message = error.to_string();
+            assert!(message.contains("`left`"), "{message}");
+            assert!(message.contains("`right`"), "{message}");
+        }
+    }
+
     /// A histogram of no bin counts nothing, so it is refused instead of
     /// built: numpy gives one edge for it and a histogram no value falls
     /// in.
@@ -2973,6 +3173,34 @@ mod hist {
         let of_equal_ratio =
             HistBins::logarithmic(1e-300, 1e300, 4).expect("the widest range of equal ratios");
         assert!(of_equal_ratio.edges().iter().all(|edge| edge.is_finite()));
+    }
+
+    /// The edges of a histogram go up, or the search for the bin of a value
+    /// gives a bin that is wrong and says nothing. They do not when a bin is
+    /// narrower than the rounding of a float64 near its edges, 100000 bins
+    /// from 1 to 1 + 1e-13, each 1e-18 wide where a unit in the last place
+    /// of 1 is 2.2e-16, and when an end times the bins is above the largest
+    /// float64, 100000 bins from -1e305 to 1e304, whose edges are then
+    /// infinite. Both are refused with the range and the bins.
+    #[test]
+    fn a_histogram_whose_edges_do_not_go_up_is_refused() {
+        for (start, end) in [(1.0, 1.0 + 1e-13), (-1e305, 1e304)] {
+            let error = HistBins::linear(start, end, MAX_NUM_BINS).unwrap_err();
+            assert!(
+                matches!(&error, Error::HistEdgesNotGoingUp { start: found_start, end: found_end, num_bins }
+                    if found_start.to_bits() == start.to_bits()
+                        && found_end.to_bits() == end.to_bits()
+                        && *num_bins == MAX_NUM_BINS),
+                "{start} to {end}: {error:?}"
+            );
+        }
+        let error = HistBins::logarithmic(1.0, 1.0 + 1e-13, MAX_NUM_BINS).unwrap_err();
+        assert!(
+            matches!(&error, Error::HistEdgesNotGoingUp { .. }),
+            "{error:?}"
+        );
+        // Few bins over the same narrow range go up, and are built.
+        assert_eq!(HistBins::linear(1.0, 1.0 + 1e-13, 4).unwrap().num_bins(), 4);
     }
 
     /// A histogram has [`MAX_NUM_BINS`] bins at most, whatever a user
@@ -3763,8 +3991,8 @@ mod distribs {
         vcf_reader_of,
     };
     use super::{
-        ExpHet, HistBins, Maf, ObsHet, PerVarDistribs, PerVarDistribsConfig, PerVarStat,
-        PolyVarsStats, Pops, StatsDistrib, calc_per_var_distribs,
+        ClosedSide, ExpHet, HistBins, Maf, ObsHet, PerVarDistribs, PerVarDistribsConfig,
+        PerVarStat, PolyVarsStats, Pops, StatsDistrib, calc_per_var_distribs,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::Error;
@@ -4156,25 +4384,30 @@ mod distribs {
         assert_eq!(found.mean(0), Some(0.5));
     }
 
-    /// 3 missing genotypes of 20 are in bin 5 of the 40 bins from 0 to 1,
-    /// counted from 0, and not in bin 6, as "A rate on the edge of a bin"
-    /// of the missing rate works out: 3/20 is 0.1499999999999999944 as a
-    /// float64 and the sixth edge, 6 x 0.025, is 0.15000000000000002. A
-    /// pass that found the bin as the rate times the bins, rounded down,
-    /// would put it in bin 6, since 0.15 x 40 rounds to 6.0 exactly.
+    /// 3 missing genotypes of 20 are on the seventh edge of the 40 bins from
+    /// 0 to 1, as "A rate on the edge of a bin" of the missing rate works
+    /// out: 3/20 is the float64 of the decimal 0.15, and so is that edge, 6
+    /// / 40. So the rate is in bin 6, counted from 0, with bins that hold
+    /// their left edge and in bin 5 with bins that hold their right one.
+    /// numpy's `linspace` puts the edge at 0.15000000000000002 and the
+    /// rate in bin 5 with the left edge.
     #[test]
-    fn per_var_missing_rate_of_3_of_20_is_in_bin_5_of_40() {
-        let found = missing_rate_of(
-            20,
-            &[a_row_with_missing(20, 3)],
-            HistBins::linear(0.0, 1.0, 40).expect("the forty bins"),
-        );
+    fn per_var_missing_rate_of_3_of_20_is_on_the_edge_of_bins_5_and_6_of_40() {
+        for (closed, bin) in [(ClosedSide::Left, 6), (ClosedSide::Right, 5)] {
+            let found = missing_rate_of(
+                20,
+                &[a_row_with_missing(20, 3)],
+                HistBins::linear(0.0, 1.0, 40)
+                    .expect("the forty bins")
+                    .closed_on(closed),
+            );
 
-        let mut expected = [0_u64; 40];
-        if let Some(bin) = expected.get_mut(5) {
-            *bin = 1;
+            let mut expected = [0_u64; 40];
+            if let Some(count) = expected.get_mut(bin) {
+                *count = 1;
+            }
+            assert_eq!(found.hist_counts(0), expected, "{closed:?}");
         }
-        assert_eq!(found.hist_counts(0), expected);
     }
 
     /// The histogram of 40 bins from 0 to 1 whose bins with a count are
@@ -4191,8 +4424,10 @@ mod distribs {
     /// of its first 20 and over `popB` of its other 30, from the table of
     /// "How it is verified" of the missing rate, which plink2 v2.0.0-a.7.7
     /// gave with `--missing variant-only` and `--vcf-half-call m`, with the
-    /// default 40 bins from 0 to 1. The 51 variants of `popA` in bin 5 are
-    /// the 3 missing genotypes of 20 that are in bin 5 and not in bin 6.
+    /// default 40 bins from 0 to 1, with bins that hold their left edge and
+    /// with bins that hold their right one. The 51 variants of `popA` in bin
+    /// 6 with the left edge and in bin 5 with the right one are the 3
+    /// missing genotypes of 20, on the edge 0.15.
     ///
     /// The means are printed to four and five digits, and each is a whole
     /// number of missing genotypes over the 500 variants times the
@@ -4201,21 +4436,8 @@ mod distribs {
     /// pass.
     #[test]
     fn per_var_missing_rate_of_many_vcf_is_the_table_of_plink2() {
-        let mut reader = vcf_reader("vcf/many.vcf");
-        let pops = the_pops_of_many_vcf(&reader);
-        let mut config = config_of(pops, 5);
-        config.bins = HistBins::linear(0.0, 1.0, 40).expect("the forty bins");
-        let found =
-            calc_per_var_distribs(&mut reader, &config).expect("the distributions of many.vcf");
-        let mut reader = vcf_reader("vcf/many.vcf");
-        config.pops = Pops::all(50);
-        let of_all = calc_per_var_distribs(&mut reader, &config)
-            .expect("the distributions of many.vcf over its 50 individuals");
-
-        for (distrib, pop, mean, with_a_count, what) in [
+        let left = [
             (
-                &of_all,
-                0,
                 0.060_44,
                 &[
                     (0, 101),
@@ -4228,18 +4450,12 @@ mod distribs {
                     (7, 1),
                     (8, 1),
                 ][..],
-                "all",
             ),
             (
-                &found,
-                0,
                 0.060_2,
-                &[(0, 144), (2, 180), (4, 116), (5, 51), (8, 8), (10, 1)][..],
-                "popA",
+                &[(0, 144), (2, 180), (4, 116), (6, 51), (8, 8), (10, 1)][..],
             ),
             (
-                &found,
-                1,
                 0.060_6,
                 &[
                     (0, 88),
@@ -4251,23 +4467,78 @@ mod distribs {
                     (8, 5),
                     (9, 1),
                     (10, 1),
+                    (12, 1),
+                ][..],
+            ),
+        ];
+        let right = [
+            (
+                0.060_44,
+                &[
+                    (0, 101),
+                    (1, 114),
+                    (2, 102),
+                    (3, 138),
+                    (4, 27),
+                    (5, 10),
+                    (6, 6),
+                    (7, 1),
+                    (8, 1),
+                ][..],
+            ),
+            (
+                0.060_2,
+                &[(0, 144), (1, 180), (3, 116), (5, 51), (7, 8), (9, 1)][..],
+            ),
+            (
+                0.060_6,
+                &[
+                    (0, 88),
+                    (1, 146),
+                    (2, 124),
+                    (3, 84),
+                    (5, 41),
+                    (6, 9),
+                    (7, 5),
+                    (9, 1),
+                    (10, 1),
                     (11, 1),
                 ][..],
-                "popB",
             ),
-        ] {
-            let missing_rate = distrib.missing_rate.as_ref().expect("the missing rate");
-            assert_eq!(
-                missing_rate.hist_counts(pop),
-                forty_bins_of(with_a_count),
-                "the histogram of the missing rate of {what}"
-            );
-            assert_eq!(missing_rate.num_vars_with_value(pop), 500, "{what}");
-            let found_mean = missing_rate.mean(pop).expect("a mean of the missing rate");
-            assert!(
-                (found_mean - mean).abs() <= OF_TWO_BLOCK_SIZES * mean,
-                "the mean of the missing rate of {what} is {found_mean}, and it is {mean}"
-            );
+        ];
+        for (closed, [all, pop_a, pop_b]) in [(ClosedSide::Left, left), (ClosedSide::Right, right)]
+        {
+            let mut reader = vcf_reader("vcf/many.vcf");
+            let pops = the_pops_of_many_vcf(&reader);
+            let mut config = config_of(pops, 5);
+            config.bins = HistBins::linear(0.0, 1.0, 40)
+                .expect("the forty bins")
+                .closed_on(closed);
+            let found =
+                calc_per_var_distribs(&mut reader, &config).expect("the distributions of many.vcf");
+            let mut reader = vcf_reader("vcf/many.vcf");
+            config.pops = Pops::all(50);
+            let of_all = calc_per_var_distribs(&mut reader, &config)
+                .expect("the distributions of many.vcf over its 50 individuals");
+
+            for (distrib, pop, (mean, with_a_count), what) in [
+                (&of_all, 0, all, "all"),
+                (&found, 0, pop_a, "popA"),
+                (&found, 1, pop_b, "popB"),
+            ] {
+                let missing_rate = distrib.missing_rate.as_ref().expect("the missing rate");
+                assert_eq!(
+                    missing_rate.hist_counts(pop),
+                    forty_bins_of(with_a_count),
+                    "the histogram of the missing rate of {what}, {closed:?}"
+                );
+                assert_eq!(missing_rate.num_vars_with_value(pop), 500, "{what}");
+                let found_mean = missing_rate.mean(pop).expect("a mean of the missing rate");
+                assert!(
+                    (found_mean - mean).abs() <= OF_TWO_BLOCK_SIZES * mean,
+                    "the mean of the missing rate of {what} is {found_mean}, and it is {mean}"
+                );
+            }
         }
     }
 
