@@ -694,6 +694,32 @@ is shared. An error of any of the three ends the pass, and none of the
 three is returned; a page that wants the others when the density refuses a
 variant past the length of its chromosome calls them on their own.
 
+It also counts, when asked, how many of the variants of the pass passed
+their FILTER and how many failed. A variant passed when the FILTER column
+of its line, in the VCF it was read from, was `PASS` or a dot, the test of
+`onlyPassed` and of `filterPassed` of `docs/specs/filters.md`. The counts
+take no variant out of the pass, so a page that opens a VCF with
+`onlyPassed: false` and draws the histograms of every variant says beside
+them how many of those variants failed, in the same pass. `filterPassed`
+cannot give that number for it: it counts the failed variants by taking
+them out, and the histograms would then be of the variants that passed.
+The counts are of the variants that reach the summary, after every step,
+so with `filterPassed` among the steps `failed` is 0, and the variants it
+took out are in its own counts, in `passStats`. The counts were added on
+7 October 2026 from issue 12, which asked for them for popnei_web, the
+application that runs the wasm package in the browser.
+
+Only a source that recorded the FILTER of its variants can give them. A
+VCF has, and so has a vars file of format 1.2 written from a source that
+had the record; a vars file of format 1.0 or 1.1 has not, nor variants
+built from an array of genotypes, nor a vars file written from those. Asked of such a source, the counts are an
+`Error`, before the first variant is read, and `variants.keepsPassed` of
+`docs/specs/variant.md` tells the page beforehand whether it can ask. The
+owner decided on 7 October 2026 that the counts are asked for, as each of
+the other three is, and that a source without the record is an error. The
+option not taken was to give the counts at every call, `null` for a source
+without the record, which needs no option and has no error.
+
 What it saves depends on the file. Over `big.vcf`, the plain VCF of 403
 MB, 100000 variants of 1000 diploid individuals that
 `crates/popnei/benches/make_big_vcf.py` writes, the three passes took
@@ -746,25 +772,31 @@ calcVariantsSummary(variants, {
   perVar,         // the options of calcPerVarDistribs, or absent
   perIndividual,  // {} for the rates of each individual, or absent
   density,        // {windowSize, chromLengths}, or absent
+  filterColumn,   // {} for the counts of the FILTER column, or absent
   onSoFar, soFarEvery,
 }): VariantsSummary
 ```
 
 A statistic is given when its key is there with a value that is not
-`undefined`, and left out otherwise; `perVar` is checked as the options of
+`undefined`, and left out otherwise. In this paragraph the counts of the
+FILTER column are a fourth statistic. `perVar` is checked as the options of
 `calcPerVarDistribs` are, but for `onSoFar` and `soFarEvery`, which are
 options of the summary and are refused inside it; `density` as the
 `windowSize` and `chromLengths` of `calcVarDensity` are, with the errors
-naming `density.windowSize`; and `perIndividual` is an empty object. A call with none of the three is an
-`Error` that says to ask for one. `VariantsSummary` has `perVar`, a
-`PerVarDistribs` or `null`, `perIndividual`, a `PerIndividualStats` or
-`null`, `density`, a `VarDensity` or `null`, each of the type its consumer
-returns so that the code of a page that draws one draws it from here
-unchanged, and `passStats`, the counts of the one pass, which each of the
-three also carries. The pass asks the reader for what the three ask for
-together: the genotypes when `perVar` or `perIndividual` is there, and the
-chromosome and the position when `density` is. A pass that gives no
-variant is the `Error` the three give for it.
+naming `density.windowSize`; and `perIndividual` and `filterColumn` are
+empty objects. A call with none of the four is an `Error` that says to ask
+for one, and `filterColumn` alone is a call that gives the counts and
+nothing else. `VariantsSummary` has `perVar`, a `PerVarDistribs` or `null`,
+`perIndividual`, a `PerIndividualStats` or `null`, `density`, a
+`VarDensity` or `null`, each of the type its consumer returns so that the
+code of a page that draws one draws it from here unchanged;
+`filterColumn`, `{ passed: number; failed: number }` or `null`; and
+`passStats`, the counts of the one pass, which each of the three also
+carries. The pass asks the reader for what the four ask for together: the
+genotypes when `perVar` or `perIndividual` is there, the chromosome and the
+position when `density` is, and whether each variant passed when
+`filterColumn` is. A pass that gives no variant is the `Error` the three
+give for it.
 `numPassesOf("calcVariantsSummary")` is 1, and it reads none of the
 options.
 
@@ -785,7 +817,23 @@ and the others are as before; and with none, an `Error`. With `onSoFar` and
 tests of `calc_variants_summary` make the same comparison on `many.vcf`,
 and check with a reader built for the test that records what it is asked
 for that the density alone asks for the chromosome and the position and
-no genotypes.
+no genotypes, and that the counts of the FILTER column alone ask for
+whether each variant passed and nothing else.
+
+The counts of the FILTER column are checked at `calcVariantsSummary` and,
+in the cargo tests, at `calc_variants_summary`, exactly, since they are
+counts. `many.vcf` has 500 variants: 450 with `PASS`, 25 with a dot and 25
+with `q10`, counted with `grep -v '^#' many.vcf | cut -f7 | sort | uniq -c`.
+So, read with `onlyPassed: false`, it gives `{ passed: 475, failed: 25 }`,
+alone and beside the three, which are then what they are without it; with
+`filterPassed` it gives `{ passed: 475, failed: 0 }`; and the vars file of
+`many.vcf` written with every variant gives the same as the VCF. With
+`onSoFar` and `soFarEvery` 0, the counts of each call equal those of a call
+over `filterFirstN` of that number of variants. `tests/reference/vars/of_1_1.vars`,
+a vars file of format 1.1, and variants built with `Variants.fromGtArray`
+have `keepsPassed` false, and asked for the counts they give the `Error`
+of a source without the record. The cargo test of that error checks, with
+the reader built for the test, that no block was asked for.
 
 ## The Rust interface
 

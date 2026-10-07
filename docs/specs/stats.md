@@ -1757,12 +1757,14 @@ pub fn calc_var_density_with<R: BlockReader + ?Sized>(
     after_a_block: AfterABlock<'_, VarDensity>,
 ) -> Result<VarDensity>;
 
-/// Which of the three a pass of `calc_variants_summary` gives; one at
-/// least, or the error of a summary of nothing.
+/// Which of the three, and whether the counts of the FILTER column, a pass
+/// of `calc_variants_summary` gives; one at least, or the error of a
+/// summary of nothing.
 pub struct VariantsSummaryConfig {
     pub per_var: Option<PerVarDistribsConfig>,
     pub per_individual: bool,
     pub density: Option<VarDensityConfig>,
+    pub filter_column: bool,
 }
 /// The two arguments of `calc_var_density` beside its reader.
 pub struct VarDensityConfig {
@@ -1779,6 +1781,13 @@ pub struct VariantsSummary {
     pub per_var: Option<PerVarDistribs>,
     pub per_individual: Option<PerIndividualStats>,
     pub density: Option<VarDensity>,
+    pub filter_column: Option<FilterColumnCounts>,
+}
+/// Of the variants of the pass, how many passed their FILTER, `PASS` or a
+/// dot, and how many failed; the two add up to the variants of the pass.
+pub struct FilterColumnCounts {
+    pub passed: u64,
+    pub failed: u64,
 }
 /// One pass over `reader`, asking it for the union of what the three that
 /// are asked for ask for.
@@ -1795,6 +1804,19 @@ just added: natively the reader one block ahead answers with
 the counts as they were when it gave that block, and in wasm there is no
 such thread. The error this adds is a summary asked for none of the three,
 which only the wasm crate can reach.
+
+The counts of the FILTER column were added on 7 October 2026, from issue
+12; `docs/specs/js_sources.md` has what they are for, the owner's decision
+and their checks. They count the `passed` column of each block, which the
+pass asks for with `Needs::PASSED`, and keep nothing else from one block to
+the next. A source whose `header().keeps_passed` is false cannot give them,
+and the pass is refused before its first block with
+`Error::FilterColumnNotRecorded`, whose message says that the variants hold
+no record of whether they passed their FILTER, as a vars file written
+before format 1.2 or variants built from an array of genotypes, so the
+summary cannot count them. A block of a source whose header says it keeps
+the column and that comes without it is a defect of its reader, and an
+error of that kind.
 
 ## Speed
 
