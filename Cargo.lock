@@ -1043,7 +1043,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "popnei"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -1060,7 +1060,7 @@ dependencies = [
 
 [[package]]
 name = "popnei-js"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "js-sys",
  "popnei",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "popnei-linalg"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "blas",
  "blas-src",
@@ -1083,7 +1083,7 @@ dependencies = [
 
 [[package]]
 name = "popnei-python"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "numpy",
  "popnei",

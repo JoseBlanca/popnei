@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 # The rustc popnei is built and tested with, and not a measured minimum:
 # no older toolchain has been tried. What the manifests use needs less,
@@ -31,8 +31,8 @@ license = "MIT"
 # linear algebra crate has and the two crates above it pass on, is one a
 # build has to be able to turn off. Every crate that wants it has
 # `default = ["blas"]` of its own, so the default build is unchanged.
-popnei = { path = "crates/popnei", version = "0.2.1", default-features = false }
-popnei-linalg = { path = "crates/popnei-linalg", version = "0.2.1", default-features = false }
+popnei = { path = "crates/popnei", version = "0.2.2", default-features = false }
+popnei-linalg = { path = "crates/popnei-linalg", version = "0.2.2", default-features = false }
 # The six routines of BLAS and LAPACK that crates/popnei-linalg calls
 # natively, dsyrk, dsyevd, dgemm, dpotrf, dpotrs and dpotri: the product
 # of a matrix with itself, the eigendecomposition of a symmetric matrix,
