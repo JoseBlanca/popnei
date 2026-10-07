@@ -15,13 +15,18 @@
  * tested on `tests/reference/vars/of_1_1.vars`, a vars file of format 1.1
  * that `tests/reference/vars/make_of_1_1.py` writes, which the Python tests
  * read too.
+ *
+ * `keepsPassed` of a `Variants`, which says beforehand whether the filter can
+ * run, is here too, from the paragraph "A `Variants` also has
+ * `keeps_passed`" of `docs/specs/variant.md`: true for `many.vcf` and for the
+ * vars file written from it, false for `of_1_1.vars`.
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { PassStats, Variants } from "popnei";
-import { calcPairwiseKosmanDists, init, openVars, openVcf } from "popnei";
+import { calcPairwiseKosmanDists, init, openVars, openVcf, writeVars } from "popnei";
 
 import { referenceVars, referenceVcf } from "./reference.ts";
 
@@ -143,5 +148,30 @@ test("filterPassed over a vars file of 1.1, which has no record of whether its v
     message:
       /the variants hold no record of whether they passed their FILTER, so the filter of the variants that passed cannot run on them: a vars file holds it from format 1.2, written from a VCF/,
   });
+  variants.free();
+});
+
+test("keepsPassed is true for a VCF, whichever way it was opened", () => {
+  const every = many();
+  const passedAlone = openVcf(MANY_VCF);
+  assert.equal(every.keepsPassed, true);
+  assert.equal(passedAlone.keepsPassed, true);
+  every.free();
+  passedAlone.free();
+});
+
+test("keepsPassed is true for a vars file written from a VCF", () => {
+  const variants = many();
+  const written = openVars(writeVars(variants).bytes);
+  assert.equal(written.keepsPassed, true);
+  variants.free();
+  written.free();
+});
+
+test("keepsPassed is false for a vars file of 1.1, and a filter does not change it", async () => {
+  const variants = openVars(await referenceVars("of_1_1.vars"));
+  assert.equal(variants.keepsPassed, false);
+  variants.filterPassed();
+  assert.equal(variants.keepsPassed, false);
   variants.free();
 });

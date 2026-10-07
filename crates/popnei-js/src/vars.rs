@@ -45,8 +45,9 @@ use crate::stats::{
 use crate::steps::Steps;
 use crate::summary::{TheStatisticsAsked, VariantsSummaryOfAPass, variants_summary_of};
 
-/// A vars file that was opened: where its file is, and the individuals and
-/// the ploidy its schema named.
+/// A vars file that was opened: where its file is, the individuals and the
+/// ploidy its schema named, and whether it has the column of whether each
+/// variant passed its FILTER, which the header of its reader says.
 #[wasm_bindgen]
 pub struct VarsSource {
     /// Where the file is, a copy of the whole of it in the memory of wasm or
@@ -55,6 +56,7 @@ pub struct VarsSource {
     file: TheFileOfASource,
     individuals: Vec<String>,
     ploidy: usize,
+    keeps_passed: bool,
     /// The number of what this source keeps in JavaScript, the file it reads
     /// the ranges from and the function the page is told the progress with,
     /// which `free()` gives back.
@@ -80,6 +82,14 @@ impl VarsSource {
     #[must_use]
     pub fn ploidy(&self) -> usize {
         self.ploidy
+    }
+
+    /// Whether the source recorded, for each variant, whether it passed its
+    /// FILTER, which `filterPassed` and the counts of the FILTER column
+    /// need: read from the header of the reader when the source was opened.
+    #[must_use]
+    pub fn keeps_passed(&self) -> bool {
+        self.keeps_passed
     }
 
     /// The function the page is told how far every pass over this source has
@@ -717,10 +727,12 @@ fn the_vars_of(file: TheFileOfASource, in_javascript: u32) -> Result<VarsSource,
     let metadata = reader.metadata();
     let individuals = metadata.individuals.clone();
     let ploidy = metadata.ploidy;
+    let keeps_passed = reader.header().keeps_passed;
     Ok(VarsSource {
         file,
         individuals,
         ploidy,
+        keeps_passed,
         in_javascript,
     })
 }

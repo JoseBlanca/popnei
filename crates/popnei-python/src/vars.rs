@@ -31,14 +31,16 @@ use crate::source::{
 };
 use crate::steps::{Step, Steps, chain_of};
 
-// A vars file that was opened: its path, and the individuals and the ploidy
-// its schema named. A `///` here would become the `__doc__` of the class,
+// A vars file that was opened: its path, the individuals and the ploidy its
+// schema named, and whether it has the column of whether each variant passed
+// its FILTER, which the header of its reader says. A `///` here would become the `__doc__` of the class,
 // and what a Python user reads belongs to the package, which is the API.
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct VarsSource {
     path: PathBuf,
     individuals: Vec<String>,
     ploidy: usize,
+    keeps_passed: bool,
 }
 
 #[pymethods]
@@ -52,6 +54,13 @@ impl VarsSource {
     // How many alleles the genotype of one individual holds.
     fn ploidy(&self) -> usize {
         self.ploidy
+    }
+
+    // Whether the source recorded, for each variant, whether it passed its
+    // FILTER, which `filter_passed` needs: read from the header of the
+    // reader when the source was opened.
+    fn keeps_passed(&self) -> bool {
+        self.keeps_passed
     }
 
     // The file the variants are read from, which the `repr` of a `Variants`
@@ -101,26 +110,32 @@ impl OpenSource for VarsSource {
 }
 
 // The vars file at `path`. It reads the schema and the footer, so the
-// individuals, the ploidy and the batches are known when it returns and a
-// file that is not a vars file fails here. A `///` comment would become the
-// `__doc__` of `popnei._core.open_vars`, and what a Python user reads
-// belongs to the package, which is the API.
+// individuals, the ploidy, whether the variants hold whether they passed and
+// the batches are known when it returns and a file that is not a vars file
+// fails here. A `///` comment would become the `__doc__` of
+// `popnei._core.open_vars`, and what a Python user reads belongs to the
+// package, which is the API.
 #[pyfunction]
 pub(crate) fn open_vars(py: Python<'_>, path: PathBuf) -> Result<VarsSource, PyPopneiError> {
-    let (individuals, ploidy) = py
+    let (individuals, ploidy, keeps_passed) = py
         .detach(|| -> Result<_, popnei::Error> {
             // The schema and the footer are read when the reader is built
             // and no batch is, so a file whose blocks would need more
             // memory than this machine gives is opened all the same.
             let reader = VarsReader::from_path(&path)?;
             let metadata = reader.metadata();
-            Ok((metadata.individuals.clone(), metadata.ploidy))
+            Ok((
+                metadata.individuals.clone(),
+                metadata.ploidy,
+                reader.header().keeps_passed,
+            ))
         })
         .map_err(|error| PyPopneiError::of_the_file(error, &path))?;
     Ok(VarsSource {
         path,
         individuals,
         ploidy,
+        keeps_passed,
     })
 }
 

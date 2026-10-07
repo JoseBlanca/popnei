@@ -8,6 +8,11 @@ those of bcftools 1.24, `bcftools view -H -f .,PASS many.vcf`, run on 6
 October 2026: the 475 of the 500 variants of `many.vcf` whose FILTER is
 `PASS` or a dot. `many.bcftools.tsv` holds every one of the 500 with its
 FILTER, and the test takes the 475 from there.
+
+`keeps_passed` of a `Variants`, which says beforehand whether the filter
+can run, is here too, from the paragraph "A `Variants` also has
+`keeps_passed`" of `docs/specs/variant.md`: true for `many.vcf` and for the
+vars file written from it, false for `of_1_1.vars`.
 """
 
 from pathlib import Path
@@ -227,3 +232,32 @@ def test_filter_passed_is_refused_after_the_filter_of_the_first_n(
     assert "a filter by passed after it" in str(refusal.value)
     assert "first_n already" in str(refusal.value)
     assert [step.kind for step in variants.steps] == ["first_n"]
+
+
+def test_keeps_passed_is_true_for_a_vcf(reference_vcf_dir: Path) -> None:
+    """A VCF records for every variant whether it passed, and the handle
+    says so before any pass, whichever way the VCF was opened."""
+    assert _many(reference_vcf_dir).keeps_passed is True
+    assert open_vcf(reference_vcf_dir / "many.vcf").keeps_passed is True
+
+
+def test_keeps_passed_is_true_for_a_vars_file_written_from_a_vcf(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    path = tmp_path / "many.vars"
+    write_vars(_many(reference_vcf_dir), path)
+
+    assert open_vars(path).keeps_passed is True
+
+
+def test_keeps_passed_is_false_for_a_vars_file_of_1_1_and_a_filter_does_not_change_it() -> (
+    None
+):
+    """A vars file of format 1.1 has no `passed` column. No step changes
+    what the source recorded, the filter of the variants that passed
+    included."""
+    variants = open_vars(OF_1_1_VARS)
+
+    assert variants.keeps_passed is False
+    variants.filter_passed()
+    assert variants.keeps_passed is False

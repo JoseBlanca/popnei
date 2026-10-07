@@ -38,7 +38,8 @@ use crate::steps::Steps;
 use crate::summary::{TheStatisticsAsked, VariantsSummaryOfAPass, variants_summary_of};
 
 /// A VCF that was opened: where its file is, the options it is read with,
-/// and the individuals its header named.
+/// the individuals its header named, and whether its blocks hold whether
+/// each variant passed its FILTER, which the header of its reader says.
 #[wasm_bindgen]
 pub struct VcfSource {
     /// Where the file is, a copy of the whole of it in the memory of wasm or
@@ -47,6 +48,7 @@ pub struct VcfSource {
     file: TheFileOfASource,
     options: VcfOptions,
     individuals: Vec<String>,
+    keeps_passed: bool,
     /// The number of what this source keeps in JavaScript, the file it reads
     /// the ranges from and the function the page is told the progress with,
     /// which `free()` gives back.
@@ -72,6 +74,14 @@ impl VcfSource {
     #[must_use]
     pub fn ploidy(&self) -> usize {
         self.options.ploidy
+    }
+
+    /// Whether the source recorded, for each variant, whether it passed its
+    /// FILTER, which `filterPassed` and the counts of the FILTER column
+    /// need: read from the header of the reader when the source was opened.
+    #[must_use]
+    pub fn keeps_passed(&self) -> bool {
+        self.keeps_passed
     }
 
     /// The function the page is told how far every pass over this source has
@@ -749,10 +759,12 @@ fn the_vcf_of(
         }
     };
     let individuals = reader.individuals().to_vec();
+    let keeps_passed = reader.header().keeps_passed;
     Ok(VcfSource {
         file,
         options,
         individuals,
+        keeps_passed,
         in_javascript,
     })
 }

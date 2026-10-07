@@ -22,8 +22,9 @@ use crate::source::{Blocks, OpenSource, PassCounts, blocks_of, count_of, source_
 use crate::steps::Steps;
 use crate::vars::write_the_pass;
 
-// A VCF that was opened: its path, the options it is read with, and the
-// individuals its header named. A `///` here would become the `__doc__` of
+// A VCF that was opened: its path, the options it is read with, the
+// individuals its header named, and whether its blocks hold whether each
+// variant passed its FILTER, which the header of its reader says. A `///` here would become the `__doc__` of
 // the class, and what a Python user reads belongs to the package, which is
 // the API.
 #[pyclass(frozen, module = "popnei._core")]
@@ -31,6 +32,7 @@ pub(crate) struct VcfSource {
     path: PathBuf,
     options: VcfOptions,
     individuals: Vec<String>,
+    keeps_passed: bool,
 }
 
 #[pymethods]
@@ -44,6 +46,13 @@ impl VcfSource {
     // How many alleles the genotype of one individual holds.
     fn ploidy(&self) -> usize {
         self.options.ploidy
+    }
+
+    // Whether the source recorded, for each variant, whether it passed its
+    // FILTER, which `filter_passed` needs: read from the header of the
+    // reader when the source was opened.
+    fn keeps_passed(&self) -> bool {
+        self.keeps_passed
     }
 
     // Whether the variants that failed their FILTER are left out, which is
@@ -107,8 +116,8 @@ impl OpenSource for VcfSource {
 // The VCF at `path`, read with `ploidy` alleles in every genotype, or with
 // the ploidy `ploidy_of_vcf_at` reads from the file when `ploidy` is `None`,
 // and, when `only_passed` is true, without the variants that failed a
-// filter. It reads the header, so the individuals are known when it
-// returns.
+// filter. It reads the header, so the individuals, and whether the
+// variants hold whether they passed, are known when it returns.
 #[pyfunction]
 pub(crate) fn open_vcf(
     py: Python<'_>,
@@ -130,7 +139,7 @@ pub(crate) fn open_vcf(
         only_passed,
         num_vars_per_block: None,
     };
-    let individuals = py
+    let (individuals, keeps_passed) = py
         .detach(|| -> Result<_, popnei::Error> {
             // The header is read when the reader is built and no variant
             // is. Nothing here asks for a block, so a file whose blocks
@@ -138,13 +147,14 @@ pub(crate) fn open_vcf(
             // the same and its individuals read, and the size of its blocks
             // is the user's to choose at `iter_blocks`.
             let reader = VcfReader::from_path(&path, options)?;
-            Ok(reader.individuals().to_vec())
+            Ok((reader.individuals().to_vec(), reader.header().keeps_passed))
         })
         .map_err(|error| PyPopneiError::of_the_file(error, &path))?;
     Ok(VcfSource {
         path,
         options,
         individuals,
+        keeps_passed,
     })
 }
 
