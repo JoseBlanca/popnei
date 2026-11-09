@@ -15,9 +15,12 @@ Every test of a call that fails checks that it leaves no file at the path,
 which is what "A call that fails" asks of each.
 """
 
-import _thread
 import json
 import math
+import os
+import signal
+import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -1157,23 +1160,70 @@ def test_write_vars_from_segments_raises_an_exception_of_a_value_as_it_was_raise
     assert not path.exists()
 
 
+# How many segments the test of a Ctrl-C gives, all one dict of one
+# variant, so that the pass runs long enough for the signal to arrive while
+# it does, about 2 s in the build of `maturin develop` without the check of
+# the signal, and takes no memory for them; and how long, and how often,
+# the thread that sends the signal looks for the file.
+SEGMENTS_OF_THE_CTRL_C = 50_000
+LOOKS_FOR_THE_FILE = 10_000
+SECONDS_BETWEEN_LOOKS = 0.001
+
+
+def _send_a_ctrl_c_once_the_file_is_there(path: Path) -> None:
+    """Waits for `path` to be made and sends the process the signal of a
+    Ctrl-C, so that it arrives while the pass over the segments runs."""
+    for _ in range(LOOKS_FOR_THE_FILE):
+        if path.exists():
+            os.kill(os.getpid(), signal.SIGINT)
+            return
+        time.sleep(SECONDS_BETWEEN_LOOKS)
+
+
 def test_write_vars_from_segments_raises_a_ctrl_c_between_segments(
     tmp_path: Path,
 ) -> None:
-    """A generator that calls `_thread.interrupt_main()`, which is what a
-    Ctrl-C does, after it yields its first segment: a `KeyboardInterrupt`
-    out of the call, raised before the next segment is used, and no file."""
+    """A Ctrl-C sent while the segments of a list are written: a
+    `KeyboardInterrupt` out of the call, no file, and segments the iterator
+    still holds.
+
+    A list iterator runs no Python bytecode and the segment is of numpy
+    arrays, so nothing raises the signal while the pass runs but the check
+    before each segment is asked for; without it the pass takes every
+    segment and the signal is raised when it is over, with the iterator
+    empty. A segment of lists does not test that check: with it removed, on
+    9 November 2026, the signal was raised from inside the call at the
+    third segment of lists, by something of the conversion of a list. The
+    number of segments is finite, so the test ends either way.
+    """
     path = tmp_path / "interrupted.vars"
+    segment = {
+        "chrom": "chr1",
+        "pos": numpy.array([100]),
+        "alleles": [["A", "T"]],
+        "gts": numpy.array([[[0, 1], [1, 1], [0, 0]]]),
+        "END": numpy.array([100], dtype=numpy.uint64),
+        "GP": numpy.full((1, 3), 0.5, dtype=numpy.float32),
+        "NODE_A": numpy.ones((1, 3), dtype=numpy.int32),
+    }
+    segments = iter([segment] * SEGMENTS_OF_THE_CTRL_C)
+    # The default handler of SIGINT is the one that raises
+    # `KeyboardInterrupt`, and it is put back where the test found it.
+    handler = signal.signal(signal.SIGINT, signal.default_int_handler)
+    ctrl_c = threading.Thread(
+        target=_send_a_ctrl_c_once_the_file_is_there, args=(path,), daemon=True
+    )
 
-    def interrupted_caller() -> Iterator[dict[str, Any]]:
-        yield first_segment()
-        _thread.interrupt_main()
-        yield third_segment()
-
-    with pytest.raises(KeyboardInterrupt):
-        write(interrupted_caller(), path)
+    try:
+        ctrl_c.start()
+        with pytest.raises(KeyboardInterrupt):
+            write(segments, path)
+    finally:
+        ctrl_c.join(timeout=10)
+        signal.signal(signal.SIGINT, handler)
 
     assert not path.exists()
+    assert next(segments, None) is not None
 
 
 def test_write_vars_from_segments_writes_a_file_of_no_variants(
