@@ -2570,15 +2570,27 @@ pub enum Error {
     },
 
     /// A name that was given for a column of a block is not one of the
-    /// five. It is a Python or a TypeScript user who writes them, in
-    /// `iter_blocks(fields=...)`, so the message lists the names there are.
+    /// five, nor one of the extra fields of the source. It is a Python or a
+    /// TypeScript user who writes them, in `iter_blocks(fields=...)`, so the
+    /// message lists the names there are.
     #[error(
-        "`{name}` is not a field of a block; the fields are {fields}",
-        fields = crate::block::field_names_listed()
+        "`{name}` is not a field of a block; the fields are {fields}{extra}",
+        fields = crate::block::field_names_listed(),
+        extra = match extra_fields.as_slice() {
+            [] => String::new(),
+            names => format!(
+                ", and the extra fields of its source, {}",
+                names.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ")
+            ),
+        }
     )]
     NotAFieldOfABlock {
         /// The name that was given and is not a field of a block.
         name: String,
+        /// The names of the extra fields of the source, in its order, which
+        /// are fields of its blocks too; none for a source that has none
+        /// and for the TypeScript binding, which does not give them.
+        extra_fields: Vec<String>,
     },
 
     /// The source the VCF reader was given holds something else. A VCF

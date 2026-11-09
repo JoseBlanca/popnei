@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use pyo3::prelude::*;
 
-use popnei::block::BlockReader;
+use popnei::block::{BlockReader, ExtraFieldDecl};
 use popnei::io::vcf::{
     VcfOptions, VcfReader, VcfWriteOptions, WriterSource, num_vars_per_block_of_write_vcf,
     ploidy_of_vcf_at,
@@ -69,6 +69,18 @@ impl VcfSource {
         self.path.clone()
     }
 
+    // The extra fields of one value for each variant, which a VCF does not
+    // have: popnei reads no INFO field of it as one.
+    fn var_fields(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    // The extra fields of one value for each genotype, which a VCF does not
+    // have: popnei reads no FORMAT field of it but `GT`.
+    fn gt_fields(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     // One pass over the file, through the steps of `steps`: it is opened
     // again, and its blocks hold `fields` besides the genotypes,
     // `num_vars_per_block` variants each.
@@ -104,6 +116,21 @@ impl OpenSource for VcfSource {
             ..self.options
         };
         Ok(Box::new(VcfReader::from_path(&self.path, options)?))
+    }
+
+    fn extra_fields(&self) -> &[ExtraFieldDecl] {
+        &[]
+    }
+
+    /// The reader of [`OpenSource::reader`]: a VCF has no extra field, so
+    /// `extra_fields` names none, since the names of a pass were checked
+    /// against the fields of this source.
+    fn reader_of_the_extra_fields(
+        &self,
+        num_vars_per_block: Option<usize>,
+        _extra_fields: Vec<String>,
+    ) -> Result<Box<dyn BlockReader>, popnei::Error> {
+        self.reader(num_vars_per_block)
     }
 
     fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize> {

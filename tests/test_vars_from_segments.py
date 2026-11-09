@@ -6,9 +6,10 @@ has the worked example of three segments that these tests write: three
 individuals, `i1`, `i2` and `i3`, of the ploidy 2, a variant field `END` of
 `uint64` and two genotype fields, `GP` of `float32` and `NODE_A` of
 `int32`, in batches of 2 variants. The reference outside the project is
-pyarrow, which opens the file as any other program would. The checks that
-read the fields back through popnei, `iter_blocks` with `GP`, the filter of
-individuals and `write_vcf`, are in the tests of the reading of the fields.
+pyarrow, which opens the file as any other program would. The tests at the
+end read the fields back through popnei: `var_fields` and `gt_fields`,
+`iter_blocks` with `GP`, the filter of individuals, `write_vars` of the
+filtered file and `write_vcf`.
 
 Every test of a call that fails checks that it leaves no file at the path,
 which is what "A call that fails" asks of each.
@@ -25,7 +26,7 @@ import numpy
 import pyarrow
 import pyarrow.ipc
 import pytest
-from popnei import open_vars, write_vars_from_segments
+from popnei import open_vars, open_vcf, write_vars, write_vars_from_segments, write_vcf
 
 INDIVIDUALS = ["i1", "i2", "i3"]
 PLOIDY = 2
@@ -703,3 +704,204 @@ def test_write_vars_from_segments_writes_a_file_of_no_variants(
     key = json.loads(schema.metadata[b"popnei"])
     assert key["var_fields"] == [["END", "uint64"]]
     assert open_vars(path).individuals == ("i1", "i2", "i3")
+
+
+def worked_example(tmp_path: Path) -> Path:
+    """The vars file of the three segments of the worked example."""
+    path = tmp_path / "segments.vars"
+    write(iter([first_segment(), empty_segment(), third_segment()]), path)
+    return path
+
+
+def test_variants_of_the_worked_example_name_its_fields_and_their_types(
+    tmp_path: Path,
+) -> None:
+    """`var_fields` and `gt_fields` of the file are the fields it was
+    written with, in their order, each with its numpy type."""
+    variants = open_vars(worked_example(tmp_path))
+
+    assert variants.var_fields == {"END": numpy.dtype("uint64")}
+    assert list(variants.gt_fields.items()) == [
+        ("GP", numpy.dtype("float32")),
+        ("NODE_A", numpy.dtype("int32")),
+    ]
+
+
+def test_variants_of_a_vcf_have_no_field(reference_vcf_dir: Path) -> None:
+    """A VCF has no extra field of either kind."""
+    variants = open_vcf(reference_vcf_dir / "many.vcf")
+
+    assert variants.var_fields == {}
+    assert variants.gt_fields == {}
+
+
+def test_iter_blocks_with_gp_gives_the_gp_that_went_in_and_no_other_field(
+    tmp_path: Path,
+) -> None:
+    """`iter_blocks(fields=("chrom", "pos", "GP"), num_vars_per_block=3)`:
+    one block whose `extra_fields` holds `GP` alone, 3 x 3, with NaN where
+    the segment had it."""
+    variants = open_vars(worked_example(tmp_path))
+
+    blocks = list(
+        variants.iter_blocks(fields=("chrom", "pos", "GP"), num_vars_per_block=3)
+    )
+
+    assert len(blocks) == 1
+    (block,) = blocks
+    assert block.chrom == ("chr1", "chr1", "chr2")
+    assert block.extra_fields is not None
+    assert list(block.extra_fields) == ["GP"]
+    gp = block.extra_fields["GP"]
+    assert gp.dtype == numpy.float32
+    assert gp.shape == (3, 3)
+    numpy.testing.assert_array_equal(
+        gp,
+        numpy.array(
+            [[0.9, 0.8, NAN], [0.7, 0.99, 0.5], [1.0, 1.0, 0.6]], dtype=numpy.float32
+        ),
+    )
+
+
+def test_iter_blocks_gives_each_field_with_its_shape_and_type_in_file_order(
+    tmp_path: Path,
+) -> None:
+    """The three fields, named in another order than the file's: the dict
+    is in the order of the file, `END` of one value for each variant and
+    the two genotype fields of variants x individuals."""
+    variants = open_vars(worked_example(tmp_path))
+
+    (block,) = variants.iter_blocks(
+        fields=("NODE_A", "END", "GP"), num_vars_per_block=3
+    )
+
+    assert block.extra_fields is not None
+    assert list(block.extra_fields) == ["END", "GP", "NODE_A"]
+    end = block.extra_fields["END"]
+    assert end.dtype == numpy.uint64
+    assert end.tolist() == [4999, 9999, 800]
+    node_a = block.extra_fields["NODE_A"]
+    assert node_a.dtype == numpy.int32
+    assert node_a.tolist() == [[1, 2, -1], [3, 1, 2], [1, 1, 1]]
+    assert block.chrom is None
+    assert block.pos is None
+
+
+def test_iter_blocks_of_the_default_fields_gives_no_extra_field(
+    tmp_path: Path,
+) -> None:
+    """A field that is not named is not read: the default `fields` gives
+    `extra_fields` None, as it does for a VCF."""
+    variants = open_vars(worked_example(tmp_path))
+
+    blocks = list(variants.iter_blocks(num_vars_per_block=2))
+
+    assert [block.num_vars for block in blocks] == [2, 1]
+    assert all(block.extra_fields is None for block in blocks)
+
+
+def test_iter_blocks_gives_extra_fields_that_cannot_be_written(
+    tmp_path: Path,
+) -> None:
+    """The arrays of the extra fields are read only, as `gts` is."""
+    variants = open_vars(worked_example(tmp_path))
+
+    (block,) = variants.iter_blocks(fields=("END", "GP"), num_vars_per_block=3)
+
+    assert block.extra_fields is not None
+    for name, array in block.extra_fields.items():
+        assert not array.flags.writeable, name
+        with pytest.raises(ValueError, match="read-only"):
+            array[0] = 0
+
+
+def test_iter_blocks_refuses_a_name_that_is_no_field_and_names_the_fields(
+    tmp_path: Path,
+) -> None:
+    """A name that is neither one of the five nor a field of the file is a
+    `ValueError` whose message names it and the fields the file has."""
+    variants = open_vars(worked_example(tmp_path))
+
+    with pytest.raises(ValueError) as refusal:
+        variants.iter_blocks(fields=("chrom", "GQ"))
+
+    message = str(refusal.value)
+    for name in ["`GQ`", "`chrom`", "`qual`", "`END`", "`GP`", "`NODE_A`"]:
+        assert name in message
+
+
+def test_repr_of_a_block_names_its_extra_fields_after_its_columns(
+    tmp_path: Path,
+) -> None:
+    """The `repr` of a block names the extra fields it holds after its
+    columns, and none when it holds none."""
+    variants = open_vars(worked_example(tmp_path))
+
+    (with_fields,) = variants.iter_blocks(
+        fields=("pos", "NODE_A", "GP"), num_vars_per_block=3
+    )
+    (without,) = variants.iter_blocks(fields=("pos",), num_vars_per_block=3)
+
+    assert repr(with_fields) == (
+        "<Block of 3 variants, gts int8 (3, 3, 2), columns chrom, pos, "
+        "extra fields GP, NODE_A>"
+    )
+    assert repr(without) == (
+        "<Block of 3 variants, gts int8 (3, 3, 2), columns chrom, pos>"
+    )
+
+
+GP_OF_I3_AND_I1 = [[NAN, 0.9], [0.5, 0.7], [0.6, 1.0]]
+
+
+def test_filter_individuals_keeps_the_gp_of_the_kept_individuals_in_their_order(
+    tmp_path: Path,
+) -> None:
+    """After `filter_individuals(["i3", "i1"])` the `GP` of the block is
+    NaN 0.9, 0.5 0.7 and 0.6 1.0, and `write_vars` of the filtered
+    `Variants` gives a file whose `GP` reads back as that, with `END` as
+    it went in."""
+    variants = open_vars(worked_example(tmp_path))
+    variants.filter_individuals(["i3", "i1"])
+
+    (block,) = variants.iter_blocks(fields=("chrom", "pos", "GP"), num_vars_per_block=3)
+    assert block.extra_fields is not None
+    numpy.testing.assert_array_equal(
+        block.extra_fields["GP"], numpy.array(GP_OF_I3_AND_I1, dtype=numpy.float32)
+    )
+
+    filtered_path = tmp_path / "filtered.vars"
+    write_vars(variants, filtered_path)
+    filtered = open_vars(filtered_path)
+
+    assert filtered.individuals == ("i3", "i1")
+    assert filtered.var_fields == {"END": numpy.dtype("uint64")}
+    assert list(filtered.gt_fields) == ["GP", "NODE_A"]
+    (read_back,) = filtered.iter_blocks(fields=("GP", "END"), num_vars_per_block=3)
+    assert read_back.extra_fields is not None
+    numpy.testing.assert_array_equal(
+        read_back.extra_fields["GP"],
+        numpy.array(GP_OF_I3_AND_I1, dtype=numpy.float32),
+    )
+    assert read_back.extra_fields["END"].tolist() == [4999, 9999, 800]
+
+
+def test_write_vcf_refuses_a_file_of_extra_fields_and_names_them(
+    tmp_path: Path,
+) -> None:
+    """`write_vcf` of the filtered file, which keeps the three fields, is
+    the `ValueError` that names `END`, `GP` and `NODE_A`, and leaves no
+    VCF."""
+    variants = open_vars(worked_example(tmp_path))
+    variants.filter_individuals(["i3", "i1"])
+    filtered_path = tmp_path / "filtered.vars"
+    write_vars(variants, filtered_path)
+    vcf_path = tmp_path / "filtered.vcf.gz"
+
+    with pytest.raises(ValueError) as refusal:
+        write_vcf(open_vars(filtered_path), vcf_path)
+
+    message = str(refusal.value)
+    for name in ["END", "GP", "NODE_A"]:
+        assert name in message
+    assert not vcf_path.exists()

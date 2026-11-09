@@ -6,8 +6,10 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy
+
 from popnei import _core
-from popnei.block import Block, Field, _block_of
+from popnei.block import Block, _block_of
 from popnei.filters import FilteringStats, Step
 
 
@@ -205,6 +207,35 @@ class Variants:
         beforehand.
         """
         return self._source.keeps_passed()
+
+    @property
+    def var_fields(self) -> dict[str, numpy.dtype]:
+        """The extra fields of the source that have one value for each
+        variant, as an INFO field of a VCF has, each name to the numpy type
+        of its values, in the order of the file.
+
+        They are read from the file when it is opened, and are every such
+        field of the file, which :meth:`iter_blocks` gives in
+        ``Block.extra_fields`` when it is asked for them by name. It is
+        empty for a VCF, whose INFO fields popnei does not read, and for a
+        vars file of the format 1.2 or before. No step changes
+        it: a filter keeps every field, and :func:`popnei.write_vars` writes
+        them all.
+        """
+        return {name: numpy.dtype(ty) for name, ty in self._source.var_fields()}
+
+    @property
+    def gt_fields(self) -> dict[str, numpy.dtype]:
+        """The extra fields of the source that have one value for each
+        genotype, that is for each individual at each variant, as a FORMAT
+        field of a VCF has, each name to the numpy type of its values, in
+        the order of the file.
+
+        They are read as :attr:`var_fields` is, and are empty when it is.
+        A filter of individuals keeps the values of the individuals it
+        keeps, in its order, as it does with the genotypes.
+        """
+        return {name: numpy.dtype(ty) for name, ty in self._source.gt_fields()}
 
     @property
     def steps(self) -> tuple[Step, ...]:
@@ -648,17 +679,29 @@ class Variants:
 
     def iter_blocks(
         self,
-        fields: Iterable[Field] = ("chrom", "pos"),
+        fields: Iterable[str] = ("chrom", "pos"),
         num_vars_per_block: int | None = None,
     ) -> Blocks:
         """The variants of the source, block by block, from its start.
 
         `fields` names what each block carries besides the genotypes, among
         ``"chrom"``, ``"pos"``, ``"id"``, ``"alleles"`` and ``"qual"``, and
-        any other name is a ``ValueError``. The chromosome and the position
-        are one field of the reader, so asking for one fills both. A field
-        that is not asked for is never parsed, and the block has ``None``
-        where it would be.
+        the extra fields of the source, :attr:`var_fields` and
+        :attr:`gt_fields`, by their names, which ``Block.extra_fields``
+        holds: ``fields=("chrom", "pos", "GP")``. Any other name is a
+        ``ValueError`` whose message lists the five and the extra fields of
+        the source. The chromosome and the position are one field of the
+        reader, so asking for one fills both. A field that is not asked for
+        is never parsed, or for an extra field never decompressed, and the
+        block has ``None`` where it would be, so the default `fields` gives
+        no extra field.
+
+        An extra field makes a block larger than its genotypes alone: the
+        size popnei chooses counts the genotypes, about five million of
+        them, and a genotype field of four bytes adds four bytes to each
+        genotype, where a diploid genotype is two. A user who asks for
+        several genotype fields of a file of many individuals sets
+        `num_vars_per_block` to keep the block within memory.
 
         `num_vars_per_block` is how many variants a block holds, and
         ``None`` asks for the size the core works out from the number of

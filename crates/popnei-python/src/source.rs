@@ -19,22 +19,26 @@
 //!
 //! The columns of a block leave as they are in the core: the genotypes as a
 //! numpy array that holds the allocation the core filled, the positions and
-//! the qualities the same way, and the chromosomes, the ids and the alleles
-//! as tuples. The Python package builds the `Block` dataclass out of them,
-//! as `docs/specs/block.md` describes it.
+//! the qualities the same way, the chromosomes, the ids and the alleles as
+//! tuples, and the extra fields a user named as a dict of arrays that hold
+//! the allocations of the core too. The Python package builds the `Block`
+//! dataclass out of them, as `docs/specs/block.md` describes it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use numpy::ndarray::Array3;
-use numpy::{IntoPyArray, PyArray1, PyArray3};
+use numpy::ndarray::{Array2, Array3};
+use numpy::{Element, IntoPyArray, PyArray1, PyArray3};
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyBool, PyString, PyTuple, PyType};
+use pyo3::types::{PyBool, PyDict, PyString, PyTuple, PyType};
 
-use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
+use popnei::block::{
+    AllelesColumn, Block, BlockReader, ExtraField, ExtraFieldDecl, ExtraKind, ExtraValues, Reblock,
+    needs_of_the_fields_of_a_source,
+};
 use popnei::filters::stopped_early;
 use popnei::variant::{ChromTable, Needs};
 
@@ -74,8 +78,10 @@ pub(crate) fn pass_counts_of(num_vars: u64, chain: &dyn BlockReader, steps: &[St
 }
 
 /// The columns of one block on their way to Python: the genotypes, and then
-/// the chromosomes, the positions, the ids, the alleles and the qualities,
-/// each `None` when it was not asked for.
+/// the chromosomes, the positions, the ids, the alleles, the qualities and
+/// the extra fields, each `None` when it was not asked for. The extra fields
+/// are a dict of the name of each one to its array, in the order of the
+/// file.
 type BlockColumns<'py> = (
     Bound<'py, PyArray3<i8>>,
     Option<Bound<'py, PyTuple>>,
@@ -83,6 +89,7 @@ type BlockColumns<'py> = (
     Option<Bound<'py, PyTuple>>,
     Option<Bound<'py, PyTuple>>,
     Option<Bound<'py, PyArray1<f32>>>,
+    Option<Bound<'py, PyDict>>,
 );
 
 /// A file of variants that was opened, which every pass reads again.
@@ -114,6 +121,25 @@ pub(crate) trait OpenSource: Sync {
     fn reader(
         &self,
         num_vars_per_block: Option<usize>,
+    ) -> Result<Box<dyn BlockReader>, popnei::Error>;
+
+    /// The extra fields of the source, in its order: every one its header
+    /// declares when it was opened, and none for a source that has none.
+    fn extra_fields(&self) -> &[ExtraFieldDecl];
+
+    /// The reader of one pass over the source, as [`OpenSource::reader`]
+    /// gives it, whose blocks hold the extra fields that `extra_fields`
+    /// names when [`Needs::EXTRA`] is asked of them, and no other. Every
+    /// name is one of [`OpenSource::extra_fields`].
+    ///
+    /// # Errors
+    ///
+    /// Those of [`OpenSource::reader`], and a name of no extra field of the
+    /// file.
+    fn reader_of_the_extra_fields(
+        &self,
+        num_vars_per_block: Option<usize>,
+        extra_fields: Vec<String>,
     ) -> Result<Box<dyn BlockReader>, popnei::Error>;
 
     /// The size of the blocks that a pass of the VCF writer opens the
@@ -156,9 +182,10 @@ pub(crate) fn source_of<'a>(
 ///
 /// # Errors
 ///
-/// When a name of `fields` is of no field and when `num_vars_per_block`
-/// counts no variant, which are refused before the file is opened, and when
-/// the source cannot be opened or read.
+/// When a name of `fields` is of no field, one of the five or an extra field
+/// of the source, and when `num_vars_per_block` counts no variant, which are
+/// refused before the file is opened, and when the source cannot be opened
+/// or read.
 pub(crate) fn blocks_of(
     py: Python<'_>,
     source: &dyn OpenSource,
@@ -166,7 +193,8 @@ pub(crate) fn blocks_of(
     num_vars_per_block: Option<&Bound<'_, PyAny>>,
     steps: &Steps,
 ) -> Result<Blocks, PyPopneiError> {
-    let needs = needs_of_the_fields(fields.iter().map(String::as_str))?;
+    let (needs, extra_fields) =
+        needs_of_the_fields_of_a_source(fields.iter().map(String::as_str), source.extra_fields())?;
     let num_vars_per_block = num_vars_per_block
         .map(|asked_for| count_of("num_vars_per_block", asked_for))
         .transpose()?;
@@ -181,7 +209,11 @@ pub(crate) fn blocks_of(
             // the vars file whose batches were written at one size and a
             // filter among them, and it is what `docs/specs/block.md` puts
             // at the end of every `iter_blocks`.
-            let reader = source.reader(num_vars_per_block)?;
+            //
+            // The extra fields are selected on the reader of the file,
+            // before the filters go over it, so a field that was not named
+            // is not decompressed.
+            let reader = source.reader_of_the_extra_fields(num_vars_per_block, extra_fields)?;
             // The fields are asked of the whole chain and not of the source
             // alone: a filter asks its source for what it was asked for and
             // for the genotypes, which it needs itself.
@@ -315,9 +347,7 @@ impl Blocks {
             // The text of the lines of a VCF is for its writer, and not a
             // field that `iter_blocks` gives.
             vcf_text: _,
-            // The extra fields of a vars file are not among the fields that
-            // `iter_blocks` gives yet.
-            extra: _,
+            extra,
         } = block;
         // The three dimensions are given to the array as it is built and
         // not by reshaping one of a single dimension, whose array would
@@ -344,8 +374,11 @@ impl Blocks {
         let qual = qual
             .map(|qual| read_only(qual.into_pyarray(py)))
             .transpose()?;
+        let extra = extra
+            .map(|fields| extra_fields_column(py, fields, num_vars, num_individuals, &self.path))
+            .transpose()?;
         self.counted(py, num_vars);
-        Ok(Some((gts, chrom, pos, id, alleles, qual)))
+        Ok(Some((gts, chrom, pos, id, alleles, qual, extra)))
     }
 
     /// The `num_vars` variants of a block that is going out, added to the
@@ -943,4 +976,84 @@ fn alleles_column<'py>(
         })
         .collect::<PyResult<Vec<_>>>()?;
     Ok(PyTuple::new(py, of_each_variant)?)
+}
+
+/// The extra fields of a block of `num_vars` variants of `num_individuals`
+/// individuals, as a dict of the name of each one to its read only array, in
+/// the order of the block, which is the order of the file.
+///
+/// Each array holds the vector the core filled, with no copy: a variant
+/// field as an array of one value for each variant, and a genotype field as
+/// one of variants x individuals, given its two dimensions as it is built,
+/// as the genotypes are, so that no writable view of it stays underneath.
+///
+/// # Errors
+///
+/// [`PyPopneiError::Broken`] when a genotype field does not hold a value
+/// for each individual at each variant, which [`Block::check`] refused
+/// before, and what Python raised when the dict could not be built.
+fn extra_fields_column<'py>(
+    py: Python<'py>,
+    fields: Vec<ExtraField>,
+    num_vars: usize,
+    num_individuals: usize,
+    path: &Path,
+) -> Result<Bound<'py, PyDict>, PyPopneiError> {
+    let dict = PyDict::new(py);
+    for ExtraField { decl, values } in fields {
+        let array = match values {
+            ExtraValues::I32(values) => {
+                extra_array(py, &decl, values, num_vars, num_individuals, path)?
+            }
+            ExtraValues::I64(values) => {
+                extra_array(py, &decl, values, num_vars, num_individuals, path)?
+            }
+            ExtraValues::U64(values) => {
+                extra_array(py, &decl, values, num_vars, num_individuals, path)?
+            }
+            ExtraValues::F32(values) => {
+                extra_array(py, &decl, values, num_vars, num_individuals, path)?
+            }
+            ExtraValues::F64(values) => {
+                extra_array(py, &decl, values, num_vars, num_individuals, path)?
+            }
+        };
+        dict.set_item(decl.name, array)?;
+    }
+    Ok(dict)
+}
+
+/// The read only array of the `values` of the extra field `decl` of a block
+/// of `num_vars` variants of `num_individuals` individuals: of variants for
+/// a variant field, of variants x individuals for a genotype field.
+///
+/// # Errors
+///
+/// Those of [`extra_fields_column`].
+fn extra_array<'py, T: Element>(
+    py: Python<'py>,
+    decl: &ExtraFieldDecl,
+    values: Vec<T>,
+    num_vars: usize,
+    num_individuals: usize,
+    path: &Path,
+) -> Result<Bound<'py, PyAny>, PyPopneiError> {
+    match decl.kind {
+        ExtraKind::Variant => Ok(read_only(values.into_pyarray(py))?.into_any()),
+        ExtraKind::Genotype => {
+            let array =
+                Array2::from_shape_vec((num_vars, num_individuals), values).map_err(|error| {
+                    PyPopneiError::broken_of_the_file(
+                        format!(
+                            "the extra field `{name}` of a block of {num_vars} variants of \
+                             {num_individuals} individuals does not hold a value for each \
+                             genotype: {error}",
+                            name = decl.name
+                        ),
+                        path,
+                    )
+                })?;
+            Ok(read_only(array.into_pyarray(py))?.into_any())
+        }
+    }
 }

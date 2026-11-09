@@ -253,9 +253,10 @@ const FIELDS_OF_THE_NAMES: [(&str, Needs); 5] = [
 /// `names` name, the genotypes among them, which every block a user gets
 /// holds.
 ///
-/// It is what the binding crates call with the names their user gave, so
-/// that one list of names serves Python and TypeScript and a column added
-/// later cannot reach one language and not the other.
+/// It is what the TypeScript binding calls with the names its user gave,
+/// and what [`needs_of_the_fields_of_a_source`] does for a source of no
+/// extra field, so that one list of names serves Python and TypeScript and
+/// a column added later cannot reach one language and not the other.
 ///
 /// # Errors
 ///
@@ -263,19 +264,53 @@ const FIELDS_OF_THE_NAMES: [(&str, Needs); 5] = [
 /// the five, and it is the `ValueError` of Python and the `Error` of
 /// TypeScript.
 pub fn needs_of_the_fields<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<Needs> {
+    needs_of_the_fields_of_a_source(names, &[]).map(|(needs, _)| needs)
+}
+
+/// The fields a reader has to be asked for to fill the columns that
+/// `names` name, as [`needs_of_the_fields`] gives them, and the names among
+/// them of the extra fields of the source, which `extra_fields`, the fields
+/// the header of the source declares, holds.
+///
+/// [`Needs::EXTRA`] is among the fields when one extra field is named, and
+/// the names of the extra fields are given in the order they were named,
+/// for the caller to select them on the reader of the source, which a vars
+/// file does with `VarsReader::select_extra_fields`. It is what the Python
+/// binding calls for `iter_blocks(fields=...)`, which takes the names of
+/// the extra fields of the source beside the five, as "In Python and in
+/// TypeScript" of "The extra fields" of `docs/specs/io_vars.md` says.
+///
+/// # Errors
+///
+/// When a name is neither one of [`FIELD_NAMES`] nor that of a field of
+/// `extra_fields`: the error names it, lists the five and the extra fields
+/// of the source, and it is the `ValueError` of Python.
+pub fn needs_of_the_fields_of_a_source<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    extra_fields: &[ExtraFieldDecl],
+) -> Result<(Needs, Vec<String>)> {
     let mut needs = Needs::GTS;
+    let mut extra_names = Vec::new();
     for name in names {
         let found = FIELDS_OF_THE_NAMES
             .iter()
             .find(|(of_a_field, _)| *of_a_field == name);
-        let Some((_, field)) = found else {
+        if let Some((_, field)) = found {
+            needs = needs.union(*field);
+        } else if extra_fields.iter().any(|field| field.name == name) {
+            needs = needs.union(Needs::EXTRA);
+            extra_names.push(name.to_owned());
+        } else {
             return Err(Error::NotAFieldOfABlock {
-                name: name.to_string(),
+                name: name.to_owned(),
+                extra_fields: extra_fields
+                    .iter()
+                    .map(|field| field.name.clone())
+                    .collect(),
             });
-        };
-        needs = needs.union(*field);
+        }
     }
-    Ok(needs)
+    Ok((needs, extra_names))
 }
 
 /// The names of the fields of a block between backticks, `` `chrom`,
@@ -2736,7 +2771,8 @@ mod tests {
         AllelesColumn, Block, BlockReader, BlockSize, ExtraField, ExtraFieldDecl, ExtraKind,
         ExtraType, ExtraValues, FIELD_NAMES, FIELDS_OF_THE_NAMES, GENOTYPES_PER_BLOCK,
         MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK, Reblock, check_the_size_of_a_block,
-        default_num_vars_per_block, needs_of_the_fields, size_of_the_blocks, with_one_block_ahead,
+        default_num_vars_per_block, needs_of_the_fields, needs_of_the_fields_of_a_source,
+        size_of_the_blocks, with_one_block_ahead,
     };
     use crate::error::{Error, Result};
     use crate::filters::FilteringStats;
@@ -3272,6 +3308,46 @@ mod tests {
         );
     }
 
+    /// The names of the extra fields of a source are fields of its blocks
+    /// beside the five: naming one asks for [`Needs::EXTRA`] and gives its
+    /// name back in the order it was named, and a name that is of neither
+    /// is refused with the fields of the source in its message.
+    #[test]
+    fn the_names_of_the_extra_fields_of_a_source_ask_for_them_and_are_given_back() {
+        let extra_fields = [
+            ExtraFieldDecl {
+                name: "END".to_owned(),
+                kind: ExtraKind::Variant,
+                ty: ExtraType::U64,
+            },
+            ExtraFieldDecl {
+                name: "GP".to_owned(),
+                kind: ExtraKind::Genotype,
+                ty: ExtraType::F32,
+            },
+        ];
+
+        let (needs, names) = needs_of_the_fields_of_a_source(["GP", "pos", "END"], &extra_fields)
+            .expect("two fields and the positions");
+        assert_eq!(needs, Needs::GTS | Needs::CHROM_POS | Needs::EXTRA);
+        assert_eq!(names, ["GP", "END"]);
+
+        let (needs, names) =
+            needs_of_the_fields_of_a_source(["id"], &extra_fields).expect("the ids");
+        assert_eq!(needs, Needs::GTS | Needs::ID);
+        assert!(names.is_empty());
+
+        let error = match needs_of_the_fields_of_a_source(["chrom", "GQ"], &extra_fields) {
+            Ok(asked_for) => panic!("the names gave {asked_for:?}"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "`GQ` is not a field of a block; the fields are `chrom`, `pos`, `id`, \
+             `alleles`, `qual`, and the extra fields of its source, `END`, `GP`"
+        );
+    }
+
     /// The names a Python and a TypeScript user writes in `fields` are the
     /// names of the columns of a block, and which field of the core each
     /// one asks for is knowledge of the domain that the core keeps: the
@@ -3311,10 +3387,11 @@ mod tests {
             Ok(needs) => panic!("the names gave {needs}"),
             Err(error) => error,
         };
-        let Error::NotAFieldOfABlock { name } = &error else {
+        let Error::NotAFieldOfABlock { name, extra_fields } = &error else {
             panic!("the error is {error}");
         };
         assert_eq!(name, "c");
+        assert!(extra_fields.is_empty());
         let message = error.to_string();
         assert!(
             message.contains("`c` is not a field of a block"),

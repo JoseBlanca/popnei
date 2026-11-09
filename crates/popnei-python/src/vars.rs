@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use pyo3::prelude::*;
 
-use popnei::block::BlockReader;
+use popnei::block::{BlockReader, ExtraFieldDecl, ExtraKind};
 use popnei::io::vars::VarsReader;
 
 use crate::errors::PyPopneiError;
@@ -42,6 +42,8 @@ pub(crate) struct VarsSource {
     individuals: Vec<String>,
     ploidy: usize,
     keeps_passed: bool,
+    // Every extra field of the file, in its order, from its schema.
+    extra_fields: Vec<ExtraFieldDecl>,
 }
 
 #[pymethods]
@@ -70,6 +72,18 @@ impl VarsSource {
         self.path.clone()
     }
 
+    // The name and the type of each extra field of one value for each
+    // variant, in the order of the file, the type as numpy names it.
+    fn var_fields(&self) -> Vec<(String, String)> {
+        self.fields_of(ExtraKind::Variant)
+    }
+
+    // The name and the type of each extra field of one value for each
+    // genotype, in the order of the file, the type as numpy names it.
+    fn gt_fields(&self) -> Vec<(String, String)> {
+        self.fields_of(ExtraKind::Genotype)
+    }
+
     // One pass over the file, through the steps of `steps`: it is opened
     // again, and its blocks hold `fields` besides the genotypes,
     // `num_vars_per_block` variants each.
@@ -82,6 +96,18 @@ impl VarsSource {
         steps: &Bound<'_, Steps>,
     ) -> Result<Blocks, PyPopneiError> {
         blocks_of(py, self, fields, num_vars_per_block, steps.get())
+    }
+}
+
+impl VarsSource {
+    /// The name and the type of each extra field of the file of `kind`, in
+    /// the order of the file.
+    fn fields_of(&self, kind: ExtraKind) -> Vec<(String, String)> {
+        self.extra_fields
+            .iter()
+            .filter(|field| field.kind == kind)
+            .map(|field| (field.name.clone(), field.ty.to_string()))
+            .collect()
     }
 }
 
@@ -105,6 +131,25 @@ impl OpenSource for VarsSource {
         Ok(Box::new(VarsReader::from_path(&self.path)?))
     }
 
+    fn extra_fields(&self) -> &[ExtraFieldDecl] {
+        &self.extra_fields
+    }
+
+    /// The reader of [`OpenSource::reader`], whose blocks hold the extra
+    /// fields `extra_fields` names and no other, which are the only ones it
+    /// decompresses. They are selected on the reader of the file, before
+    /// the filters are put over it, so that a filter of individuals and the
+    /// `Reblock` carry those and the header says those.
+    fn reader_of_the_extra_fields(
+        &self,
+        _num_vars_per_block: Option<usize>,
+        extra_fields: Vec<String>,
+    ) -> Result<Box<dyn BlockReader>, popnei::Error> {
+        let mut reader = VarsReader::from_path(&self.path)?;
+        reader.select_extra_fields(Some(extra_fields))?;
+        Ok(Box::new(reader))
+    }
+
     fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize> {
         popnei::io::vcf::num_vars_per_block_of_write_vcf(popnei::io::vcf::WriterSource::VarsFile)
     }
@@ -118,7 +163,7 @@ impl OpenSource for VarsSource {
 // package, which is the API.
 #[pyfunction]
 pub(crate) fn open_vars(py: Python<'_>, path: PathBuf) -> Result<VarsSource, PyPopneiError> {
-    let (individuals, ploidy, keeps_passed) = py
+    let (individuals, ploidy, keeps_passed, extra_fields) = py
         .detach(|| -> Result<_, popnei::Error> {
             // The schema and the footer are read when the reader is built
             // and no batch is, so a file whose blocks would need more
@@ -129,6 +174,7 @@ pub(crate) fn open_vars(py: Python<'_>, path: PathBuf) -> Result<VarsSource, PyP
                 metadata.individuals.clone(),
                 metadata.ploidy,
                 reader.header().keeps_passed,
+                metadata.extra_fields.clone(),
             ))
         })
         .map_err(|error| PyPopneiError::of_the_file(error, &path))?;
@@ -137,6 +183,7 @@ pub(crate) fn open_vars(py: Python<'_>, path: PathBuf) -> Result<VarsSource, PyP
         individuals,
         ploidy,
         keeps_passed,
+        extra_fields,
     })
 }
 
