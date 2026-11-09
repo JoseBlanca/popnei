@@ -300,15 +300,16 @@ fn the_pass(
 /// The file being written is what the cases of the writer are about: a
 /// write the file system or arrow-rs refused, a file whose genotypes would
 /// hold no allele, a block with more text or more alleles in one column
-/// than a column of a batch takes, and the two defects of a block that does
-/// not fit the file that is being written; and the four defects of the VCF
-/// writer, a block of a VCF without its text, a chromosome number with no
-/// name, a variant that failed its FILTER from a source whose header keeps
-/// no `passed`, and a member of bgzip that could not be put together.
-/// Everything else happened while the source was read and names the
-/// source, the wrong lines of a VCF and the batches of a vars file among
-/// them, and so does a case that a later module adds, since the writer's
-/// are all here.
+/// than a column of a batch takes, and the four defects of a block that
+/// does not fit the file that is being written, its size, its columns, its
+/// extra fields and a chromosome number with no name; and the four defects
+/// of the VCF writer, a block of a VCF without its text, a chromosome
+/// number with no name, a variant that failed its FILTER from a source
+/// whose header keeps no `passed`, and a member of bgzip that could not be
+/// put together. Everything else happened while the source was read and
+/// names the source, the wrong lines of a VCF, the batches of a vars file
+/// and a variant out of order among them, and so does a case that a later
+/// module adds, since the writer's are all here.
 ///
 /// Four name no file at all: a `num_vars_per_block` of 0, one whose block
 /// is more than this machine counts, and the two of the filters that
@@ -324,6 +325,8 @@ fn of_the_file_it_is_about(error: popnei::Error, read: &Path, written: &Path) ->
             | popnei::Error::VarsTextTooLarge { .. }
             | popnei::Error::VarsBlockDoesNotFit { .. }
             | popnei::Error::VarsBlockColumns { .. }
+            | popnei::Error::VarsBlockExtraFields { .. }
+            | popnei::Error::VarsChromNameMissing { .. }
             | popnei::Error::VcfWriterFieldsMissing { .. }
             | popnei::Error::VcfWriterChromNameMissing { .. }
             | popnei::Error::VcfWriterPassedNotInTheHeader { .. }
