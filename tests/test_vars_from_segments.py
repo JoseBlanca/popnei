@@ -1279,6 +1279,36 @@ def test_variants_of_a_vcf_have_no_field(reference_vcf_dir: Path) -> None:
     assert variants.gt_fields == {}
 
 
+OF_1_1_VARS = Path(__file__).parent / "reference" / "vars" / "of_1_1.vars"
+
+
+def test_variants_of_a_vars_file_of_1_2_or_1_1_have_no_field(tmp_path: Path) -> None:
+    """The file of the worked example rewritten by pyarrow as a file of 1.2,
+    with its extra columns but without the two entries of the key, which a
+    file of 1.2 does not have, and the reference file of 1.1: neither has
+    an extra field of either kind."""
+    written = worked_example(tmp_path)
+    of_1_2 = tmp_path / "of_1_2.vars"
+    with pyarrow.ipc.open_file(written) as reader:
+        footer = reader.metadata
+        schema_metadata = dict(reader.schema.metadata)
+        table = reader.read_all()
+    key = json.loads(schema_metadata[b"popnei"])
+    key["format_version"] = "1.2"
+    del key["var_fields"]
+    del key["gt_fields"]
+    schema_metadata[b"popnei"] = json.dumps(key).encode()
+    table = table.replace_schema_metadata(schema_metadata)
+    with pyarrow.ipc.new_file(of_1_2, table.schema, metadata=footer) as writer:
+        for batch in table.to_batches():
+            writer.write_batch(batch)
+
+    for path in [of_1_2, OF_1_1_VARS]:
+        variants = open_vars(path)
+        assert variants.var_fields == {}, path
+        assert variants.gt_fields == {}, path
+
+
 def test_iter_blocks_with_gp_gives_the_gp_that_went_in_and_no_other_field(
     tmp_path: Path,
 ) -> None:
