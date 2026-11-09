@@ -5313,6 +5313,35 @@ mod tests {
         assert_eq!(names, ["END"]);
         assert!(given[2].extra.is_none());
         assert!(!given[2].fields().contains(Needs::EXTRA));
+
+        // As many fields in both blocks, one named otherwise: the
+        // declarations are compared and not only counted.
+        let mut len_and_gp = cases_block_with_extra_fields(&[1], &[2], &[10.0, 11.0, 12.0]);
+        if let Some(end) = len_and_gp
+            .extra
+            .as_mut()
+            .and_then(|fields| fields.first_mut())
+        {
+            end.decl.name = "LEN".to_owned();
+        }
+        let blocks = vec![
+            cases_block_with_extra_fields(&[0], &[1], &[0.0, 1.0, 2.0]),
+            len_and_gp,
+        ];
+        let mut reblock = Reblock::new(GivenBlocks::of(blocks), Some(3)).expect("the reblock");
+        let given = blocks_given(&mut reblock).expect("the blocks");
+
+        assert_eq!(num_vars_of(&given), [1, 1]);
+        let names_of = |block: &Block| -> Vec<String> {
+            block
+                .extra
+                .iter()
+                .flatten()
+                .map(|field| field.decl.name.clone())
+                .collect()
+        };
+        assert_eq!(names_of(&given[0]), ["END", "GP"]);
+        assert_eq!(names_of(&given[1]), ["LEN", "GP"]);
     }
 
     #[test]
