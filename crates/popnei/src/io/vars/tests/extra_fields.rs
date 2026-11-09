@@ -338,6 +338,77 @@ fn extra_fields_of_each_of_the_five_types_are_read_back_as_they_were_written() {
     assert_eq!(extra_of(&blocks), vec![Some(in_the_file)]);
 }
 
+/// The floats of a field go through the writer and the reader bit for bit:
+/// a NaN, a NaN with a payload, -0.0 and the two infinities, which `==`
+/// cannot tell from 0.0 or from another NaN, are compared with `to_bits`.
+#[test]
+fn extra_field_floats_go_through_the_writer_and_the_reader_bit_for_bit() {
+    let f32s = vec![
+        f32::NAN,
+        f32::from_bits(0x7fc0_1234),
+        -0.0,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::from_bits(0xffc0_0001),
+    ];
+    let f64s = vec![
+        f64::NAN,
+        f64::from_bits(0x7ff8_0000_dead_beef),
+        -0.0,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::from_bits(0xfff8_0000_0000_0001),
+    ];
+    let decl = |name: &str, ty: ExtraType| ExtraFieldDecl {
+        name: name.to_owned(),
+        kind: ExtraKind::Genotype,
+        ty,
+    };
+    let fields = vec![
+        ExtraField {
+            decl: decl("GP", ExtraType::F32),
+            values: ExtraValues::F32(f32s.clone()),
+        },
+        ExtraField {
+            decl: decl("DIV", ExtraType::F64),
+            values: ExtraValues::F64(f64s.clone()),
+        },
+    ];
+    let declared: Vec<ExtraFieldDecl> = fields.iter().map(|field| field.decl.clone()).collect();
+    let mut chroms = ChromTable::new();
+    let rows: Vec<&Row> = CASES[..2].iter().collect();
+    let mut block = block_of(&rows, &mut chroms);
+    block.extra = Some(fields);
+    let reader = WithFields::of(vec![block], chroms, declared);
+    let (bytes, _) = write_vars(reader, Vec::new(), None, false).expect("the file was written");
+
+    let (blocks, _) = blocks_read(bytes, Needs::ALL);
+
+    let [block] = blocks.as_slice() else {
+        panic!("one block, and {} were read", blocks.len());
+    };
+    let Some([gp, div]) = block.extra.as_deref() else {
+        panic!("the two fields, and {:?} were read", block.extra);
+    };
+    let (ExtraValues::F32(gp), ExtraValues::F64(div)) = (&gp.values, &div.values) else {
+        panic!("a field of float32 and one of float64, and {gp:?} {div:?} were read");
+    };
+    let bits_32 = |values: &[f32]| {
+        values
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>()
+    };
+    let bits_64 = |values: &[f64]| {
+        values
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(bits_32(gp), bits_32(&f32s));
+    assert_eq!(bits_64(div), bits_64(&f64s));
+}
+
 /// The schema is written before the first batch, so a source of no
 /// variant gives a file with the columns of its fields and both entries,
 /// and its reader says which fields it has.
