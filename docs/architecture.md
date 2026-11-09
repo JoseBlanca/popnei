@@ -230,6 +230,11 @@ are `chrom`, `pos`, `id`, `alleles` as a list of strings per variant,
 `qual`, and `gts` as a fixed size list of `num_individuals * ploidy` int8
 per variant, whose flat buffer is the genotype array itself, and from
 format 1.2 `passed`, whether the FILTER of the variant was PASS or a dot.
+From format 1.3 a file also has a column for each extra field, a named
+array of numbers with a value for each variant or for each genotype that
+a user attached, listed under `var_fields` and `gt_fields` of the `popnei`
+key; they are written by the writer of segments, which makes a vars file
+from variants a user's code computes, and carried by `write_vars`.
 Any program
 with an arrow library opens it as a table. Written and read with arrow-rs.
 

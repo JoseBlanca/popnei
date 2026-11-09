@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use thiserror::Error as ThisError;
 
-use crate::block::BlockSize;
+use crate::block::{BlockSize, ExtraType};
 use crate::filters::{BedLineProblem, FilteringStats};
 use crate::io::vcf::VcfPlace;
 use crate::ld::{MAX_ALLELES_OF_A_VARIANT, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES};
@@ -246,6 +246,37 @@ pub enum Error {
         found: usize,
         /// How many it has to hold.
         expected: usize,
+    },
+
+    /// An extra field of a block has not one value for each variant, or
+    /// for each genotype when it is a genotype field. It is
+    /// [`Error::BlockArrayOfAnotherSize`] for the arrays whose name a reader
+    /// does not know before it reads its source, and `Block::check` finds
+    /// it for the same reason.
+    #[error(
+        "the extra field `{name}` of a block holds {found} values, and a block of its size holds {expected}"
+    )]
+    BlockExtraFieldOfAnotherSize {
+        /// The name of the field.
+        name: String,
+        /// How many values it holds.
+        found: usize,
+        /// How many it has to hold.
+        expected: usize,
+    },
+
+    /// The values of an extra field of a block are of another type than
+    /// the field says it holds. The fields of a block are public, so a
+    /// reader with a defect can build one, and a writer would write the
+    /// values under a type that is not theirs. `Block::check` finds it.
+    #[error("the extra field `{name}` of a block says it holds {declared} and holds {found}")]
+    BlockExtraFieldOfAnotherType {
+        /// The name of the field.
+        name: String,
+        /// The type the field says it holds.
+        declared: ExtraType,
+        /// The type of its values.
+        found: ExtraType,
     },
 
     /// A filter gave `Block::retain_vars` a number of values other than
@@ -2539,15 +2570,27 @@ pub enum Error {
     },
 
     /// A name that was given for a column of a block is not one of the
-    /// five. It is a Python or a TypeScript user who writes them, in
-    /// `iter_blocks(fields=...)`, so the message lists the names there are.
+    /// five, nor one of the extra fields of the source. It is a Python or a
+    /// TypeScript user who writes them, in `iter_blocks(fields=...)`, so the
+    /// message lists the names there are.
     #[error(
-        "`{name}` is not a field of a block; the fields are {fields}",
-        fields = crate::block::field_names_listed()
+        "`{name}` is not a field of a block; the fields are {fields}{extra}",
+        fields = crate::block::field_names_listed(),
+        extra = match extra_fields.as_slice() {
+            [] => String::new(),
+            names => format!(
+                ", and the extra fields of its source, {}",
+                names.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ")
+            ),
+        }
     )]
     NotAFieldOfABlock {
         /// The name that was given and is not a field of a block.
         name: String,
+        /// The names of the extra fields of the source, in its order, which
+        /// are fields of its blocks too; none for a source that has none
+        /// and for the TypeScript binding, which does not give them.
+        extra_fields: Vec<String>,
     },
 
     /// The source the VCF reader was given holds something else. A VCF
@@ -2939,6 +2982,124 @@ pub enum Error {
         /// How many one column of a batch holds.
         largest: u64,
     },
+
+    /// An extra field of the vars file is not what its entry of the
+    /// `popnei` key says: the entry has no column, or a column of another
+    /// arrow type or, for a genotype field, of a width that is not the
+    /// individuals of the key; or its name is one the rule of
+    /// `docs/specs/io_vars.md` refuses, that of a column every vars file
+    /// can have, or one given twice. The writer of a vars file gives the
+    /// last three for the fields it is asked to write.
+    #[error("the extra field `{name}` of the vars file {problem}")]
+    VarsExtraField {
+        /// The name of the field.
+        name: String,
+        /// What is wrong with it, with the type or the width found and the
+        /// one expected.
+        problem: String,
+    },
+
+    /// The column of an extra field of the vars file has no value for one
+    /// of its variants: [`Error::VarsNullValue`] for a column whose name
+    /// the file gives, and not popnei.
+    #[error(
+        "the `{name}` column of the vars file has no value for its variant {var}, and every variant has one"
+    )]
+    VarsExtraFieldNull {
+        /// The name of the field.
+        name: String,
+        /// Which variant of the file it is, counted from 1, over the whole
+        /// file and not inside its batch.
+        var: u64,
+    },
+
+    /// The reader of a vars file was asked for an extra field the file has
+    /// not. A Python user names the fields in `iter_blocks(fields=...)`, so
+    /// the message lists the ones there are.
+    #[error(
+        "the vars file has no extra field `{name}`; {has}",
+        has = match fields.as_slice() {
+            [] => "it has none".to_owned(),
+            names => format!(
+                "its extra fields are {}",
+                names.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ")
+            ),
+        }
+    )]
+    VarsExtraFieldNotInTheFile {
+        /// The name that was asked for.
+        name: String,
+        /// The names of the extra fields of the file, in its order.
+        fields: Vec<String>,
+    },
+
+    /// A block given to the vars file writer carries other extra fields
+    /// than the writer declared, or the writer was told of other fields
+    /// after its first block, whose schema already holds the ones declared.
+    /// `write_vars` declares the fields of the header of its reader, whose
+    /// blocks carry them, so a user reaches this only through a reader
+    /// with a defect.
+    #[error(
+        "the writer of the vars file declared the extra fields {declared} and was given {found}; every block of a vars file carries the extra fields its `popnei` key declares, which are fixed before the first block"
+    )]
+    VarsBlockExtraFields {
+        /// The fields declared, each as its name, its kind and its type.
+        declared: String,
+        /// The fields of the block, or of the late declaration.
+        found: String,
+    },
+
+    /// A variant given to `write_vars` comes out of the order of a vars
+    /// file, "Sorted variants" of `docs/specs/io_vars.md`: its position is
+    /// below that of the variant before it on its chromosome, or its
+    /// chromosome had ended, a variant of another one having come after
+    /// its last. Two variants at one position are in order, and the
+    /// chromosomes can come in any order. In Python it is a `ValueError`
+    /// with the file the variants were read from, since the order is what
+    /// that source holds. The two variants are counted among those
+    /// written, after any filter, which the message says, since a filter
+    /// makes them other numbers than their places in that file; and it ends
+    /// with `allow_unsorted=True`, which the JavaScript binding writes as
+    /// `allowUnsorted: true`.
+    #[error(
+        "the {} variant written, {chrom} {pos}, comes after the {}, {chrom_before} {pos_before}; {why}; the variants are counted among those written, after any filter, and `allow_unsorted=True` writes them in the order they come",
+        ordinal(*var),
+        ordinal(*var_before),
+        why = if chrom == chrom_before {
+            "the variants of a vars file are sorted, and the positions of a chromosome do not go down from one variant to the next".to_owned()
+        } else {
+            format!("the variants of a vars file are sorted, and the variants of a chromosome come together, so {chrom}, which had ended, does not come back")
+        }
+    )]
+    VarsVariantNotSorted {
+        /// Which variant it is, counted from 1 among those written.
+        var: u64,
+        /// The name of its chromosome.
+        chrom: String,
+        /// Its position.
+        pos: u64,
+        /// Which variant the one before it is, counted from 1 among those
+        /// written.
+        var_before: u64,
+        /// The name of the chromosome of the variant before it.
+        chrom_before: String,
+        /// The position of the variant before it.
+        pos_before: u64,
+    },
+
+    /// The source of segments that a binding crate reads a vars file from,
+    /// the code of its user that yields them, failed: it raised an exception
+    /// of its own language, which the core cannot carry. The reader of
+    /// segments keeps that exception, ends the pass with this, and the
+    /// binding crate raises the exception it kept in its place, as "A call
+    /// that fails" of the writer of segments of `docs/specs/io_vars.md`
+    /// says. A user who reads this message reads a reader that kept nothing,
+    /// which is a defect of the binding crate.
+    #[error(
+        "the source of the segments failed, and the exception it raised was not kept to be raised in the place of this one"
+    )]
+    SegmentsFailed,
+
     /// A block of a VCF given to the VCF writer does not hold the text of
     /// its lines. The writer asks a VCF for it, so a block without it comes
     /// from a reader with a defect.
@@ -2961,6 +3122,22 @@ pub enum Error {
     VcfWriterColumnMissing {
         /// The column: `chrom`, `pos`, `alleles` or `gts`.
         column: &'static str,
+    },
+
+    /// The source given to the VCF writer has extra fields, the named
+    /// values for each variant or each genotype that a vars file can carry,
+    /// "The extra fields" of `docs/specs/io_vars.md`. The VCF it writes has
+    /// no place for them, so it refuses the source before it writes
+    /// anything, as `docs/specs/io_vcf.md` has it. It is of the file that
+    /// was read, which it names in Python.
+    #[error(
+        "the source has the extra fields {}, and a VCF written by popnei has no place for them, so it is not written from a source that has some",
+        fields.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ")
+    )]
+    VcfWriterExtraFields {
+        /// The names of the fields, in the order of the header of the
+        /// source.
+        fields: Vec<String>,
     },
 
     /// A member of bgzip that the VCF writer could not put together: a text
@@ -3714,7 +3891,11 @@ impl Error {
             | Self::PcoaNotEuclidean {
                 from: crate::pca::pcoa::PcoaInput::Distances,
                 ..
-            } => false,
+            }
+            // The source of segments that failed, which is code of the
+            // user and no file: the binding crate raises the exception
+            // that code raised in its place.
+            | Self::SegmentsFailed => false,
             // The dataset a user gave, which is a file: a pass that gave
             // no variant with variance, a source of no individual, a
             // variant of more than two alleles among its called genotypes
@@ -3795,6 +3976,8 @@ impl Error {
             | Self::MissingRateOfAPopOfNoIndividual { .. }
             | Self::BlocksDoNotFitTogether { .. }
             | Self::BlockArrayOfAnotherSize { .. }
+            | Self::BlockExtraFieldOfAnotherSize { .. }
+            | Self::BlockExtraFieldOfAnotherType { .. }
             | Self::ReaderGaveABlockOfNoVariants
             | Self::ReadAheadAnswerInPlaceOfABlock
             | Self::BlockWithNoGenotypeOfAVariant { .. }
@@ -3803,6 +3986,7 @@ impl Error {
             | Self::VarsBlockDoesNotFit { .. }
             | Self::VarsBlockColumns { .. }
             | Self::VarsChromNameMissing { .. }
+            | Self::VarsBlockExtraFields { .. }
             | Self::VcfWriterFieldsMissing { .. }
             | Self::VcfWriterChromNameMissing { .. }
             | Self::VcfWriterPassedNotInTheHeader { .. }
@@ -3844,7 +4028,10 @@ impl Error {
             // when no ploidy was given, a wrong line of a BED
             // file and one with no region, the thirteen of the
             // vars file that "The Rust interface" of `docs/specs/io_vars.md`
-            // lists, a variant whose position goes back within its
+            // lists and the three of its extra fields, a field that is not
+            // what the file says, a null in its column and a name asked for
+            // that the file has no field of, a variant out of the order a
+            // vars file is written in, a variant whose position goes back within its
             // chromosome, which the filter by linkage disequilibrium is the
             // one reader of popnei to refuse, a pass that gave no variant,
             // the fields a consumer asked a block for and the name of a
@@ -3876,6 +4063,7 @@ impl Error {
             | Self::VcfHeader { .. }
             | Self::VcfDataLine { .. }
             | Self::VcfWriterColumnMissing { .. }
+            | Self::VcfWriterExtraFields { .. }
             | Self::VcfGenotypePloidy { .. }
             | Self::VcfPloidyNotRead { .. }
             | Self::VcfPloidyOfNoVariants
@@ -3895,6 +4083,10 @@ impl Error {
             | Self::VarsIndividualTwice { .. }
             | Self::VarsFileOfNoGenotypes { .. }
             | Self::VarsTextTooLarge { .. }
+            | Self::VarsExtraField { .. }
+            | Self::VarsExtraFieldNull { .. }
+            | Self::VarsExtraFieldNotInTheFile { .. }
+            | Self::VarsVariantNotSorted { .. }
             // The six of the density of the variants that are of the file:
             // a length of 0 or a chromosome twice among the lengths its
             // header gave, which no reader of popnei gives; a variant past
@@ -4053,6 +4245,19 @@ fn the_remedies_of_a_fit_that_did_not_settle(model: crate::gwas::GwasModel) -> &
     }
 }
 
+/// `number` as an ordinal of English, `1st`, `2nd`, `3rd`, `4th`, `11th`,
+/// `21st`.
+fn ordinal(number: u64) -> String {
+    let suffix = match (number % 10, number % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{number}{suffix}")
+}
+
 /// The data lines `ploidy_of_vcf` looked at, as the subject of the sentence
 /// that says they hold no genotype with alleles: "the first 4096 data lines
 /// of the VCF hold", and "the one data line of the VCF holds" for one.
@@ -4110,6 +4315,23 @@ mod tests {
     use crate::gwas::GwasModel;
     use crate::io::vcf::VcfPlace;
     use crate::variant::Needs;
+
+    /// The ordinals of the error of a variant out of order, the teens among
+    /// them, which end in `th` whatever their last digit.
+    #[test]
+    fn ordinals_end_as_english_writes_them() {
+        let written: Vec<String> = [1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101, 111, 1000]
+            .into_iter()
+            .map(super::ordinal)
+            .collect();
+        assert_eq!(
+            written,
+            [
+                "1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd",
+                "101st", "111th", "1000th"
+            ]
+        );
+    }
 
     /// A fit that did not settle names the causes of the model it was
     /// fitting: the logistic mixed model has the kinship among them, and

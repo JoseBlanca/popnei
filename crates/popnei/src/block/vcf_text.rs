@@ -803,7 +803,11 @@ mod tests {
     #[test]
     fn vcf_text_of_write_vcf_is_the_nine_first_columns_and_each_individual_of_its_six_lines() {
         let block = the_block_of_write_vcf();
-        assert!(block.fields().contains(Needs::ALL | Needs::VCF_TEXT));
+        assert!(
+            block
+                .fields()
+                .contains(Needs::ALL.difference(Needs::EXTRA) | Needs::VCF_TEXT)
+        );
         assert_eq!(
             texts_of(&block),
             the_six_lines(&[0, 1, 2, 3, 4, 5], &[0, 1, 2])

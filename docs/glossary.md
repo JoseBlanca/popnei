@@ -377,6 +377,17 @@ the start and the end, separated by tabs. It counts the bases from 0 and
 leaves the end out, so the line `chr1 0 2000` is the region of popnei from
 1 to 2000. The filter by regions of `docs/specs/filters.md` reads it.
 
+**segment.** A run of consecutive variants that a user's code gives the
+writer of segments of `docs/specs/io_vars.md` as a dict of arrays, one
+stretch of the genome at a time, to make a vars file. The writer cuts and
+joins segments into blocks. Not used: chunk, which is pyNei's.
+
+**extra field.** A named array of numbers that a vars file carries beside
+the columns of a VCF: a **variant field** has one value for each variant,
+as an INFO field of a VCF, and a **genotype field** one for each genotype,
+as a FORMAT field. `docs/specs/io_vars.md`. Not used: annotation, INFO and
+FORMAT, which are the VCF's.
+
 **header of a source.** What a source of variants says of itself before
 its first variant: its individuals, the length of each chromosome it gives
 one for and, for a VCF, the lines before `#CHROM`. `SourceHeader`, of

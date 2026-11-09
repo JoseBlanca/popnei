@@ -547,7 +547,12 @@ gives, individual for pyNei's sample. The differences:
   out. pyNei's `gather_filtering_stats` lists it under the kind `sample`,
   with every variant processed and kept.
 - The kept individuals come in the order of the argument, and not of the
-  source, under "What it gives".
+  source, under "What it gives". So an argument that is not a sequence, a
+  `set`, a `dict` or a generator, is a `TypeError`: a set gives its names
+  in an order of its own, which would become the order of the genotypes
+  with nothing said. A numpy array of names is taken. This was decided on
+  9 November 2026 in the review of work package 2 of
+  `docs/plans/vars-from-segments.md`.
 
 The three refusals of the names are made at the call, against the
 individuals of the source, with `resolve_individuals` of "The Rust
@@ -788,9 +793,10 @@ one before it. The other part of popnei that needs the same order is the
 cutting of the variants into the resampling groups of the standard errors
 of the distances between populations, `docs/specs/dists.md`, which
 refuses the same two cases where the groups are stretches of a
-chromosome. Everything else reads a source in any order, and
-`docs/specs/io_vars.md` has a test that writes a block of four variants
-that are not sorted, so these two refuse what the rest of popnei takes.
+chromosome. The vars file writers refuse it too, unless they are told
+otherwise, since 9 November 2026, as "Sorted variants" of
+`docs/specs/io_vars.md` says. Everything else reads a source in any
+order.
 Decided here: the alternative is to subtract two positions that can run
 backwards, which on a `u64` wraps to a distance of 18 million million
 million and puts the pair outside every window without a word.
@@ -1860,7 +1866,9 @@ each block with, which that spec leaves to this item.
 impl Block {
     /// It keeps the genotypes of the individuals `keep`, indices into the
     /// individuals of the block, in that order, within the array of the
-    /// block, and sets `num_individuals`. An error, with the block as it
+    /// block, and the values of those individuals in each genotype field
+    /// of `docs/specs/io_vars.md` in the same order, and sets
+    /// `num_individuals`. An error, with the block as it
     /// was, for an index at or beyond the individuals, an index twice, no
     /// index, and a block with variants and no genotypes.
     pub fn retain_individuals(&mut self, keep: &[usize]) -> Result<()>;

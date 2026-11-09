@@ -81,6 +81,7 @@ fn block_at(positions: &[u64]) -> Block {
         qual: None,
         passed: None,
         vcf_text: None,
+        extra: None,
     }
 }
 
@@ -315,8 +316,9 @@ fn random_filter_over_many_vcf_keeps_the_variants_of_the_table() {
 /// batches of 7 variants.
 #[cfg(not(target_family = "wasm"))]
 fn vars_file_of_many_vcf_in_batches_of_7() -> Vec<u8> {
-    let (bytes, num_vars) = crate::io::vars::write_vars(many_vcf_reader(None), Vec::new(), Some(7))
-        .expect("the vars file");
+    let (bytes, num_vars) =
+        crate::io::vars::write_vars(many_vcf_reader(None), Vec::new(), Some(7), false)
+            .expect("the vars file");
     assert_eq!(num_vars, 500);
     bytes
 }
@@ -597,6 +599,7 @@ impl Recording {
                 chrom_lengths: Vec::new(),
                 vcf_meta_lines: None,
                 keeps_passed: false,
+                extra_fields: Vec::new(),
             },
         }
     }

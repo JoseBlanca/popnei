@@ -253,9 +253,10 @@ const FIELDS_OF_THE_NAMES: [(&str, Needs); 5] = [
 /// `names` name, the genotypes among them, which every block a user gets
 /// holds.
 ///
-/// It is what the binding crates call with the names their user gave, so
-/// that one list of names serves Python and TypeScript and a column added
-/// later cannot reach one language and not the other.
+/// It is what the TypeScript binding calls with the names its user gave,
+/// and what [`needs_of_the_fields_of_a_source`] does for a source of no
+/// extra field, so that one list of names serves Python and TypeScript and
+/// a column added later cannot reach one language and not the other.
 ///
 /// # Errors
 ///
@@ -263,19 +264,53 @@ const FIELDS_OF_THE_NAMES: [(&str, Needs); 5] = [
 /// the five, and it is the `ValueError` of Python and the `Error` of
 /// TypeScript.
 pub fn needs_of_the_fields<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<Needs> {
+    needs_of_the_fields_of_a_source(names, &[]).map(|(needs, _)| needs)
+}
+
+/// The fields a reader has to be asked for to fill the columns that
+/// `names` name, as [`needs_of_the_fields`] gives them, and the names among
+/// them of the extra fields of the source, which `extra_fields`, the fields
+/// the header of the source declares, holds.
+///
+/// [`Needs::EXTRA`] is among the fields when one extra field is named, and
+/// the names of the extra fields are given in the order they were named,
+/// for the caller to select them on the reader of the source, which a vars
+/// file does with `VarsReader::select_extra_fields`. It is what the Python
+/// binding calls for `iter_blocks(fields=...)`, which takes the names of
+/// the extra fields of the source beside the five, as "In Python and in
+/// TypeScript" of "The extra fields" of `docs/specs/io_vars.md` says.
+///
+/// # Errors
+///
+/// When a name is neither one of [`FIELD_NAMES`] nor that of a field of
+/// `extra_fields`: the error names it, lists the five and the extra fields
+/// of the source, and it is the `ValueError` of Python.
+pub fn needs_of_the_fields_of_a_source<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    extra_fields: &[ExtraFieldDecl],
+) -> Result<(Needs, Vec<String>)> {
     let mut needs = Needs::GTS;
+    let mut extra_names = Vec::new();
     for name in names {
         let found = FIELDS_OF_THE_NAMES
             .iter()
             .find(|(of_a_field, _)| *of_a_field == name);
-        let Some((_, field)) = found else {
+        if let Some((_, field)) = found {
+            needs = needs.union(*field);
+        } else if extra_fields.iter().any(|field| field.name == name) {
+            needs = needs.union(Needs::EXTRA);
+            extra_names.push(name.to_owned());
+        } else {
             return Err(Error::NotAFieldOfABlock {
-                name: name.to_string(),
+                name: name.to_owned(),
+                extra_fields: extra_fields
+                    .iter()
+                    .map(|field| field.name.clone())
+                    .collect(),
             });
-        };
-        needs = needs.union(*field);
+        }
     }
-    Ok(needs)
+    Ok((needs, extra_names))
 }
 
 /// The names of the fields of a block between backticks, `` `chrom`,
@@ -318,7 +353,8 @@ impl AllelesColumn {
     /// `num_vars` variants of [`ALLELES_PER_VARIANT`] alleles of
     /// [`BYTES_PER_ALLELE`] bytes.
     ///
-    /// Every reader of the crate that fills the alleles of a block starts
+    /// Every reader that fills the alleles of a block, the reader of
+    /// segments of the Python binding crate among them, starts
     /// its column here, with the variants a full block holds, and then
     /// pushes the alleles of one variant after another with
     /// [`AllelesColumn::push`]. The memory is asked for with `try_reserve`,
@@ -331,9 +367,7 @@ impl AllelesColumn {
     /// When the machine does not give the memory of the buffers, which the
     /// reader turns into the error of the crate that names the size that
     /// was asked for.
-    pub(crate) fn with_num_vars(
-        num_vars: usize,
-    ) -> std::result::Result<AllelesColumn, TryReserveError> {
+    pub fn with_num_vars(num_vars: usize) -> std::result::Result<AllelesColumn, TryReserveError> {
         // A number of variants that makes these saturate is far above what
         // any machine gives, and the reservation of it is the error.
         let num_alleles = num_vars.saturating_mul(ALLELES_PER_VARIANT);
@@ -361,9 +395,9 @@ impl AllelesColumn {
     /// what `Vec` does with a memory it is not given: an allocation that
     /// fails here ends the process. A reader that reserves for the block it
     /// builds does not reach it.
-    pub(crate) fn push(&mut self, alleles: &[String]) {
+    pub fn push<S: AsRef<str>>(&mut self, alleles: impl IntoIterator<Item = S>) {
         for allele in alleles {
-            self.texts.extend_from_slice(allele.as_bytes());
+            self.texts.extend_from_slice(allele.as_ref().as_bytes());
             self.allele_ends.push(self.texts.len());
         }
         self.var_ends.push(self.allele_ends.len());
@@ -612,6 +646,11 @@ pub struct Block {
     /// [`Needs::VCF_TEXT`] was asked for and the source is a VCF, which the
     /// VCF writer writes the lines from.
     pub vcf_text: Option<VcfText>,
+    /// The extra fields, when [`Needs::EXTRA`] was asked for and the source
+    /// has some, in the order of the header of the source: named arrays of
+    /// a value for each variant or for each genotype that a user attached
+    /// to the variants, which popnei carries and does not read.
+    pub extra: Option<Vec<ExtraField>>,
 }
 
 impl Block {
@@ -623,8 +662,8 @@ impl Block {
     /// `asked_for.difference(block.fields())`.
     #[must_use]
     pub fn fields(&self) -> Needs {
-        // Every field of the block is named here, and in the five other
-        // places that read them all, so that a column added later does not
+        // Every field of the block is named here, and in the other places
+        // that read them all, so that a column added later does not
         // fall out of one of them without the compiler saying so.
         let Block {
             num_vars,
@@ -638,6 +677,7 @@ impl Block {
             qual,
             passed,
             vcf_text,
+            extra,
         } = self;
         let mut fields = Needs::empty();
         if !gts.is_empty() || *num_vars == 0 {
@@ -664,16 +704,18 @@ impl Block {
         if vcf_text.is_some() {
             fields |= Needs::VCF_TEXT;
         }
+        if extra.is_some() {
+            fields |= Needs::EXTRA;
+        }
         fields
     }
 
     /// Which columns the block has, one flag for the genotypes and one for
-    /// each of the seven others, so that two blocks are joined only when every
-    /// column of the one is a column of the other.
+    /// each of the eight others, the extra fields as one.
     ///
     /// It is not [`Block::fields`]: that one answers what a consumer can
     /// read, and puts the chromosome and the position together.
-    fn columns(&self) -> [bool; 8] {
+    fn columns(&self) -> [bool; 9] {
         let Block {
             num_vars: _,
             num_individuals: _,
@@ -686,6 +728,7 @@ impl Block {
             qual,
             passed,
             vcf_text,
+            extra,
         } = self;
         [
             !gts.is_empty(),
@@ -696,7 +739,28 @@ impl Block {
             qual.is_some(),
             passed.is_some(),
             vcf_text.is_some(),
+            extra.is_some(),
         ]
+    }
+
+    /// Whether the rows of `other` can be joined after the rows of this
+    /// block: every column of the one is a column of the other, and both
+    /// hold the same extra fields, in the same order. [`Reblock`] joins
+    /// two blocks only when this is true, so that no column and no field of
+    /// one of them is lost in the join.
+    fn has_the_columns_of(&self, other: &Block) -> bool {
+        let same_extra_fields = match (&self.extra, &other.extra) {
+            (None, None) => true,
+            (Some(these), Some(those)) => {
+                these.len() == those.len()
+                    && these
+                        .iter()
+                        .zip(those)
+                        .all(|(this, that)| this.decl == that.decl)
+            }
+            (None, Some(_)) | (Some(_), None) => false,
+        };
+        self.columns() == other.columns() && same_extra_fields
     }
 
     /// How many alleles one variant of the block holds, the individuals
@@ -755,6 +819,7 @@ impl Block {
             qual,
             passed: _,
             vcf_text: _,
+            extra: _,
         } = self;
         if var >= *num_vars {
             return None;
@@ -782,9 +847,9 @@ impl Block {
     }
 
     /// It keeps the variants whose `keep` is true, in their order, in the
-    /// genotypes and in every column, in place, and sets `num_vars` to how
-    /// many stayed. It is what a filter of variants calls with the rows it
-    /// decided to keep.
+    /// genotypes, in every column and in every extra field, in place, and
+    /// sets `num_vars` to how many stayed. It is what a filter of variants
+    /// calls with the rows it decided to keep.
     ///
     /// Nothing is allocated and the block keeps its capacity. A `gts` that
     /// is empty, of a block built without the genotypes, stays empty.
@@ -807,7 +872,7 @@ impl Block {
         let alleles_per_var = self.alleles_per_var()?;
         let Block {
             num_vars,
-            num_individuals: _,
+            num_individuals,
             ploidy: _,
             gts,
             chrom,
@@ -817,23 +882,14 @@ impl Block {
             qual,
             passed,
             vcf_text,
+            extra,
         } = self;
         if !gts.is_empty() {
-            let mut write = 0usize;
-            for (var, keep_it) in keep.iter().enumerate() {
-                if !*keep_it {
-                    continue;
-                }
-                // Every one of these is a place in `gts`, which `check`
-                // just said holds num_vars x alleles_per_var alleles.
-                let read = var.saturating_mul(alleles_per_var);
-                let end = read.saturating_add(alleles_per_var);
-                if end <= gts.len() {
-                    gts.copy_within(read..end, write);
-                }
-                write = write.saturating_add(alleles_per_var);
-            }
-            gts.truncate(write);
+            retain_rows(gts, keep, alleles_per_var);
+        }
+        for field in extra.iter_mut().flatten() {
+            let values_per_var = field.decl.kind.values_per_var(*num_individuals);
+            field.values.retain_rows(keep, values_per_var);
         }
         retain_in_column(chrom.as_mut(), keep);
         retain_in_column(pos.as_mut(), keep);
@@ -858,7 +914,9 @@ impl Block {
     ///
     /// Every variant stays, and so does every column of the block; the text
     /// of the lines of a VCF, when the block has it, keeps the columns of
-    /// the kept individuals in the order of `keep`. The kept
+    /// the kept individuals in the order of `keep`, and each genotype field
+    /// among the extra fields keeps the values of the kept individuals in
+    /// that order too, while a variant field is left as it is. The kept
     /// individuals come in the order of `keep`, which is the order the user
     /// named them in, so the genotypes are gathered in two passes over the
     /// array: first the kept genotypes of each row are gathered to the front
@@ -914,6 +972,15 @@ impl Block {
         if let Some(vcf_text) = self.vcf_text.as_mut() {
             vcf_text.retain_individuals(keep, self.ploidy)?;
         }
+        for field in self.extra.iter_mut().flatten() {
+            match field.decl.kind {
+                ExtraKind::Variant => {}
+                ExtraKind::Genotype => field
+                    .values
+                    .retain_individuals(keep, self.num_individuals)
+                    .map_err(|error| field.decl.of_another_size(error))?,
+            }
+        }
         if !self.gts.is_empty() {
             // `check` passed and the genotypes are not empty, so they are
             // the variants of the block times this number and it is one
@@ -933,8 +1000,9 @@ impl Block {
     }
 
     /// That `gts` holds `num_vars` x `num_individuals` x `ploidy` alleles,
-    /// or none, and that every column that is there holds `num_vars`
-    /// entries.
+    /// or none, that every column that is there holds `num_vars` entries,
+    /// and that every extra field holds values of the type it says, one
+    /// for each variant, or for each genotype when it is a genotype field.
     ///
     /// The fields of a block are public, so a reader with a defect can
     /// build one that breaks this, and its genotypes would then be read
@@ -946,7 +1014,9 @@ impl Block {
     /// # Errors
     ///
     /// When an array is not of the size of the block: the error names the
-    /// array, how many entries it holds and how many the block says.
+    /// array, how many entries it holds and how many the block says. When
+    /// an extra field is not of that size, or its values are not of its
+    /// type, with the name of the field.
     pub fn check(&self) -> Result<()> {
         let alleles_per_var = self.alleles_per_var()?;
         let Block {
@@ -961,6 +1031,7 @@ impl Block {
             qual,
             passed,
             vcf_text,
+            extra,
         } = self;
         let alleles_of_the_block =
             num_vars
@@ -1001,6 +1072,31 @@ impl Block {
         if let Some(vcf_text) = vcf_text {
             vcf_text.check(*num_vars, *num_individuals)?;
         }
+        for field in extra.iter().flatten() {
+            let found = field.values.ty();
+            if found != field.decl.ty {
+                return Err(Error::BlockExtraFieldOfAnotherType {
+                    name: field.decl.name.clone(),
+                    declared: field.decl.ty,
+                    found,
+                });
+            }
+            let expected = num_vars
+                .checked_mul(field.decl.kind.values_per_var(*num_individuals))
+                .ok_or(Error::BlockTooLarge {
+                    num_vars_per_block: *num_vars,
+                    num_individuals: *num_individuals,
+                    ploidy: *ploidy,
+                    size: BlockSize::AskedFor,
+                })?;
+            if field.values.len() != expected {
+                return Err(Error::BlockExtraFieldOfAnotherSize {
+                    name: field.decl.name.clone(),
+                    found: field.values.len(),
+                    expected,
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -1008,7 +1104,9 @@ impl Block {
 /// The genotypes of the individuals `keep` gathered to the front of the row
 /// of each variant of `gts`, at the width the rows have now,
 /// `alleles_per_var` alleles each: the first of the two passes of
-/// [`Block::retain_individuals`].
+/// [`Block::retain_individuals`]. A genotype field among the extra fields
+/// is gathered by the same two passes, as genotypes of one value each, the
+/// ploidy 1.
 ///
 /// The rows are disjoint and no row reads another, so natively they are
 /// gathered on the threads of rayon, as section 3 of
@@ -1029,8 +1127,8 @@ impl Block {
 /// What [`gather_the_row`] refuses, a row that does not hold the genotype of
 /// one of `keep`.
 #[cfg(not(target_family = "wasm"))]
-fn gather_the_kept_genotypes(
-    gts: &mut [i8],
+fn gather_the_kept_genotypes<T: Copy + Send + Sync>(
+    gts: &mut [T],
     keep: &[usize],
     ploidy: usize,
     alleles_per_var: usize,
@@ -1075,8 +1173,8 @@ const ROWS_PER_GATHER_JOB: usize = 64;
 /// What [`gather_the_row`] refuses, a row that does not hold the genotype of
 /// one of `keep`.
 #[cfg(target_family = "wasm")]
-fn gather_the_kept_genotypes(
-    gts: &mut [i8],
+fn gather_the_kept_genotypes<T: Copy>(
+    gts: &mut [T],
     keep: &[usize],
     ploidy: usize,
     alleles_per_var: usize,
@@ -1109,11 +1207,11 @@ fn gather_the_kept_genotypes(
               first row was touched, so the product and the sum are at most the alleles \
               of one row, which are a part of an array that was allocated"
 )]
-fn gather_the_row(
-    row: &mut [i8],
+fn gather_the_row<T: Copy>(
+    row: &mut [T],
     keep: &[usize],
     ploidy: usize,
-    buffer: &mut Vec<i8>,
+    buffer: &mut Vec<T>,
 ) -> Result<()> {
     buffer.clear();
     for individual in keep {
@@ -1160,8 +1258,8 @@ fn gather_the_row(
               `Block::check` said, and `kept_alleles_per_var` is at most `alleles_per_var`, \
               so neither place passes the length of an array that was allocated"
 )]
-fn pack_the_rows(
-    gts: &mut Vec<i8>,
+fn pack_the_rows<T: Copy>(
+    gts: &mut Vec<T>,
     alleles_per_var: usize,
     kept_alleles_per_var: usize,
 ) -> Result<()> {
@@ -1197,6 +1295,292 @@ fn retain_in_column<T>(column: Option<&mut Vec<T>>, keep: &[bool]) {
     column.retain(|_| keep.next().copied().unwrap_or(false));
 }
 
+/// The rows of `values` whose `keep` is true, `row_len` values each, moved
+/// to the front in their order and the rest dropped, in place: what
+/// [`Block::retain_vars`] does to the genotypes, `row_len` being the alleles
+/// of a variant, and to an extra field, one value for each variant or one
+/// for each individual.
+///
+/// `values` holds `keep.len()` rows of `row_len`, which [`Block::check`]
+/// said before this is called.
+fn retain_rows<T: Copy>(values: &mut Vec<T>, keep: &[bool], row_len: usize) {
+    let mut write = 0usize;
+    for (var, keep_it) in keep.iter().enumerate() {
+        if !*keep_it {
+            continue;
+        }
+        // Every one of these is a place in `values`, which `check` said
+        // holds the variants of the block times `row_len` values.
+        let read = var.saturating_mul(row_len);
+        let end = read.saturating_add(row_len);
+        if end <= values.len() {
+            values.copy_within(read..end, write);
+        }
+        write = write.saturating_add(row_len);
+    }
+    values.truncate(write);
+}
+
+/// Whether an extra field has one value for each variant or one for each
+/// genotype, that is for each individual at each variant.
+///
+/// "The extra fields" of `docs/specs/io_vars.md` has what they are for: a
+/// variant field is as an INFO field of a VCF, a genotype field as a
+/// FORMAT field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtraKind {
+    /// One value for each variant.
+    Variant,
+    /// One value for each individual at each variant, the variants after
+    /// one another as the genotypes of `gts` are.
+    Genotype,
+}
+
+impl ExtraKind {
+    /// How many values a field of this kind holds for one variant of a
+    /// block of `num_individuals` individuals.
+    fn values_per_var(self, num_individuals: usize) -> usize {
+        match self {
+            ExtraKind::Variant => 1,
+            ExtraKind::Genotype => num_individuals,
+        }
+    }
+}
+
+/// The type of the values of an extra field, one of the five a vars file
+/// holds them in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtraType {
+    /// `int32`.
+    I32,
+    /// `int64`.
+    I64,
+    /// `uint64`.
+    U64,
+    /// `float32`.
+    F32,
+    /// `float64`.
+    F64,
+}
+
+impl ExtraType {
+    /// The five types, in the order the spec lists them: the one list that
+    /// the reader of the `popnei` key parses a name with and that its
+    /// messages name.
+    pub const ALL: [ExtraType; 5] = [
+        ExtraType::I32,
+        ExtraType::I64,
+        ExtraType::U64,
+        ExtraType::F32,
+        ExtraType::F64,
+    ];
+}
+
+impl fmt::Display for ExtraType {
+    /// The name of the type in the `popnei` key of a vars file and in
+    /// numpy: `int32`, `int64`, `uint64`, `float32` or `float64`.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            ExtraType::I32 => "int32",
+            ExtraType::I64 => "int64",
+            ExtraType::U64 => "uint64",
+            ExtraType::F32 => "float32",
+            ExtraType::F64 => "float64",
+        })
+    }
+}
+
+/// The name, the kind and the type of one extra field: what the header of
+/// a source says of a field before any of its values is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtraFieldDecl {
+    /// The name of the field, which is the name of its column in a vars
+    /// file.
+    pub name: String,
+    /// Whether it has a value for each variant or for each genotype.
+    pub kind: ExtraKind,
+    /// The type of its values.
+    pub ty: ExtraType,
+}
+
+impl ExtraFieldDecl {
+    /// The error of an array of the wrong size that the gather of
+    /// [`Block::retain_individuals`] gives, which names `gts`, as the error
+    /// of this field. Any other error is given as it is.
+    fn of_another_size(&self, error: Error) -> Error {
+        if let Error::BlockArrayOfAnotherSize {
+            array: _,
+            found,
+            expected,
+        } = error
+        {
+            return Error::BlockExtraFieldOfAnotherSize {
+                name: self.name.clone(),
+                found,
+                expected,
+            };
+        }
+        error
+    }
+}
+
+/// The values of one extra field of a block, of one of the five types: one
+/// for each variant of the block in a variant field, and the variants times
+/// the individuals in a genotype field, variant after variant and inside a
+/// variant individual after individual, as `gts` holds the genotypes.
+///
+/// A missing value is the user's to choose, NaN or a number, since popnei
+/// does not read the values.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtraValues {
+    /// Values of the type `int32`.
+    I32(Vec<i32>),
+    /// Values of the type `int64`.
+    I64(Vec<i64>),
+    /// Values of the type `uint64`.
+    U64(Vec<u64>),
+    /// Values of the type `float32`.
+    F32(Vec<f32>),
+    /// Values of the type `float64`.
+    F64(Vec<f64>),
+}
+
+/// `$body` with `$values` bound to the vector of whichever of the five types
+/// `$extra_values` holds: the code that moves values is the same for all
+/// five, and this writes the `match` over them once.
+macro_rules! on_the_values {
+    ($extra_values:expr, $values:ident => $body:expr) => {
+        match $extra_values {
+            ExtraValues::I32($values) => $body,
+            ExtraValues::I64($values) => $body,
+            ExtraValues::U64($values) => $body,
+            ExtraValues::F32($values) => $body,
+            ExtraValues::F64($values) => $body,
+        }
+    };
+}
+
+impl ExtraValues {
+    /// The type of the values.
+    #[must_use]
+    pub fn ty(&self) -> ExtraType {
+        match self {
+            ExtraValues::I32(_) => ExtraType::I32,
+            ExtraValues::I64(_) => ExtraType::I64,
+            ExtraValues::U64(_) => ExtraType::U64,
+            ExtraValues::F32(_) => ExtraType::F32,
+            ExtraValues::F64(_) => ExtraType::F64,
+        }
+    }
+
+    /// How many values there are, of every variant of the block together.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        on_the_values!(self, values => values.len())
+    }
+
+    /// Whether there is no value.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The rows of the variants whose `keep` is true, `values_per_var`
+    /// values each, in place: [`retain_rows`].
+    fn retain_rows(&mut self, keep: &[bool], values_per_var: usize) {
+        on_the_values!(self, values => retain_rows(values, keep, values_per_var));
+    }
+
+    /// The values of the individuals `keep` in each row of a genotype
+    /// field of `num_individuals` individuals, in the order of `keep`, by
+    /// the two passes that [`Block::retain_individuals`] moves the
+    /// genotypes with.
+    ///
+    /// # Errors
+    ///
+    /// The error of the genotypes, which names `gts`, when the values are
+    /// not a whole number of rows; [`Block::check`] said they are before
+    /// this is called.
+    fn retain_individuals(&mut self, keep: &[usize], num_individuals: usize) -> Result<()> {
+        on_the_values!(self, values => {
+            if !values.is_empty() {
+                // A row holds one value at least: the values are not empty,
+                // and a row of none would be cut with a size of 0, which the
+                // standard library refuses with a panic.
+                let values_per_var = num_individuals.max(1);
+                gather_the_kept_genotypes(values, keep, 1, values_per_var)?;
+                pack_the_rows(values, values_per_var, keep.len())?;
+            }
+            Ok(())
+        })
+    }
+
+    /// `other` after these values, with the memory asked of the machine
+    /// first, or `other` back when it is of another type.
+    fn try_append(&mut self, other: ExtraValues) -> std::result::Result<(), AppendFailed> {
+        match (self, other) {
+            (ExtraValues::I32(these), ExtraValues::I32(those)) => try_extend(these, those),
+            (ExtraValues::I64(these), ExtraValues::I64(those)) => try_extend(these, those),
+            (ExtraValues::U64(these), ExtraValues::U64(those)) => try_extend(these, those),
+            (ExtraValues::F32(these), ExtraValues::F32(those)) => try_extend(these, those),
+            (ExtraValues::F64(these), ExtraValues::F64(those)) => try_extend(these, those),
+            (_, other) => return Err(AppendFailed::OfAnotherType(other.ty())),
+        }
+        .map_err(|_| AppendFailed::NoMemory)
+    }
+
+    /// `count` rows of `values_per_var` values from the row `from` on,
+    /// copied into values of their own, as [`copied_rows`] does with a
+    /// column.
+    fn try_rows(
+        &self,
+        from: usize,
+        count: usize,
+        values_per_var: usize,
+    ) -> std::result::Result<ExtraValues, TryReserveError> {
+        let from = from.saturating_mul(values_per_var);
+        let count = count.saturating_mul(values_per_var);
+        fn rows<T: Copy>(
+            values: &Vec<T>,
+            from: usize,
+            count: usize,
+        ) -> std::result::Result<Vec<T>, TryReserveError> {
+            copied_rows(Some(values), from, count).map(Option::unwrap_or_default)
+        }
+        Ok(match self {
+            ExtraValues::I32(values) => ExtraValues::I32(rows(values, from, count)?),
+            ExtraValues::I64(values) => ExtraValues::I64(rows(values, from, count)?),
+            ExtraValues::U64(values) => ExtraValues::U64(rows(values, from, count)?),
+            ExtraValues::F32(values) => ExtraValues::F32(rows(values, from, count)?),
+            ExtraValues::F64(values) => ExtraValues::F64(rows(values, from, count)?),
+        })
+    }
+}
+
+/// Why the values of an extra field were not appended to another's.
+enum AppendFailed {
+    /// The machine did not give the memory.
+    NoMemory,
+    /// The values are of this type, and the ones they were to follow of
+    /// another.
+    OfAnotherType(ExtraType),
+}
+
+/// One extra field of a block: what it is and its values.
+///
+/// `retain_vars` compacts it with the other columns, [`Reblock`] cuts and
+/// joins it, the filter of individuals keeps the values of the kept
+/// individuals of a genotype field, and [`Block::check`] says whether its
+/// values are of its type and of the size of the block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtraField {
+    /// Its name, its kind and its type.
+    pub decl: ExtraFieldDecl,
+    /// Its values, which are of the type of `decl` in a block that passed
+    /// [`Block::check`].
+    pub values: ExtraValues,
+}
+
 /// What a source said of itself before its first variant.
 ///
 /// A reader over another reader gives its source's, so a consumer at the
@@ -1223,6 +1607,10 @@ pub struct SourceHeader {
     /// The VCF writer writes the `##FILTER` line of `FAIL` from it, before
     /// the first block.
     pub keeps_passed: bool,
+    /// The extra fields the blocks of the source can carry, in their order:
+    /// those of the `popnei` key of a vars file, and none for a VCF. The
+    /// writer of a vars file writes the fields of the header of its source.
+    pub extra_fields: Vec<ExtraFieldDecl>,
 }
 
 /// The header of a source of the tests that says nothing of itself.
@@ -1232,6 +1620,7 @@ pub(crate) static AN_EMPTY_HEADER: SourceHeader = SourceHeader {
     chrom_lengths: Vec::new(),
     vcf_meta_lines: None,
     keeps_passed: false,
+    extra_fields: Vec::new(),
 };
 
 /// Anything that gives blocks: the VCF reader, the vars file reader, a
@@ -1531,7 +1920,16 @@ impl<R: BlockReader> Reblock<R> {
     }
 
     /// The rows of `block` after the ones of `waiting`, which have the same
-    /// columns: one copy of each column and none per variant.
+    /// columns and the same extra fields, as
+    /// [`Block::has_the_columns_of`] says: one copy of each column and of
+    /// each field and none per variant.
+    ///
+    /// # Errors
+    ///
+    /// When the machine does not give the memory, and when the values of an
+    /// extra field of `block` are of another type than those of `waiting`,
+    /// which [`Block::check`] and the fields of the two blocks being the
+    /// same leave to a defect of this module.
     fn join(&self, waiting: &mut Block, block: Block) -> Result<()> {
         let Block {
             num_vars: arrived,
@@ -1545,6 +1943,7 @@ impl<R: BlockReader> Reblock<R> {
             qual,
             passed,
             vcf_text,
+            extra,
         } = block;
         let num_vars = waiting
             .num_vars
@@ -1561,6 +1960,21 @@ impl<R: BlockReader> Reblock<R> {
         }
         if let (Some(waiting), Some(arrived)) = (waiting.vcf_text.as_mut(), vcf_text.as_ref()) {
             waiting.try_append(arrived).map_err(|_| self.too_large())?;
+        }
+        if let (Some(waiting), Some(arrived)) = (waiting.extra.as_mut(), extra) {
+            for (waiting, arrived) in waiting.iter_mut().zip(arrived) {
+                match waiting.values.try_append(arrived.values) {
+                    Ok(()) => {}
+                    Err(AppendFailed::NoMemory) => return Err(self.too_large()),
+                    Err(AppendFailed::OfAnotherType(found)) => {
+                        return Err(Error::BlockExtraFieldOfAnotherType {
+                            name: arrived.decl.name,
+                            declared: waiting.values.ty(),
+                            found,
+                        });
+                    }
+                }
+            }
         }
         waiting.num_vars = num_vars;
         Ok(())
@@ -1673,7 +2087,7 @@ impl<R: BlockReader> BlockReader for Reblock<R> {
             let same_columns = self
                 .waiting
                 .as_ref()
-                .is_some_and(|waiting| waiting.columns() == block.columns());
+                .is_some_and(|waiting| waiting.has_the_columns_of(&block));
             if self.waiting.is_none() {
                 self.waiting = Some(block);
                 self.given = 0;
@@ -2272,6 +2686,21 @@ fn take_rows(
         None => None,
     };
     let id = taken_rows(block.id.as_mut(), from, count)?;
+    let extra = match block.extra.as_ref() {
+        Some(fields) => {
+            let mut taken = Vec::new();
+            taken.try_reserve_exact(fields.len())?;
+            for field in fields {
+                let values_per_var = field.decl.kind.values_per_var(block.num_individuals);
+                taken.push(ExtraField {
+                    decl: field.decl.clone(),
+                    values: field.values.try_rows(from, count, values_per_var)?,
+                });
+            }
+            Some(taken)
+        }
+        None => None,
+    };
     Ok(Block {
         num_vars: count,
         num_individuals: block.num_individuals,
@@ -2284,6 +2713,7 @@ fn take_rows(
         qual,
         passed,
         vcf_text,
+        extra,
     })
 }
 
@@ -2338,9 +2768,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AllelesColumn, Block, BlockReader, BlockSize, FIELD_NAMES, FIELDS_OF_THE_NAMES,
-        GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK, Reblock,
-        check_the_size_of_a_block, default_num_vars_per_block, needs_of_the_fields,
+        AllelesColumn, Block, BlockReader, BlockSize, ExtraField, ExtraFieldDecl, ExtraKind,
+        ExtraType, ExtraValues, FIELD_NAMES, FIELDS_OF_THE_NAMES, GENOTYPES_PER_BLOCK,
+        MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK, Reblock, check_the_size_of_a_block,
+        default_num_vars_per_block, needs_of_the_fields, needs_of_the_fields_of_a_source,
         size_of_the_blocks, with_one_block_ahead,
     };
     use crate::error::{Error, Result};
@@ -2877,6 +3308,46 @@ mod tests {
         );
     }
 
+    /// The names of the extra fields of a source are fields of its blocks
+    /// beside the five: naming one asks for [`Needs::EXTRA`] and gives its
+    /// name back in the order it was named, and a name that is of neither
+    /// is refused with the fields of the source in its message.
+    #[test]
+    fn the_names_of_the_extra_fields_of_a_source_ask_for_them_and_are_given_back() {
+        let extra_fields = [
+            ExtraFieldDecl {
+                name: "END".to_owned(),
+                kind: ExtraKind::Variant,
+                ty: ExtraType::U64,
+            },
+            ExtraFieldDecl {
+                name: "GP".to_owned(),
+                kind: ExtraKind::Genotype,
+                ty: ExtraType::F32,
+            },
+        ];
+
+        let (needs, names) = needs_of_the_fields_of_a_source(["GP", "pos", "END"], &extra_fields)
+            .expect("two fields and the positions");
+        assert_eq!(needs, Needs::GTS | Needs::CHROM_POS | Needs::EXTRA);
+        assert_eq!(names, ["GP", "END"]);
+
+        let (needs, names) =
+            needs_of_the_fields_of_a_source(["id"], &extra_fields).expect("the ids");
+        assert_eq!(needs, Needs::GTS | Needs::ID);
+        assert!(names.is_empty());
+
+        let error = match needs_of_the_fields_of_a_source(["chrom", "GQ"], &extra_fields) {
+            Ok(asked_for) => panic!("the names gave {asked_for:?}"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "`GQ` is not a field of a block; the fields are `chrom`, `pos`, `id`, \
+             `alleles`, `qual`, and the extra fields of its source, `END`, `GP`"
+        );
+    }
+
     /// The names a Python and a TypeScript user writes in `fields` are the
     /// names of the columns of a block, and which field of the core each
     /// one asks for is knowledge of the domain that the core keeps: the
@@ -2901,10 +3372,11 @@ mod tests {
             Needs::GTS | Needs::CHROM_POS
         );
         // Whether each variant passed its FILTER is in `ALL` and has no
-        // name: `iter_blocks` does not give it.
+        // name: `iter_blocks` does not give it. The extra fields are in
+        // `ALL` too, and are asked for by their own names.
         assert_eq!(
             needs_of_the_fields(["qual", "id", "alleles", "chrom"]).expect("the four"),
-            Needs::ALL.difference(Needs::PASSED)
+            Needs::ALL.difference(Needs::PASSED | Needs::EXTRA)
         );
         assert_eq!(
             needs_of_the_fields(["id", "id"]).expect("the ids twice"),
@@ -2915,10 +3387,11 @@ mod tests {
             Ok(needs) => panic!("the names gave {needs}"),
             Err(error) => error,
         };
-        let Error::NotAFieldOfABlock { name } = &error else {
+        let Error::NotAFieldOfABlock { name, extra_fields } = &error else {
             panic!("the error is {error}");
         };
         assert_eq!(name, "c");
+        assert!(extra_fields.is_empty());
         let message = error.to_string();
         assert!(
             message.contains("`c` is not a field of a block"),
@@ -3045,6 +3518,7 @@ mod tests {
             qual: Some(qual),
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 
@@ -3095,7 +3569,10 @@ mod tests {
     #[test]
     fn the_views_of_a_block_give_the_fields_of_each_of_its_variants() {
         let block = cases_block(&[0, 1, 2, 3]);
-        assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
+        assert_eq!(
+            block.fields(),
+            Needs::ALL.difference(Needs::PASSED | Needs::EXTRA)
+        );
         block.check().expect("the block is of its size");
 
         let views: Vec<VariantRef<'_>> = block.variants().collect();
@@ -3130,7 +3607,7 @@ mod tests {
         assert_eq!(block.fields(), Needs::GTS | Needs::CHROM_POS);
         assert_eq!(
             Needs::ALL.difference(block.fields()),
-            Needs::ID | Needs::ALLELES | Needs::QUAL | Needs::PASSED
+            Needs::ID | Needs::ALLELES | Needs::QUAL | Needs::PASSED | Needs::EXTRA
         );
 
         let first = block.variant(0).expect("the first variant");
@@ -3229,6 +3706,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
 
         // The individuals times the ploidy, the alleles of one variant.
@@ -3321,7 +3799,10 @@ mod tests {
         block.check().expect("the block is of its size");
         // A block of no variants holds every field it was built with, the
         // genotypes among them, although its `gts` is empty.
-        assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
+        assert_eq!(
+            block.fields(),
+            Needs::ALL.difference(Needs::PASSED | Needs::EXTRA)
+        );
         assert!(block.gts.is_empty());
         assert_eq!(block.chrom.as_deref(), Some([].as_slice()));
         assert_eq!(block.pos.as_deref(), Some([].as_slice()));
@@ -3407,6 +3888,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 
@@ -3488,6 +3970,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
 
         block
@@ -3688,6 +4171,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let kept = |threads| {
             let pool = rayon::ThreadPoolBuilder::new()
@@ -4193,7 +4677,7 @@ mod tests {
     #[test]
     fn passed_column_keeps_the_values_of_the_variants_retain_vars_keeps() {
         let mut block = cases_block_with_passed(&[0, 1, 2, 3], &[true, false, false, true]);
-        assert_eq!(block.fields(), Needs::ALL);
+        assert_eq!(block.fields(), Needs::ALL.difference(Needs::EXTRA));
         block
             .retain_vars(&[false, true, true, true])
             .expect("the variants to keep");
@@ -4207,7 +4691,7 @@ mod tests {
             .retain_vars(&[false, false, false])
             .expect("the variants to keep");
         assert_eq!(block.passed.as_deref(), Some([].as_slice()));
-        assert_eq!(block.fields(), Needs::ALL);
+        assert_eq!(block.fields(), Needs::ALL.difference(Needs::EXTRA));
     }
 
     #[test]
@@ -4329,7 +4813,10 @@ mod tests {
 
         let given = blocks_given(&mut reblock).expect("the blocks");
         assert_eq!(num_vars_of(&given), [1, 1]);
-        assert_eq!(given[0].fields(), Needs::ALL.difference(Needs::PASSED));
+        assert_eq!(
+            given[0].fields(),
+            Needs::ALL.difference(Needs::PASSED | Needs::EXTRA)
+        );
         assert_view_is_the_row(&given[0].variant(0).expect("the variant"), 0);
         assert_eq!(given[1].fields(), Needs::GTS);
         assert_eq!(
@@ -4741,6 +5228,264 @@ mod tests {
         assert!(
             !reader.left.is_empty(),
             "the reader was read to the end although the pass stopped"
+        );
+    }
+
+    /// A variant field `END` of `uint64` and a genotype field `GP` of
+    /// `float32`, with the values given, in that order: the two kinds and
+    /// two of the five types of "The extra fields" of
+    /// `docs/specs/io_vars.md`.
+    fn end_and_gp(end: &[u64], gp: &[f32]) -> Vec<ExtraField> {
+        vec![
+            ExtraField {
+                decl: ExtraFieldDecl {
+                    name: "END".to_owned(),
+                    kind: ExtraKind::Variant,
+                    ty: ExtraType::U64,
+                },
+                values: ExtraValues::U64(end.to_vec()),
+            },
+            ExtraField {
+                decl: ExtraFieldDecl {
+                    name: "GP".to_owned(),
+                    kind: ExtraKind::Genotype,
+                    ty: ExtraType::F32,
+                },
+                values: ExtraValues::F32(gp.to_vec()),
+            },
+        ]
+    }
+
+    /// The rows of `cases.vcf` given, with `END` and `GP` of the values
+    /// given.
+    fn cases_block_with_extra_fields(rows: &[usize], end: &[u64], gp: &[f32]) -> Block {
+        let mut block = cases_block(rows);
+        block.extra = Some(end_and_gp(end, gp));
+        block
+    }
+
+    /// The values of `END` and of `GP` of a block that holds the two.
+    fn end_and_gp_of(block: &Block) -> (Vec<u64>, Vec<f32>) {
+        let Some([end, gp]) = block.extra.as_deref() else {
+            panic!("the block holds {:?}", block.extra);
+        };
+        let ExtraValues::U64(end) = &end.values else {
+            panic!("END is {:?}", end.values);
+        };
+        let ExtraValues::F32(gp) = &gp.values else {
+            panic!("GP is {:?}", gp.values);
+        };
+        (end.clone(), gp.clone())
+    }
+
+    /// The `GP` of the four variants of three individuals of the tests: the
+    /// individual i of the variant v has `10 v + i`, so that every value
+    /// says where it was.
+    const GP_OF_FOUR_VARIANTS: [f32; 12] = [
+        0.0, 1.0, 2.0, 10.0, 11.0, 12.0, 20.0, 21.0, 22.0, 30.0, 31.0, 32.0,
+    ];
+
+    #[test]
+    fn extra_field_rows_of_the_variants_retain_vars_keeps_stay_in_both_kinds() {
+        let mut block = cases_block_with_extra_fields(
+            &[0, 1, 2, 3],
+            &[1100, 1200, 1300, 1400],
+            &GP_OF_FOUR_VARIANTS,
+        );
+        block.check().expect("the block is of its size");
+        assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
+
+        block
+            .retain_vars(&[true, false, true, true])
+            .expect("the variants to keep");
+
+        assert_eq!(block.num_vars, 3);
+        block.check().expect("the block is of its size");
+        let (end, gp) = end_and_gp_of(&block);
+        assert_eq!(end, [1100, 1300, 1400]);
+        assert_eq!(gp, [0.0, 1.0, 2.0, 20.0, 21.0, 22.0, 30.0, 31.0, 32.0]);
+    }
+
+    #[test]
+    fn extra_field_of_genotypes_keeps_the_third_and_the_first_individual_in_that_order() {
+        let mut block = cases_block_with_extra_fields(
+            &[0, 1, 2, 3],
+            &[1100, 1200, 1300, 1400],
+            &GP_OF_FOUR_VARIANTS,
+        );
+
+        block
+            .retain_individuals(&[2, 0])
+            .expect("the individuals to keep");
+
+        assert_eq!(block.num_individuals, 2);
+        block.check().expect("the block is of its size");
+        let (end, gp) = end_and_gp_of(&block);
+        // A variant field has nothing of an individual and is left as it
+        // was.
+        assert_eq!(end, [1100, 1200, 1300, 1400]);
+        assert_eq!(gp, [2.0, 0.0, 12.0, 10.0, 22.0, 20.0, 32.0, 30.0]);
+    }
+
+    #[test]
+    fn extra_field_reblock_of_three_and_two_into_four_and_one_joins_the_fields_in_order() {
+        // Five variants: the four rows of `cases.vcf` and the first again,
+        // each with values of its own.
+        let blocks = vec![
+            cases_block_with_extra_fields(
+                &[0, 1, 2],
+                &[1, 2, 3],
+                &[0.0, 1.0, 2.0, 10.0, 11.0, 12.0, 20.0, 21.0, 22.0],
+            ),
+            cases_block_with_extra_fields(&[3, 0], &[4, 5], &[30.0, 31.0, 32.0, 40.0, 41.0, 42.0]),
+        ];
+        let mut reblock = Reblock::new(GivenBlocks::of(blocks), Some(4)).expect("the reblock");
+        let given = blocks_given(&mut reblock).expect("the blocks");
+
+        assert_eq!(num_vars_of(&given), [4, 1]);
+        for block in &given {
+            block.check().expect("the block is of its size");
+        }
+        let (end, gp) = end_and_gp_of(&given[0]);
+        assert_eq!(end, [1, 2, 3, 4]);
+        assert_eq!(
+            gp,
+            [
+                0.0, 1.0, 2.0, 10.0, 11.0, 12.0, 20.0, 21.0, 22.0, 30.0, 31.0, 32.0
+            ]
+        );
+        let (end, gp) = end_and_gp_of(&given[1]);
+        assert_eq!(end, [5]);
+        assert_eq!(gp, [40.0, 41.0, 42.0]);
+    }
+
+    /// Blocks that carry other extra fields are not joined, which would
+    /// lose the fields of one of them: the block that waits is given as a
+    /// shorter block, as when the columns of the source change.
+    #[test]
+    fn extra_field_reblock_does_not_join_blocks_of_other_extra_fields() {
+        let mut only_end = cases_block_with_extra_fields(&[1], &[2], &[10.0, 11.0, 12.0]);
+        if let Some(fields) = only_end.extra.as_mut() {
+            fields.truncate(1);
+        }
+        let blocks = vec![
+            cases_block_with_extra_fields(&[0], &[1], &[0.0, 1.0, 2.0]),
+            only_end,
+            cases_block(&[2]),
+        ];
+        let mut reblock = Reblock::new(GivenBlocks::of(blocks), Some(3)).expect("the reblock");
+        let given = blocks_given(&mut reblock).expect("the blocks");
+
+        assert_eq!(num_vars_of(&given), [1, 1, 1]);
+        let (end, gp) = end_and_gp_of(&given[0]);
+        assert_eq!(end, [1]);
+        assert_eq!(gp, [0.0, 1.0, 2.0]);
+        let names: Vec<&str> = given[1]
+            .extra
+            .iter()
+            .flatten()
+            .map(|field| field.decl.name.as_str())
+            .collect();
+        assert_eq!(names, ["END"]);
+        assert!(given[2].extra.is_none());
+        assert!(!given[2].fields().contains(Needs::EXTRA));
+
+        // As many fields in both blocks, one named otherwise: the
+        // declarations are compared and not only counted.
+        let mut len_and_gp = cases_block_with_extra_fields(&[1], &[2], &[10.0, 11.0, 12.0]);
+        if let Some(end) = len_and_gp
+            .extra
+            .as_mut()
+            .and_then(|fields| fields.first_mut())
+        {
+            end.decl.name = "LEN".to_owned();
+        }
+        let blocks = vec![
+            cases_block_with_extra_fields(&[0], &[1], &[0.0, 1.0, 2.0]),
+            len_and_gp,
+        ];
+        let mut reblock = Reblock::new(GivenBlocks::of(blocks), Some(3)).expect("the reblock");
+        let given = blocks_given(&mut reblock).expect("the blocks");
+
+        assert_eq!(num_vars_of(&given), [1, 1]);
+        let names_of = |block: &Block| -> Vec<String> {
+            block
+                .extra
+                .iter()
+                .flatten()
+                .map(|field| field.decl.name.clone())
+                .collect()
+        };
+        assert_eq!(names_of(&given[0]), ["END", "GP"]);
+        assert_eq!(names_of(&given[1]), ["LEN", "GP"]);
+    }
+
+    #[test]
+    fn extra_field_of_genotypes_one_value_short_is_refused_by_check() {
+        let block = cases_block_with_extra_fields(
+            &[0, 1, 2, 3],
+            &[1100, 1200, 1300, 1400],
+            &GP_OF_FOUR_VARIANTS[..11],
+        );
+
+        let error = block.check().expect_err("a value of GP is missing");
+
+        let Error::BlockExtraFieldOfAnotherSize {
+            name,
+            found,
+            expected,
+        } = &error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(name, "GP");
+        assert_eq!((*found, *expected), (11, 12));
+        assert_eq!(
+            error.to_string(),
+            "the extra field `GP` of a block holds 11 values, and a block of its size holds 12"
+        );
+    }
+
+    #[test]
+    fn extra_field_of_variants_one_value_short_is_refused_by_check_and_by_retain_vars() {
+        let mut block =
+            cases_block_with_extra_fields(&[0, 1, 2, 3], &[1100, 1200, 1300], &GP_OF_FOUR_VARIANTS);
+
+        let error = block.check().expect_err("a value of END is missing");
+        assert!(
+            matches!(
+                &error,
+                Error::BlockExtraFieldOfAnotherSize { name, found: 3, expected: 4 } if name == "END"
+            ),
+            "the error is {error}"
+        );
+        // The rows are moved by their place, so a block whose field is not
+        // of its size is refused before any of them is.
+        block
+            .retain_vars(&[true, false, true, true])
+            .expect_err("the block is not of its size");
+        assert_eq!(block.num_vars, 4);
+        assert_eq!(end_and_gp_of(&block).0, [1100, 1200, 1300]);
+    }
+
+    #[test]
+    fn extra_field_of_values_of_another_type_than_it_says_is_refused_by_check() {
+        let mut block = cases_block_with_extra_fields(
+            &[0, 1, 2, 3],
+            &[1100, 1200, 1300, 1400],
+            &GP_OF_FOUR_VARIANTS,
+        );
+        if let Some(fields) = block.extra.as_mut()
+            && let Some(gp) = fields.get_mut(1)
+        {
+            gp.values = ExtraValues::F64(vec![0.0; 12]);
+        }
+
+        let error = block.check().expect_err("GP holds float64");
+
+        assert_eq!(
+            error.to_string(),
+            "the extra field `GP` of a block says it holds float32 and holds float64"
         );
     }
 }

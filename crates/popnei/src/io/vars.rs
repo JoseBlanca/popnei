@@ -3,7 +3,8 @@
 //!
 //! A vars file is one arrow IPC file, also called feather v2, with one
 //! record batch for each block of variants and the columns `chrom`, `pos`,
-//! `id`, `alleles`, `qual` and `gts`, so that any program with an arrow
+//! `id`, `alleles`, `qual`, `gts` and `passed`, then one for each extra field
+//! a user attached to the variants, so that any program with an arrow
 //! library opens it as a table. What the file says about itself travels in
 //! two keys whose values are json: `popnei`, in the schema, holds what is
 //! known before the first variant, and `popnei_batches`, in the footer,
@@ -28,9 +29,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::builder::{ListBuilder, StringBuilder};
+use arrow_array::types::{Float32Type, Float64Type, Int32Type, Int64Type, UInt64Type};
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, Int8Array, ListArray,
-    RecordBatch, StringArray, UInt64Array,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, FixedSizeListArray, Float32Array, Int8Array,
+    ListArray, PrimitiveArray, RecordBatch, StringArray, UInt64Array,
 };
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
 use arrow_ipc::convert::try_fb_to_schema;
@@ -44,7 +46,8 @@ use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef};
 use serde_json::{Map, Value};
 
 use crate::block::{
-    AllelesColumn, Block, BlockReader, BlockSize, Reblock, SourceHeader, size_of_the_blocks,
+    AllelesColumn, Block, BlockReader, BlockSize, ExtraField, ExtraFieldDecl, ExtraKind, ExtraType,
+    ExtraValues, Reblock, SourceHeader, size_of_the_blocks,
 };
 use crate::error::{Error, Result};
 use crate::filters::{FilteringStats, RegionSelection};
@@ -53,6 +56,11 @@ use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 /// The key of the schema of a vars file whose value says what is known
 /// before its first variant.
 const POPNEI_KEY: &str = "popnei";
+
+/// The entries of the `popnei` key that list the variant fields and the
+/// genotype fields of the file, each as pairs of a name and a type.
+const VAR_FIELDS_KEY: &str = "var_fields";
+const GT_FIELDS_KEY: &str = "gt_fields";
 
 /// The key of the footer of a vars file whose value says, for each batch,
 /// how many variants it holds and where they are. It is in the footer and
@@ -67,7 +75,7 @@ const POPNEI_BATCHES_KEY: &str = "popnei_batches";
 /// later one than its own too, ignoring the keys and the columns it does
 /// not know: that is what lets a later version of the format add a column
 /// without making the files or the readers that are there useless.
-pub const FORMAT_VERSION: &str = "1.2";
+pub const FORMAT_VERSION: &str = "1.3";
 
 /// The major version of the format that popnei reads, the part of
 /// [`FORMAT_VERSION`] before the dot.
@@ -77,7 +85,7 @@ pub(crate) const FORMAT_VERSION_READ: &str = "1";
 /// of the `popnei` key of its schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarsMetadata {
-    /// The whole string, "1.2". Only the part before the dot is checked.
+    /// The whole string, "1.3". Only the part before the dot is checked.
     pub format_version: String,
     /// The names of the individuals, in the order of their genotypes in
     /// every row of `gts`.
@@ -89,6 +97,10 @@ pub struct VarsMetadata {
     /// The length of each chromosome the source of the file gave one for,
     /// in its order. Empty in a file of 1.0, which has no such key.
     pub chrom_lengths: Vec<(String, u64)>,
+    /// The extra fields, from `var_fields` and `gt_fields`, in the order of
+    /// their columns: the variant fields and then the genotype fields.
+    /// Empty in a file of 1.2 or before, which has neither key.
+    pub extra_fields: Vec<ExtraFieldDecl>,
 }
 
 /// What the footer of a vars file says of one of its batches, one entry of
@@ -141,6 +153,15 @@ pub(crate) fn metadata_as_json(metadata: &VarsMetadata) -> String {
         .iter()
         .map(|(chrom, length)| json_array(&[json_text(chrom), length.to_string()]))
         .collect();
+    let fields_of = |kind: ExtraKind| -> String {
+        let pairs: Vec<String> = metadata
+            .extra_fields
+            .iter()
+            .filter(|field| field.kind == kind)
+            .map(|field| json_array(&[json_text(&field.name), json_text(&field.ty.to_string())]))
+            .collect();
+        json_array(&pairs)
+    };
     json_object(&[
         ("format_version", json_text(&metadata.format_version)),
         ("individuals", json_array(&individuals)),
@@ -150,6 +171,8 @@ pub(crate) fn metadata_as_json(metadata: &VarsMetadata) -> String {
             metadata.num_vars_per_block.to_string(),
         ),
         ("chrom_lengths", json_array(&chrom_lengths)),
+        (VAR_FIELDS_KEY, fields_of(ExtraKind::Variant)),
+        (GT_FIELDS_KEY, fields_of(ExtraKind::Genotype)),
     ])
 }
 
@@ -168,7 +191,9 @@ pub(crate) fn batches_as_json(batches: &[BatchInfo]) -> String {
 /// when one of its four keys is missing or does not hold what that key
 /// holds, and when `chrom_lengths`, which a file of 1.0 does not have, is
 /// there and is not a list of pairs of a name and a length above 0, one
-/// for each chromosome.
+/// for each chromosome. And when `var_fields` or `gt_fields`, which a file
+/// of 1.2 or before does not have, is there and is not a list of pairs of
+/// a name and one of the five types of an extra field.
 pub(crate) fn metadata_from_json(text: &str) -> Result<VarsMetadata> {
     let value = json_of_the_popnei_key(text)?;
     let Some(object) = value.as_object() else {
@@ -182,6 +207,11 @@ pub(crate) fn metadata_from_json(text: &str) -> Result<VarsMetadata> {
         ploidy: count_of(object, "ploidy")?,
         num_vars_per_block: count_of(object, "num_vars_per_block")?,
         chrom_lengths: chrom_lengths_of(object)?,
+        extra_fields: [
+            extra_fields_of(object, VAR_FIELDS_KEY, ExtraKind::Variant)?,
+            extra_fields_of(object, GT_FIELDS_KEY, ExtraKind::Genotype)?,
+        ]
+        .concat(),
     })
 }
 
@@ -334,6 +364,119 @@ fn chrom_lengths_of(object: &Map<String, Value>) -> Result<Vec<(String, u64)>> {
         lengths.push((chrom.to_owned(), length));
     }
     Ok(lengths)
+}
+
+/// The extra fields of one kind, from the entry `key` of the `popnei` key,
+/// in its order, and none in a file of 1.2 or before, which has no such
+/// entry. Whether their names are ones a field can have is not read here
+/// but where the file is opened.
+fn extra_fields_of(
+    object: &Map<String, Value>,
+    key: &str,
+    kind: ExtraKind,
+) -> Result<Vec<ExtraFieldDecl>> {
+    let Some(value) = object.get(key) else {
+        return Ok(Vec::new());
+    };
+    let not_pairs = || {
+        not_a_vars_file(format!(
+            "`{key}` of the `{POPNEI_KEY}` key of its schema is {value}, which is not a json array of pairs of the name of a field and one of {}",
+            ExtraType::ALL
+                .iter()
+                .map(|ty| format!("`{ty}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    };
+    let Some(pairs) = value.as_array() else {
+        return Err(not_pairs());
+    };
+    pairs
+        .iter()
+        .map(|pair| {
+            let name = pair.get(0).and_then(Value::as_str);
+            let ty = pair.get(1).and_then(Value::as_str).and_then(extra_type_of);
+            match (name, ty, pair.as_array().map(Vec::len)) {
+                (Some(name), Some(ty), Some(2)) => Ok(ExtraFieldDecl {
+                    name: name.to_owned(),
+                    kind,
+                    ty,
+                }),
+                _ => Err(not_pairs()),
+            }
+        })
+        .collect()
+}
+
+/// The type of an extra field of that name, as the `popnei` key and numpy
+/// write it, or `None` for a name that is not one of the five.
+fn extra_type_of(name: &str) -> Option<ExtraType> {
+    ExtraType::ALL.into_iter().find(|ty| ty.to_string() == name)
+}
+
+/// That the names of the extra fields are ones a field can have: each
+/// follows the rule of the key of an INFO or a FORMAT field of a VCF, so
+/// that a field can become one, is not the name of a column every vars
+/// file can have, and is the name of one field. It is what
+/// [`VarsWriter::set_extra_fields`] and the reader of a file refuse, and a
+/// caller that checks the fields it was given before it makes the file they
+/// go into calls it too: the writer of segments of the Python binding
+/// crate, which refuses the fields a user declared before the path is
+/// taken.
+///
+/// # Errors
+///
+/// [`Error::VarsExtraField`] for the first field whose name is not one a
+/// field can have, by the rule of "The extra fields" of
+/// `docs/specs/io_vars.md`, is that of a column every vars file can have,
+/// or is given twice.
+pub fn extra_fields_fit(fields: &[ExtraFieldDecl]) -> Result<()> {
+    let mut named: HashSet<&str> = HashSet::with_capacity(fields.len());
+    for field in fields {
+        let name = field.name.as_str();
+        let problem = if !a_name_of_a_field(name) {
+            "has a name no field can have: a name starts with a letter or `_` and holds letters, digits, `_` and `.` after it, as the key of an INFO or a FORMAT field of a VCF does"
+        } else if VarsColumn::of_the_name(name).is_some() {
+            "has the name of a column that every vars file can have, which no extra field takes"
+        } else if !named.insert(name) {
+            "is named twice among the extra fields, and each of them has a name of its own"
+        } else {
+            continue;
+        };
+        return Err(Error::VarsExtraField {
+            name: field.name.clone(),
+            problem: problem.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Whether `name` follows the rule of the VCF for the key of an INFO or a
+/// FORMAT field: a letter or `_`, and then letters, digits, `_` and `.`.
+fn a_name_of_a_field(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|after| after.is_ascii_alphanumeric() || after == '_' || after == '.')
+}
+
+/// The fields as the messages of the errors write them, each as its name,
+/// its kind and its type, or `none`.
+fn fields_described<'a>(fields: impl Iterator<Item = &'a ExtraFieldDecl>) -> String {
+    let described: Vec<String> = fields
+        .map(|field| {
+            let kind = match field.kind {
+                ExtraKind::Variant => "variant",
+                ExtraKind::Genotype => "genotype",
+            };
+            format!("`{name}` ({kind}, {ty})", name = field.name, ty = field.ty)
+        })
+        .collect();
+    if described.is_empty() {
+        return "none".to_owned();
+    }
+    described.join(", ")
 }
 
 /// A value of the `popnei` key that says how many of something there are,
@@ -523,6 +666,11 @@ pub struct VarsWriter<W: Write> {
     /// How many alleles one variant holds, the individuals times the
     /// ploidy, which is the width of the `gts` column.
     alleles_per_var: i32,
+    /// The extra fields every block carries, in the order the blocks hold
+    /// them, which [`VarsWriter::set_extra_fields`] declares. The `popnei`
+    /// key has them in the order of their columns, the variant fields
+    /// first.
+    extra_fields: Vec<ExtraFieldDecl>,
     /// How the buffers of every batch are compressed, lz4.
     options: IpcWriteOptions,
     /// What the first block written fixed, or `None` while no block has
@@ -603,8 +751,10 @@ impl<W: Write> VarsWriter<W> {
                 ploidy,
                 num_vars_per_block,
                 chrom_lengths: Vec::new(),
+                extra_fields: Vec::new(),
             },
             alleles_per_var,
+            extra_fields: Vec::new(),
             options,
             columns: None,
             batches: Vec::new(),
@@ -619,6 +769,44 @@ impl<W: Write> VarsWriter<W> {
         self.metadata.chrom_lengths = chrom_lengths;
     }
 
+    /// The extra fields of the file, which the `popnei` key will say and
+    /// which every block written has to carry, with these names, kinds and
+    /// types, in this order. The columns of the file are the variant fields
+    /// in that order and then the genotype fields, which is the order of
+    /// `var_fields` and `gt_fields` in the key and the order a reader of
+    /// the file gives them in.
+    ///
+    /// None until this is called. It holds when it is called before the
+    /// first block, which writes the key with the schema; [`write_vars`]
+    /// takes them from the header of its source.
+    ///
+    /// # Errors
+    ///
+    /// When a name is not one a field can have, is that of a column every
+    /// vars file can have, or is given twice, with the field. When the
+    /// first block was written and the fields are not the ones it fixed,
+    /// since the schema of the file is written and holds those.
+    pub fn set_extra_fields(&mut self, fields: Vec<ExtraFieldDecl>) -> Result<()> {
+        if self.columns.is_some() {
+            if fields == self.extra_fields {
+                return Ok(());
+            }
+            return Err(Error::VarsBlockExtraFields {
+                declared: fields_described(self.extra_fields.iter()),
+                found: fields_described(fields.iter()),
+            });
+        }
+        extra_fields_fit(&fields)?;
+        let (mut in_the_key, genotype_fields): (Vec<ExtraFieldDecl>, Vec<ExtraFieldDecl>) = fields
+            .iter()
+            .cloned()
+            .partition(|field| field.kind == ExtraKind::Variant);
+        in_the_key.extend(genotype_fields);
+        self.metadata.extra_fields = in_the_key;
+        self.extra_fields = fields;
+        Ok(())
+    }
+
     /// It writes `block` as one batch, of whatever size the block has.
     ///
     /// `chroms` is the table of the reader the block came from, which holds
@@ -629,14 +817,22 @@ impl<W: Write> VarsWriter<W> {
     ///
     /// When the block holds other individuals or another ploidy than the
     /// writer was built for, when it does not pass [`Block::check`], when
-    /// its columns are not those of the first block written, and when
-    /// `chroms` has no name for one of its chromosome numbers; in each of
-    /// them nothing of the block is written. And when the sink fails.
+    /// its columns are not those of the first block written, when its
+    /// extra fields are not the ones declared, and when `chroms` has no
+    /// name for one of its chromosome numbers; in each of them nothing of
+    /// the block is written. And when the sink fails.
     pub fn write_block(&mut self, block: Block, chroms: &ChromTable) -> Result<()> {
         self.fits(&block)?;
         // The rows of the batch are read out of the arrays by their place
         // in them, so the arrays have to be of the size the block says.
         block.check()?;
+        let carried = block.extra.iter().flatten().map(|field| &field.decl);
+        if !carried.clone().eq(self.extra_fields.iter()) {
+            return Err(Error::VarsBlockExtraFields {
+                declared: fields_described(self.extra_fields.iter()),
+                found: fields_described(carried),
+            });
+        }
         let fields = block.fields();
         let schema = match &self.columns {
             Some(written) if written.fields != fields => {
@@ -730,6 +926,7 @@ impl<W: Write> VarsWriter<W> {
             // The vars file has no place for the text of the lines of a
             // VCF, which the writer of a vars file does not ask for.
             vcf_text: _,
+            extra,
         } = block;
         let mut arrays: Vec<ArrayRef> = Vec::new();
         let mut regions = Vec::new();
@@ -759,7 +956,33 @@ impl<W: Write> VarsWriter<W> {
         if let Some(passed) = passed {
             arrays.push(Arc::new(passed_column(&passed)));
         }
+        // `write_block` checked that the fields are the ones declared, in
+        // their order, so the variant fields of the block in that order and
+        // then its genotype fields are the columns of the schema.
+        let (mut fields_in_columns, genotype_fields): (Vec<ExtraField>, Vec<ExtraField>) = extra
+            .unwrap_or_default()
+            .into_iter()
+            .partition(|field| field.decl.kind == ExtraKind::Variant);
+        fields_in_columns.extend(genotype_fields);
+        if !fields_in_columns.is_empty() {
+            let num_individuals = self.num_individuals()?;
+            for field in fields_in_columns {
+                arrays.push(extra_column(field, num_individuals)?);
+            }
+        }
         Ok((arrays, regions))
+    }
+
+    /// How many individuals a genotype field holds for each variant, the
+    /// width of its column: a 32 bit number, which the individuals times
+    /// the ploidy were checked to fit in when the writer was built.
+    fn num_individuals(&self) -> Result<i32> {
+        i32::try_from(self.metadata.individuals.len()).map_err(|_| Error::BlockTooLarge {
+            num_vars_per_block: self.metadata.num_vars_per_block,
+            num_individuals: self.metadata.individuals.len(),
+            ploidy: self.metadata.ploidy,
+            size: BlockSize::AskedFor,
+        })
     }
 
     /// The arrow writer, made over the sink with the schema of the first
@@ -804,6 +1027,14 @@ impl<W: Write> VarsWriter<W> {
 /// `popnei` key says. A source with no variants gives a file with the two
 /// keys, a `gts` column and no batch.
 ///
+/// With `allow_unsorted` false the variants have to be sorted, "Sorted
+/// variants" of `docs/specs/io_vars.md`: the positions of a chromosome do
+/// not go down from one variant to the next, two at one position being in
+/// order, and the variants of a chromosome come together, the chromosomes
+/// in any order. It is checked on each block before it is written, so a
+/// block without chromosomes and positions is not checked. With
+/// `allow_unsorted` true the variants are written in the order they come.
+///
 /// This is what both binding crates call. The Python binding crate opens
 /// the file, refuses a path that exists, and removes the file when this
 /// returns an error.
@@ -812,7 +1043,9 @@ impl<W: Write> VarsWriter<W> {
 ///
 /// When `num_vars_per_block` is 0 or the blocks of that size do not fit in
 /// the memory of the machine, when the reader fails, when a block of it is
-/// not one a vars file can hold, and when the sink fails. The bytes that
+/// not one a vars file can hold, when a variant is out of order and
+/// `allow_unsorted` is false, which names it and the one before it, and
+/// when the sink fails. The bytes that
 /// were written before the error are on the sink: a file that a failed call
 /// was writing is not one that can be read, and it is the caller that
 /// removes it.
@@ -820,6 +1053,7 @@ pub fn write_vars<R: BlockReader, W: Write>(
     mut reader: R,
     sink: W,
     num_vars_per_block: Option<usize>,
+    allow_unsorted: bool,
 ) -> Result<(W, u64)> {
     // Every field, so that a file written from a VCF holds its seven
     // columns whether or not the user will read them.
@@ -833,9 +1067,16 @@ pub fn write_vars<R: BlockReader, W: Write>(
         size_of_the_blocks(num_vars_per_block, individuals.len(), ploidy)?;
     let mut writer = VarsWriter::new(sink, &individuals, ploidy, num_vars_per_block)?;
     writer.set_chrom_lengths(reader.header().chrom_lengths.clone());
+    // The fields of the header are those of every block the reader gives,
+    // so a file written from another keeps its fields, after any filter.
+    writer.set_extra_fields(reader.header().extra_fields.clone())?;
     let mut blocks = Reblock::new(reader, Some(num_vars_per_block))?;
+    let mut order = TheOrderSoFar::new();
     let mut num_vars: u64 = 0;
     while let Some(block) = blocks.next_block()? {
+        if !allow_unsorted {
+            order.check(&block, blocks.chroms())?;
+        }
         let of_the_block = u64::try_from(block.num_vars).unwrap_or(u64::MAX);
         writer.write_block(block, blocks.chroms())?;
         // A variant is a row of the file that is being written, so a pass
@@ -846,6 +1087,91 @@ pub fn write_vars<R: BlockReader, W: Write>(
         num_vars = num_vars.saturating_add(of_the_block);
     }
     Ok((writer.finish()?, num_vars))
+}
+
+/// What `write_vars` keeps of the variants it has written to check that the
+/// next ones come in the order of "Sorted variants" of
+/// `docs/specs/io_vars.md`: the positions of a chromosome do not go down,
+/// and a chromosome whose variants have ended does not come back.
+struct TheOrderSoFar {
+    /// The last variant checked, none before the first.
+    last: Option<VariantChecked>,
+    /// How many variants have been given, those of blocks without
+    /// chromosomes and positions among them.
+    num_vars: u64,
+    /// The chromosomes that a variant of another one came after.
+    ended: HashSet<u32>,
+}
+
+/// A variant that [`TheOrderSoFar`] checked, which the next one is compared
+/// with.
+#[derive(Clone, Copy)]
+struct VariantChecked {
+    /// The number of its chromosome.
+    chrom: u32,
+    /// Its position.
+    pos: u64,
+    /// Which variant written it was, counted from 1.
+    var: u64,
+}
+
+impl TheOrderSoFar {
+    fn new() -> TheOrderSoFar {
+        TheOrderSoFar {
+            last: None,
+            num_vars: 0,
+            ended: HashSet::new(),
+        }
+    }
+
+    /// It checks the variants of `block`, the next of the file, whose
+    /// chromosome numbers are those of `chroms`. A block without
+    /// chromosomes and positions is not checked, and counts.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::VarsVariantNotSorted`] for the first variant out of order,
+    /// and [`Error::VarsChromNameMissing`] when `chroms` has no name for
+    /// one of the two variants it names.
+    fn check(&mut self, block: &Block, chroms: &ChromTable) -> Result<()> {
+        // A variant is a row of the file that is being written, so the
+        // 18446744073709551615 variants this count holds are more rows than
+        // any file system takes: the sum cannot reach its end. A `usize` is
+        // 64 bits natively and 32 in wasm, and both fit in a `u64`.
+        let first = self.num_vars;
+        self.num_vars = first.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+        let (Some(chrom), Some(pos)) = (&block.chrom, &block.pos) else {
+            return Ok(());
+        };
+        for (var, (&chrom, &pos)) in (first.saturating_add(1)..).zip(chrom.iter().zip(pos)) {
+            if let Some(before) = self.last {
+                let in_order = if chrom == before.chrom {
+                    pos >= before.pos
+                } else {
+                    self.ended.insert(before.chrom);
+                    !self.ended.contains(&chrom)
+                };
+                if !in_order {
+                    let name_of = |number: u32| {
+                        chroms
+                            .name(number)
+                            .map(str::to_owned)
+                            .ok_or(Error::VarsChromNameMissing { number })
+                    };
+                    return Err(Error::VarsVariantNotSorted {
+                        var,
+                        chrom: name_of(chrom)?,
+                        pos,
+                        var_before: before.var,
+                        chrom_before: name_of(before.chrom)?,
+                        pos_before: before.pos,
+                    });
+                }
+            }
+            self.last = Some(VariantChecked { chrom, pos, var });
+        }
+        Ok(())
+    }
 }
 
 /// The schema of a vars file whose blocks hold `fields`, with the `popnei`
@@ -873,8 +1199,88 @@ fn schema_of(fields: Needs, alleles_per_var: i32, metadata: &VarsMetadata) -> Sc
     if fields.contains(Needs::PASSED) {
         columns.push(Field::new(PASSED_COLUMN, DataType::Boolean, false));
     }
+    // The extra fields are in the key whether or not a block carried them,
+    // so their columns are in a file of no batch too. The individuals
+    // times the ploidy were checked to fit in an `i32` when the writer was
+    // built, so the individuals do, and the number is never the one this
+    // falls back to.
+    let num_individuals = i32::try_from(metadata.individuals.len()).unwrap_or(i32::MAX);
+    for field in &metadata.extra_fields {
+        columns.push(Field::new(
+            field.name.clone(),
+            extra_field_type(field, num_individuals),
+            false,
+        ));
+    }
     let popnei = HashMap::from([(POPNEI_KEY.to_owned(), metadata_as_json(metadata))]);
     Schema::new(columns).with_metadata(popnei)
+}
+
+/// The arrow type of the values of an extra field of the type `ty`.
+fn arrow_type_of(ty: ExtraType) -> DataType {
+    match ty {
+        ExtraType::I32 => DataType::Int32,
+        ExtraType::I64 => DataType::Int64,
+        ExtraType::U64 => DataType::UInt64,
+        ExtraType::F32 => DataType::Float32,
+        ExtraType::F64 => DataType::Float64,
+    }
+}
+
+/// The arrow type of the column of an extra field: its values for a
+/// variant field, and a fixed size list of `num_individuals` of them for a
+/// genotype field, whose values hold no null, as those of `gts`.
+fn extra_field_type(field: &ExtraFieldDecl, num_individuals: i32) -> DataType {
+    match field.kind {
+        ExtraKind::Variant => arrow_type_of(field.ty),
+        ExtraKind::Genotype => DataType::FixedSizeList(
+            Arc::new(Field::new(ITEM_FIELD, arrow_type_of(field.ty), false)),
+            num_individuals,
+        ),
+    }
+}
+
+/// The column of one extra field of one batch. The vector of the block
+/// becomes the buffer of the column with no copy, as the genotypes do.
+///
+/// # Errors
+///
+/// When the values of a genotype field are not `num_individuals` for each
+/// variant, which [`Block::check`] is what says before the block reaches
+/// here.
+fn extra_column(field: ExtraField, num_individuals: i32) -> Result<ArrayRef> {
+    let ExtraField { decl, values } = field;
+    let values: ArrayRef = match values {
+        ExtraValues::I32(values) => Arc::new(PrimitiveArray::<Int32Type>::new(
+            ScalarBuffer::from(values),
+            None,
+        )),
+        ExtraValues::I64(values) => Arc::new(PrimitiveArray::<Int64Type>::new(
+            ScalarBuffer::from(values),
+            None,
+        )),
+        ExtraValues::U64(values) => Arc::new(PrimitiveArray::<UInt64Type>::new(
+            ScalarBuffer::from(values),
+            None,
+        )),
+        ExtraValues::F32(values) => Arc::new(PrimitiveArray::<Float32Type>::new(
+            ScalarBuffer::from(values),
+            None,
+        )),
+        ExtraValues::F64(values) => Arc::new(PrimitiveArray::<Float64Type>::new(
+            ScalarBuffer::from(values),
+            None,
+        )),
+    };
+    match decl.kind {
+        ExtraKind::Variant => Ok(values),
+        ExtraKind::Genotype => {
+            let item = Field::new(ITEM_FIELD, arrow_type_of(decl.ty), false);
+            let column = FixedSizeListArray::try_new(Arc::new(item), num_individuals, values, None)
+                .map_err(not_written)?;
+            Ok(Arc::new(column))
+        }
+    }
 }
 
 /// The arrow type of the `alleles` column, one list of texts for each
@@ -1381,6 +1787,70 @@ fn gts_width_fits(width: i32, metadata: &VarsMetadata) -> Result<()> {
     Ok(())
 }
 
+/// Where the column of each extra field of the `popnei` key is in that
+/// schema, in the order of the key, each checked against the type its
+/// entry gives.
+///
+/// What is compared is the type of the values, and for a genotype field
+/// that the width of its list is the individuals of the key; neither the
+/// name of the field arrow gives the values of a list nor whether a column
+/// takes nulls is compared, as for the columns of "What it holds". A file
+/// with two columns of one name is read with the first, as for those.
+///
+/// # Errors
+///
+/// When an extra field has no column, and when its column is of another
+/// type or width, with both.
+fn extra_columns_of(schema: &Schema, metadata: &VarsMetadata) -> Result<Vec<usize>> {
+    let num_individuals = metadata.individuals.len();
+    metadata
+        .extra_fields
+        .iter()
+        .map(|field| {
+            let expected = match field.kind {
+                ExtraKind::Variant => type_name(&arrow_type_of(field.ty)),
+                ExtraKind::Genotype => format!(
+                    "FixedSizeList<{inside}>[{num_individuals}]",
+                    inside = type_name(&arrow_type_of(field.ty))
+                ),
+            };
+            let Some((place, column)) = schema
+                .fields()
+                .iter()
+                .enumerate()
+                .find(|(_, column)| *column.name() == field.name)
+            else {
+                return Err(Error::VarsExtraField {
+                    name: field.name.clone(),
+                    problem: format!(
+                        "has no column in the file, and its entry of the `{POPNEI_KEY}` key says it has one of the arrow type {expected}"
+                    ),
+                });
+            };
+            let found = column.data_type();
+            let holds = match field.kind {
+                ExtraKind::Variant => *found == arrow_type_of(field.ty),
+                ExtraKind::Genotype => matches!(
+                    found,
+                    DataType::FixedSizeList(item, width)
+                        if *item.data_type() == arrow_type_of(field.ty)
+                            && usize::try_from(*width).ok() == Some(num_individuals)
+                ),
+            };
+            if !holds {
+                return Err(Error::VarsExtraField {
+                    name: field.name.clone(),
+                    problem: format!(
+                        "has a column of the arrow type {found}, and its entry of the `{POPNEI_KEY}` key says {expected}",
+                        found = type_name(found)
+                    ),
+                });
+            }
+            Ok(place)
+        })
+        .collect()
+}
+
 /// The arrow type of a column as the table of "What it holds" of
 /// `docs/specs/io_vars.md` writes it, so that the type a file has and the
 /// type popnei reads are written the same way in one message.
@@ -1450,10 +1920,19 @@ pub struct VarsReader<R: Read + Seek> {
     blocks: Vec<BatchAt>,
     /// Where each column popnei knows is in the schema.
     columns: VarsColumns,
+    /// Where the column of each extra field is in the schema, in the order
+    /// of `extra_fields` of `metadata`.
+    extra_columns: Vec<usize>,
+    /// Whether each extra field is decompressed when [`Needs::EXTRA`] is
+    /// asked for, in the same order: every one until
+    /// [`VarsReader::select_extra_fields`] says otherwise.
+    extra_selected: Vec<bool>,
     /// What the `popnei` key of the schema says.
     metadata: VarsMetadata,
-    /// What the file said of itself: the individuals and the lengths of the
-    /// chromosomes of `metadata`.
+    /// What the file said of itself: the individuals, the lengths of the
+    /// chromosomes and the extra fields of `metadata` that
+    /// [`VarsReader::select_extra_fields`] selected, every one until it is
+    /// called.
     header: SourceHeader,
     /// What the `popnei_batches` key of the footer says of each batch.
     batches: Vec<BatchInfo>,
@@ -1522,8 +2001,10 @@ impl<R: Read + Seek> VarsReader<R> {
     /// it gives does not start with the one popnei reads, when a column
     /// popnei knows is of another arrow type, when the `gts` column holds
     /// another number of alleles for each variant than the `popnei` key
-    /// gives, when that key names one individual twice, and when the
-    /// entries of the footer are not as many as the batches of the file.
+    /// gives, when that key names one individual twice, when an extra field
+    /// of that key has a name no field can have, has no column or has a
+    /// column of another type, and when the entries of the footer are not
+    /// as many as the batches of the file.
     /// When the file starts as an arrow file and was cut short. And when
     /// the source cannot be read.
     pub fn new(mut source: R) -> Result<VarsReader<R>> {
@@ -1542,6 +2023,7 @@ impl<R: Read + Seek> VarsReader<R> {
         // columns.
         let metadata = metadata_of_the_schema(&schema)?;
         let columns = VarsColumns::of(&schema, &metadata)?;
+        let extra_columns = extra_columns_of(&schema, &metadata)?;
         // Every vars file holds the genotypes, so a file without them is
         // not one: a reader of this version cannot tell a file whose column
         // was lost from one that a later version of the format wrote with
@@ -1560,6 +2042,7 @@ impl<R: Read + Seek> VarsReader<R> {
             chrom_lengths: metadata.chrom_lengths.clone(),
             vcf_meta_lines: None,
             keeps_passed: columns.passed.is_some(),
+            extra_fields: metadata.extra_fields.clone(),
         };
         Ok(VarsReader {
             source,
@@ -1567,6 +2050,8 @@ impl<R: Read + Seek> VarsReader<R> {
             version: footer.version(),
             blocks,
             columns,
+            extra_selected: vec![true; extra_columns.len()],
+            extra_columns,
             metadata,
             header,
             batches,
@@ -1587,8 +2072,9 @@ impl<R: Read + Seek> VarsReader<R> {
     }
 
     /// What the `popnei` key of the schema of the file says: the version of
-    /// the format, the names of the individuals, the ploidy and how many
-    /// variants a batch holds.
+    /// the format, the names of the individuals, the ploidy, how many
+    /// variants a batch holds and every extra field of the file, whatever
+    /// [`VarsReader::select_extra_fields`] selected.
     #[must_use]
     pub fn metadata(&self) -> &VarsMetadata {
         &self.metadata
@@ -1607,6 +2093,91 @@ impl<R: Read + Seek> VarsReader<R> {
     #[must_use]
     pub fn num_vars(&self) -> usize {
         self.num_vars
+    }
+
+    /// Which extra fields the blocks hold when [`Needs::EXTRA`] is asked
+    /// for: the ones named, every one for `None`, which is what the reader
+    /// gives until this is called. It holds from the next block, as
+    /// [`BlockReader::set_needs`] does. The fields of a block are in the
+    /// order of the file whatever the order of the names, and a block of a
+    /// selection that names none has no extra field, as one of a file that
+    /// has none.
+    ///
+    /// The extra fields of [`BlockReader::header`] become the ones
+    /// selected, in the order of the file, and none for a selection of
+    /// none, so that [`write_vars`] of this reader writes a file of those
+    /// fields. Every field of the file stays in
+    /// [`VarsReader::metadata`], which is where `Variants.var_fields` and
+    /// `gt_fields` of Python read them when the file is opened.
+    ///
+    /// The binding crate calls it on the source it opened for
+    /// `iter_blocks`, before it puts the filters over it; [`write_vars`]
+    /// never does, so a file written from another keeps every field.
+    ///
+    /// # Errors
+    ///
+    /// When a name is not that of an extra field of the file, with the
+    /// fields it has; the selection is then as it was.
+    pub fn select_extra_fields(&mut self, names: Option<Vec<String>>) -> Result<()> {
+        let selected = match names {
+            None => vec![true; self.extra_columns.len()],
+            Some(names) => {
+                let mut selected = vec![false; self.extra_columns.len()];
+                for name in names {
+                    let field = self
+                        .metadata
+                        .extra_fields
+                        .iter()
+                        .position(|field| field.name == name);
+                    match field.and_then(|field| selected.get_mut(field)) {
+                        Some(selected) => *selected = true,
+                        None => {
+                            return Err(Error::VarsExtraFieldNotInTheFile {
+                                name,
+                                fields: self
+                                    .metadata
+                                    .extra_fields
+                                    .iter()
+                                    .map(|field| field.name.clone())
+                                    .collect(),
+                            });
+                        }
+                    }
+                }
+                selected
+            }
+        };
+        self.header.extra_fields = self
+            .metadata
+            .extra_fields
+            .iter()
+            .zip(&selected)
+            .filter(|(_, selected)| **selected)
+            .map(|(field, _)| field.clone())
+            .collect();
+        self.extra_selected = selected;
+        // The batches that were decoded and not given were decoded with the
+        // columns that were selected before this call.
+        #[cfg(not(target_family = "wasm"))]
+        self.throw_the_queue_away();
+        Ok(())
+    }
+
+    /// The extra fields a block is given and where their columns are in
+    /// the file: each one that is selected, in the order of the file, as
+    /// its place among the extra fields and its place in the schema, and
+    /// none when [`Needs::EXTRA`] is not asked for.
+    fn extra_projection(&self) -> Vec<(usize, usize)> {
+        if !self.needs.contains(Needs::EXTRA) {
+            return Vec::new();
+        }
+        self.extra_columns
+            .iter()
+            .zip(&self.extra_selected)
+            .enumerate()
+            .filter(|(_, (_, selected))| **selected)
+            .map(|(field, (place, _))| (field, *place))
+            .collect()
     }
 
     /// The place of each batch whose bytes were read, in the order they
@@ -1703,6 +2274,17 @@ fn projection_of(needs: Needs, columns: &VarsColumns) -> Vec<(VarsColumn, usize)
     }
     wanted.sort_by_key(|(_, place)| *place);
     wanted
+}
+
+/// The columns that are decompressed, by their place in the schema: those
+/// of `wanted` and then those of the extra fields of `extra_wanted`, which
+/// is the order the columns of the decoded batch come in.
+fn places_of(wanted: &[(VarsColumn, usize)], extra_wanted: &[(usize, usize)]) -> Vec<usize> {
+    wanted
+        .iter()
+        .map(|(_, place)| *place)
+        .chain(extra_wanted.iter().map(|(_, place)| *place))
+        .collect()
 }
 
 /// Where a batch is, for the messages of the errors it gives.
@@ -1852,6 +2434,7 @@ impl<R: Read + Seek> VarsReader<R> {
         index: usize,
         batch: &RecordBatch,
         wanted: &[(VarsColumn, usize)],
+        extra_wanted: &[(usize, usize)],
     ) -> Result<Option<Block>> {
         let place = self.place_of(index)?;
         let num_vars = batch.num_rows();
@@ -1869,7 +2452,8 @@ impl<R: Read + Seek> VarsReader<R> {
         if num_vars == 0 {
             return Ok(None);
         }
-        let block = block_of_the_batch(batch, wanted, &self.metadata, &mut self.chroms, place)?;
+        let mut block = block_of_the_batch(batch, wanted, &self.metadata, &mut self.chroms, place)?;
+        block.extra = extra_of_the_batch(batch, wanted.len(), extra_wanted, &self.metadata, place)?;
         if let Some(entry) = self.batches.get(index) {
             variants_in_their_entry(&block, &self.chroms, entry, place.batch)?;
         }
@@ -1904,7 +2488,8 @@ impl<R: Read + Seek> VarsReader<R> {
         // The columns to decompress are chosen when the batch is read, so a
         // consumer that asks for other fields is served from here on.
         let wanted = projection_of(self.needs, &self.columns);
-        let places: Vec<usize> = wanted.iter().map(|(_, place)| *place).collect();
+        let extra_wanted = self.extra_projection();
+        let places = places_of(&wanted, &extra_wanted);
         loop {
             if self.decoded.is_empty() {
                 self.decode_the_next_batches(&places);
@@ -1913,7 +2498,9 @@ impl<R: Read + Seek> VarsReader<R> {
                 return Ok(None);
             };
             let batch = decoded?;
-            if let Some(block) = self.block_of_a_decoded_batch(index, &batch, &wanted)? {
+            if let Some(block) =
+                self.block_of_a_decoded_batch(index, &batch, &wanted, &extra_wanted)?
+            {
                 return Ok(Some(block));
             }
         }
@@ -2034,7 +2621,8 @@ impl<R: Read + Seek> VarsReader<R> {
         // The columns to decompress are chosen when the batch is read, so a
         // consumer that asks for other fields is served from here on.
         let wanted = projection_of(self.needs, &self.columns);
-        let places: Vec<usize> = wanted.iter().map(|(_, place)| *place).collect();
+        let extra_wanted = self.extra_projection();
+        let places = places_of(&wanted, &extra_wanted);
         loop {
             let Some(at) = self.blocks.get(self.next).copied() else {
                 return Ok(None);
@@ -2054,7 +2642,9 @@ impl<R: Read + Seek> VarsReader<R> {
             // this never saturates.
             self.next = self.next.saturating_add(1);
             let batch = batch_of(&self.schema, self.version, &places, at, bytes, place)?;
-            if let Some(block) = self.block_of_a_decoded_batch(index, &batch, &wanted)? {
+            if let Some(block) =
+                self.block_of_a_decoded_batch(index, &batch, &wanted, &extra_wanted)?
+            {
                 return Ok(Some(block));
             }
         }
@@ -2751,6 +3341,7 @@ fn block_of_the_batch(
         qual: None,
         passed: None,
         vcf_text: None,
+        extra: None,
     };
     // The texts of the alleles of one variant, written over for the next
     // one: nothing is allocated for each variant of the block.
@@ -2782,6 +3373,161 @@ fn block_of_the_batch(
         }
     }
     Ok(block)
+}
+
+/// The extra fields of `extra_wanted` of one batch, whose columns come
+/// after the `first` ones of the columns popnei knows, in that order; and
+/// `None` when none of them was asked for, which is a block with no extra
+/// field.
+///
+/// # Errors
+///
+/// When a column holds a null, with the field and the variant; when a
+/// column of the batch is not what the schema of the file says it is,
+/// which is a file that was damaged; and when the machine does not give
+/// the memory of a field of the block.
+fn extra_of_the_batch(
+    batch: &RecordBatch,
+    first: usize,
+    extra_wanted: &[(usize, usize)],
+    metadata: &VarsMetadata,
+    place: BatchPlace,
+) -> Result<Option<Vec<ExtraField>>> {
+    if extra_wanted.is_empty() {
+        return Ok(None);
+    }
+    let arrays = batch.columns().get(first..).unwrap_or(&[]);
+    if arrays.len() != extra_wanted.len() {
+        return Err(batch_of_other_bytes(
+            place.batch,
+            format!(
+                "it holds {found} columns of extra fields where {expected} were read",
+                found = arrays.len(),
+                expected = extra_wanted.len()
+            ),
+        ));
+    }
+    let mut fields = Vec::new();
+    fields
+        .try_reserve_exact(extra_wanted.len())
+        .map_err(|_| block_too_large(batch.num_rows(), metadata))?;
+    for (array, (field, _)) in arrays.iter().zip(extra_wanted) {
+        let Some(decl) = metadata.extra_fields.get(*field) else {
+            return Err(batch_of_other_bytes(
+                place.batch,
+                format!(
+                    "the extra field {field}, counted from 0, is not in the `{POPNEI_KEY}` key"
+                ),
+            ));
+        };
+        let num_vars = batch.num_rows();
+        let values = match decl.ty {
+            ExtraType::I32 => ExtraValues::I32(values_of::<Int32Type>(
+                array, decl, num_vars, metadata, place,
+            )?),
+            ExtraType::I64 => ExtraValues::I64(values_of::<Int64Type>(
+                array, decl, num_vars, metadata, place,
+            )?),
+            ExtraType::U64 => ExtraValues::U64(values_of::<UInt64Type>(
+                array, decl, num_vars, metadata, place,
+            )?),
+            ExtraType::F32 => ExtraValues::F32(values_of::<Float32Type>(
+                array, decl, num_vars, metadata, place,
+            )?),
+            ExtraType::F64 => ExtraValues::F64(values_of::<Float64Type>(
+                array, decl, num_vars, metadata, place,
+            )?),
+        };
+        fields.push(ExtraField {
+            decl: decl.clone(),
+            values,
+        });
+    }
+    Ok(Some(fields))
+}
+
+/// The values of one extra field of a batch, of the arrow type `T`: one
+/// for each variant of a variant field, and the individuals for each of a
+/// genotype field, copied out of the buffer arrow decompressed.
+///
+/// # Errors
+///
+/// When a variant has no value, or one of the values of a genotype field
+/// is a null; when the column is not of the type the schema of the file
+/// gives it or holds fewer values than the batch; when a genotype field
+/// holds another number of values for each variant than the individuals
+/// of the `popnei` key; and when the machine does not give the memory.
+fn values_of<T: ArrowPrimitiveType>(
+    array: &ArrayRef,
+    field: &ExtraFieldDecl,
+    num_vars: usize,
+    metadata: &VarsMetadata,
+    place: BatchPlace,
+) -> Result<Vec<T::Native>> {
+    let damaged = |problem: &str| {
+        batch_of_other_bytes(
+            place.batch,
+            format!("its `{name}` column {problem}", name = field.name),
+        )
+    };
+    let not_of_its_type =
+        || damaged("is not of the arrow type that the schema of the file gives it");
+    let null_at = |row: usize| Error::VarsExtraFieldNull {
+        name: field.name.clone(),
+        var: place.vars_before.saturating_add(counted_from_one(row)),
+    };
+    let (values, values_per_var) = match field.kind {
+        ExtraKind::Variant => {
+            let column = array
+                .as_any()
+                .downcast_ref::<PrimitiveArray<T>>()
+                .ok_or_else(not_of_its_type)?;
+            if let Some(row) = first_null(column) {
+                return Err(null_at(row));
+            }
+            (column, 1)
+        }
+        ExtraKind::Genotype => {
+            let column = array
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .ok_or_else(not_of_its_type)?;
+            if let Some(row) = first_null(column) {
+                return Err(null_at(row));
+            }
+            let num_individuals = metadata.individuals.len();
+            // The width was checked against the `popnei` key when the file
+            // was opened, and it is what turns the flat buffer into
+            // variants.
+            if usize::try_from(column.value_length()).ok() != Some(num_individuals) {
+                return Err(damaged(&format!(
+                    "holds {found} values for each variant, and the `{POPNEI_KEY}` key names {num_individuals} individuals",
+                    found = column.value_length()
+                )));
+            }
+            let values = column
+                .values()
+                .as_any()
+                .downcast_ref::<PrimitiveArray<T>>()
+                .ok_or_else(not_of_its_type)?;
+            if let Some(index) = first_null(values) {
+                return Err(null_at(index.checked_div(num_individuals).unwrap_or(0)));
+            }
+            (values, num_individuals)
+        }
+    };
+    let wanted = num_vars
+        .checked_mul(values_per_var)
+        .ok_or_else(|| block_too_large(num_vars, metadata))?;
+    let Some(of_the_batch) = values.values().get(..wanted) else {
+        return Err(damaged("holds fewer values than the variants of the batch"));
+    };
+    let mut copied = Vec::new();
+    copied
+        .try_reserve_exact(wanted)
+        .map_err(|_| block_too_large(num_vars, metadata))?;
+    copied.extend_from_slice(of_the_batch);
+    Ok(copied)
 }
 
 /// That every variant of the block of a batch is in its entry of the
@@ -3412,6 +4158,7 @@ fn metadata_of_the_schema(schema: &Schema) -> Result<VarsMetadata> {
             return Err(Error::VarsIndividualTwice { name: name.clone() });
         }
     }
+    extra_fields_fit(&metadata.extra_fields)?;
     Ok(metadata)
 }
 
@@ -3758,6 +4505,7 @@ mod tests {
             qual: Some(qual),
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 
@@ -4008,7 +4756,7 @@ mod tests {
         let mut chroms = ChromTable::new();
         let block = cases_block(&mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        write_vars(reader, Vec::new(), Some(num_vars_per_block))
+        write_vars(reader, Vec::new(), Some(num_vars_per_block), false)
             .expect("the file was written")
             .0
     }
@@ -4030,7 +4778,7 @@ mod tests {
             "the reader was asked for fields before the call"
         );
 
-        write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
 
         assert_eq!(
             *asked_for.lock().expect("what the reader was asked for"),
@@ -4047,17 +4795,19 @@ mod tests {
         let mut chroms = ChromTable::new();
         let block = cases_block(&mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (_, num_vars) = write_vars(reader, Vec::new(), Some(3)).expect("the file");
+        let (_, num_vars) = write_vars(reader, Vec::new(), Some(3), false).expect("the file");
         assert_eq!(num_vars, 4);
 
         let (_, num_vars) =
-            write_vars(many_vcf_reader(None), Vec::new(), Some(100)).expect("the file");
+            write_vars(many_vcf_reader(None), Vec::new(), Some(100), false).expect("the file");
         assert_eq!(num_vars, 500);
-        let (_, num_vars) = write_vars(many_vcf_reader(None), Vec::new(), None).expect("the file");
+        let (_, num_vars) =
+            write_vars(many_vcf_reader(None), Vec::new(), None, false).expect("the file");
         assert_eq!(num_vars, 500);
 
         let of_no_variants = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let (_, num_vars) = write_vars(of_no_variants, Vec::new(), Some(3)).expect("the file");
+        let (_, num_vars) =
+            write_vars(of_no_variants, Vec::new(), Some(3), false).expect("the file");
         assert_eq!(num_vars, 0);
     }
 
@@ -4073,7 +4823,7 @@ mod tests {
         let mut reader = GivenBlocks::of(vec![block], chroms);
 
         let (bytes, num_vars) =
-            write_vars(&mut reader, Vec::new(), Some(3)).expect("the file was written");
+            write_vars(&mut reader, Vec::new(), Some(3), false).expect("the file was written");
 
         assert_eq!(num_vars, 4);
         assert_eq!(bytes, cases_written_in_batches_of(3));
@@ -4159,6 +4909,7 @@ mod tests {
                 ploidy: 2,
                 num_vars_per_block: 3,
                 chrom_lengths: Vec::new(),
+                extra_fields: Vec::new(),
             }
         );
         assert_eq!(
@@ -4195,7 +4946,8 @@ mod tests {
         let rows: Vec<&Row> = NOT_SORTED.iter().collect();
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(4), true).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(num_rows_of(&file.rows), [4]);
@@ -4240,7 +4992,8 @@ mod tests {
         block.qual = None;
         assert_eq!(block.fields(), Needs::GTS);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(file.columns, vec![("gts".to_owned(), gts_type(6), false)]);
@@ -4265,7 +5018,8 @@ mod tests {
     #[test]
     fn a_source_with_no_variants_gives_a_file_with_both_keys_and_no_batch() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(file.columns, vec![("gts".to_owned(), gts_type(6), false)]);
@@ -4299,12 +5053,14 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let reader = GivenBlocks {
             ploidy: 4,
             ..GivenBlocks::of(vec![block], chroms)
         };
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(2)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(2), false).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(
@@ -4372,7 +5128,7 @@ mod tests {
         let rows: Vec<&Row> = vec![&CASES[0]; 1000];
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), None).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), None, false).expect("the file was written");
 
         let frames = bytes
             .windows(LZ4_FRAME_MARK.len())
@@ -4615,7 +5371,7 @@ mod tests {
         let reader = GivenBlocks::of(vec![block], chroms);
         let sink = SinkThatFills::of(200);
 
-        let error = match write_vars(reader, sink.clone(), Some(3)) {
+        let error = match write_vars(reader, sink.clone(), Some(3), false) {
             Ok(_) => panic!("the file was written on a sink that fails"),
             Err(error) => error,
         };
@@ -4771,7 +5527,7 @@ mod tests {
         };
         // The blocks of the test have no column of whether each variant
         // passed its FILTER.
-        let every_column = Needs::ALL.difference(Needs::PASSED);
+        let every_column = Needs::ALL.difference(Needs::PASSED | Needs::EXTRA);
         assert_eq!(*first, every_column);
         assert_eq!(*found, every_column.difference(Needs::QUAL));
         let message = error.to_string();
@@ -4796,6 +5552,7 @@ mod tests {
             ploidy: 2,
             num_vars_per_block: 3,
             chrom_lengths: Vec::new(),
+            extra_fields: Vec::new(),
         }
     }
 
@@ -4805,7 +5562,7 @@ mod tests {
     #[test]
     fn the_version_that_is_written_starts_with_the_part_that_is_read() {
         assert_eq!(FORMAT_VERSION.split('.').next(), Some(FORMAT_VERSION_READ));
-        assert_eq!(FORMAT_VERSION, "1.2");
+        assert_eq!(FORMAT_VERSION, "1.3");
     }
 
     /// The text of the key is what another program that opens the file
@@ -4817,7 +5574,7 @@ mod tests {
         let written = metadata_as_json(&metadata);
         assert_eq!(
             written,
-            r#"{"format_version":"1.2","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[]}"#
+            r#"{"format_version":"1.3","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[],"var_fields":[],"gt_fields":[]}"#
         );
         let parsed = metadata_from_json(&written).expect("the key written is parsed back");
         assert_eq!(parsed, metadata);
@@ -4835,11 +5592,12 @@ mod tests {
             ploidy: 4,
             num_vars_per_block: 100,
             chrom_lengths: Vec::new(),
+            extra_fields: Vec::new(),
         };
         let written = metadata_as_json(&metadata);
         assert_eq!(
             written,
-            r#"{"format_version":"1.7","individuals":["the \"first\" one","ind\\2"],"ploidy":4,"num_vars_per_block":100,"chrom_lengths":[]}"#
+            r#"{"format_version":"1.7","individuals":["the \"first\" one","ind\\2"],"ploidy":4,"num_vars_per_block":100,"chrom_lengths":[],"var_fields":[],"gt_fields":[]}"#
         );
         let parsed = metadata_from_json(&written).expect("the key written is parsed back");
         assert_eq!(parsed, metadata);
@@ -5303,18 +6061,18 @@ mod tests {
     fn source_header_of_write_vcf_goes_into_the_popnei_key_of_its_vars_file() {
         let path = reference("vcf", "write.vcf");
         let vcf = VcfReader::from_path(&path, VcfOptions::default()).expect("write.vcf");
-        let (bytes, num_vars) = write_vars(vcf, Vec::new(), None).expect("the file");
+        let (bytes, num_vars) = write_vars(vcf, Vec::new(), None, false).expect("the file");
         assert_eq!(num_vars, 5);
 
         let key = the_popnei_key_of(bytes.clone());
-        assert!(key.contains(r#""format_version":"1.2""#), "{key}");
+        assert!(key.contains(r#""format_version":"1.3""#), "{key}");
         assert!(
             key.contains(r#""chrom_lengths":[["chr1",2000],["chr2",1500]]"#),
             "{key}"
         );
         let expected = vec![("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)];
         let reader = opened(bytes).expect("the file is a vars file");
-        assert_eq!(reader.metadata().format_version, "1.2");
+        assert_eq!(reader.metadata().format_version, "1.3");
         assert_eq!(reader.metadata().chrom_lengths, expected);
         assert_eq!(reader.header().chrom_lengths, expected);
         assert_eq!(reader.header().individuals, ["a", "b", "c"]);
@@ -5363,7 +6121,7 @@ mod tests {
 
     /// The vars file of `many.vcf` read with every variant has the column
     /// `passed` after `gts`, of booleans and with no null, which holds 25
-    /// false, the variants whose FILTER is `q10`, and the version 1.2; read
+    /// false, the variants whose FILTER is `q10`, and the version 1.3; read
     /// back, every block has the column, and it is, variant by variant,
     /// what the VCF reader gives.
     #[test]
@@ -5396,7 +6154,7 @@ mod tests {
         }
         assert_eq!(failed_in_the_file, 25);
         let key = the_popnei_key_of(bytes.clone());
-        assert!(key.contains(r#""format_version":"1.2""#), "{key}");
+        assert!(key.contains(r#""format_version":"1.3""#), "{key}");
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
         assert_eq!(num_vars_of(&blocks), [100; 5]);
@@ -5420,7 +6178,7 @@ mod tests {
             num_vars_per_block: None,
         };
         let vcf = VcfReader::from_path(&reference("vcf", "many.vcf"), options).expect("many.vcf");
-        let (bytes, num_vars) = write_vars(vcf, Vec::new(), Some(100)).expect("the file");
+        let (bytes, num_vars) = write_vars(vcf, Vec::new(), Some(100), false).expect("the file");
         assert_eq!(num_vars, 475);
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
@@ -5431,7 +6189,7 @@ mod tests {
 
     /// A source whose blocks have no column of whether each variant passed,
     /// as a vars file of 1.1 is, gives a file with no such column, of the
-    /// version 1.2 all the same, and its blocks read back have none.
+    /// version 1.3 all the same, and its blocks read back have none.
     #[test]
     fn passed_column_is_not_in_a_file_written_from_a_source_without_it() {
         let bytes = cases_written_in_batches_of(3);
@@ -5445,13 +6203,16 @@ mod tests {
             .collect();
         assert_eq!(names, ["chrom", "pos", "id", "alleles", "qual", "gts"]);
         let key = the_popnei_key_of(bytes.clone());
-        assert!(key.contains(r#""format_version":"1.2""#), "{key}");
+        assert!(key.contains(r#""format_version":"1.3""#), "{key}");
 
         let (blocks, _) = blocks_read(bytes, Needs::ALL);
         assert_eq!(num_vars_of(&blocks), [3, 1]);
         for block in &blocks {
             assert_eq!(block.passed, None);
-            assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
+            assert_eq!(
+                block.fields(),
+                Needs::ALL.difference(Needs::PASSED | Needs::EXTRA)
+            );
         }
     }
 
@@ -5482,7 +6243,7 @@ mod tests {
     #[test]
     fn passed_column_of_a_file_of_1_2_is_left_out_by_a_reader_that_does_not_ask_for_it() {
         let bytes = many_vcf_written(Some(100));
-        let every_other = Needs::ALL.difference(Needs::PASSED);
+        let every_other = Needs::ALL.difference(Needs::PASSED | Needs::EXTRA);
 
         let (without, chroms_without) = blocks_read(bytes.clone(), every_other);
         let (with, chroms_with) = blocks_read(bytes, Needs::ALL);
@@ -5493,7 +6254,7 @@ mod tests {
             assert_eq!(block.fields(), every_other);
         }
         for block in &with {
-            assert_eq!(block.fields(), Needs::ALL);
+            assert_eq!(block.fields(), Needs::ALL.difference(Needs::EXTRA));
         }
         assert_eq!(
             rows_of(&without, &chroms_without),
@@ -5613,7 +6374,7 @@ mod tests {
         let written = metadata_as_json(&metadata);
         assert_eq!(
             written,
-            r#"{"format_version":"1.2","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[["chr\"2",1500],["chr1",2000]]}"#
+            r#"{"format_version":"1.3","individuals":["ind1","ind2","ind3"],"ploidy":2,"num_vars_per_block":3,"chrom_lengths":[["chr\"2",1500],["chr1",2000]],"var_fields":[],"gt_fields":[]}"#
         );
         assert_eq!(metadata_from_json(&written).expect("parsed back"), metadata);
     }
@@ -5686,7 +6447,7 @@ mod tests {
     /// The bytes of the vars file of `many.vcf`, written from the VCF
     /// reader with batches of that many variants.
     fn many_vcf_written(num_vars_per_block: Option<usize>) -> Vec<u8> {
-        write_vars(many_vcf_reader(None), Vec::new(), num_vars_per_block)
+        write_vars(many_vcf_reader(None), Vec::new(), num_vars_per_block, false)
             .expect("many.vcf was written as a vars file")
             .0
     }
@@ -5869,6 +6630,7 @@ mod tests {
                 ploidy: 2,
                 num_vars_per_block: 3,
                 chrom_lengths: Vec::new(),
+                extra_fields: Vec::new(),
             }
         );
         assert_eq!(
@@ -6214,7 +6976,8 @@ mod tests {
         block.alleles = None;
         block.qual = None;
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
 
         let reader = opened(bytes).expect("the file of one column is a vars file");
 
@@ -6252,7 +7015,8 @@ mod tests {
     #[test]
     fn a_file_with_no_variants_is_opened_and_says_it_holds_none() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
 
         let reader = opened(bytes).expect("the file with no batch is a vars file");
 
@@ -6551,7 +7315,10 @@ mod tests {
         for block in &blocks {
             // The block the file was written from has no column of whether
             // each variant passed its FILTER, so the file has none.
-            assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
+            assert_eq!(
+                block.fields(),
+                Needs::ALL.difference(Needs::PASSED | Needs::EXTRA)
+            );
             assert_eq!(block.num_individuals, CASES_INDIVIDUALS);
             assert_eq!(block.ploidy, CASES_PLOIDY);
         }
@@ -6567,7 +7334,8 @@ mod tests {
         let rows: Vec<&Row> = NOT_SORTED.iter().collect();
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(4), true).expect("the file was written");
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
 
@@ -6600,7 +7368,8 @@ mod tests {
         block.alleles = None;
         block.qual = None;
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
 
@@ -6700,6 +7469,7 @@ mod tests {
             qual: Some(vec![30.0; NUM_VARS]),
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let expected = block.gts.clone();
         let reader = GivenBlocks {
@@ -6710,7 +7480,7 @@ mod tests {
             asked_for: Arc::new(Mutex::new(Needs::empty())),
         };
 
-        let bytes = write_vars(reader, Vec::new(), Some(NUM_VARS))
+        let bytes = write_vars(reader, Vec::new(), Some(NUM_VARS), false)
             .expect("the blocks were written as a vars file")
             .0;
 
@@ -6886,7 +7656,8 @@ mod tests {
     #[test]
     fn a_file_with_no_variants_gives_no_block() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
         let mut reader = opened(bytes).expect("the file with no batch is a vars file");
 
         assert!(reader.next_block().expect("the empty file").is_none());
@@ -7936,6 +8707,18 @@ mod tests {
     /// ones of its own: the reader of a vars file uses no threads, so every
     /// panic of the files this makes is on this thread.
     fn swept(whole: &[u8], values: &[u8], expected: &[ReadRow]) -> Sweep {
+        swept_with(whole, values, expected, rows_or_error)
+    }
+
+    /// [`swept`] with what a file is read as given: `read` reads the bytes
+    /// of a file, and a file it gives `expected` for is read as the whole
+    /// one.
+    fn swept_with<T: PartialEq<E>, E: ?Sized>(
+        whole: &[u8],
+        values: &[u8],
+        expected: &E,
+        read: impl Fn(Vec<u8>) -> Result<T>,
+    ) -> Sweep {
         let seen: Arc<Mutex<HashMap<(ThreadId, String), u64>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let hook = std::panic::take_hook();
@@ -7962,9 +8745,9 @@ mod tests {
                 }
                 let mut bytes = whole.to_vec();
                 bytes[at] = *value;
-                match rows_or_error(bytes) {
+                match read(bytes) {
                     Err(_) => errors = errors.saturating_add(1),
-                    Ok(rows) if rows == expected => the_same = the_same.saturating_add(1),
+                    Ok(rows) if rows == *expected => the_same = the_same.saturating_add(1),
                     Ok(_) => others = others.saturating_add(1),
                 }
             }
@@ -8219,7 +9002,8 @@ mod tests {
         let rows: Vec<&Row> = vec![&CASES[0]; 1000];
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (whole, _) = write_vars(reader, Vec::new(), Some(1000)).expect("the file was written");
+        let (whole, _) =
+            write_vars(reader, Vec::new(), Some(1000), false).expect("the file was written");
         let at = the_length_of_the_genotypes(&whole, 0);
         let says = <[u8; UNCOMPRESSED_LENGTH_BYTES]>::try_from(
             &whole[at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)],
@@ -8363,6 +9147,7 @@ mod tests {
             qual: Some(vec![quality, f32::NAN]),
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 
@@ -8616,4 +9401,7 @@ mod tests {
             "the ten variants of the five batches before the damaged one"
         );
     }
+
+    mod extra_fields;
+    mod not_sorted;
 }

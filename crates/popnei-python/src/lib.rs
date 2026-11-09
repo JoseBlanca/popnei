@@ -19,6 +19,7 @@ mod ld;
 mod pca;
 mod pcoa;
 mod pop_dists;
+mod segments;
 mod source;
 mod stats;
 mod steps;
@@ -171,6 +172,8 @@ mod _core {
     use super::pcoa::{correct_dists_by_lingoes, pcoa, pcoa_of_variants};
     #[pymodule_export]
     use super::pop_dists::{calc_pop_dists, pop_dist_measures_that_have_a_value};
+    #[pymodule_export]
+    use super::segments::{extra_field_types, write_vars_from_segments};
     #[pymodule_export]
     use super::source::Blocks;
     #[pymodule_export]

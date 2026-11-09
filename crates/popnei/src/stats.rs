@@ -2856,6 +2856,7 @@ mod fixtures {
                 qual: None,
                 passed: None,
                 vcf_text: None,
+                extra: None,
             })
             .collect()
     }
@@ -4327,6 +4328,7 @@ mod distribs {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 
@@ -4931,6 +4933,7 @@ mod distribs {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let mut reader = GivenBlocks::of(vec![of_no_individual]);
         let error = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
@@ -4968,6 +4971,7 @@ mod distribs {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let mut reader = GivenBlocks::of_a_source_of(3, 2, vec![of_three_individuals]);
         let error = calc_per_var_distribs(&mut reader, &config_of(Pops::all(5), 1))
@@ -5005,6 +5009,7 @@ mod distribs {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let mut blocks = blocks_of(&THE_SIX_VARIANTS, 6);
         blocks.push(of_seven_individuals);
@@ -5354,6 +5359,7 @@ mod per_individual {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 

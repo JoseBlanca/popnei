@@ -14,7 +14,9 @@ import numpy
 Field = Literal["chrom", "pos", "id", "alleles", "qual"]
 """The name of a column of a block, which ``iter_blocks`` takes in `fields`.
 
-The genotypes are not among them: every block holds them.
+The genotypes are not among them: every block holds them. The names of the
+extra fields of a vars file are taken there too, and they are the user's,
+so they are not among these five.
 """
 
 
@@ -69,6 +71,24 @@ class Block:
     at that site. It is NaN for a variant whose source gives no quality.
     """
 
+    extra_fields: dict[str, numpy.ndarray] | None = None
+    """The extra fields of a vars file that ``iter_blocks`` was asked for,
+    the name of each one to its array, in the order of the file.
+
+    A variant field, one value for each variant as an INFO field of a VCF,
+    is an array of variants; a genotype field, one value for each
+    individual at each variant as a FORMAT field, is an array of variants x
+    individuals, the individuals in the order of ``gts``, and so in the
+    order a filter of individuals kept them. Each array is of the numpy type
+    of its field, which :attr:`popnei.Variants.var_fields` and
+    :attr:`popnei.Variants.gt_fields` give, holds the values the file holds,
+    with whatever the user wrote for a missing one, and is read only, as
+    ``gts`` is, since it is the memory the core filled with no copy.
+
+    It is ``None`` when no extra field was asked for, which the default
+    `fields` of ``iter_blocks`` is: a field that is not named is not read.
+    """
+
     def __repr__(self) -> str:
         """What the block holds, and not the variants it holds.
 
@@ -79,16 +99,21 @@ class Block:
         columns = ", ".join(
             name for name in get_args(Field) if getattr(self, name) is not None
         )
+        extra = (
+            f", extra fields {', '.join(self.extra_fields)}"
+            if self.extra_fields
+            else ""
+        )
         return (
             f"<Block of {self.num_vars} variants, "
             f"gts {self.gts.dtype} {self.gts.shape}, "
-            f"columns {columns or 'none'}>"
+            f"columns {columns or 'none'}{extra}>"
         )
 
 
 def _block_of(columns) -> Block:
     """The block of the columns that `popnei._core` gives for one block."""
-    gts, chrom, pos, id_, alleles, qual = columns
+    gts, chrom, pos, id_, alleles, qual, extra_fields = columns
     return Block(
         gts=gts,
         num_vars=gts.shape[0],
@@ -97,4 +122,5 @@ def _block_of(columns) -> Block:
         id=id_,
         alleles=alleles,
         qual=qual,
+        extra_fields=extra_fields,
     )

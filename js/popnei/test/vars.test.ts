@@ -411,6 +411,49 @@ test("a source that fails half way is thrown and leaves the handle usable", () =
   variants.free();
 });
 
+test("writeVars refuses unsorted variants unless allowUnsorted, from a VCF and from a vars file", () => {
+  // The second variant is at a lower position of chr1 than the first.
+  const fromTheVcf = openVcf(
+    vcfOf([
+      "chr1\t5000\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+      "chr1\t100\t.\tG\tC\t.\tPASS\t.\tGT\t0/1\t1/1\t0/0",
+    ]),
+  );
+  // The message ends with the option of TypeScript and not the name the
+  // core writes it with.
+  const notSorted =
+    /^the 2nd variant written, chr1 100, comes after the 1st, chr1 5000; .*`allowUnsorted: true` writes them in the order they come$/;
+  assert.throws(() => writeVars(fromTheVcf), { name: "Error", message: notSorted });
+  assert.throws(() => writeVars(fromTheVcf, { allowUnsorted: false }), {
+    name: "Error",
+    message: notSorted,
+  });
+  const written = writeVars(fromTheVcf, { allowUnsorted: true });
+  fromTheVcf.free();
+  assert.equal(written.passStats.numVars, 2);
+
+  // The vars file holds the variants in the order of the VCF, and writing
+  // it again is checked as writing the VCF was.
+  const fromTheFile = openVars(written.bytes);
+  const [block] = [...fromTheFile.iterBlocks({ fields: ["pos"] })];
+  assert.deepEqual([...(block?.pos ?? [])], [5000, 100]);
+  assert.throws(() => writeVars(fromTheFile), { name: "Error", message: notSorted });
+  assert.equal(writeVars(fromTheFile, { allowUnsorted: true }).passStats.numVars, 2);
+  fromTheFile.free();
+});
+
+test("an allowUnsorted that is not a boolean is refused", async () => {
+  const variants = openVcf(await referenceVcf("cases.vcf"));
+  for (const allowUnsorted of ["yes", 1, null]) {
+    assert.throws(
+      // @ts-expect-error: the value is not a boolean, which is the point.
+      () => writeVars(variants, { allowUnsorted }),
+      { name: "Error", message: /`allowUnsorted` is true or false/ },
+    );
+  }
+  variants.free();
+});
+
 test("a pass over a vars file gives itself back however it ends", async () => {
   const before = numberOfOpenPasses();
   const variants = openVars(await varsFileOfCases(1));

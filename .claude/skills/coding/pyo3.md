@@ -127,7 +127,7 @@ builds the frozen dataclasses.
 `impl From<popnei::Error> for PyErr` cannot be written in this crate,
 because neither type is ours. So the crate has an error type of its own,
 `enum PyPopneiError`, with a `From<popnei::Error>`, a `From<PyErr>` and one
-`From<PyPopneiError> for PyErr`. Its fourteen cases are the error of the
+`From<PyPopneiError> for PyErr`. Its seventeen cases are the error of the
 core; that same error with the file it happened in, which the core was not
 given; the error of the core met in what was read from a file where the
 same case can also be an argument the caller wrote, the ploidy out of range
@@ -146,7 +146,11 @@ already at, given to a call that writes one, which this crate also refuses
 before the core sees it; another of those errors with the file that the
 call was writing and could not take away afterwards, which becomes a note
 on the exception, the text that Python keeps in `__notes__` and prints under
-the message; a defect of this crate, a lock that a panic left broken or a
+the message; an argument of the writer of segments that the schema of the
+file cannot hold, under the name of the argument; a segment that the writer
+of segments refuses, which names the segment and its variant, each counted
+from 1; an item of the segments that is not a mapping, which is the one
+`TypeError` of the crate; a defect of this crate, a lock that a panic left broken or a
 chromosome that is not in the table it came from; and an exception the
 interpreter itself raised, the `KeyboardInterrupt` that `py.check_signals`
 finds between two blocks, which travels back as it is.

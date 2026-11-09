@@ -82,7 +82,7 @@ test("the passes of a vars file share the bytes it was opened with", () => {
   // twelve copies of it: measured at 36765696 bytes of growth for the
   // 12231618 byte file this wrote before the vars file had the column of
   // whether each variant passed, three times what is asked here; the file
-  // is now 12249642 bytes.
+  // is now 12249738 bytes.
   assert.ok(
     grew < bytes.length,
     `${NUM_PASSES} passes over a vars file of ${bytes.length} bytes grew ` +

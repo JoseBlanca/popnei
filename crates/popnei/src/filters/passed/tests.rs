@@ -287,6 +287,7 @@ impl<R: BlockReader> WithoutPassed<R> {
     fn over(reader: R) -> WithoutPassed<R> {
         let header = SourceHeader {
             keeps_passed: false,
+            extra_fields: Vec::new(),
             ..reader.header().clone()
         };
         WithoutPassed {
@@ -376,7 +377,7 @@ fn over_a_vars_file_of_many_vcf_keeps_the_same_475() {
     use crate::io::vars::{VarsReader, write_vars};
 
     let (bytes, num_vars) =
-        write_vars(many_vcf_reader(None), Vec::new(), Some(7)).expect("the vars file");
+        write_vars(many_vcf_reader(None), Vec::new(), Some(7), false).expect("the vars file");
     assert_eq!(num_vars, 500);
     let source = VarsReader::new(Cursor::new(bytes)).expect("the reader of the vars file");
     let mut chain = chain_of(Box::new(source), &[PassStep::Passed]).expect("the chain");
@@ -403,6 +404,7 @@ fn over_a_vars_file_without_the_passed_column_is_refused_at_the_first_block() {
         WithoutPassed::over(many_vcf_reader(None)),
         Vec::new(),
         Some(7),
+        false,
     )
     .expect("the vars file");
     assert_eq!(num_vars, 500);
@@ -573,6 +575,7 @@ fn block_at(positions: &[u64], passed: Option<Vec<bool>>) -> Block {
         qual: None,
         passed,
         vcf_text: None,
+        extra: None,
     }
 }
 
@@ -604,6 +607,7 @@ impl Recording {
                 chrom_lengths: Vec::new(),
                 vcf_meta_lines: None,
                 keeps_passed: true,
+                extra_fields: Vec::new(),
             },
         }
     }

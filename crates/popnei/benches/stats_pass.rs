@@ -372,6 +372,7 @@ static NO_HEADER: SourceHeader = SourceHeader {
     chrom_lengths: Vec::new(),
     vcf_meta_lines: None,
     keeps_passed: false,
+    extra_fields: Vec::new(),
 };
 
 impl BlockReader for TheSameBlockAgain<'_> {
@@ -392,6 +393,7 @@ impl BlockReader for TheSameBlockAgain<'_> {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         }))
     }
 

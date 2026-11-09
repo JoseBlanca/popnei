@@ -7,6 +7,7 @@ import {
 } from "../wasm/popnei.js";
 
 import {
+  aBoolean,
   anObjectOfOptions,
   bytesOrFile as bytesOrFileOf,
   whatWasGiven,
@@ -48,9 +49,9 @@ export interface WrittenInPieces {
 export type OnBytes = (piece: Uint8Array) => void;
 
 /**
- * How a vars file is written: how many variants a batch of it holds, and
- * whether its bytes go to a function of the application as they are
- * written.
+ * How a vars file is written: how many variants a batch of it holds,
+ * whether variants that are not sorted are written, and whether its bytes
+ * go to a function of the application as they are written.
  */
 export interface WriteVarsOptions {
   /**
@@ -60,6 +61,13 @@ export interface WriteVarsOptions {
    * which is the size of its blocks.
    */
   numVarsPerBlock?: number;
+
+  /**
+   * Whether variants that are not sorted are written, in the order they
+   * come. When it is not given, or is `false`, a variant out of order is an
+   * `Error` that names it and the one before it.
+   */
+  allowUnsorted?: boolean;
 
   /**
    * The function the file is given to while the pass writes it, one piece
@@ -151,6 +159,16 @@ export function openVars(source: BytesOrFile): Variants {
  * column, and one that does not keep whether its variants passed, a vars
  * file written before that column existed, gives one without it.
  *
+ * The variants have to be sorted unless `allowUnsorted` is `true`: the
+ * positions of a chromosome do not go down from one variant to the next,
+ * and the variants of a chromosome come together, so a chromosome whose
+ * variants have ended does not come back. Two variants at one position are
+ * in order, and the chromosomes can come in any order. A variant out of
+ * that order is an `Error` that names it and the one before it, `the 2nd
+ * variant written, chr1 100, comes after the 1st, chr1 5000`, counted among
+ * the variants written, after any filter. With `allowUnsorted`,
+ * the variants are written in the order they come.
+ *
  * Without `onBytes`, the whole file is built in the memory of wasm, which
  * grows and never shrinks, so what the tab holds while the call runs is the
  * source and the file together, and `numVarsPerBlock` is what an application that runs out
@@ -174,8 +192,9 @@ export function openVars(source: BytesOrFile): Variants {
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
  * `options` is not an object, when `numVarsPerBlock` is not a whole number of 1 or more and at most
- * 4294967295, when `onBytes` is not a function, when the source cannot be read, a wrong line of a VCF among
- * the causes, when the memory of the tab does not take the file, when
+ * 4294967295, when `allowUnsorted` is not a boolean, when `onBytes` is not a function, when the source
+ * cannot be read, a wrong line of a VCF among the causes, when a variant is out of order and
+ * `allowUnsorted` is not `true`, when the memory of the tab does not take the file, when
  * `onBytes` returns a promise, and when `init` has not been awaited; and
  * it throws what `onBytes` threw.
  */
@@ -196,7 +215,11 @@ export function writeVars(
   options: WriteVarsOptions = {},
 ): VarsWritten | WrittenInPieces {
   theWasmHasToBeLoaded();
-  anObjectOfOptions("writeVars", options, ["numVarsPerBlock", "onBytes"]);
+  anObjectOfOptions("writeVars", options, [
+    "numVarsPerBlock",
+    "allowUnsorted",
+    "onBytes",
+  ]);
   const { source, steps, whileTheRunReads } = sourceOfTheVariants(
     "variants",
     variants,
@@ -205,6 +228,10 @@ export function writeVars(
     options.numVarsPerBlock === undefined
       ? undefined
       : wholeNumberOfOneOrMore("numVarsPerBlock", options.numVarsPerBlock);
+  const allowUnsorted =
+    options.allowUnsorted === undefined
+      ? false
+      : aBoolean("allowUnsorted", options.allowUnsorted);
   const onBytes = theFunctionOfThePieces(options.onBytes);
   // The steps of the pass are a copy of the list, made after the argument
   // was checked so that nothing refused here leaves one behind: the call
@@ -216,7 +243,12 @@ export function writeVars(
   // crossed, and the memory of wasm would keep its half of that for as long
   // as the page lives.
   const file = whileTheRunReads(() =>
-    source.write_vars(numVarsPerBlock, steps.of_a_pass(), onBytes),
+    source.write_vars(
+      numVarsPerBlock,
+      allowUnsorted,
+      steps.of_a_pass(),
+      onBytes,
+    ),
   );
   return theFileOrTheCountsOf(file, onBytes, "vars file");
 }

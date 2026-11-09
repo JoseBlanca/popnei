@@ -156,7 +156,9 @@ pub fn num_vars_per_block_of_write_vcf(source: WriterSource) -> Option<usize> {
 /// [`Error::VcfWriterChromNameMissing`], and when a block holds a variant
 /// whose `passed` is false while the header of the source says it keeps no
 /// `passed`, [`Error::VcfWriterPassedNotInTheHeader`], the three of them
-/// defects of the reader; and when the sink fails, [`Error::FileNotWritten`]. The bytes
+/// defects of the reader; when the header of the source has extra fields,
+/// which a VCF has no place for, [`Error::VcfWriterExtraFields`], before
+/// anything is written; and when the sink fails, [`Error::FileNotWritten`]. The bytes
 /// written before the error are on the sink, and it is the caller that
 /// removes the file.
 pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
@@ -164,6 +166,15 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
     sink: W,
     options: VcfWriteOptions,
 ) -> Result<(W, u64)> {
+    let extra_fields = &reader.header().extra_fields;
+    if !extra_fields.is_empty() {
+        return Err(Error::VcfWriterExtraFields {
+            fields: extra_fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect(),
+        });
+    }
     let from = match reader.header().vcf_meta_lines {
         Some(_) => LinesFrom::Text,
         None => LinesFrom::Columns,
@@ -684,7 +695,7 @@ mod tests {
         LinesFrom, LinesOf, VcfWriteOptions, WriterSource, num_vars_per_block_of_write_vcf,
         vcf_text_num_vars_per_block, write_vcf,
     };
-    use crate::block::{Block, BlockReader, SourceHeader};
+    use crate::block::{Block, BlockReader, ExtraFieldDecl, ExtraKind, ExtraType, SourceHeader};
     use crate::error::{Error, Result};
     use crate::filters::{
         FilteringStats, PassStep, RegionSelection, TheChromOfTheVariant, VarFilteringCriterion,
@@ -967,7 +978,7 @@ mod tests {
     #[test]
     fn write_vcf_from_the_vars_file_of_write_vcf_gives_the_five_lines_of_the_spec() {
         let reader = reader_of("write.vcf", true, None);
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
         let (text, num_vars) = written(|| {
             Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
         });
@@ -1061,7 +1072,7 @@ mod tests {
     #[test]
     fn write_vcf_passed_column_of_many_vcf_writes_25_lines_with_fail_and_the_filter_line() {
         let reader = reader_of("many.vcf", false, Some(7));
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
         let opened = VarsReader::new(Cursor::new(vars.clone())).expect("the vars file");
         assert!(opened.header().keeps_passed);
 
@@ -1116,7 +1127,7 @@ mod tests {
     fn write_vcf_passed_column_of_many_vcf_through_the_filter_of_individuals_keeps_the_25_fail() {
         let reader = reader_of("many.vcf", false, Some(7));
         let kept: Vec<String> = reader.individuals().iter().take(2).cloned().collect();
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
 
         let (text, num_vars) = written(|| {
             let reader = VarsReader::new(Cursor::new(vars.clone())).expect("the vars file");
@@ -1156,7 +1167,7 @@ mod tests {
             reader: reader_of("many.vcf", false, None),
             dropped: Needs::PASSED,
         };
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
         let opened = VarsReader::new(Cursor::new(vars.clone())).expect("the vars file");
         assert!(!opened.header().keeps_passed);
 
@@ -1384,7 +1395,7 @@ mod tests {
             reader: reader_of("write.vcf", true, None),
             dropped,
         };
-        write_vars(reader, Vec::new(), None)
+        write_vars(reader, Vec::new(), None, false)
             .expect("the vars file")
             .0
     }
@@ -1524,6 +1535,41 @@ mod tests {
         }
     }
 
+    /// A source with extra fields, which a vars file can have, is refused
+    /// before a byte is written, plain or bgzipped: the VCF written has no
+    /// place for them. The error names them in the order of the header.
+    #[test]
+    fn write_vcf_refuses_a_source_with_extra_fields_before_it_writes_anything() {
+        for options in [PLAIN, BGZIP] {
+            let mut reader = OneBlock::of_write_vcf(Needs::ALL);
+            reader.header.vcf_meta_lines = None;
+            reader.header.extra_fields = vec![
+                ExtraFieldDecl {
+                    name: "GP".to_owned(),
+                    kind: ExtraKind::Genotype,
+                    ty: ExtraType::F32,
+                },
+                ExtraFieldDecl {
+                    name: "END".to_owned(),
+                    kind: ExtraKind::Variant,
+                    ty: ExtraType::U64,
+                },
+            ];
+            let mut sink: Vec<u8> = Vec::new();
+            let error = match write_vcf(&mut reader, &mut sink, options) {
+                Ok((_, num_vars)) => panic!("{num_vars} variants were written"),
+                Err(error) => error,
+            };
+            let Error::VcfWriterExtraFields { ref fields } = error else {
+                panic!("not the error of the extra fields: {error:?}");
+            };
+            assert_eq!(fields, &["GP", "END"]);
+            assert!(error.to_string().contains("`GP`, `END`"), "{error}");
+            assert!(sink.is_empty(), "{} bytes were written", sink.len());
+            assert!(reader.block.is_some(), "a block was read");
+        }
+    }
+
     #[test]
     fn write_vcf_refuses_a_chromosome_number_its_reader_has_no_name_for() {
         let mut reader = OneBlock::of_write_vcf(Needs::ALL);
@@ -1559,7 +1605,7 @@ mod tests {
             chr2\t7\t.\tA\tT\t.\tPASS\t.\tGT\t1/1\n";
         let reader = VcfReader::new(Cursor::new(vcf.as_bytes().to_vec()), VcfOptions::default())
             .expect("the VCF");
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
         let (text, _) = written(|| {
             Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
         });
@@ -1715,7 +1761,7 @@ mod tests {
             num_vars_per_block: None,
         };
         let reader = VcfReader::new(Cursor::new(vcf.into_bytes()), options).expect("the VCF");
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
         let (text, _) = written(|| {
             Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
         });
@@ -1909,7 +1955,7 @@ mod tests {
         assert_eq!(of_the_vcf.asked_for, [Needs::ALL | Needs::VCF_TEXT]);
         assert_eq!(text, write_vcf_text());
 
-        let (vars, _) = write_vars(reader_of("write.vcf", true, None), Vec::new(), None)
+        let (vars, _) = write_vars(reader_of("write.vcf", true, None), Vec::new(), None, false)
             .expect("the vars file");
         let mut of_the_vars_file = ThatKeepsItsNeeds {
             reader: Box::new(VarsReader::new(Cursor::new(vars)).expect("the vars file")),

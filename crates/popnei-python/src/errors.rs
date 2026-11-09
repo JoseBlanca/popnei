@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyOSError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 create_exception!(
@@ -251,6 +251,41 @@ pub(crate) enum PyPopneiError {
         /// Why it could not be taken away, as the system said it.
         problem: String,
     },
+    /// An argument of the writer of segments that the schema of the file
+    /// cannot hold, which this crate refuses before the file is made, under
+    /// the name of the argument: no individual or one named twice, a type
+    /// of a field that is not one of the five, and a length of a chromosome
+    /// that is not above 0.
+    Argument {
+        /// The name of the argument, as a Python user writes it.
+        name: &'static str,
+        /// What is wrong with it, which follows its name in the message.
+        problem: String,
+    },
+    /// A segment that the writer of segments refuses, "A call that fails"
+    /// of the writer of segments of `docs/specs/io_vars.md`: what a user's
+    /// code yielded, which names no file.
+    Segment {
+        /// Which segment it is, counted from 1 among the items of the
+        /// user's iterator, those of no variant among them.
+        segment: u64,
+        /// Which variant of the segment it is, counted from 1, when the
+        /// refusal is of one.
+        var: Option<u64>,
+        /// The chromosome and the position of that variant, when they are
+        /// known and are not what is wrong.
+        at: Option<(String, u64)>,
+        /// What is wrong.
+        problem: String,
+    },
+    /// An item of the segments that is not a mapping, which Python calls a
+    /// `TypeError`.
+    SegmentNotAMapping {
+        /// Which item it is, counted from 1.
+        segment: u64,
+        /// The name of its type.
+        found: String,
+    },
     /// Something that cannot happen unless this crate has a defect: a lock
     /// a panic left broken, or a chromosome whose number is not in the
     /// table of the reader that gave it.
@@ -426,6 +461,30 @@ impl From<PyPopneiError> for PyErr {
                 path,
                 problem,
             } => left_behind(PyErr::from(*error), &path, &problem),
+            PyPopneiError::Argument { name, problem } => {
+                PyValueError::new_err(format!("`{name}` {problem}"))
+            }
+            PyPopneiError::Segment {
+                segment,
+                var,
+                at,
+                problem,
+            } => {
+                let variant = match (var, at) {
+                    (Some(var), Some((chrom, pos))) => format!(", variant {var}, {chrom} {pos}"),
+                    (Some(var), None) => format!(", variant {var}"),
+                    (None, _) => String::new(),
+                };
+                PyValueError::new_err(format!(
+                    "segment {segment}{variant}: {problem} (the segments, and the variants of \
+                     each, are counted from 1)"
+                ))
+            }
+            PyPopneiError::SegmentNotAMapping { segment, found } => PyTypeError::new_err(format!(
+                "segment {segment} is a {found}, and a segment is a mapping of `chrom`, `pos`, \
+                 `alleles`, `gts` and the declared fields to their values (the segments are \
+                 counted from 1)"
+            )),
             PyPopneiError::Broken { message, path } => {
                 PyRuntimeError::new_err(of_the_file(message, path))
             }
@@ -530,12 +589,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // batch of lines that did not come back, which a panic inside it
         // leaves behind. Nothing a user asks for gives them, so a user who
         // gets one reports it instead of looking for what they typed wrong.
-        // The three of the vars file writer are of the same kind: a block
+        // The four of the vars file writer are of the same kind: a block
         // that does not hold the individuals of the file, one whose columns
-        // are not those of the first block written, and a chromosome number
-        // that the table given with the block has no name for. `write_vars`
-        // gives the writer the individuals, the fields and the table of one
-        // reader, so a user reaches them only through a reader with a
+        // are not those of the first block written, a chromosome number
+        // that the table given with the block has no name for, and a block
+        // whose extra fields are not those the writer declared. `write_vars`
+        // gives the writer the individuals, the fields, the extra fields of
+        // the header and the table of one reader, so a user reaches them only through a reader with a
         // defect. The three of the counts of one variant are of that kind
         // too, which `docs/specs/variant.md` says in "The Rust interface":
         // the counts have no function in Python, so the genotypes they
@@ -565,6 +625,8 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::MissingRateOfAPopOfNoIndividual { .. }
         | popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
+        | popnei::Error::BlockExtraFieldOfAnotherSize { .. }
+        | popnei::Error::BlockExtraFieldOfAnotherType { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
         | popnei::Error::ReadAheadAnswerInPlaceOfABlock
         | popnei::Error::BlockWithNoGenotypeOfAVariant { .. }
@@ -572,7 +634,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VcfParseNotFinished { .. }
         | popnei::Error::VarsBlockDoesNotFit { .. }
         | popnei::Error::VarsBlockColumns { .. }
+        | popnei::Error::VarsBlockExtraFields { .. }
         | popnei::Error::VarsChromNameMissing { .. }
+        // The source of segments that failed, which the reader of segments
+        // gives only when it kept the error it failed with, and the call
+        // raises that one in its place: a user who reads this one met a
+        // reader that kept nothing.
+        | popnei::Error::SegmentsFailed
         // The three of the VCF writer, which are of the same kind: a block
         // that holds neither the text of its lines nor every column a line
         // is written from, a chromosome number its reader has no name for,
@@ -1073,7 +1141,10 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // disequilibrium was given and whose position does not rise within
         // its chromosome is one of them: what is wrong is the order the
         // variants come in the file, which that filter is the one reader of
-        // popnei to refuse. The block with more text
+        // popnei to refuse. So is a variant that `write_vars` was given out
+        // of the order a vars file is written in, which is the order of
+        // the source that was read, and a source with extra fields given to
+        // `write_vcf`, which names that source. The block with more text
         // or more alleles in one column than a column of a batch takes is
         // one no call from Python reaches: 2147483647 bytes of text or
         // alleles in one block is more memory than a machine gives. A pass

@@ -290,6 +290,7 @@ fn a_variant_on_either_edge_of_a_region_by_regions_is_on_the_side_bed_puts_it() 
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let mut filter = RegionFilter::new(selection_of(b"chr1\t10\t20\n", exclude));
         filter
@@ -518,6 +519,7 @@ fn a_source_with_no_positions_by_regions_is_the_error_of_a_field_at_its_first_bl
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         }),
         chroms: ChromTable::new(),
         individuals: vec!["ind1".to_owned()],
@@ -526,6 +528,7 @@ fn a_source_with_no_positions_by_regions_is_the_error_of_a_field_at_its_first_bl
             chrom_lengths: Vec::new(),
             vcf_meta_lines: None,
             keeps_passed: false,
+            extra_fields: Vec::new(),
         },
     };
     let mut reader = RegionsReader::new(
@@ -561,6 +564,7 @@ fn a_chromosome_number_with_no_name_by_regions_is_an_error_and_the_block_is_as_i
         qual: None,
         passed: None,
         vcf_text: None,
+        extra: None,
     };
     let mut chroms = ChromTable::new();
     chroms.intern("chr1");
@@ -1133,6 +1137,7 @@ impl GivenBlocks {
                 chrom_lengths: Vec::new(),
                 vcf_meta_lines: None,
                 keeps_passed: false,
+                extra_fields: Vec::new(),
             },
             calls: Arc::new(AtomicUsize::new(0)),
         }
@@ -1194,6 +1199,7 @@ fn haploid_block(variants: &[(u32, u64)]) -> Block {
         qual: None,
         passed: None,
         vcf_text: None,
+        extra: None,
     }
 }
 
@@ -1411,6 +1417,7 @@ fn vars_file_of_many_vcf(num_vars_per_batch: usize) -> Vec<u8> {
         vcf_reader("many.vcf", None),
         Vec::new(),
         Some(num_vars_per_batch),
+        false,
     )
     .expect("the vars file");
     assert_eq!(num_vars, 500);

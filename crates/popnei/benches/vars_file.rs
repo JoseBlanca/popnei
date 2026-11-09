@@ -376,6 +376,7 @@ impl Digest {
             qual,
             passed,
             vcf_text,
+            extra: _,
         } = block;
         self.number(place);
         self.count(*num_vars);

@@ -1100,6 +1100,12 @@ block.
 
 ### The cases a reader of the rules would not guess
 
+- A source with extra fields, a vars file that carries named values for
+  each variant or each genotype as "The extra fields" of
+  `docs/specs/io_vars.md` has them, is a `ValueError` naming the fields,
+  before the file is made, since the VCF written has no place for them.
+  The owner decided it on 9 November 2026; the option not taken, INFO and
+  FORMAT fields, is in "What carries them" of `docs/specs/io_vars.md`.
 - The lines are written in the order the source gives them. The writer
   does not sort, so a source that is not sorted gives a file that tabix
   refuses to index.

@@ -38,7 +38,7 @@ pub const MISSING_ALLELE: i8 = -1;
 pub const MAX_ALLELE: i8 = i8::MAX;
 
 /// The name of each field, for the messages. In the order of the bits.
-const NAMES_OF_THE_NEEDS: [(Needs, &str); 7] = [
+const NAMES_OF_THE_NEEDS: [(Needs, &str); 8] = [
     (Needs::GTS, "gts"),
     (Needs::CHROM_POS, "chrom and pos"),
     (Needs::ID, "id"),
@@ -46,10 +46,11 @@ const NAMES_OF_THE_NEEDS: [(Needs, &str); 7] = [
     (Needs::QUAL, "qual"),
     (Needs::VCF_TEXT, "vcf_text"),
     (Needs::PASSED, "passed"),
+    (Needs::EXTRA, "extra fields"),
 ];
 
 /// Which fields of the variants a consumer wants, or which ones a block
-/// holds: a set of the seven fields, with union, [`Needs::contains`] and
+/// holds: a set of the eight fields, with union, [`Needs::contains`] and
 /// [`Needs::difference`].
 ///
 /// A reader is asked for a set with
@@ -81,18 +82,27 @@ impl Needs {
     /// `PASS` or a dot. The filter of the variants that passed of
     /// `docs/specs/filters.md` reads it.
     pub const PASSED: Needs = Needs(64);
-    /// The six fields of a variant that a vars file holds, the genotypes to
-    /// the quality and whether the variant passed its FILTER, which the
-    /// writer of a vars file asks for and every reader is asked for until
-    /// it is told otherwise. A field added to `Needs` is added here by hand
-    /// when a vars file holds it: [`Needs::VCF_TEXT`] is left out, since
-    /// that file has no place for the text of the lines of a VCF.
+    /// The extra fields of a vars file, named arrays of a value for each
+    /// variant or for each genotype that a user attached to the variants
+    /// and that popnei carries without reading them: the `extra` of a
+    /// block, [`ExtraField`](crate::block::ExtraField). The reader of a vars
+    /// file gives the ones it was told to select, every one by default.
+    /// "The extra fields" of `docs/specs/io_vars.md` has what they are.
+    pub const EXTRA: Needs = Needs(128);
+    /// The seven fields of a variant that a vars file holds, the genotypes
+    /// to the quality, whether the variant passed its FILTER and the extra
+    /// fields, which the writer of a vars file asks for and every reader is
+    /// asked for until it is told otherwise. A field added to `Needs` is
+    /// added here by hand when a vars file holds it: [`Needs::VCF_TEXT`] is
+    /// left out, since that file has no place for the text of the lines of
+    /// a VCF.
     pub const ALL: Needs = Needs::GTS
         .union(Needs::CHROM_POS)
         .union(Needs::ID)
         .union(Needs::ALLELES)
         .union(Needs::QUAL)
-        .union(Needs::PASSED);
+        .union(Needs::PASSED)
+        .union(Needs::EXTRA);
 
     /// No field at all.
     #[must_use]
@@ -146,7 +156,7 @@ impl fmt::Display for Needs {
     /// The name of each field of the set between backticks, `` `gts`,
     /// `qual` ``, and `nothing` when it is empty. The backticks are what
     /// tells the reader of a message where one name ends, since one of the
-    /// seven is `chrom and pos`.
+    /// eight is `chrom and pos`.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut written = false;
         for (field, name) in NAMES_OF_THE_NEEDS {
@@ -2063,6 +2073,7 @@ mod tests {
                 qual: None,
                 passed: None,
                 vcf_text: None,
+                extra: None,
             };
             let mut standardized: Vec<f64> = Vec::new();
 

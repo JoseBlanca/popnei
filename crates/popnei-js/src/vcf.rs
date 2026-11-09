@@ -119,19 +119,22 @@ impl VcfSource {
     /// counts of the pass that wrote them. With `on_bytes`, the file is
     /// given to that function in pieces while the pass writes it, and what
     /// comes back holds the counts and no piece.
+    /// The variants have to be sorted unless `allow_unsorted` is true.
     ///
     /// # Errors
     ///
     /// When `num_vars_per_block` is 0, when the VCF cannot be read, when a
-    /// block of it is not one a vars file holds, and when the memory of the
-    /// tab does not take the file; and the value `on_bytes` threw.
+    /// block of it is not one a vars file holds, when a variant is out of
+    /// order and `allow_unsorted` is false, and when the memory of the tab
+    /// does not take the file; and the value `on_bytes` threw.
     pub fn write_vars(
         &self,
         num_vars_per_block: Option<usize>,
+        allow_unsorted: bool,
         steps: Steps,
         on_bytes: Option<Function>,
     ) -> Result<WrittenFile, JsPopneiError> {
-        bytes_of_a_vars_file(self, num_vars_per_block, steps, on_bytes)
+        bytes_of_a_vars_file(self, num_vars_per_block, allow_unsorted, steps, on_bytes)
     }
 
     /// The variants of the VCF, through the steps of `steps`, as a VCF,

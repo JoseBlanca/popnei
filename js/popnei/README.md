@@ -564,7 +564,13 @@ fromTheFile.free();
 `writeVars` reads the whole source once and writes every column a VCF has,
 the chromosome, the position, the id, the alleles, the quality and the
 genotypes, whether or not the user will read them, so that the file can
-stand in for the VCF in any later analysis. `openVars` reads the schema of
+stand in for the VCF in any later analysis. The variants have to be
+sorted: the positions of a chromosome do not go down from one variant to
+the next, and the variants of a chromosome come together, while the
+chromosomes can come in any order. A variant out of that order throws an
+`Error` that names it and the one before it, unless the call is given
+`{allowUnsorted: true}`, which writes the variants in the order they come.
+`openVars` reads the schema of
 the file and its footer, so bytes that are not a vars file throw there and
 not at the first block; a file whose buffers are compressed with zstd
 opens and throws at its first block, because arrow decompresses a batch

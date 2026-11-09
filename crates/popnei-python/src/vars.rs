@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use pyo3::prelude::*;
 
-use popnei::block::BlockReader;
+use popnei::block::{BlockReader, ExtraFieldDecl, ExtraKind};
 use popnei::io::vars::VarsReader;
 
 use crate::errors::PyPopneiError;
@@ -42,6 +42,8 @@ pub(crate) struct VarsSource {
     individuals: Vec<String>,
     ploidy: usize,
     keeps_passed: bool,
+    // Every extra field of the file, in its order, from its schema.
+    extra_fields: Vec<ExtraFieldDecl>,
 }
 
 #[pymethods]
@@ -70,6 +72,18 @@ impl VarsSource {
         self.path.clone()
     }
 
+    // The name and the type of each extra field of one value for each
+    // variant, in the order of the file, the type as numpy names it.
+    fn var_fields(&self) -> Vec<(String, String)> {
+        self.fields_of(ExtraKind::Variant)
+    }
+
+    // The name and the type of each extra field of one value for each
+    // genotype, in the order of the file, the type as numpy names it.
+    fn gt_fields(&self) -> Vec<(String, String)> {
+        self.fields_of(ExtraKind::Genotype)
+    }
+
     // One pass over the file, through the steps of `steps`: it is opened
     // again, and its blocks hold `fields` besides the genotypes,
     // `num_vars_per_block` variants each.
@@ -82,6 +96,18 @@ impl VarsSource {
         steps: &Bound<'_, Steps>,
     ) -> Result<Blocks, PyPopneiError> {
         blocks_of(py, self, fields, num_vars_per_block, steps.get())
+    }
+}
+
+impl VarsSource {
+    /// The name and the type of each extra field of the file of `kind`, in
+    /// the order of the file.
+    fn fields_of(&self, kind: ExtraKind) -> Vec<(String, String)> {
+        self.extra_fields
+            .iter()
+            .filter(|field| field.kind == kind)
+            .map(|field| (field.name.clone(), field.ty.to_string()))
+            .collect()
     }
 }
 
@@ -105,6 +131,25 @@ impl OpenSource for VarsSource {
         Ok(Box::new(VarsReader::from_path(&self.path)?))
     }
 
+    fn extra_fields(&self) -> &[ExtraFieldDecl] {
+        &self.extra_fields
+    }
+
+    /// The reader of [`OpenSource::reader`], whose blocks hold the extra
+    /// fields `extra_fields` names and no other, which are the only ones it
+    /// decompresses. They are selected on the reader of the file, before
+    /// the filters are put over it, so that a filter of individuals and the
+    /// `Reblock` carry those and the header says those.
+    fn reader_of_the_extra_fields(
+        &self,
+        _num_vars_per_block: Option<usize>,
+        extra_fields: Vec<String>,
+    ) -> Result<Box<dyn BlockReader>, popnei::Error> {
+        let mut reader = VarsReader::from_path(&self.path)?;
+        reader.select_extra_fields(Some(extra_fields))?;
+        Ok(Box::new(reader))
+    }
+
     fn num_vars_per_block_of_the_vcf_writer(&self) -> Option<usize> {
         popnei::io::vcf::num_vars_per_block_of_write_vcf(popnei::io::vcf::WriterSource::VarsFile)
     }
@@ -118,7 +163,7 @@ impl OpenSource for VarsSource {
 // package, which is the API.
 #[pyfunction]
 pub(crate) fn open_vars(py: Python<'_>, path: PathBuf) -> Result<VarsSource, PyPopneiError> {
-    let (individuals, ploidy, keeps_passed) = py
+    let (individuals, ploidy, keeps_passed, extra_fields) = py
         .detach(|| -> Result<_, popnei::Error> {
             // The schema and the footer are read when the reader is built
             // and no batch is, so a file whose blocks would need more
@@ -129,6 +174,7 @@ pub(crate) fn open_vars(py: Python<'_>, path: PathBuf) -> Result<VarsSource, PyP
                 metadata.individuals.clone(),
                 metadata.ploidy,
                 reader.header().keeps_passed,
+                metadata.extra_fields.clone(),
             ))
         })
         .map_err(|error| PyPopneiError::of_the_file(error, &path))?;
@@ -137,12 +183,14 @@ pub(crate) fn open_vars(py: Python<'_>, path: PathBuf) -> Result<VarsSource, PyP
         individuals,
         ploidy,
         keeps_passed,
+        extra_fields,
     })
 }
 
 // Every variant of `source` into a vars file at `path`, through the steps
 // of `steps`, one batch of `num_vars_per_block` variants after another, and
-// `None` for the size popnei chooses for the individuals of the source.
+// `None` for the size popnei chooses for the individuals of the source,
+// refusing variants that are not sorted unless `allow_unsorted` is true.
 // `source` is a VCF that `open_vcf` opened or a vars file that `open_vars`
 // did, which is what a `Variants` of the package holds. What it gives back
 // is the counts of the pass it made, how many variants were written and
@@ -150,12 +198,13 @@ pub(crate) fn open_vars(py: Python<'_>, path: PathBuf) -> Result<VarsSource, PyP
 // the `__doc__` of `popnei._core.write_vars`, and what a Python user reads
 // belongs to the package, which is the API.
 #[pyfunction]
-#[pyo3(signature = (source, path, num_vars_per_block, steps))]
+#[pyo3(signature = (source, path, num_vars_per_block, allow_unsorted, steps))]
 pub(crate) fn write_vars(
     py: Python<'_>,
     source: &Bound<'_, PyAny>,
     path: PathBuf,
     num_vars_per_block: Option<&Bound<'_, PyAny>>,
+    allow_unsorted: bool,
     steps: &Bound<'_, Steps>,
 ) -> Result<PassCounts, PyPopneiError> {
     let source = source_of(source)?;
@@ -168,7 +217,7 @@ pub(crate) fn write_vars(
     // batches of the file hold that many variants whichever source they
     // came from.
     write_the_pass(py, source, &path, None, &steps, |chain, sink| {
-        popnei::io::vars::write_vars(chain, sink, num_vars_per_block)
+        popnei::io::vars::write_vars(chain, sink, num_vars_per_block, allow_unsorted)
     })
 }
 
@@ -178,16 +227,13 @@ pub(crate) fn write_vars(
 /// The source is opened with blocks of `num_vars_per_block`, or of the size
 /// of its own blocks for `None`.
 ///
-/// It makes the file, refusing a path that a file is at; releases the
-/// interpreter for the whole pass; flushes the bytes to the disc before it
-/// returns; and takes the file away when the pass fails or a Ctrl-C
-/// arrived, so that a call that failed leaves nothing behind.
+/// [`write_a_new_file`] makes the file and takes it away when the pass
+/// fails; an error of the pass names the file it is about, the source or
+/// the file being written.
 ///
 /// # Errors
 ///
-/// The ones [`file_at`] gives for the path, what the pass or `write`
-/// failed with, named for the file it is about, and the `KeyboardInterrupt`
-/// of a Ctrl-C.
+/// Those of [`write_a_new_file`], and what the pass or `write` failed with.
 pub(crate) fn write_the_pass(
     py: Python<'_>,
     source: &dyn OpenSource,
@@ -200,10 +246,41 @@ pub(crate) fn write_the_pass(
     ) -> Result<(BufWriter<File>, u64), popnei::Error>
     + Send,
 ) -> Result<PassCounts, PyPopneiError> {
+    let read = source.path().to_path_buf();
+    write_a_new_file(py, path, |file| {
+        the_pass(source, num_vars_per_block, steps, file, write)
+            // The file the error names is the one it is about: a wrong line
+            // of the VCF that was being read names that VCF, and a disc that
+            // filled up names the file that was being written, which the
+            // core keeps apart from an error of a source that could not be
+            // read.
+            .map_err(|error| of_the_file_it_is_about(error, &read, path))
+    })
+}
+
+/// A file made at `path` and filled by `pass`, which gives the counts of
+/// the pass it made: what every call of this crate that writes a file does
+/// around the pass that writes it.
+///
+/// It makes the file, refusing a path that a file is at; releases the
+/// interpreter for the whole of `pass`, which takes it back for itself
+/// where it needs it, as the reader of the writer of segments does for each
+/// segment; and takes the file away when `pass` fails or a Ctrl-C arrived,
+/// so that a call that failed leaves nothing behind.
+///
+/// # Errors
+///
+/// The ones [`file_at`] gives for the path, what `pass` failed with, and the
+/// `KeyboardInterrupt` of a Ctrl-C, each with a note when the file could not
+/// be taken away.
+pub(crate) fn write_a_new_file(
+    py: Python<'_>,
+    path: &Path,
+    pass: impl FnOnce(File) -> Result<PassCounts, PyPopneiError> + Send,
+) -> Result<PassCounts, PyPopneiError> {
     // A Ctrl-C that was pending when this was called is raised here, before
     // a file is made: what a user stopped leaves no file at the path.
     py.check_signals()?;
-    let read = source.path().to_path_buf();
     let file = file_at(path)?;
     // The whole source is read inside this one call, which is seconds for a
     // VCF of hundreds of megabytes, so the interpreter is released for all
@@ -216,9 +293,7 @@ pub(crate) fn write_the_pass(
         // this call as a `PanicException`; it is caught here for as long as
         // it takes to take the file away, since a file left at the path is
         // one the user's next call refuses as a path already taken.
-        catch_unwind(AssertUnwindSafe(|| {
-            the_pass(source, num_vars_per_block, steps, file, write)
-        }))
+        catch_unwind(AssertUnwindSafe(|| pass(file)))
     });
     let written = match written {
         Ok(written) => written,
@@ -232,14 +307,8 @@ pub(crate) fn write_the_pass(
     };
     let written = match written {
         Ok(counts) => counts,
-        Err(error) => {
+        Err(refusal) => {
             let taken = take_away(path);
-            // The file the error names is the one it is about: a wrong line
-            // of the VCF that was being read names that VCF, and a disc that
-            // filled up names the file that was being written, which the
-            // core keeps apart from an error of a source that could not be
-            // read.
-            let refusal = of_the_file_it_is_about(error, &read, path);
             return Err(with_what_was_left(refusal, path, taken));
         }
     };
@@ -279,6 +348,18 @@ fn the_pass(
     // variants it wrote, which no loop of this crate sees.
     let mut chain = chain_of(reader, steps)?;
     let (sink, num_vars) = write(&mut chain, BufWriter::new(file))?;
+    to_the_disc(sink)?;
+    Ok(pass_counts_of(num_vars, chain.as_ref(), steps))
+}
+
+/// What `sink` still holds, written to its file, and the file's bytes on the
+/// disc.
+///
+/// # Errors
+///
+/// The error of a file that could not be written, with what the file
+/// system said.
+pub(crate) fn to_the_disc(sink: BufWriter<File>) -> Result<(), popnei::Error> {
     // What the buffer still holds goes to the file here, where its
     // error is read; a buffer that is dropped writes it and loses it.
     let file = sink
@@ -288,8 +369,7 @@ fn the_pass(
     // where nothing reads what the close said: a file system that only
     // then says that it is full would leave a file that is not whole
     // after a call that returned and said nothing.
-    file.sync_all().map_err(not_written)?;
-    Ok(pass_counts_of(num_vars, chain.as_ref(), steps))
+    file.sync_all().map_err(not_written)
 }
 
 /// `error` with the file it is about, since a user reads which of the two
@@ -298,15 +378,16 @@ fn the_pass(
 /// The file being written is what the cases of the writer are about: a
 /// write the file system or arrow-rs refused, a file whose genotypes would
 /// hold no allele, a block with more text or more alleles in one column
-/// than a column of a batch takes, and the two defects of a block that does
-/// not fit the file that is being written; and the four defects of the VCF
-/// writer, a block of a VCF without its text, a chromosome number with no
-/// name, a variant that failed its FILTER from a source whose header keeps
-/// no `passed`, and a member of bgzip that could not be put together.
-/// Everything else happened while the source was read and names the
-/// source, the wrong lines of a VCF and the batches of a vars file among
-/// them, and so does a case that a later module adds, since the writer's
-/// are all here.
+/// than a column of a batch takes, and the four defects of a block that
+/// does not fit the file that is being written, its size, its columns, its
+/// extra fields and a chromosome number with no name; and the four defects
+/// of the VCF writer, a block of a VCF without its text, a chromosome
+/// number with no name, a variant that failed its FILTER from a source
+/// whose header keeps no `passed`, and a member of bgzip that could not be
+/// put together. Everything else happened while the source was read and
+/// names the source, the wrong lines of a VCF, the batches of a vars file
+/// and a variant out of order among them, and so does a case that a later
+/// module adds, since the writer's are all here.
 ///
 /// Four name no file at all: a `num_vars_per_block` of 0, one whose block
 /// is more than this machine counts, and the two of the filters that
@@ -314,7 +395,11 @@ fn the_pass(
 /// number from 0 to 1 and a second filter of a kind the steps hold. What is
 /// wrong with an argument is wrong whatever file is read, and `errors.rs`
 /// drops the path they are given.
-fn of_the_file_it_is_about(error: popnei::Error, read: &Path, written: &Path) -> PyPopneiError {
+pub(crate) fn of_the_file_it_is_about(
+    error: popnei::Error,
+    read: &Path,
+    written: &Path,
+) -> PyPopneiError {
     let of_the_write = matches!(
         error,
         popnei::Error::FileNotWritten { .. }
@@ -322,6 +407,8 @@ fn of_the_file_it_is_about(error: popnei::Error, read: &Path, written: &Path) ->
             | popnei::Error::VarsTextTooLarge { .. }
             | popnei::Error::VarsBlockDoesNotFit { .. }
             | popnei::Error::VarsBlockColumns { .. }
+            | popnei::Error::VarsBlockExtraFields { .. }
+            | popnei::Error::VarsChromNameMissing { .. }
             | popnei::Error::VcfWriterFieldsMissing { .. }
             | popnei::Error::VcfWriterChromNameMissing { .. }
             | popnei::Error::VcfWriterPassedNotInTheHeader { .. }

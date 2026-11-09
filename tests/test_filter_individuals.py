@@ -422,3 +422,26 @@ def test_what_is_no_sequence_of_names_is_a_type_error_that_names_the_argument(
     assert "3" in str(of_a_name_that_is_no_name.value)
     assert "int" in str(of_a_name_that_is_no_name.value)
     assert variants.steps == ()
+
+
+def test_a_set_of_names_is_a_type_error_and_an_array_of_names_is_taken(
+    reference_vcf_dir: Path,
+) -> None:
+    """`filter_individuals({"ind05", "ind00"})` and the same names as a
+    numpy array.
+
+    The individuals are kept in the order of the argument, and a set gives
+    its names in an order of its own, so the genotypes would come in an
+    order the user did not write. A numpy array has an order and is taken.
+    """
+    variants = _many(reference_vcf_dir)
+
+    with pytest.raises(TypeError) as of_a_set:
+        variants.filter_individuals({"ind05", "ind00"})  # type: ignore[arg-type]
+
+    assert "`individuals` is a set" in str(of_a_set.value)
+    assert variants.steps == ()
+
+    variants.filter_individuals(numpy.array(THE_THREE))
+
+    assert variants.individuals == THE_THREE

@@ -726,6 +726,7 @@ fn of_no_variants(block: &mut Block) {
         qual: None,
         passed: block.passed.as_ref().map(|_| Vec::new()),
         vcf_text: None,
+        extra: None,
     };
 }
 
@@ -785,6 +786,7 @@ fn vars_file_of_many_vcf() -> Vec<u8> {
         vcf_reader_of("vcf/many.vcf", None),
         Vec::new(),
         Some(usize::try_from(NUM_VARS_PER_BLOCK).expect("100")),
+        false,
     )
     .expect("the vars file of many.vcf");
     assert_eq!(num_vars, NUM_VARS_OF_MANY_VCF);

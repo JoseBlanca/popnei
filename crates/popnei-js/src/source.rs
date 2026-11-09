@@ -2158,7 +2158,9 @@ impl Write for PiecesToThePage {
 
 /// Every variant of `source`, through the steps of `steps`, as a vars
 /// file, one batch of `num_vars_per_block` variants after another, and
-/// `None` for the size popnei chooses for the individuals of the source.
+/// `None` for the size popnei chooses for the individuals of the source. A
+/// variant out of the order of the chromosomes and positions is an error
+/// unless `allow_unsorted` is true.
 ///
 /// The file is built in the memory of wasm, in pieces that cross one by one:
 /// a `Uint8Array` that were a view into that memory would stop being valid
@@ -2170,11 +2172,13 @@ impl Write for PiecesToThePage {
 /// # Errors
 ///
 /// When `num_vars_per_block` is 0, when the source cannot be read, when a
-/// block of it is not one a vars file holds, when the memory of the tab
-/// does not take the file, and the value `on_bytes` threw.
+/// block of it is not one a vars file holds, when a variant is out of
+/// order and `allow_unsorted` is false, when the memory of the tab does not
+/// take the file, and the value `on_bytes` threw.
 pub(crate) fn bytes_of_a_vars_file(
     source: &dyn OpenSource,
     num_vars_per_block: Option<usize>,
+    allow_unsorted: bool,
     steps: Steps,
     on_bytes: Option<Function>,
 ) -> Result<WrittenFile, JsPopneiError> {
@@ -2198,6 +2202,7 @@ pub(crate) fn bytes_of_a_vars_file(
                     &mut chain,
                     PiecesOfTheFile::new(),
                     num_vars_per_block,
+                    allow_unsorted,
                 )?;
                 (written.pieces, written.num_bytes, num_vars)
             }
@@ -2207,6 +2212,7 @@ pub(crate) fn bytes_of_a_vars_file(
                     &mut chain,
                     PiecesToThePage::of(run)?,
                     num_vars_per_block,
+                    allow_unsorted,
                 )?;
                 written.the_last_piece()?;
                 (Vec::new(), 0, num_vars)
@@ -2483,6 +2489,9 @@ impl Blocks {
             // The text of the lines of a VCF is for its writer, and not a
             // field that `iterBlocks` gives.
             vcf_text: _,
+            // TypeScript has nothing of the extra fields of a vars file, as
+            // "The extra fields" of `docs/specs/io_vars.md` says.
+            extra: _,
         } = block;
         let alleles = alleles.map(|column| alleles_of(&column)).transpose()?;
         let (alleles, num_alleles_per_var) = match alleles {
