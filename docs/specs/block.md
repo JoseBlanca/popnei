@@ -24,6 +24,12 @@ on 6 October 2026, from issue 9, for the filter of the variants that
 passed of `docs/specs/filters.md`, and built on 6 October 2026, in work package 1 of `docs/plans/filter-passed.md`. It is a
 column of the core alone: it is not among the fields that `iter_blocks`
 names, and a Python or TypeScript user sees it only through that filter.
+The extra fields, named arrays of a value for each variant or for each
+genotype that a vars file carries, were added on 9 November 2026 from
+issue 19, with no code yet: what they are and how they reach a block is
+in "The extra fields" of `docs/specs/io_vars.md`, and what this spec gains
+with them is a column of the block, one attribute of the Python `Block`
+and their names in `fields`.
 
 ## The block, its readers and reblock
 
@@ -119,7 +125,8 @@ asked for, the last one aside, also when a filter took variants out on the
 way. The memory in use is two blocks at most.
 
 `fields` names what each block carries besides the genotypes, among
-`"chrom"`, `"pos"`, `"id"`, `"alleles"` and `"qual"`. The chromosome and
+`"chrom"`, `"pos"`, `"id"`, `"alleles"` and `"qual"`, and the extra fields
+of the source by their names. The chromosome and
 the position travel together in the core, so asking for one fills both.
 Another name is a `ValueError`. `fields` is a sequence of names, and one
 name written where the sequence goes, `fields="alleles"`, is a
@@ -138,7 +145,10 @@ a numpy uint64 array, `id` a tuple of strings with `None` for a variant
 that has none, `alleles` a tuple with, for each variant, the tuple of its
 alleles, the reference first, and `qual` a numpy float32 array with NaN
 for a variant that has none. A field that was not asked for is `None`.
-`num_vars` is the number of variants.
+`num_vars` is the number of variants. `extra_fields` is a dict of the
+name of each extra field that was asked for to its read only array, of
+variants or of variants x individuals, and `None` when none was asked for;
+it is the last attribute of the dataclass, with a default of `None`.
 
 The three arrays are read only, and so is every array a user can reach
 from them: a block is frozen, and an array that a reshape or a slice of
@@ -489,6 +499,10 @@ pub struct Block {
     /// The text of the lines of a VCF, when `VCF_TEXT` was asked for and
     /// the source is a VCF.
     pub vcf_text: Option<VcfText>,
+    /// The extra fields, when `EXTRA` was asked for and the source has
+    /// some, in the order of the header of the source. Added on 9
+    /// November 2026.
+    pub extra: Option<Vec<ExtraField>>,
 }
 impl Block {
     /// Which fields the block holds: the columns that are there, and GTS
@@ -506,8 +520,38 @@ impl Block {
     /// it was.
     pub fn retain_vars(&mut self, keep: &[bool]) -> Result<()>;
     /// That `gts` holds `num_vars` x `num_individuals` x `ploidy` alleles,
-    /// or none, and every column that is there `num_vars` entries.
+    /// or none, every column that is there `num_vars` entries, and every
+    /// extra field `num_vars` values, times `num_individuals` for a
+    /// genotype field.
     pub fn check(&self) -> Result<()>;
+}
+```
+
+The values of one extra field of a block, with its name, its kind and
+its type, whose meaning is in "The extra fields" of
+`docs/specs/io_vars.md`. A genotype field holds variants x individuals
+values, variant after variant, as `gts` does with the alleles.
+`retain_vars` compacts them with the other columns, `reblock` cuts and
+joins them, and the filter of individuals of `docs/specs/filters.md`
+keeps the values of the kept individuals of each genotype field.
+
+```rust
+pub enum ExtraKind { Variant, Genotype }
+pub enum ExtraType { I32, I64, U64, F32, F64 }
+
+pub struct ExtraFieldDecl {
+    pub name: String,
+    pub kind: ExtraKind,
+    pub ty: ExtraType,
+}
+
+pub enum ExtraValues {
+    I32(Vec<i32>), I64(Vec<i64>), U64(Vec<u64>), F32(Vec<f32>), F64(Vec<f64>),
+}
+
+pub struct ExtraField {
+    pub decl: ExtraFieldDecl,
+    pub values: ExtraValues,
 }
 ```
 
@@ -566,6 +610,10 @@ pub struct SourceHeader {
     /// `calc_variants_summary` refuse a source without it before theirs.
     /// `Variants` gives it as `keeps_passed`. Added on 6 October 2026.
     pub keeps_passed: bool,
+    /// The extra fields the blocks of the source can carry, in their
+    /// order: those of the `popnei` key of a vars file, those the writer of
+    /// segments was given, and none for a VCF. Added on 9 November 2026.
+    pub extra_fields: Vec<ExtraFieldDecl>,
 }
 ```
 

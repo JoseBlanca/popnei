@@ -1860,7 +1860,9 @@ each block with, which that spec leaves to this item.
 impl Block {
     /// It keeps the genotypes of the individuals `keep`, indices into the
     /// individuals of the block, in that order, within the array of the
-    /// block, and sets `num_individuals`. An error, with the block as it
+    /// block, and the values of those individuals in each genotype field
+    /// of `docs/specs/io_vars.md` in the same order, and sets
+    /// `num_individuals`. An error, with the block as it
     /// was, for an index at or beyond the individuals, an index twice, no
     /// index, and a block with variants and no genotypes.
     pub fn retain_individuals(&mut self, keep: &[usize]) -> Result<()>;

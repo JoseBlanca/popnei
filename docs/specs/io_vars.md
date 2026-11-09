@@ -9,7 +9,13 @@ in the file, and the batches the reader skips for the filter by regions of
 `docs/specs/filters.md`. This spec
 develops the row `io::vars` of the table in section 9 of
 `docs/architecture.md` and section 6 of that document. It covers the format of
-the file, the writer and the reader.
+the file, the writer and the reader. Two items were added on 9 November
+2026 from issue 19, with no code yet: the extra fields, named arrays of a
+value for each variant or for each genotype that a file carries beside
+its columns, and the writer of segments, which writes a vars file from
+variants that a user's code computes one stretch of the genome at a time.
+With them the format goes to 1.3, and `write_vars` refuses variants that
+are not sorted unless it is told otherwise.
 
 The format is popnei's own. The owner decided on 20 September 2026 that it
 owes nothing to the vars file of pyNei, the Python library that popnei
@@ -93,7 +99,7 @@ What is known before the first variant goes in the schema, under the key
 
 | key | value |
 |---|---|
-| `format_version` | `"1.2"` |
+| `format_version` | `"1.3"` |
 | `individuals` | the names of the individuals, in order |
 | `ploidy` | how many alleles a genotype holds |
 | `num_vars_per_block` | how many variants a batch holds, the last one aside |
@@ -123,6 +129,10 @@ filter of the variants that passed refuses it at the first block, naming
 the file, as the owner decided on 6 October 2026. A reader of 1.1 reads a
 file of 1.2 and ignores the column, by the rule of the version below. It costs
 one bit for each variant before compression.
+
+The extra fields were added on 9 November 2026, from issue 19, and with
+them the version went from 1.2 to 1.3: two more entries of the `popnei`
+key and a column for each field, which "The extra fields" below has.
 
 What is known only after the last variant goes in the footer, under the key
 `popnei_batches`: arrow-rs writes the metadata of the footer when the file is
@@ -229,9 +239,16 @@ not an error.
 
 ```python
 def write_vars(
-    variants: Variants, path: str | Path, num_vars_per_block: int | None = None
+    variants: Variants, path: str | Path, num_vars_per_block: int | None = None,
+    allow_unsorted: bool = False,
 ) -> VarsWritten
 ```
+
+`allow_unsorted` was added on 9 November 2026: with its default the call
+refuses variants that are not sorted, as "Sorted variants" of the writer
+of segments below says, and removes the file. A source with no
+chromosomes and positions, a `Variants` built from an array of
+genotypes, is not checked.
 
 `VarsWritten` is a frozen dataclass with one field, `pass_stats`, the
 `PassStats` of `docs/specs/variant.md`: how many variants were written,
@@ -294,7 +311,7 @@ their VCF with a call that refuses the path and no reason.
 `default_num_vars_per_block` of `docs/specs/block.md`, so a file read back
 with the default size of block gives its batches as they are.
 
-In TypeScript, `writeVars(variants, {numVarsPerBlock})` gives back an
+In TypeScript, `writeVars(variants, {numVarsPerBlock, allowUnsorted})` gives back an
 object with `bytes`, a `Uint8Array` with the bytes of the file, and
 `passStats`. The page offers the bytes as a download:
 a tab has no file a path names, as section 11 of the architecture says. With the
@@ -354,7 +371,7 @@ A pytest test made at `write_vars`, on `many.vcf` of `tests/reference/vcf/`,
 the 500 variants of 50 individuals, read with `only_passed=False` and written
 with `num_vars_per_block` 100. pyarrow opens the file. Its schema is the seven
 columns with the types and the nulls of the table above, in that order. The
-value of `popnei` parses as json and holds `format_version` `"1.2"`, the 50
+value of `popnei` parses as json and holds `format_version` `"1.3"`, the 50
 names of the individuals, `ploidy` 2, `num_vars_per_block` 100 and
 `chrom_lengths` `[]`, since the `##contig` lines of `many.vcf` have no
 length. Written from `write.vcf` of the VCF writer of `docs/specs/io_vcf.md`,
@@ -718,8 +735,8 @@ are skipped. A file with no
 `chrom` and `pos` columns has no regions in its footer, so the reader
 skips nothing and gives its first batch, which the filter refuses with the
 error of a field it depends on. `header()` gives the individuals of
-the file, `chrom_lengths` of its `popnei` key, and no meta lines of a
-VCF.
+the file, `chrom_lengths` of its `popnei` key, its extra fields, and no
+meta lines of a VCF.
 
 ### How it is verified
 
@@ -793,21 +810,415 @@ after it to the body of the batch.
 
 The TypeScript test is the round trip under node of "The writer".
 
+## The extra fields
+
+Added on 9 November 2026 from issue 19, with no code yet.
+
+### What they give
+
+An extra field is a named array of numbers that a user attaches to the
+variants of a vars file beyond the columns of the table of "What it holds".
+A variant field has one value for each variant, as an INFO field of a VCF:
+the end of a haplotype region, whose position is its start. A genotype
+field has one value for each genotype, that is for each individual at each
+variant, as a FORMAT field of a VCF: the posterior probability of the
+genotype that a caller gave, or the p-value of a test of how well it fits.
+popnei does not read the values. They travel with the variants, through
+the filters and into the files that `write_vars` writes, and come back out
+of `iter_blocks` when they are asked for by name, so that the confidence of
+each call stays with the call instead of in a table kept beside the file.
+
+The case they were asked for is the haplotype analysis of the tomato25
+panel. Each region of a chromosome is one variant whose alleles are the
+haplotypes seen in it, from a few to about 90, and each individual has six
+values that say how far to trust its genotype there. The pair of nodes of
+the tree of a region's alleles that the coarser call gives is two genotype
+fields, one for each node, since a field holds one number for each
+genotype. The owner decided this on 9 November 2026; the option not taken
+was a field of a fixed number of values for each genotype, which only that
+pair would have used.
+
+A field has one of five types: `int32`, `int64`, `uint64`, `float32` and
+`float64`. A missing value is the user's to choose, NaN in a field of
+floats and some number in a field of integers, since popnei does not read
+the values. Its name starts with a letter or `_` and holds letters,
+digits, `_` and `.` after it, the rule of the VCF for the key of an INFO
+or a FORMAT field, so that a field can become one. It is not the name of a
+column of the table of "What it holds", and no two fields of a file share
+one, of either kind.
+
+### In the file
+
+The vars file of format 1.3 has one column for each extra field after
+those of the table of "What it holds", the variant fields first and then
+the genotype fields, each in the order it was declared, and named as the
+field is, so that pandas shows `END` and `GP` as columns:
+
+| field | arrow type | nulls |
+|---|---|---|
+| variant field | `Int32`, `Int64`, `UInt64`, `Float32` or `Float64` | no |
+| genotype field | `FixedSizeList<that type>[num_individuals]` | no |
+
+A genotype field is a fixed size list, as `gts` is, so its column is one
+flat buffer of variants x individuals values. The `popnei` key of the
+schema gains two entries, `var_fields` and `gt_fields`, each a list of the
+name and the type of each field, in the order of the columns:
+
+    "var_fields": [["END", "uint64"]],
+    "gt_fields": [["GP", "float32"], ["NODE_A", "int32"], ["NODE_B", "int32"]]
+
+The schema is written before the first batch, so the extra columns are
+there in a file with no batch too, and a user reads which fields a file
+has without reading a variant. A file without the two entries, any file of
+1.2 or before, has no extra field.
+
+Every file that popnei writes from now on says `"1.3"`, with or without
+extra fields. A reader of 1.2 reads a file of 1.3 and ignores the two
+entries and the extra columns, by the rule of the version under "What it
+holds"; a reader of 1.3 reads every file of 1.0 to 1.2.
+
+The reader refuses, as an error of the file as a whole, a name in the two
+lists without its column, a column of another type than its entry says or
+of a genotype field whose width is not the number of individuals, a name
+that does not follow the rule above, one that is a column of the table of
+"What it holds", and one that is in the lists twice. A null in an extra
+column is the error of a null of "What it refuses". The bounds that
+"What it refuses" puts on the buffers of a batch before arrow-rs reads it
+hold the extra columns too: a variant field is the rows of the batch times
+the bytes of its type, 4 or 8, and a genotype field that times the
+individuals.
+
+A `float32` genotype field is 4 bytes for each genotype before
+compression, where the genotype itself is one byte for each allele, 2 for
+a diploid; the six fields of the tomato25 case, all in four bytes, are 24.
+How those values compress has not been measured.
+
+### What carries them
+
+- `retain_vars` of `docs/specs/block.md`, which every filter of variants
+  calls, compacts the extra columns with the others.
+- The filter of individuals of `docs/specs/filters.md` keeps, in each
+  genotype field, the values of the kept individuals in the order it keeps
+  them, as it does with the genotypes. A variant field is left as it is.
+- `reblock` cuts and joins them with the rest of the block, and joins two
+  blocks only when they have the same fields, as it does with the columns.
+- `write_vars` writes them: the extra fields of a file are those of the
+  header of its source, which for a vars file are those of its key, so a
+  file written from another file keeps its fields, after any filter.
+- `write_vcf` of `docs/specs/io_vcf.md` refuses a source that has extra
+  fields with a `ValueError` naming them, before it makes the file
+  (**Open 1**, below).
+- No calculation reads them, so none asks for them and a vars file reader
+  asked by a calculation decompresses none of them.
+
+The number of variants of a block that popnei picks when it is asked for
+none, `default_num_vars_per_block` of `docs/specs/block.md`, counts the
+genotypes and not the extra fields: about 5 million genotypes, at most
+10000 variants. So a block that carries the six `float32` fields above
+takes 26 bytes for each diploid genotype instead of 2, 130 MB for 5 million
+genotypes. It is decided here that the default does not change: only
+`write_vars` and an `iter_blocks` that names the fields read them, and both
+take a `num_vars_per_block`. For the tomato25 case, 10000 regions of 300
+individuals, a block is 78 MB.
+
+### In Python and in TypeScript
+
+```python
+Variants.var_fields: dict[str, numpy.dtype]
+Variants.gt_fields: dict[str, numpy.dtype]
+```
+
+The extra fields of the source of a `Variants` and the type of each, in
+the order of the file, read from the header when it was opened. Both are
+empty for a VCF and for a vars file of 1.2 or before.
+
+`iter_blocks(fields=...)` of `docs/specs/block.md` takes the names of the
+extra fields of the source beside the five it takes now:
+`fields=("chrom", "pos", "GP", "END")`. A name that is neither one of the
+five nor a field of the source is the `ValueError` it gives now, and its
+message names the fields of the source. `Block` gains one attribute,
+`extra_fields`, a dict of the name of each field that was asked for to a
+read only numpy array of its type, of variants for a variant field and of
+variants x individuals for a genotype field. It is `None` when no extra
+field was asked for, as a column that was not asked for is. The two kinds
+share one dict because no two fields share a name.
+
+No class of the package changes in any other way, which the owner asked
+for on 9 November 2026: `Block` keeps its attributes and gains one with a
+default of `None`, `Variants` gains two properties, and `iter_blocks`
+keeps its arguments.
+
+In TypeScript, `variants.varFields` and `variants.gtFields` are objects of
+the name of each field to the name of its type, and a block of
+`iterBlocks` has `extraFields`, an object of the name of each field asked
+for to an `Int32Array`, a `Float32Array` or a `Float64Array`, and to a
+`Float64Array` for the two types of 64 bit integers, for the reason
+`docs/specs/block.md` gives for the positions: a value whose size is above
+2^53 is an `Error` (**Open 2**, below).
+
+pyNei has no genotype fields. Its `VariantsChunk` of `pynei/variants.py`
+holds a pandas frame of the variants, `vars_info`, with any columns a user
+puts in it, and its `write_vars` writes them, so its variant fields are
+those columns.
+
+### How it is verified
+
+The tests are those of the writer of segments, below, which is the one
+source of extra fields, and these cargo tests: `Block::retain_vars` on a
+block of 4 variants of 3 individuals with a variant field and a genotype
+field keeps the rows of the variants that are kept in both; the filter of
+individuals keeping the third and the first individual, in that order,
+gives each row of the genotype field as the third value then the first;
+`reblock` of blocks of 3 and 2 variants into blocks of 4 and 1 gives the
+fields joined in order; and `Block::check` refuses a genotype field with
+one value too few. A reader test for each error of the file above, on a
+file built with arrow-rs. The sweep of "How it is verified" of the reader,
+every byte of a small file set to four values, runs on a second file too:
+the four variants of `cases.vcf` with a `float32` genotype field and an
+`int64` variant field.
+
+## The writer of segments
+
+Added on 9 November 2026 from issue 19, with no code yet.
+
+### What it gives
+
+It writes a vars file from variants that a user's code computes, one
+genomic segment at a time, with no VCF in between and without the whole
+genome in memory at once. A segment is a run of consecutive variants that
+the code gives as a dict of arrays: the caller of haplotypes that issue 19
+was written for walks a genome region by region and yields the regions it
+has called. Once written, the file is opened with `open_vars` and every
+filter and calculation of popnei runs on it as on any other.
+
+The owner chose it on 9 November 2026. The options not taken were a
+`Variants` built from arrays in memory, which holds the whole dataset, and
+a function that writes to a file object of Python instead of a path, which
+leaves the file to the caller to remove when the call fails.
+
+### Its Python function
+
+```python
+def write_vars_from_segments(
+    segments: Iterable[Mapping[str, Any]],
+    path: str | Path,
+    individuals: Sequence[str],
+    ploidy: int,
+    var_fields: Mapping[str, str | numpy.dtype] = {},
+    gt_fields: Mapping[str, str | numpy.dtype] = {},
+    chrom_lengths: Mapping[str, int] | None = None,
+    num_vars_per_block: int | None = None,
+    allow_unsorted: bool = False,
+) -> VarsWritten
+```
+
+Each item of `segments` is a dict with these keys:
+
+| key | value | |
+|---|---|---|
+| `chrom` | a sequence of the chromosome of each variant, or one `str`, the chromosome of every variant of the segment | required |
+| `pos` | integers, the position of each variant, 1 based | required |
+| `alleles` | a sequence with the sequence of the alleles of each variant, each one a text, the reference first | required |
+| `gts` | integers of variants x individuals x ploidy, -1 for a missing allele | required |
+| `id` | a sequence of a text or `None` for each variant | optional |
+| `qual` | floats, NaN for a variant with no quality | optional |
+| each declared field | a variant field of variants, a genotype field of variants x individuals | required |
+
+The number of variants of a segment is the length of `pos`, and every
+other value has to agree with it. A segment of no variants is taken and
+writes nothing. An allele is any text that is not empty, so the haplotypes
+of a region are `H0`, `H1` and so on, with no made up nucleotides: the
+vars file keeps an allele as text, and bcftools 1.25, run on 9 November
+2026 on a VCF with `REF` `H0` and `ALT` `H1,H2`, reads it and writes it
+back unchanged, so `write_vcf` writes such alleles as they are. An absent
+`id` or `qual` writes no id or no quality for those variants.
+
+`individuals`, `ploidy`, `chrom_lengths` and the two declarations of the
+fields go in the schema of the file, which is written before the first
+segment is taken, and that is why they are arguments and not read from the
+first segment. A field is declared by its name and its type, any spelling
+of one of the five types that `numpy.dtype` takes. A field array is cast
+to its declared type when numpy says the cast is safe, an `int32` array
+into an `int64` field, and is a `ValueError` otherwise, a `float64` array
+into a `float32` field among them: the cast would round the values with no
+sign.
+
+`num_vars_per_block` is the size of the batches of the file, as for
+`write_vars`, and the segments are cut and joined to it, so a segment can
+hold any number of variants. What it gives back is `VarsWritten`, whose
+`pass_stats` has the number of variants written and no filter.
+
+The memory it uses is the segment it was last given and the variants that
+wait for the next batch, `num_vars_per_block` at most, with the batch
+being compressed. The size of the genome does not change it.
+
+The `Variants` of the file it writes has `keeps_passed` false: no FILTER
+was read, and the file has no `passed` column.
+
+### Sorted variants
+
+The variants have to be sorted, which the owner asked for on 9 November
+2026: the positions of a chromosome do not go down from one variant to the
+next, and the variants of a chromosome come together, so a chromosome
+whose variants have ended does not come back. Two variants at one position
+are sorted. The chromosomes themselves can come in any order. The check
+runs over the whole file, across segments and across batches, and costs
+one comparison for each variant. A variant out of order is a `ValueError`
+that names it and the one before it, `chr1 100 after chr1 5000`, and the
+file is removed. `allow_unsorted=True` writes the variants in the order
+they come. The option not taken was to write any order with no check,
+which is what the format allows and what `docs/specs/io_vcf.md` does with
+the VCF it writes.
+
+`write_vars` gains the same argument with the same default, and refuses a
+source that is not sorted in the same way. That changes what it does with a
+VCF that is not sorted, which it wrote until now and refuses from this
+version on unless the caller passes `allow_unsorted=True`.
+
+### A call that fails
+
+It does what `write_vars` does: a path that already exists is a
+`ValueError` and nothing is written, and when anything fails after the
+file was made, the file is removed, so a failed call leaves nothing at the
+path and the same call can be made again. Since the path is never
+overwritten, a call that fails cannot destroy a file that was there
+before.
+
+An exception raised by `segments`, the user's code that computes them,
+comes out of the call as it was raised, with its type and its traceback,
+after the file is removed. A Ctrl-C is raised between two segments, and
+removes the file as an error does. `write_vars` releases the interpreter
+for its whole pass and raises a Ctrl-C only at its end; this call cannot,
+since every segment comes from Python.
+
+A segment that is wrong is a `ValueError` that names it, counted from 1,
+and the variant of it, counted from 1, with its chromosome and its
+position when those are not what is wrong. These are:
+
+- a key that is neither one of the six of the table nor a declared field,
+  and a required one that is missing;
+- a value whose length or shape does not agree with the number of
+  variants, the individuals and the ploidy;
+- a `pos` that is not of integers or holds a negative one, and `gts` that
+  are not of integers;
+- an allele of `gts` below -1, or not among the alleles of its variant, 2
+  for a variant of two alleles;
+- a variant with no allele, an allele that is an empty text, and a variant
+  of more than 128 alleles, the most that one byte holds, which the owner
+  kept on 9 November 2026; the option not taken was alleles of two bytes,
+  which doubles the genotypes in memory and in the file before
+  compression, changes every calculation that reads them and is a new
+  first part of the version of the format;
+- a quality that is an infinity, which the reader would refuse;
+- a field array that numpy cannot cast safely to its type.
+
+An item that is not a mapping is a `TypeError`. The arguments are checked
+before the file is made, each a `ValueError`: no individual, two of one
+name, a ploidy of 0 or above 255, a field of another type than the five, a
+name that breaks the rule of "The extra fields", a name declared twice,
+and a length of a chromosome that is not above 0.
+
+### What pyNei does
+
+pyNei writes a vars file from code of the user through its `Variants`,
+which is built over any object with an `iter_vars_chunks` that yields
+`VariantsChunk`s, read in `pynei/variants.py` at ef0ca6e; its `write_vars`
+of `pynei/io_vars.py` writes the columns of the first chunk. The
+differences: popnei takes dicts and writes them in one call, the fields
+are declared, there are genotype fields, the variants are checked to be
+sorted, a source of no variants is written, and the file of a call that
+failed is removed, where pyNei leaves it.
+
+In TypeScript it is `writeVarsFromSegments(segments, {individuals, ploidy,
+varFields, gtFields, chromLengths, numVarsPerBlock, allowUnsorted,
+onBytes})`, which takes any iterable of plain objects and gives back what
+`writeVars` gives, the `bytes` of the file or its pieces through
+`onBytes`. A segment has `gts` as one `Int8Array` of variants x
+individuals x ploidy, `pos` as a `Float64Array` or an array of numbers,
+and each field as the typed array that `extraFields` of "The extra fields"
+gives (**Open 2**, below).
+
+### How it runs
+
+The Python binding crate wraps `segments` in a reader, a `BlockReader` of
+`docs/specs/block.md` whose `next_block` takes the next item from Python,
+checks it and turns it into a block, and gives that reader to `write_vars`
+of the core, which puts the `reblock` over it, checks the order and writes
+the batches, as for any other source. The reader holds the chromosome
+table of the names it has met, and its header holds the individuals, the
+lengths of the chromosomes and the declarations of the fields. The pass
+releases the interpreter, as `write_vars` does, and the reader takes it
+again for each item it asks for. A segment of no variants is skipped, since
+a reader never gives a block of none.
+
+### How it is verified
+
+The reference outside the project is pyarrow, which opens the file as any
+other program would. A pytest test made at `write_vars_from_segments`,
+with the individuals `i1`, `i2` and `i3`, ploidy 2, `var_fields`
+`{"END": "uint64"}`, `gt_fields` `{"GP": "float32", "NODE_A": "int32"}`
+and `num_vars_per_block` 2, on three segments:
+
+| segment | chrom | pos | alleles | gts | END | GP | NODE_A |
+|---|---|---|---|---|---|---|---|
+| 1 | `"chr1"` | 100 | H0 H1 | 0/1 1/1 ./. | 4999 | 0.9 0.8 NaN | 1 2 -1 |
+| | | 5000 | H0 H1 H2 | 2/0 0/0 1/2 | 9999 | 0.7 0.99 0.5 | 3 1 2 |
+| 2 | `"chr1"` | none | | | | | |
+| 3 | `"chr2"` | 50 | H0 | 0/0 0/0 0/. | 800 | 1.0 1.0 0.6 | 1 1 1 |
+
+It writes 3 variants. pyarrow finds the columns `chrom`, `pos`, `id`,
+`alleles`, `qual`, `gts`, `END`, `GP` and `NODE_A`, in that order, with
+the types of the two tables above, no `passed` column, an `id` and a
+`qual` that are null in all 3 rows, and the values that went in; the
+`popnei` key has `format_version` `"1.3"`, `var_fields` `[["END",
+"uint64"]]` and `gt_fields` `[["GP", "float32"], ["NODE_A", "int32"]]`;
+`popnei_batches` has 2 batches, of 2 variants with chr1 100 to 5000 and of
+1 with chr2 50 to 50. `open_vars` of the file has `var_fields` `{"END":
+uint64}` and `gt_fields` `{"GP": float32, "NODE_A": int32}`, and
+`iter_blocks(fields=("chrom", "pos", "GP"), num_vars_per_block=3)` gives
+one block whose `extra_fields` holds `GP` alone, 3 x 3, equal to what
+went in with NaN in its place. After `filter_individuals(["i3", "i1"])` the
+`GP` of that block is NaN 0.9, 0.5 0.7 and 0.6 1.0, and `write_vars` of the
+filtered `Variants` gives a file whose `GP` reads back as that. `write_vcf`
+of it is the `ValueError` of **Open 1** and names `END`, `GP` and `NODE_A`.
+
+One pytest test for each `ValueError` and the `TypeError` of "A call that
+fails", each of which leaves no file at the path, and among them: chr1 5000
+then chr1 100, whose message holds both; chr1, chr2, chr1, refused although
+the positions go up, and both written with `allow_unsorted=True`; an
+allele 2 for a variant of the alleles H0 H1; a `float64` array for `GP`.
+A generator that yields the first segment above and then raises
+`RuntimeError("caller failed")` gives that `RuntimeError` and no file. A
+test of `write_vars` on a VCF written in the test whose second variant is
+at a lower position than its first gives the `ValueError` and no file, and
+writes it with `allow_unsorted=True`. The tests of `write_vars` on
+`many.vcf`, which is sorted, change only in the `format_version` they read,
+`"1.3"`.
+
+pyNei is not run: its file is another one, and it has no genotype fields.
+
 ## The Rust interface
 
 What a vars file says about itself, from the `popnei` key of its schema.
 
 ```rust
 pub struct VarsMetadata {
-    /// The whole string, "1.2". Only the part before the dot is checked.
+    /// The whole string, "1.3". Only the part before the dot is checked.
     pub format_version: String,
     pub individuals: Vec<String>,
     pub ploidy: usize,
     pub num_vars_per_block: usize,
     /// Empty in a file of 1.0, which has no such key.
     pub chrom_lengths: Vec<(String, u64)>,
+    /// The extra fields, from `var_fields` and `gt_fields`, in the order
+    /// of their columns. Empty in a file of 1.2 or before. Added on 9
+    /// November 2026.
+    pub extra_fields: Vec<ExtraFieldDecl>,
 }
 ```
+
+`ExtraFieldDecl`, the name, the kind and the type of one extra field, is
+in `docs/specs/block.md`, since the header of every source carries it.
 
 What the footer says of one batch, from `popnei_batches`. It is a batch and
 not a block: the blocks that `iter_blocks` gives from a file are cut at the
@@ -853,6 +1264,20 @@ impl VarsReader<BufReader<File>> {
 impl<R: Read + Seek + Send> BlockReader for VarsReader<R> { /* ... */ }
 ```
 
+Which extra fields the reader decompresses when `EXTRA` of `Needs` is
+asked for: the ones named, every one for `None`, which is what it does
+until this is called. It holds from the next block, as `set_needs` does.
+A name the file has no field of is an error naming the fields it has. It
+is a method of the vars reader and not of `BlockReader`: the binding crate
+calls it on the source it opened for `iter_blocks`, before it puts the
+filters over it, and `write_vars` never calls it.
+
+```rust
+impl<R: Read + Seek> VarsReader<R> {
+    pub fn select_extra_fields(&mut self, names: Option<Vec<String>>) -> Result<()>;
+}
+```
+
 The writer. The columns of the file are fixed by the first block that is
 written, so `new` takes only what the `popnei` key needs. It writes one batch
 for each block it is given, of whatever size.
@@ -867,6 +1292,11 @@ impl<W: Write> VarsWriter<W> {
         sink: W, individuals: &[String], ploidy: usize,
         num_vars_per_block: usize,
     ) -> Result<Self>;
+    /// The extra fields of the file, which the `popnei` key will say and
+    /// which every block written has to carry, with these names, kinds and
+    /// types. None until this is called. It holds when it is called before
+    /// the first block, as the lengths of the chromosomes do.
+    pub fn set_extra_fields(&mut self, fields: Vec<ExtraFieldDecl>) -> Result<()>;
     /// It writes `block` as one batch. `chroms` is the table of the reader
     /// the block came from, which holds the names behind its chromosome
     /// numbers. A block of other individuals or another ploidy than those
@@ -881,11 +1311,14 @@ impl<W: Write> VarsWriter<W> {
 /// with how many variants were written. It asks `reader` for
 /// every field and puts a `reblock` of `num_vars_per_block` over it, None for
 /// `default_num_vars_per_block` for the individuals of `reader`, which is
-/// then the number that the `popnei` key says. This is what both binding crates call. The Python
+/// then the number that the `popnei` key says. The extra fields are those
+/// of the header of `reader`. With `allow_unsorted` false, a variant out of
+/// the order of "Sorted variants" is an error. This is what both binding
+/// crates call, for `write_vars` and for the writer of segments. The Python
 /// binding crate opens the file, refuses a path that exists, and removes the
 /// file when this returns an error.
 pub fn write_vars<R: BlockReader, W: Write>(
-    reader: R, sink: W, num_vars_per_block: Option<usize>,
+    reader: R, sink: W, num_vars_per_block: Option<usize>, allow_unsorted: bool,
 ) -> Result<(W, u64)>;
 ```
 
@@ -965,6 +1398,19 @@ and a chromosome number that the table given with the block has no name for.
 A user reaches none of the three by what they write, since `write_vars` asks
 its reader for every field and gives the writer the table of that reader.
 
+The extra fields and the writer of segments, added on 9 November 2026, add
+these. A `ValueError`: variants out of order, with the two variants; an
+extra field of the file that is not what its entry of the `popnei` key
+says, with the field, the type or the width found and the one expected,
+which is also the case of an entry without its column and of a name the
+rule refuses or that is there twice; and a name asked of
+`select_extra_fields` that the file has no field of, with the fields it
+has. The checks of a segment of "A call that fails" are made in the
+Python binding crate before a block is built, and are a `ValueError` of
+that crate that names the segment. A `RuntimeError`: a block whose extra
+fields are not those `set_extra_fields` declared, with both lists, which
+the reader of segments never gives the writer.
+
 Four more cases that a call of this module gives are not its own. A path
 that already exists is refused by the binding crate before the core is
 called, and is a `ValueError`. A `num_vars_per_block` of 0 is the case of
@@ -1014,11 +1460,47 @@ speed waits for that measurement.
 
 ## Open points
 
-None. The owner decided on 20 September 2026 the five that there were: a
-format of popnei's own that owes pyNei's nothing, lz4 in every build, the name
-`open_vars`, the regions of each batch in the footer, and every field in the
-file that `write_vars` makes. Each is written where it applies, with the
-option that was not taken.
+The owner decided on 20 September 2026 the five points of the first version
+of this spec: a format of popnei's own that owes pyNei's nothing, lz4 in
+every build, the name `open_vars`, the regions of each batch in the footer,
+and every field in the file that `write_vars` makes. Each is written where it
+applies, with the option that was not taken. The two below came with the
+items of 9 November 2026. The owner decides them, and the implementer
+follows the "meanwhile" of each until they do.
+
+**Open 1. What `write_vcf` does with a source that has extra fields.**
+The VCF it writes has no place for them today: its INFO column is `.` and
+its FORMAT `GT`.
+
+- Refuse the source with a `ValueError` that names the fields, before the
+  file is made. Nothing is lost with no sign, and nothing is to build but
+  the check. A user with such a file gets no VCF of it, since no step
+  takes a field away.
+- Write each variant field as an INFO field and each genotype field as a
+  FORMAT field, with the lines of the header that declare them, Integer or
+  Float with `Number=1`. The VCF holds what the file holds and any tool
+  reads it. It is the writer formatting numbers for every genotype, a pass
+  that has not been measured, and a reader that reads such fields back
+  into extra fields is another item.
+
+The recommendation is to refuse, until a user asks for a VCF of such a
+file. Meanwhile the implementer builds the refusal.
+
+**Open 2. Whether the TypeScript functions are built with the Python
+ones.** The use case of issue 19 is a caller written in Python.
+
+- Build `writeVarsFromSegments`, `varFields`, `gtFields` and `extraFields`
+  with the rest. The two packages keep the same API, as the objectives
+  ask, at the cost of the conversion of every typed array of a segment in
+  the wasm binding crate and its tests under node.
+- Build the core and Python first, and the TypeScript functions in a later
+  plan. In the meantime a file with extra fields opens in TypeScript, its
+  calculations run and `writeVars` keeps its fields, since that is the
+  core, but a TypeScript user cannot read the fields or write such a file.
+
+The recommendation is the second. Meanwhile the implementer builds the
+second, and in TypeScript `allowUnsorted` of `writeVars` alone, since the
+check of the order is the core's and refuses for both packages.
 
 ## Not in this spec
 
@@ -1033,6 +1515,15 @@ option that was not taken.
 - The reading of a `File` of a page by ranges, which is what `openVars`
   takes in the wasm package: `docs/specs/js_sources.md`.
 - The VCF writer: an item of `docs/specs/io_vcf.md`.
+- A filter that calls only the genotypes whose genotype field passes a
+  threshold, setting the others to missing, which issue 19 names as the
+  next step: a step of `docs/specs/filters.md`, when it is asked for.
+- Reading the INFO and FORMAT fields of a VCF into extra fields.
+- A variant field of a list of values of its own length for each
+  variant, which the tree of the alleles of a haplotype region would need.
+  The format holds a list column, and nothing asks for one yet.
+- `Variants.from_gt_array`, a `Variants` of an array of genotypes in
+  memory, which has a spec and no code: `docs/specs/variant.md`.
 - `Variants`, the handle both functions here give and take:
   `docs/specs/variant.md`. `iter_blocks`, which is how its genotypes reach
   Python and TypeScript: `docs/specs/block.md`.

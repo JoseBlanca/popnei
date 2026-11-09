@@ -28,7 +28,7 @@ they were built.
 ### What it gives
 
 A consumer, a filter, a calculation or a writer, says which fields of the
-variants it wants with a `Needs`, a set of seven flags. Five are the
+variants it wants with a `Needs`, a set of eight flags. Five are the
 genotypes, the chromosome and the position, which travel together, the
 id, the alleles and the quality. A reader may skip the rest: most calculations want the
 genotypes alone, and the VCF reader then does not parse the other columns
@@ -40,9 +40,11 @@ VCF reader for the text of each line, which only the VCF writer of
 `docs/specs/io_vcf.md` wants; it is not in `ALL`, the six that
 `write_vars` asks for, because the vars file has no place for it.
 `PASSED`, whether each variant passed its FILTER, was added on 6 October
-2026 and is in `ALL`, which holds six of the seven; the tests that
+2026 and is in `ALL`; the tests that
 compare a set of fields with `ALL`, or a vars file with format 1.1 or six
-columns, change with it.
+columns, change with it. `EXTRA`, the extra fields of a vars file of
+`docs/specs/io_vars.md`, was added on 9 November 2026 and is in `ALL`
+too, which then holds seven of the eight flags.
 
 The chromosome of a variant is a number, an index into the table of
 chromosome names that its reader keeps, the `ChromTable`, so that a block
@@ -138,6 +140,12 @@ can run, since both refuse a source without the record. It was added on 7
 October 2026 from issue 12. The tests of both packages check it on
 `tests/reference/vcf/many.vcf`, on the vars file written from it and on
 `tests/reference/vars/of_1_1.vars`: true, true and false.
+
+A `Variants` also has `var_fields` and `gt_fields`, two dicts of the name
+of each extra field of its source to its numpy type, empty for a VCF and
+for a vars file of 1.2 or before, which "The extra fields" of
+`docs/specs/io_vars.md` has. They were added on 9 November 2026 from
+issue 19.
 
 In TypeScript, `Variants` is a class with `individuals`, `numIndividuals`,
 `ploidy` and `keepsPassed`, the steps as methods, `steps`, and `iterBlocks`. It lives in the memory of wasm, which the
@@ -379,8 +387,11 @@ impl Needs {
     pub const PASSED: Needs;
     /// The text of the lines of a VCF, for its writer. Not in ALL.
     pub const VCF_TEXT: Needs;
-    /// GTS to QUAL and PASSED, the six that a vars file holds, built from
-    /// them.
+    /// The extra fields of `docs/specs/io_vars.md`, those the vars reader
+    /// was told to select, every one by default. Added on 9 November 2026.
+    pub const EXTRA: Needs;
+    /// GTS to QUAL, PASSED and EXTRA, the seven that a vars file holds,
+    /// built from them.
     pub const ALL: Needs;
     pub fn empty() -> Needs;
     pub fn contains(self, fields: Needs) -> bool;
