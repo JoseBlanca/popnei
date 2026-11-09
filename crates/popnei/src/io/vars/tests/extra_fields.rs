@@ -433,6 +433,34 @@ fn select_extra_fields_gives_the_fields_named_in_the_order_of_the_file() {
     assert_eq!(read_selecting(Some(Vec::new())), vec![None, None]);
 }
 
+/// `select_extra_fields` makes the header declare the fields selected, as
+/// the blocks carry them, so `write_vars` of a reader of `GP` alone writes
+/// a file of `GP` alone; the metadata keeps every field of the file.
+#[test]
+fn select_extra_fields_sets_the_fields_of_the_header_and_write_vars_writes_them() {
+    let mut reader = opened(cases_with_fields_written()).expect("the file");
+    reader
+        .select_extra_fields(Some(vec!["GP".to_owned()]))
+        .expect("a field of the file");
+
+    assert_eq!(reader.header().extra_fields, vec![gp_decl()]);
+    assert_eq!(reader.metadata().extra_fields, vec![end_decl(), gp_decl()]);
+    let (bytes, num_vars) = write_vars(reader, Vec::new(), None, false).expect("the file of `GP`");
+    assert_eq!(num_vars, 4);
+    let reader = opened(bytes.clone()).expect("the file of `GP`");
+    assert_eq!(reader.header().extra_fields, vec![gp_decl()]);
+    let (blocks, _) = blocks_read(bytes, Needs::ALL);
+    assert_eq!(extra_of(&blocks), vec![Some(vec![gp_of(0, 4)])]);
+
+    let mut reader = opened(cases_with_fields_written()).expect("the file");
+    reader
+        .select_extra_fields(Some(Vec::new()))
+        .expect("no field");
+    assert_eq!(reader.header().extra_fields, Vec::new());
+    reader.select_extra_fields(None).expect("every field");
+    assert_eq!(reader.header().extra_fields, vec![end_decl(), gp_decl()]);
+}
+
 /// A selection holds from the next block, as `set_needs` does.
 #[test]
 fn select_extra_fields_holds_from_the_next_block() {

@@ -1914,7 +1914,9 @@ pub struct VarsReader<R: Read + Seek> {
     /// What the `popnei` key of the schema says.
     metadata: VarsMetadata,
     /// What the file said of itself: the individuals, the lengths of the
-    /// chromosomes and the extra fields of `metadata`.
+    /// chromosomes and the extra fields of `metadata` that
+    /// [`VarsReader::select_extra_fields`] selected, every one until it is
+    /// called.
     header: SourceHeader,
     /// What the `popnei_batches` key of the footer says of each batch.
     batches: Vec<BatchInfo>,
@@ -2054,8 +2056,9 @@ impl<R: Read + Seek> VarsReader<R> {
     }
 
     /// What the `popnei` key of the schema of the file says: the version of
-    /// the format, the names of the individuals, the ploidy and how many
-    /// variants a batch holds.
+    /// the format, the names of the individuals, the ploidy, how many
+    /// variants a batch holds and every extra field of the file, whatever
+    /// [`VarsReader::select_extra_fields`] selected.
     #[must_use]
     pub fn metadata(&self) -> &VarsMetadata {
         &self.metadata
@@ -2083,6 +2086,13 @@ impl<R: Read + Seek> VarsReader<R> {
     /// order of the file whatever the order of the names, and a block of a
     /// selection that names none has no extra field, as one of a file that
     /// has none.
+    ///
+    /// The extra fields of [`BlockReader::header`] become the ones
+    /// selected, in the order of the file, and none for a selection of
+    /// none, so that [`write_vars`] of this reader writes a file of those
+    /// fields. Every field of the file stays in
+    /// [`VarsReader::metadata`], which is where `Variants.var_fields` and
+    /// `gt_fields` of Python read them when the file is opened.
     ///
     /// The binding crate calls it on the source it opened for
     /// `iter_blocks`, before it puts the filters over it; [`write_vars`]
@@ -2121,6 +2131,14 @@ impl<R: Read + Seek> VarsReader<R> {
                 selected
             }
         };
+        self.header.extra_fields = self
+            .metadata
+            .extra_fields
+            .iter()
+            .zip(&selected)
+            .filter(|(_, selected)| **selected)
+            .map(|(field, _)| field.clone())
+            .collect();
         self.extra_selected = selected;
         // The batches that were decoded and not given were decoded with the
         // columns that were selected before this call.
