@@ -105,8 +105,9 @@ def write_vars(
     variants have ended does not come back. Two variants at one position
     are in order, and the chromosomes can come in any order. A variant out
     of that order is a ``ValueError`` that names it and the one before it,
-    ``variant 2, chr1 100, comes after variant 1, chr1 5000``, and the file
-    is taken away as for any other error. With ``allow_unsorted=True`` the
+    ``the 2nd variant written, chr1 100, comes after the 1st, chr1 5000``,
+    counted among the variants written, after any filter, and the file is
+    taken away as for any other error. With ``allow_unsorted=True`` the
     variants are written in the order they come. A source with no
     chromosomes and positions, a :class:`Variants` built from an array of
     genotypes, is not checked.

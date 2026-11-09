@@ -401,7 +401,8 @@ def test_write_vars_refuses_unsorted_variants_and_leaves_no_file(
 
     message = str(refusal.value)
     assert message.startswith(str(vcf_path))
-    assert "variant 2, chr1 100, comes after variant 1, chr1 5000" in message
+    assert "the 2nd variant written, chr1 100, comes after the 1st, chr1 5000" in message
+    assert message.endswith("`allow_unsorted=True` writes them in the order they come")
     assert not path.exists()
 
 

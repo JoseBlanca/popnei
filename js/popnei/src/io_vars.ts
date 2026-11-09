@@ -164,8 +164,9 @@ export function openVars(source: BytesOrFile): Variants {
  * and the variants of a chromosome come together, so a chromosome whose
  * variants have ended does not come back. Two variants at one position are
  * in order, and the chromosomes can come in any order. A variant out of
- * that order is an `Error` that names it and the one before it, `variant
- * 2, chr1 100, comes after variant 1, chr1 5000`. With `allowUnsorted`,
+ * that order is an `Error` that names it and the one before it, `the 2nd
+ * variant written, chr1 100, comes after the 1st, chr1 5000`, counted among
+ * the variants written, after any filter. With `allowUnsorted`,
  * the variants are written in the order they come.
  *
  * Without `onBytes`, the whole file is built in the memory of wasm, which

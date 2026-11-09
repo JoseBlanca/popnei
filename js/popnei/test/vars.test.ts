@@ -419,7 +419,10 @@ test("writeVars refuses unsorted variants unless allowUnsorted, from a VCF and f
       "chr1\t100\t.\tG\tC\t.\tPASS\t.\tGT\t0/1\t1/1\t0/0",
     ]),
   );
-  const notSorted = /variant 2, chr1 100, comes after variant 1, chr1 5000/;
+  // The message ends with the option of TypeScript and not the name the
+  // core writes it with.
+  const notSorted =
+    /^the 2nd variant written, chr1 100, comes after the 1st, chr1 5000; .*`allowUnsorted: true` writes them in the order they come$/;
   assert.throws(() => writeVars(fromTheVcf), { name: "Error", message: notSorted });
   assert.throws(() => writeVars(fromTheVcf, { allowUnsorted: false }), {
     name: "Error",

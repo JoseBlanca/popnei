@@ -111,7 +111,13 @@ fn a_position_that_goes_down_is_not_sorted_and_the_error_names_both_variants() {
     assert!(
         error
             .to_string()
-            .starts_with("variant 2, chr1 100, comes after variant 1, chr1 5000; "),
+            .starts_with("the 2nd variant written, chr1 100, comes after the 1st, chr1 5000; "),
+        "{error}"
+    );
+    assert!(
+        error.to_string().ends_with(
+            "; the variants are counted among those written, after any filter, and `allow_unsorted=True` writes them in the order they come"
+        ),
         "{error}"
     );
 }
@@ -148,7 +154,7 @@ fn a_chromosome_that_comes_back_is_not_sorted_and_the_error_names_both_variants(
     assert!(
         error
             .to_string()
-            .starts_with("variant 4, chr1 150, comes after variant 3, chr2 300; "),
+            .starts_with("the 4th variant written, chr1 150, comes after the 3rd, chr2 300; "),
         "{error}"
     );
     assert!(

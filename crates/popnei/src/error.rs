@@ -3044,9 +3044,15 @@ pub enum Error {
     /// its last. Two variants at one position are in order, and the
     /// chromosomes can come in any order. In Python it is a `ValueError`
     /// with the file the variants were read from, since the order is what
-    /// that source holds.
+    /// that source holds. The two variants are counted among those
+    /// written, after any filter, which the message says, since a filter
+    /// makes them other numbers than their places in that file; and it ends
+    /// with `allow_unsorted=True`, which the JavaScript binding writes as
+    /// `allowUnsorted: true`.
     #[error(
-        "variant {var}, {chrom} {pos}, comes after variant {var_before}, {chrom_before} {pos_before}; {why}",
+        "the {} variant written, {chrom} {pos}, comes after the {}, {chrom_before} {pos_before}; {why}; the variants are counted among those written, after any filter, and `allow_unsorted=True` writes them in the order they come",
+        ordinal(*var),
+        ordinal(*var_before),
         why = if chrom == chrom_before {
             "the variants of a vars file are sorted, and the positions of a chromosome do not go down from one variant to the next".to_owned()
         } else {
@@ -3054,14 +3060,14 @@ pub enum Error {
         }
     )]
     VarsVariantNotSorted {
-        /// Which variant it is, counted from 1 over the file.
+        /// Which variant it is, counted from 1 among those written.
         var: u64,
         /// The name of its chromosome.
         chrom: String,
         /// Its position.
         pos: u64,
-        /// Which variant the one before it is, counted from 1 over the
-        /// file.
+        /// Which variant the one before it is, counted from 1 among those
+        /// written.
         var_before: u64,
         /// The name of the chromosome of the variant before it.
         chrom_before: String,
@@ -4210,6 +4216,19 @@ fn the_remedies_of_a_fit_that_did_not_settle(model: crate::gwas::GwasModel) -> &
     }
 }
 
+/// `number` as an ordinal of English, `1st`, `2nd`, `3rd`, `4th`, `11th`,
+/// `21st`.
+fn ordinal(number: u64) -> String {
+    let suffix = match (number % 10, number % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{number}{suffix}")
+}
+
 /// The data lines `ploidy_of_vcf` looked at, as the subject of the sentence
 /// that says they hold no genotype with alleles: "the first 4096 data lines
 /// of the VCF hold", and "the one data line of the VCF holds" for one.
@@ -4267,6 +4286,23 @@ mod tests {
     use crate::gwas::GwasModel;
     use crate::io::vcf::VcfPlace;
     use crate::variant::Needs;
+
+    /// The ordinals of the error of a variant out of order, the teens among
+    /// them, which end in `th` whatever their last digit.
+    #[test]
+    fn ordinals_end_as_english_writes_them() {
+        let written: Vec<String> = [1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101, 111, 1000]
+            .into_iter()
+            .map(super::ordinal)
+            .collect();
+        assert_eq!(
+            written,
+            [
+                "1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd",
+                "101st", "111th", "1000th"
+            ]
+        );
+    }
 
     /// A fit that did not settle names the causes of the model it was
     /// fitting: the logistic mixed model has the kinship among them, and

@@ -289,7 +289,9 @@ impl From<JsPopneiError> for JsValue {
 /// `chrom_lengths` of the density of the variants, the `num_vars` of a
 /// filter of the first n of no variants and the `keep_rate` of the filter
 /// that keeps variants at random, whose value is written as JavaScript
-/// writes it as well.
+/// writes it as well. The `allow_unsorted=True` that the error of a variant
+/// out of order ends with is written as the option of `writeVars`,
+/// `allowUnsorted: true`.
 ///
 /// The `correct_dists_by_lingoes` and the `correct_by_lingoes` that a matrix
 /// that is not Euclidean is pointed to are rewritten here, and so are the
@@ -298,7 +300,7 @@ impl From<JsPopneiError> for JsValue {
 /// [`JsPopneiError::PairsWithNoDistance`] writes in TypeScript whenever the
 /// names reach its positions.
 ///
-/// Three of the twenty names the core writes are left as they are.
+/// Three of the twenty-one names the core writes are left as they are.
 /// `num_prin_comps` is in the error of a second pass that was not made,
 /// which `pca.rs` of this crate opens a reader for whenever the weights are
 /// asked for, so no call of TypeScript reaches it. The `max_num_vars` of a
@@ -374,6 +376,9 @@ fn the_message_of_the_core(error: &popnei::Error) -> String {
             &format!("`keepRate` is {},", as_javascript_writes_it(*keep_rate)),
             1,
         );
+    }
+    if matches!(error, popnei::Error::VarsVariantNotSorted { .. }) {
+        return message.replace("`allow_unsorted=True`", "`allowUnsorted: true`");
     }
     if matches!(error, popnei::Error::VarDensityWindowSizeZero) {
         return message.replace("window_size", "windowSize");
