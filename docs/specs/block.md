@@ -737,7 +737,27 @@ pub const FIELD_NAMES: [&str; 5] = ["chrom", "pos", "id", "alleles", "qual"];
 pub fn needs_of_the_fields<'a>(
     names: impl IntoIterator<Item = &'a str>,
 ) -> Result<Needs>;
+
+/// What `needs_of_the_fields` gives, for a source whose header declares
+/// `extra_fields`, and the names among `names` of those fields, in the
+/// order they were named: a name of one asks for `EXTRA` as well. A name
+/// of neither is the same error, whose message lists the five and then
+/// the extra fields of the source.
+pub fn needs_of_the_fields_of_a_source<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    extra_fields: &[ExtraFieldDecl],
+) -> Result<(Needs, Vec<String>)>;
 ```
+
+The Python binding calls the second with the names of `iter_blocks` and
+the extra fields of the file, which it read when the file was opened, and
+selects the names it gives back on the reader of the file of the pass
+with `VarsReader::select_extra_fields` of `docs/specs/io_vars.md`, before
+the filters go over it. The TypeScript binding calls the first, since it
+gives no extra field yet. The session that ran task 2.3 of
+`docs/plans/vars-from-segments.md` decided it on 9 November 2026, so that
+which name is a column and which an extra field is decided in the core and
+not in a binding crate.
 
 This module adds eight cases to the error of the crate. A
 `num_vars_per_block` of 0, which `Reblock::new` and every source that
