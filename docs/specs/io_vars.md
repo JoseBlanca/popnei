@@ -1098,10 +1098,15 @@ whose variants have ended does not come back. Two variants at one position
 are in order, whichever comes first. The chromosomes themselves can come in any order. The check
 runs over the whole file, across segments and across batches, and costs
 one comparison for each variant. A variant out of order is a `ValueError`
-that names it and the one before it, with the number of each, counted
-from 1 over the file, `variant 2, chr1 100, comes after variant 1, chr1
-5000`, and the file is removed. `allow_unsorted=True` writes the variants in the order
-they come. The option not taken was to write any order with no check,
+that names it and the one before it, with the number of each among the
+variants written, counted from 1 over the file that is being written,
+`the 2nd variant written, chr1 100, comes after the 1st, chr1 5000`, and
+the file is removed. The numbers count the variants that reach the
+writer, after any filter, so they are not the places of the two variants
+in a source that a filter took variants out of; the message says so.
+`allow_unsorted=True` writes the variants in the order
+they come, and the message ends by naming it, as `allowUnsorted: true` in
+TypeScript. The option not taken was to write any order with no check,
 which is what the format allows and what `docs/specs/io_vcf.md` does with
 the VCF it writes.
 
