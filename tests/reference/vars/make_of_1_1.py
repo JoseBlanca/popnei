@@ -6,12 +6,13 @@ pyarrow of uv.lock, 25.0.1, which wrote the file that is committed:
 
     uv run python tests/reference/vars/make_of_1_1.py
 
-popnei writes a vars file of format 1.2 from the four variants of cases.vcf of
+popnei writes a vars file of format 1.3 from the four variants of cases.vcf of
 tests/reference/vcf/, read with only_passed false, so that the one at 200,
 which failed its filter q10, is there too. pyarrow then writes it again,
 beside this script, with the same batches and the same keys, but without the
-`passed` column and with format_version "1.1" in the `popnei` key: what a file
-written before format 1.2 holds. popnei opens it, and the filter of the
+`passed` column, with format_version "1.1" in the `popnei` key and without
+the two entries of the extra fields, `var_fields` and `gt_fields`, which that
+file has none of: what a file written before format 1.2 holds. popnei opens it, and the filter of the
 variants that passed refuses it at the first block, as "The filter of the
 variants that passed their FILTER" of docs/specs/filters.md says, rather than
 taking the failed variant at 200 as passed.
@@ -28,8 +29,9 @@ PATH = HERE / "of_1_1.vars"
 CASES_VCF = HERE.parent / "vcf" / "cases.vcf"
 
 POPNEI_KEY = b"popnei"
-VERSION_1_2 = b'"format_version":"1.2"'
+VERSION_1_3 = b'"format_version":"1.3"'
 VERSION_1_1 = b'"format_version":"1.1"'
+NO_EXTRA_FIELDS = b',"var_fields":[],"gt_fields":[]'
 
 
 def write(path):
@@ -40,9 +42,12 @@ def write(path):
             footer = reader.metadata
             schema_metadata = dict(reader.schema.metadata)
             table = reader.read_all()
-    assert VERSION_1_2 in schema_metadata[POPNEI_KEY], schema_metadata
-    schema_metadata[POPNEI_KEY] = schema_metadata[POPNEI_KEY].replace(
-        VERSION_1_2, VERSION_1_1
+    assert VERSION_1_3 in schema_metadata[POPNEI_KEY], schema_metadata
+    assert NO_EXTRA_FIELDS in schema_metadata[POPNEI_KEY], schema_metadata
+    schema_metadata[POPNEI_KEY] = (
+        schema_metadata[POPNEI_KEY]
+        .replace(VERSION_1_3, VERSION_1_1)
+        .replace(NO_EXTRA_FIELDS, b"")
     )
     table = table.drop_columns(["passed"]).replace_schema_metadata(schema_metadata)
     with ipc.new_file(path, table.schema, metadata=footer) as writer:

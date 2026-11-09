@@ -82,21 +82,26 @@ const BYTES_OF_MANY_VCF_GZ = 21904;
  * each batch whole. The schema message at the head of the file it never
  * reads, because the footer carries the schema too, so the count ends below
  * the size of the file. It was measured on the file this test writes, with
- * the blocks of the size popnei chooses for 50 individuals.
+ * the blocks of the size popnei chooses for 50 individuals. It was 42744
+ * in format 1.2 and grew by 32 bytes in 1.3, whose `popnei` key, which the
+ * footer carries in its schema, holds `"var_fields":[],"gt_fields":[]` too.
  */
-const BYTES_READ_OF_THE_VARS_FILE = 42744;
+const BYTES_READ_OF_THE_VARS_FILE = 42776;
 
 /**
  * How many bytes a pass over the vars file of more than one range reads,
- * measured on the file `vcfOfDrawnGenotypes(14000, 600)` writes, 12249642
- * bytes, of which the pass reads all but its schema message.
+ * measured on the file `vcfOfDrawnGenotypes(14000, 600)` writes, 12249738
+ * bytes, of which the pass reads all but its schema message. In format 1.2
+ * they were 12243560 of 12249642: the two entries of the extra fields that
+ * the `popnei` key of 1.3 holds made the file 96 bytes longer and the bytes
+ * read 32.
  *
  * The call that says it is the one the end of the run makes. The reads of
  * that pass after its last range never reach another one, so without that
  * call the page was last told at 8476400 bytes, two thirds of the way, and
  * a bar drawn from the calls stopped there.
  */
-const BYTES_READ_OF_THE_LARGE_VARS_FILE = 12243560;
+const BYTES_READ_OF_THE_LARGE_VARS_FILE = 12243592;
 
 /**
  * The kinship of the 50 individuals of `many.vcf`, for the study that asks
@@ -288,7 +293,7 @@ test("a pass over a vars file smaller than a range is told twice", () => {
 
 test("a pass over a vars file of several ranges is told at the end of the run", () => {
   // The vars file of `vars_memory.test.ts`, 14000 variants of 600
-  // individuals written in batches of 100, 12249642 bytes, which is more
+  // individuals written in batches of 100, 12249738 bytes, which is more
   // than one range of 4 MiB. A pass over it reads its batches and stops
   // after the last one, with up to a range read since the call before it.
   const vcf = openVcf(vcfOfDrawnGenotypes(14000, 600), { onlyPassed: false });
@@ -302,7 +307,7 @@ test("a pass over a vars file of several ranges is told at the end of the run", 
     variants.free();
   }
   assertTheyRise(calls, "the pass over a vars file of several ranges");
-  assert.equal(file.length, 12249642, "the vars file changed size");
+  assert.equal(file.length, 12249738, "the vars file changed size");
   assert.equal(calls.at(0)?.bytesRead, 0);
   assert.equal(calls.at(-1)?.bytesRead, BYTES_READ_OF_THE_LARGE_VARS_FILE);
   assert.ok(
