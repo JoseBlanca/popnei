@@ -8638,7 +8638,20 @@ mod tests {
     /// holds its rows, which is far below the bits of the batch that the
     /// bound was before, so three more of these files are refused before
     /// arrow-rs reads them.
-    const PANICS_CAUGHT: u64 = 11;
+    ///
+    /// It went from 11 to 22 on 9 November 2026, with no change of the
+    /// reader: until then the sweep counted none of the panics, which happen
+    /// on the threads the reader decodes on, and the files of the flipped
+    /// bits were read after the hook that counts was taken away, so the
+    /// bound of 11 was never met. The 22 are 6 at `boolean.rs:128` of
+    /// arrow-buffer 60, a buffer of bits too short, and 16 at
+    /// `immutable.rs:334`, a buffer whose length is not a whole number of
+    /// the values of its column.
+    const PANICS_CAUGHT: u64 = 22;
+
+    /// What [`swept_with`] holds while it runs, so that no two sweeps put
+    /// their hooks at once.
+    static ONE_SWEEP_AT_A_TIME: Mutex<()> = Mutex::new(());
 
     /// The variants of the file in those bytes, with every field, or the
     /// error it gave: what a sweep over a damaged file reads.
@@ -8704,21 +8717,39 @@ mod tests {
     /// crates/popnei/src/filters.rs:1588:9, 1 times` that way on 21
     /// September 2026, by breaking a test of the filters. So each panic is
     /// counted under the thread it happened in, and the sweep keeps the
-    /// ones of its own: the reader of a vars file uses no threads, so every
-    /// panic of the files this makes is on this thread.
-    fn swept(whole: &[u8], values: &[u8], expected: &[ReadRow]) -> Sweep {
-        swept_with(whole, values, expected, rows_or_error)
+    /// ones of the thread that reads the files.
+    ///
+    /// That thread is the one of a pool of one thread that the sweep makes,
+    /// away from wasm. The reader decodes the batches of a window on the
+    /// threads of the pool it is called in, so a sweep that read the files
+    /// on the thread of the test counted none of the panics the net caught,
+    /// and its bound on them could not fail; it counted 0 of the 11 there
+    /// were until 9 November 2026.
+    ///
+    /// Each byte is set to each of `set_to`, and then has each of `flipped`
+    /// flipped: the files of both are read while the hook counts.
+    fn swept(whole: &[u8], set_to: &[u8], flipped: &[u8], expected: &[ReadRow]) -> Sweep {
+        swept_with(whole, set_to, flipped, expected, rows_or_error)
     }
 
     /// [`swept`] with what a file is read as given: `read` reads the bytes
     /// of a file, and a file it gives `expected` for is read as the whole
     /// one.
-    fn swept_with<T: PartialEq<E>, E: ?Sized>(
+    fn swept_with<T: PartialEq<E>, E: ?Sized + Sync>(
         whole: &[u8],
-        values: &[u8],
+        set_to: &[u8],
+        flipped: &[u8],
         expected: &E,
-        read: impl Fn(Vec<u8>) -> Result<T>,
+        read: impl Fn(Vec<u8>) -> Result<T> + Sync,
     ) -> Sweep {
+        // The hook is one for the whole process, and two sweeps that ran at
+        // once, which cargo does with the tests of this binary, each put
+        // their own and took the other's away: one of them then counted no
+        // panic. On 9 November 2026 the sweep over the file with extra
+        // fields counted 0 of its 22 that way. So one sweep runs at a time.
+        let _one_at_a_time = ONE_SWEEP_AT_A_TIME
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let seen: Arc<Mutex<HashMap<(ThreadId, String), u64>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let hook = std::panic::take_hook();
@@ -8734,24 +8765,33 @@ mod tests {
                 *counted = counted.saturating_add(1);
             }
         }));
-        let sweeping = std::thread::current().id();
-        let mut errors: u64 = 0;
-        let mut the_same: u64 = 0;
-        let mut others: u64 = 0;
-        for (at, byte) in whole.iter().enumerate() {
-            for value in values {
-                if value == byte {
-                    continue;
-                }
-                let mut bytes = whole.to_vec();
-                bytes[at] = *value;
-                match read(bytes) {
-                    Err(_) => errors = errors.saturating_add(1),
-                    Ok(rows) if rows == *expected => the_same = the_same.saturating_add(1),
-                    Ok(_) => others = others.saturating_add(1),
+        let sweep_on_this_thread = || {
+            let mut errors: u64 = 0;
+            let mut the_same: u64 = 0;
+            let mut others: u64 = 0;
+            for (at, byte) in whole.iter().enumerate() {
+                let set = set_to.iter().filter(|value| *value != byte).copied();
+                let changed = set.chain(flipped.iter().map(|bit| byte ^ bit));
+                for value in changed {
+                    let mut bytes = whole.to_vec();
+                    bytes[at] = value;
+                    match read(bytes) {
+                        Err(_) => errors = errors.saturating_add(1),
+                        Ok(rows) if rows == *expected => the_same = the_same.saturating_add(1),
+                        Ok(_) => others = others.saturating_add(1),
+                    }
                 }
             }
-        }
+            (std::thread::current().id(), errors, the_same, others)
+        };
+        #[cfg(not(target_family = "wasm"))]
+        let (sweeping, errors, the_same, others) = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("a pool of one thread")
+            .install(sweep_on_this_thread);
+        #[cfg(target_family = "wasm")]
+        let (sweeping, errors, the_same, others) = sweep_on_this_thread();
         std::panic::set_hook(hook);
         let panics = seen
             .lock()
@@ -8787,7 +8827,10 @@ mod tests {
     /// in 0.13 s: 6946 errors, 8988 read as the whole file, 362 read as
     /// another file with no error, 11 panics caught and no abort. The check
     /// of an allele below the missing one moved 24 files from the third
-    /// count to the first.
+    /// count to the first. On 9 November 2026, once the panics on the
+    /// threads of the reader and the files of the flipped bits were
+    /// counted, it gave 16732 files: 7271 errors, 9242 read as the whole
+    /// file, 219 read as another file and 22 panics caught.
     ///
     /// Every byte is set to four values here, the low bit and the high bit
     /// flipped, 0 and 255; the sweep over all 255 is the ignored test that
@@ -8803,23 +8846,7 @@ mod tests {
         let expected = rows_or_error(whole.clone()).expect("the whole file is read");
         assert_eq!(expected.len(), 4);
 
-        let values = [0x00, 0xff];
-        let mut sweep = swept(&whole, &values, &expected);
-        // The two values that depend on the byte, which `swept` takes as
-        // they are, so the sweep is run again for each of them.
-        for bit in [0x01_u8, 0x80] {
-            for (at, byte) in whole.iter().enumerate() {
-                let mut bytes = whole.clone();
-                bytes[at] = byte ^ bit;
-                match rows_or_error(bytes) {
-                    Err(_) => sweep.errors = sweep.errors.saturating_add(1),
-                    Ok(rows) if rows == expected => {
-                        sweep.the_same = sweep.the_same.saturating_add(1);
-                    }
-                    Ok(_) => sweep.others = sweep.others.saturating_add(1),
-                }
-            }
-        }
+        let sweep = swept(&whole, &[0x00, 0xff], &[0x01, 0x80], &expected);
 
         // A test in which nothing is read, or nothing refused, is one that
         // cannot fail.
@@ -8856,7 +8883,7 @@ mod tests {
         let expected = rows_or_error(whole.clone()).expect("the whole file is read");
         let values: Vec<u8> = (0..=255).collect();
 
-        let sweep = swept(&whole, &values, &expected);
+        let sweep = swept(&whole, &values, &[], &expected);
 
         assert!(sweep.errors > 10000, "{} errors", sweep.errors);
         sweep.panics_are_of_arrow();
