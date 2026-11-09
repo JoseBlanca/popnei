@@ -885,7 +885,11 @@ The reader refuses, as an error of the file as a whole, a name in the two
 lists without its column, a column of another type than its entry says or
 of a genotype field whose width is not the number of individuals, a name
 that does not follow the rule above, one that is a column of the table of
-"What it holds", and one that is in the lists twice. A null in an extra
+"What it holds", and one that is in the lists twice. An entry that is not
+a list of pairs of a name and one of the five types is the error of a
+file that is not a vars file, as one of `chrom_lengths` is; the session
+that ran task 1.2 of `docs/plans/vars-from-segments.md` decided it on 9
+November 2026. A null in an extra
 column is the error of a null of "What it refuses". The bounds that
 "What it refuses" puts on the buffers of a batch before arrow-rs reads it
 hold the extra columns too: a variant field is the rows of the batch times
@@ -1329,7 +1333,10 @@ impl<R: Read + Seek + Send> BlockReader for VarsReader<R> { /* ... */ }
 Which extra fields the reader decompresses when `EXTRA` of `Needs`, the
 flag of `docs/specs/variant.md`, is asked for: the ones named, every one for `None`, which is what it does
 until this is called. It holds from the next block, as `set_needs` does.
-A name the file has no field of is an error naming the fields it has. It
+A name the file has no field of is an error naming the fields it has.
+The fields of a block are in the order of the file whatever the order of
+the names, and a block of a selection that names none has no extra
+field, `extra` of `None`, as one of a file that has none. It
 is a method of the vars reader and not of `BlockReader`: the binding crate
 calls it on the source it opened for `iter_blocks`, before it puts the
 filters over it, and `write_vars` never calls it.
@@ -1356,8 +1363,14 @@ impl<W: Write> VarsWriter<W> {
     ) -> Result<Self>;
     /// The extra fields of the file, which the `popnei` key will say and
     /// which every block written has to carry, with these names, kinds and
-    /// types. None until this is called. It holds when it is called before
-    /// the first block, as the lengths of the chromosomes do.
+    /// types, in the order the blocks hold them; the columns are the
+    /// variant fields in that order and then the genotype fields. None
+    /// until this is called. It holds when it is called before the first
+    /// block, as the lengths of the chromosomes do. A name the rule of
+    /// "What they give" refuses, one of a column of "What it holds" and
+    /// one given twice are the error of a field of the file, and a call
+    /// after the first block, which would change a schema already
+    /// written, the error of a block whose fields are not those declared.
     pub fn set_extra_fields(&mut self, fields: Vec<ExtraFieldDecl>) -> Result<()>;
     /// It writes `block` as one batch. `chroms` is the table of the reader
     /// the block came from, which holds the names behind its chromosome
