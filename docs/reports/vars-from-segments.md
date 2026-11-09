@@ -35,3 +35,16 @@ to them, nor sent to the `first-reader`, before the work.
   the block now names them. The check of deliverable 1 counted 3 tests on
   95c5874 and not 0, three tests of gzip members whose names hold
   `extra_field`; the plan says so now.
+- 1.2, eaf4cf2 (spec) and 17cb60e (code): the vars file of 1.3, with 22
+  tests; `cargo test --workspace` 1557 passed. The spec gained three
+  things the task had to decide: a malformed entry of the two lists is
+  the error of a file that is not a vars file, a selection of no field
+  gives a block with no extra fields, and what `set_extra_fields` refuses.
+  The bounds walk of the reader needed no change. Two findings outside
+  the plan, for the owner: the existing byte sweep of the reader counts
+  panics only on the thread of the test, while the reader decodes on the
+  threads of rayon natively, so its assertion on the panics it caught
+  cannot fail; the new sweep runs in a pool of one thread and caught 11
+  panics, all inside arrow-rs, none out of the reader. And
+  `tests/reference/vars/make_of_1_1.py` asserts that popnei writes 1.2, so
+  it fails if it is run again; task 1.3 fixes it.

@@ -106,7 +106,7 @@ Tasks:
   block, filter and reblock tests), 5, 6. A filter that dropped or
   misordered the values of a genotype field would be silent, and the
   tests of deliverable 1 guard it.
-- [ ] 1.2 The vars file of 1.3: the extra columns and the two entries of
+- [x] 1.2 The vars file of 1.3: the extra columns and the two entries of
   the `popnei` key in the writer, `set_extra_fields`, `write_vars` taking
   the fields of the header of its reader; the reader's reading and
   refusals, `select_extra_fields`, the bounds of the new columns, and
