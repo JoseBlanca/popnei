@@ -547,7 +547,12 @@ gives, individual for pyNei's sample. The differences:
   out. pyNei's `gather_filtering_stats` lists it under the kind `sample`,
   with every variant processed and kept.
 - The kept individuals come in the order of the argument, and not of the
-  source, under "What it gives".
+  source, under "What it gives". So an argument that is not a sequence, a
+  `set`, a `dict` or a generator, is a `TypeError`: a set gives its names
+  in an order of its own, which would become the order of the genotypes
+  with nothing said. A numpy array of names is taken. This was decided on
+  9 November 2026 in the review of work package 2 of
+  `docs/plans/vars-from-segments.md`.
 
 The three refusals of the names are made at the call, against the
 individuals of the source, with `resolve_individuals` of "The Rust

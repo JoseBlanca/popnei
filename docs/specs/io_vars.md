@@ -1051,7 +1051,8 @@ of a region are `H0`, `H1` and so on, with no made up nucleotides: the
 vars file keeps an allele as text, and bcftools 1.25, run on 9 November
 2026 on a VCF with `REF` `H0` and `ALT` `H1,H2`, reads it and writes it
 back unchanged, so `write_vcf` writes such alleles as they are. An absent
-`id` or `qual` writes no id or no quality for those variants.
+`id` or `qual`, or one given as `None`, writes no id or no quality for
+those variants.
 
 `individuals`, `ploidy`, `chrom_lengths` and the two declarations of the
 fields go in the schema of the file, which is written before the first
@@ -1066,9 +1067,39 @@ one, so a list too:
   field or 2^31 in an `int32` one, is a `ValueError` naming it, since
   numpy would wrap it into another number with no sign; floats are a
   `ValueError`, also when they are whole;
-- a field of floats takes floats and integers, which are converted to the
-  declared type, so a `float32` field rounds a `float64` value to the
-  nearest `float32`, which is what declaring it `float32` asks for.
+- a field of floats takes floats and integers. A float is rounded to the
+  nearest value of the declared type, so a `float32` field rounds a
+  `float64` value to the nearest `float32`, which is what declaring it
+  `float32` asks for; a finite float beyond the largest of the type, 1e40
+  in a `float32` field, is a `ValueError`, since it would become an
+  infinity. An integer is taken only when the type holds it exactly, and
+  any other is a `ValueError`: 2^53 + 1 in a `float64` field and 2^24 + 1
+  in a `float32` one, whose nearest float is another number, while 2^24
+  is taken by both. Each of the two names the segment, the variant, the
+  field and the value. `qual`, which the file holds as a `float32`,
+  follows the same rule.
+
+A key of numbers, `pos`, `gts`, `qual` and each field, also refuses, each
+a `ValueError` that names the segment and the key:
+
+- truth values, a numpy array of `bool` and a list that holds `True` or
+  `False`, which Python would count as 1 and 0;
+- a numpy masked array, whose mask would be lost; a user who has one
+  writes `.filled(...)` with the missing value of the field, as for
+  `Variants.from_gt_array` of `docs/specs/variant.md`;
+- a scalar, a number or an array of no dimension, where the key has one
+  value for each variant, which numpy would read as one variant;
+- a value of a list that is not a number, `None` or a text, which the
+  message shows as Python writes it, so that the text `"5"` shows as
+  `'5'`.
+
+The values of a list are read one by one, so a list of integers keeps
+each of them as it is, `2**64 - 1` in a `uint64` field among them, where
+numpy would make it a `float64`. A numpy array of the other byte order
+than the machine's, `>i4` on a machine that is little endian, is converted
+to the machine's and taken. `id` or `qual` given as `None` is the same as
+the key left out. These were decided on 9 November 2026 in the review of
+work package 2 of `docs/plans/vars-from-segments.md`.
 
 The rule of numpy for a safe cast was not taken: it refuses an `int64`
 array, the type numpy gives a list of integers, into a `uint64` field,
@@ -1153,25 +1184,49 @@ position when those are not what is wrong. These are:
   are not of integers;
 - an allele of `gts` below -1, or not among the alleles of its variant, 2
   for a variant of two alleles;
-- a variant with no allele, an allele that is an empty text, and a variant
-  of more than 128 alleles, numbered 0 to 127, the most that one byte holds, which the owner
+- a variant with no allele, an allele that is an empty text or `.`, which
+  a VCF reads as a missing allele, an allele given twice in one variant,
+  and a variant of more than 128 alleles, numbered 0 to 127, the most that one byte holds, which the owner
   kept on 9 November 2026; the option not taken was alleles of two bytes,
   which doubles the genotypes in memory and in the file before
   compression, changes every calculation that reads them and is a new
   first part of the version of the format;
 - a quality that is an infinity, which the reader would refuse;
-- a field array that its type does not take, by the rule of "Its Python
-  function";
-- a tab, a newline, a carriage return or a space in a chromosome, an id or
-  an allele, a comma in an allele and a semicolon in an id, which would
-  break the columns and the lists of a VCF that `write_vcf` writes from
-  the file, as the VCF reader would split them.
+- a value of `pos`, `gts`, `qual` or a field that the rules of "Its Python
+  function" refuse, and `gts` that hold a float, whose message says that
+  `gts` holds integers, with the type numpy gave the array, `float16`
+  among them;
+- an empty chromosome, and a tab, a newline, a carriage return or a space
+  in a chromosome, an id or an allele, a comma in an allele and a
+  semicolon in an id, which would break the columns and the lists of a
+  VCF that `write_vcf` writes from the file, as the VCF reader would split
+  them.
 
-An item that is not a mapping is a `TypeError`. The arguments are checked
-before the file is made, each a `ValueError`: no individual, two of one
-name, a ploidy of 0 or above 255, a field of another type than the five, a
-name that breaks the rule of "The extra fields", a name declared twice,
-and a length of a chromosome that is not above 0.
+An item that is not a mapping is a `TypeError`, and so is a `segments`
+that is itself a mapping, whose message says that one segment was given
+where an iterable of segments was expected. An exception that the user's
+code raises while a value of a segment is read, from its `__array__` or
+its `__len__`, comes out of the call as it was raised, as one of the
+iterator does; only what numpy refuses to make an array of, its
+`ValueError` and its `TypeError`, is the `ValueError` of the segment.
+
+The arguments are checked before the file is made. Each of these is a
+`ValueError`: no individual, two of one name, an individual whose name is
+empty or holds a tab, a newline, a carriage return or a space, a ploidy of
+0 or above 255, a field of another type than the five, `None` among them,
+which numpy reads as `float64`, a name that breaks the rule of "The extra
+fields", a name declared twice, a chromosome of `chrom_lengths` whose name
+is empty or holds one of those four characters, a length of a chromosome
+that is not above 0, `True` among them, and a `num_vars_per_block` of 0,
+whose message names the argument. `individuals` that is not a sequence, a
+`set`, a `dict` or a generator, is a `TypeError`, since a set gives its
+names in an order of its own and the individuals of the file are in the
+order given; a numpy array of names is taken. `chrom_lengths` that is not
+a mapping, a list of pairs among them, is a `TypeError` that names it.
+These were decided on 9 November 2026 in the review of work package 2 of
+`docs/plans/vars-from-segments.md`, and so is the same `TypeError` of
+`Variants.filter_individuals` of `docs/specs/filters.md`, which keeps the
+individuals in the order it is given them.
 
 ### What pyNei does
 
