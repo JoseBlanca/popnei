@@ -457,6 +457,51 @@ fn extra_fields_of_a_vars_file_are_kept_in_a_file_written_from_it() {
     );
 }
 
+/// The extra fields asked for with only some of the columns popnei knows:
+/// the columns of the fields follow those asked for in the batch the reader
+/// projects, so a reader that looked for them at the places of the whole
+/// schema reads another column.
+#[test]
+fn extra_fields_are_read_beside_only_some_of_the_known_columns() {
+    let all_pos: Vec<u64> = CASES.iter().map(|row| row.pos).collect();
+    let all_gts: Vec<i8> = CASES
+        .iter()
+        .flat_map(|row| row.gts.iter().copied())
+        .collect();
+    let both = vec![
+        Some(vec![end_of(0, 3), gp_of(0, 3)]),
+        Some(vec![end_of(3, 4), gp_of(3, 4)]),
+    ];
+
+    let (blocks, _) = blocks_read(cases_with_fields_written(), Needs::CHROM_POS | Needs::EXTRA);
+    assert_eq!(extra_of(&blocks), both);
+    let pos: Vec<u64> = blocks
+        .iter()
+        .flat_map(|block| block.pos.iter().flatten().copied())
+        .collect();
+    assert_eq!(pos, all_pos);
+
+    let (blocks, _) = blocks_read(cases_with_fields_written(), Needs::GTS | Needs::EXTRA);
+    assert_eq!(extra_of(&blocks), both);
+    let gts: Vec<i8> = blocks
+        .iter()
+        .flat_map(|block| block.gts.iter().copied())
+        .collect();
+    assert_eq!(gts, all_gts);
+
+    // A selection of the second field alone, beside the positions.
+    let mut reader = opened(cases_with_fields_written()).expect("the file");
+    reader.set_needs(Needs::CHROM_POS | Needs::EXTRA);
+    reader
+        .select_extra_fields(Some(vec!["GP".to_owned()]))
+        .expect("a field of the file");
+    let blocks = blocks_of(&mut reader).expect("the blocks");
+    assert_eq!(
+        extra_of(&blocks),
+        vec![Some(vec![gp_of(0, 3)]), Some(vec![gp_of(3, 4)])]
+    );
+}
+
 /// The blocks of a file with no extra field, and of one read without
 /// [`Needs::EXTRA`], have none.
 #[test]
