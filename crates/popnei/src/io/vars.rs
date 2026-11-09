@@ -1086,14 +1086,25 @@ pub fn write_vars<R: BlockReader, W: Write>(
 /// `docs/specs/io_vars.md`: the positions of a chromosome do not go down,
 /// and a chromosome whose variants have ended does not come back.
 struct TheOrderSoFar {
-    /// The chromosome number and the position of the last variant checked,
-    /// and which variant of the file it was, counted from 1.
-    last: Option<(u32, u64, u64)>,
+    /// The last variant checked, none before the first.
+    last: Option<VariantChecked>,
     /// How many variants have been given, those of blocks without
     /// chromosomes and positions among them.
     num_vars: u64,
     /// The chromosomes that a variant of another one came after.
     ended: HashSet<u32>,
+}
+
+/// A variant that [`TheOrderSoFar`] checked, which the next one is compared
+/// with.
+#[derive(Clone, Copy)]
+struct VariantChecked {
+    /// The number of its chromosome.
+    chrom: u32,
+    /// Its position.
+    pos: u64,
+    /// Which variant written it was, counted from 1.
+    var: u64,
 }
 
 impl TheOrderSoFar {
@@ -1125,11 +1136,11 @@ impl TheOrderSoFar {
             return Ok(());
         };
         for (var, (&chrom, &pos)) in (first.saturating_add(1)..).zip(chrom.iter().zip(pos)) {
-            if let Some((chrom_before, pos_before, var_before)) = self.last {
-                let in_order = if chrom == chrom_before {
-                    pos >= pos_before
+            if let Some(before) = self.last {
+                let in_order = if chrom == before.chrom {
+                    pos >= before.pos
                 } else {
-                    self.ended.insert(chrom_before);
+                    self.ended.insert(before.chrom);
                     !self.ended.contains(&chrom)
                 };
                 if !in_order {
@@ -1143,13 +1154,13 @@ impl TheOrderSoFar {
                         var,
                         chrom: name_of(chrom)?,
                         pos,
-                        var_before,
-                        chrom_before: name_of(chrom_before)?,
-                        pos_before,
+                        var_before: before.var,
+                        chrom_before: name_of(before.chrom)?,
+                        pos_before: before.pos,
                     });
                 }
             }
-            self.last = Some((chrom, pos, var));
+            self.last = Some(VariantChecked { chrom, pos, var });
         }
         Ok(())
     }
