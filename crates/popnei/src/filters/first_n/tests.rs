@@ -491,7 +491,7 @@ fn the_first_n_of_a_vars_file_in_batches_of_100_decompresses_one_batch() {
 
     let (vcf, _) = counted_vcf_reader(the_vcf_of_100000_variants());
     let (written, num_written) =
-        write_vars(vcf, Cursor::new(Vec::new()), Some(100)).expect("the vars file");
+        write_vars(vcf, Cursor::new(Vec::new()), Some(100), false).expect("the vars file");
     assert_eq!(num_written, 100_000);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(1)

@@ -2192,12 +2192,18 @@ pub(crate) fn bytes_of_a_vars_file(
         // over the blocks is the core's, and so is the count of the variants
         // it wrote, which no loop of this crate sees.
         let mut chain = chain_of(reader, steps.steps())?;
+        // The variants are written in the order they come, as they were
+        // before the core checked it, until task 2.1 of
+        // `docs/plans/vars-from-segments.md` makes this the `allowUnsorted`
+        // of `writeVars`.
+        let allow_unsorted = true;
         let (pieces, num_bytes, num_vars) = match on_bytes {
             None => {
                 let (written, num_vars) = popnei::io::vars::write_vars(
                     &mut chain,
                     PiecesOfTheFile::new(),
                     num_vars_per_block,
+                    allow_unsorted,
                 )?;
                 (written.pieces, written.num_bytes, num_vars)
             }
@@ -2207,6 +2213,7 @@ pub(crate) fn bytes_of_a_vars_file(
                     &mut chain,
                     PiecesToThePage::of(run)?,
                     num_vars_per_block,
+                    allow_unsorted,
                 )?;
                 written.the_last_piece()?;
                 (Vec::new(), 0, num_vars)

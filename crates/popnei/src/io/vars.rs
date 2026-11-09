@@ -1022,6 +1022,14 @@ impl<W: Write> VarsWriter<W> {
 /// `popnei` key says. A source with no variants gives a file with the two
 /// keys, a `gts` column and no batch.
 ///
+/// With `allow_unsorted` false the variants have to be sorted, "Sorted
+/// variants" of `docs/specs/io_vars.md`: the positions of a chromosome do
+/// not go down from one variant to the next, two at one position being in
+/// order, and the variants of a chromosome come together, the chromosomes
+/// in any order. It is checked on each block before it is written, so a
+/// block without chromosomes and positions is not checked. With
+/// `allow_unsorted` true the variants are written in the order they come.
+///
 /// This is what both binding crates call. The Python binding crate opens
 /// the file, refuses a path that exists, and removes the file when this
 /// returns an error.
@@ -1030,7 +1038,9 @@ impl<W: Write> VarsWriter<W> {
 ///
 /// When `num_vars_per_block` is 0 or the blocks of that size do not fit in
 /// the memory of the machine, when the reader fails, when a block of it is
-/// not one a vars file can hold, and when the sink fails. The bytes that
+/// not one a vars file can hold, when a variant is out of order and
+/// `allow_unsorted` is false, which names it and the one before it, and
+/// when the sink fails. The bytes that
 /// were written before the error are on the sink: a file that a failed call
 /// was writing is not one that can be read, and it is the caller that
 /// removes it.
@@ -1038,6 +1048,7 @@ pub fn write_vars<R: BlockReader, W: Write>(
     mut reader: R,
     sink: W,
     num_vars_per_block: Option<usize>,
+    allow_unsorted: bool,
 ) -> Result<(W, u64)> {
     // Every field, so that a file written from a VCF holds its seven
     // columns whether or not the user will read them.
@@ -1055,8 +1066,12 @@ pub fn write_vars<R: BlockReader, W: Write>(
     // so a file written from another keeps its fields, after any filter.
     writer.set_extra_fields(reader.header().extra_fields.clone())?;
     let mut blocks = Reblock::new(reader, Some(num_vars_per_block))?;
+    let mut order = TheOrderSoFar::new();
     let mut num_vars: u64 = 0;
     while let Some(block) = blocks.next_block()? {
+        if !allow_unsorted {
+            order.check(&block, blocks.chroms())?;
+        }
         let of_the_block = u64::try_from(block.num_vars).unwrap_or(u64::MAX);
         writer.write_block(block, blocks.chroms())?;
         // A variant is a row of the file that is being written, so a pass
@@ -1067,6 +1082,80 @@ pub fn write_vars<R: BlockReader, W: Write>(
         num_vars = num_vars.saturating_add(of_the_block);
     }
     Ok((writer.finish()?, num_vars))
+}
+
+/// What `write_vars` keeps of the variants it has written to check that the
+/// next ones come in the order of "Sorted variants" of
+/// `docs/specs/io_vars.md`: the positions of a chromosome do not go down,
+/// and a chromosome whose variants have ended does not come back.
+struct TheOrderSoFar {
+    /// The chromosome number and the position of the last variant checked,
+    /// and which variant of the file it was, counted from 1.
+    last: Option<(u32, u64, u64)>,
+    /// How many variants have been given, those of blocks without
+    /// chromosomes and positions among them.
+    num_vars: u64,
+    /// The chromosomes that a variant of another one came after.
+    ended: HashSet<u32>,
+}
+
+impl TheOrderSoFar {
+    fn new() -> TheOrderSoFar {
+        TheOrderSoFar {
+            last: None,
+            num_vars: 0,
+            ended: HashSet::new(),
+        }
+    }
+
+    /// It checks the variants of `block`, the next of the file, whose
+    /// chromosome numbers are those of `chroms`. A block without
+    /// chromosomes and positions is not checked, and counts.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::VarsVariantNotSorted`] for the first variant out of order,
+    /// and [`Error::VarsChromNameMissing`] when `chroms` has no name for
+    /// one of the two variants it names.
+    fn check(&mut self, block: &Block, chroms: &ChromTable) -> Result<()> {
+        // A variant is a row of the file that is being written, so the
+        // 18446744073709551615 variants this count holds are more rows than
+        // any file system takes: the sum cannot reach its end. A `usize` is
+        // 64 bits natively and 32 in wasm, and both fit in a `u64`.
+        let first = self.num_vars;
+        self.num_vars = first.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+        let (Some(chrom), Some(pos)) = (&block.chrom, &block.pos) else {
+            return Ok(());
+        };
+        for (var, (&chrom, &pos)) in (first.saturating_add(1)..).zip(chrom.iter().zip(pos)) {
+            if let Some((chrom_before, pos_before, var_before)) = self.last {
+                let in_order = if chrom == chrom_before {
+                    pos >= pos_before
+                } else {
+                    self.ended.insert(chrom_before);
+                    !self.ended.contains(&chrom)
+                };
+                if !in_order {
+                    let name_of = |number: u32| {
+                        chroms
+                            .name(number)
+                            .map(str::to_owned)
+                            .ok_or(Error::VarsChromNameMissing { number })
+                    };
+                    return Err(Error::VarsVariantNotSorted {
+                        var,
+                        chrom: name_of(chrom)?,
+                        pos,
+                        var_before,
+                        chrom_before: name_of(chrom_before)?,
+                        pos_before,
+                    });
+                }
+            }
+            self.last = Some((chrom, pos, var));
+        }
+        Ok(())
+    }
 }
 
 /// The schema of a vars file whose blocks hold `fields`, with the `popnei`
@@ -4633,7 +4722,7 @@ mod tests {
         let mut chroms = ChromTable::new();
         let block = cases_block(&mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        write_vars(reader, Vec::new(), Some(num_vars_per_block))
+        write_vars(reader, Vec::new(), Some(num_vars_per_block), false)
             .expect("the file was written")
             .0
     }
@@ -4655,7 +4744,7 @@ mod tests {
             "the reader was asked for fields before the call"
         );
 
-        write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
 
         assert_eq!(
             *asked_for.lock().expect("what the reader was asked for"),
@@ -4672,17 +4761,19 @@ mod tests {
         let mut chroms = ChromTable::new();
         let block = cases_block(&mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (_, num_vars) = write_vars(reader, Vec::new(), Some(3)).expect("the file");
+        let (_, num_vars) = write_vars(reader, Vec::new(), Some(3), false).expect("the file");
         assert_eq!(num_vars, 4);
 
         let (_, num_vars) =
-            write_vars(many_vcf_reader(None), Vec::new(), Some(100)).expect("the file");
+            write_vars(many_vcf_reader(None), Vec::new(), Some(100), false).expect("the file");
         assert_eq!(num_vars, 500);
-        let (_, num_vars) = write_vars(many_vcf_reader(None), Vec::new(), None).expect("the file");
+        let (_, num_vars) =
+            write_vars(many_vcf_reader(None), Vec::new(), None, false).expect("the file");
         assert_eq!(num_vars, 500);
 
         let of_no_variants = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let (_, num_vars) = write_vars(of_no_variants, Vec::new(), Some(3)).expect("the file");
+        let (_, num_vars) =
+            write_vars(of_no_variants, Vec::new(), Some(3), false).expect("the file");
         assert_eq!(num_vars, 0);
     }
 
@@ -4698,7 +4789,7 @@ mod tests {
         let mut reader = GivenBlocks::of(vec![block], chroms);
 
         let (bytes, num_vars) =
-            write_vars(&mut reader, Vec::new(), Some(3)).expect("the file was written");
+            write_vars(&mut reader, Vec::new(), Some(3), false).expect("the file was written");
 
         assert_eq!(num_vars, 4);
         assert_eq!(bytes, cases_written_in_batches_of(3));
@@ -4821,7 +4912,8 @@ mod tests {
         let rows: Vec<&Row> = NOT_SORTED.iter().collect();
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(4), true).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(num_rows_of(&file.rows), [4]);
@@ -4866,7 +4958,8 @@ mod tests {
         block.qual = None;
         assert_eq!(block.fields(), Needs::GTS);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(file.columns, vec![("gts".to_owned(), gts_type(6), false)]);
@@ -4891,7 +4984,8 @@ mod tests {
     #[test]
     fn a_source_with_no_variants_gives_a_file_with_both_keys_and_no_batch() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(file.columns, vec![("gts".to_owned(), gts_type(6), false)]);
@@ -4931,7 +5025,8 @@ mod tests {
             ploidy: 4,
             ..GivenBlocks::of(vec![block], chroms)
         };
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(2)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(2), false).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(
@@ -4999,7 +5094,7 @@ mod tests {
         let rows: Vec<&Row> = vec![&CASES[0]; 1000];
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), None).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), None, false).expect("the file was written");
 
         let frames = bytes
             .windows(LZ4_FRAME_MARK.len())
@@ -5242,7 +5337,7 @@ mod tests {
         let reader = GivenBlocks::of(vec![block], chroms);
         let sink = SinkThatFills::of(200);
 
-        let error = match write_vars(reader, sink.clone(), Some(3)) {
+        let error = match write_vars(reader, sink.clone(), Some(3), false) {
             Ok(_) => panic!("the file was written on a sink that fails"),
             Err(error) => error,
         };
@@ -5932,7 +6027,7 @@ mod tests {
     fn source_header_of_write_vcf_goes_into_the_popnei_key_of_its_vars_file() {
         let path = reference("vcf", "write.vcf");
         let vcf = VcfReader::from_path(&path, VcfOptions::default()).expect("write.vcf");
-        let (bytes, num_vars) = write_vars(vcf, Vec::new(), None).expect("the file");
+        let (bytes, num_vars) = write_vars(vcf, Vec::new(), None, false).expect("the file");
         assert_eq!(num_vars, 5);
 
         let key = the_popnei_key_of(bytes.clone());
@@ -6049,7 +6144,7 @@ mod tests {
             num_vars_per_block: None,
         };
         let vcf = VcfReader::from_path(&reference("vcf", "many.vcf"), options).expect("many.vcf");
-        let (bytes, num_vars) = write_vars(vcf, Vec::new(), Some(100)).expect("the file");
+        let (bytes, num_vars) = write_vars(vcf, Vec::new(), Some(100), false).expect("the file");
         assert_eq!(num_vars, 475);
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
@@ -6318,7 +6413,7 @@ mod tests {
     /// The bytes of the vars file of `many.vcf`, written from the VCF
     /// reader with batches of that many variants.
     fn many_vcf_written(num_vars_per_block: Option<usize>) -> Vec<u8> {
-        write_vars(many_vcf_reader(None), Vec::new(), num_vars_per_block)
+        write_vars(many_vcf_reader(None), Vec::new(), num_vars_per_block, false)
             .expect("many.vcf was written as a vars file")
             .0
     }
@@ -6847,7 +6942,8 @@ mod tests {
         block.alleles = None;
         block.qual = None;
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
 
         let reader = opened(bytes).expect("the file of one column is a vars file");
 
@@ -6885,7 +6981,8 @@ mod tests {
     #[test]
     fn a_file_with_no_variants_is_opened_and_says_it_holds_none() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
 
         let reader = opened(bytes).expect("the file with no batch is a vars file");
 
@@ -7203,7 +7300,8 @@ mod tests {
         let rows: Vec<&Row> = NOT_SORTED.iter().collect();
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(4), true).expect("the file was written");
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
 
@@ -7236,7 +7334,8 @@ mod tests {
         block.alleles = None;
         block.qual = None;
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
 
@@ -7347,7 +7446,7 @@ mod tests {
             asked_for: Arc::new(Mutex::new(Needs::empty())),
         };
 
-        let bytes = write_vars(reader, Vec::new(), Some(NUM_VARS))
+        let bytes = write_vars(reader, Vec::new(), Some(NUM_VARS), false)
             .expect("the blocks were written as a vars file")
             .0;
 
@@ -7523,7 +7622,8 @@ mod tests {
     #[test]
     fn a_file_with_no_variants_gives_no_block() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) =
+            write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
         let mut reader = opened(bytes).expect("the file with no batch is a vars file");
 
         assert!(reader.next_block().expect("the empty file").is_none());
@@ -8868,7 +8968,8 @@ mod tests {
         let rows: Vec<&Row> = vec![&CASES[0]; 1000];
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let (whole, _) = write_vars(reader, Vec::new(), Some(1000)).expect("the file was written");
+        let (whole, _) =
+            write_vars(reader, Vec::new(), Some(1000), false).expect("the file was written");
         let at = the_length_of_the_genotypes(&whole, 0);
         let says = <[u8; UNCOMPRESSED_LENGTH_BYTES]>::try_from(
             &whole[at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)],
@@ -9268,4 +9369,5 @@ mod tests {
     }
 
     mod extra_fields;
+    mod not_sorted;
 }

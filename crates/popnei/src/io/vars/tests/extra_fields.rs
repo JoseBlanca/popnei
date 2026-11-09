@@ -161,7 +161,7 @@ fn cases_with_fields_written() -> Vec<u8> {
     let mut chroms = ChromTable::new();
     let block = cases_block_with_fields(&mut chroms);
     let reader = WithFields::of(vec![block], chroms, gp_and_end());
-    write_vars(reader, Vec::new(), Some(3))
+    write_vars(reader, Vec::new(), Some(3), false)
         .expect("the file was written")
         .0
 }
@@ -326,7 +326,7 @@ fn extra_fields_of_each_of_the_five_types_are_read_back_as_they_were_written() {
     let mut block = block_of(&rows, &mut chroms);
     block.extra = Some(fields.clone());
     let reader = WithFields::of(vec![block], chroms, declared);
-    let (bytes, _) = write_vars(reader, Vec::new(), None).expect("the file was written");
+    let (bytes, _) = write_vars(reader, Vec::new(), None, false).expect("the file was written");
 
     let (blocks, _) = blocks_read(bytes, Needs::ALL);
 
@@ -344,7 +344,8 @@ fn extra_fields_of_each_of_the_five_types_are_read_back_as_they_were_written() {
 #[test]
 fn extra_field_columns_are_in_a_file_with_no_variant() {
     let reader = WithFields::of(Vec::new(), ChromTable::new(), gp_and_end());
-    let (bytes, num_vars) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+    let (bytes, num_vars) =
+        write_vars(reader, Vec::new(), Some(3), false).expect("the file was written");
     assert_eq!(num_vars, 0);
 
     let file = file_read(bytes.clone());
@@ -370,7 +371,8 @@ fn extra_fields_of_a_vars_file_are_kept_in_a_file_written_from_it() {
     let first = cases_with_fields_written();
     let reader = opened(first).expect("the first file");
 
-    let (second, num_vars) = write_vars(reader, Vec::new(), Some(2)).expect("the second file");
+    let (second, num_vars) =
+        write_vars(reader, Vec::new(), Some(2), false).expect("the second file");
 
     assert_eq!(num_vars, 4);
     let (blocks, _) = blocks_read(second, Needs::ALL);
@@ -889,7 +891,7 @@ fn a_thousand_variants_with_fields() -> Vec<u8> {
         },
     ]);
     let reader = WithFields::of(vec![block], chroms, gp_and_end());
-    write_vars(reader, Vec::new(), Some(1000))
+    write_vars(reader, Vec::new(), Some(1000), false)
         .expect("the file was written")
         .0
 }
@@ -952,7 +954,7 @@ fn cases_with_a_float32_and_an_int64_field() -> Vec<u8> {
         },
     ]);
     let reader = WithFields::of(vec![block], chroms, vec![gp_decl(), len]);
-    write_vars(reader, Vec::new(), Some(3))
+    write_vars(reader, Vec::new(), Some(3), false)
         .expect("the file was written")
         .0
 }

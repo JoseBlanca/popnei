@@ -1417,6 +1417,7 @@ fn vars_file_of_many_vcf(num_vars_per_batch: usize) -> Vec<u8> {
         vcf_reader("many.vcf", None),
         Vec::new(),
         Some(num_vars_per_batch),
+        false,
     )
     .expect("the vars file");
     assert_eq!(num_vars, 500);

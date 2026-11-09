@@ -967,7 +967,7 @@ mod tests {
     #[test]
     fn write_vcf_from_the_vars_file_of_write_vcf_gives_the_five_lines_of_the_spec() {
         let reader = reader_of("write.vcf", true, None);
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
         let (text, num_vars) = written(|| {
             Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
         });
@@ -1061,7 +1061,7 @@ mod tests {
     #[test]
     fn write_vcf_passed_column_of_many_vcf_writes_25_lines_with_fail_and_the_filter_line() {
         let reader = reader_of("many.vcf", false, Some(7));
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
         let opened = VarsReader::new(Cursor::new(vars.clone())).expect("the vars file");
         assert!(opened.header().keeps_passed);
 
@@ -1116,7 +1116,7 @@ mod tests {
     fn write_vcf_passed_column_of_many_vcf_through_the_filter_of_individuals_keeps_the_25_fail() {
         let reader = reader_of("many.vcf", false, Some(7));
         let kept: Vec<String> = reader.individuals().iter().take(2).cloned().collect();
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
 
         let (text, num_vars) = written(|| {
             let reader = VarsReader::new(Cursor::new(vars.clone())).expect("the vars file");
@@ -1156,7 +1156,7 @@ mod tests {
             reader: reader_of("many.vcf", false, None),
             dropped: Needs::PASSED,
         };
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
         let opened = VarsReader::new(Cursor::new(vars.clone())).expect("the vars file");
         assert!(!opened.header().keeps_passed);
 
@@ -1384,7 +1384,7 @@ mod tests {
             reader: reader_of("write.vcf", true, None),
             dropped,
         };
-        write_vars(reader, Vec::new(), None)
+        write_vars(reader, Vec::new(), None, false)
             .expect("the vars file")
             .0
     }
@@ -1559,7 +1559,7 @@ mod tests {
             chr2\t7\t.\tA\tT\t.\tPASS\t.\tGT\t1/1\n";
         let reader = VcfReader::new(Cursor::new(vcf.as_bytes().to_vec()), VcfOptions::default())
             .expect("the VCF");
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
         let (text, _) = written(|| {
             Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
         });
@@ -1715,7 +1715,7 @@ mod tests {
             num_vars_per_block: None,
         };
         let reader = VcfReader::new(Cursor::new(vcf.into_bytes()), options).expect("the VCF");
-        let (vars, _) = write_vars(reader, Vec::new(), None).expect("the vars file");
+        let (vars, _) = write_vars(reader, Vec::new(), None, false).expect("the vars file");
         let (text, _) = written(|| {
             Box::new(VarsReader::new(Cursor::new(vars.clone())).expect("the vars file"))
         });
@@ -1909,7 +1909,7 @@ mod tests {
         assert_eq!(of_the_vcf.asked_for, [Needs::ALL | Needs::VCF_TEXT]);
         assert_eq!(text, write_vcf_text());
 
-        let (vars, _) = write_vars(reader_of("write.vcf", true, None), Vec::new(), None)
+        let (vars, _) = write_vars(reader_of("write.vcf", true, None), Vec::new(), None, false)
             .expect("the vars file");
         let mut of_the_vars_file = ThatKeepsItsNeeds {
             reader: Box::new(VarsReader::new(Cursor::new(vars)).expect("the vars file")),

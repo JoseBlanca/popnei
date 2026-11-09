@@ -167,8 +167,13 @@ pub(crate) fn write_vars(
     // `reblock` of `num_vars_per_block` over whatever it is given, so the
     // batches of the file hold that many variants whichever source they
     // came from.
+    // The variants are written in the order they come, as they were before
+    // the core checked it, until task 2.1 of
+    // `docs/plans/vars-from-segments.md` makes this the `allow_unsorted` of
+    // `write_vars`: `long_vcf` of `tests/test_io_vars.py` is not sorted.
+    let allow_unsorted = true;
     write_the_pass(py, source, &path, None, &steps, |chain, sink| {
-        popnei::io::vars::write_vars(chain, sink, num_vars_per_block)
+        popnei::io::vars::write_vars(chain, sink, num_vars_per_block, allow_unsorted)
     })
 }
 

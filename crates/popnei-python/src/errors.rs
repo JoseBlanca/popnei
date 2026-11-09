@@ -1077,7 +1077,9 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // disequilibrium was given and whose position does not rise within
         // its chromosome is one of them: what is wrong is the order the
         // variants come in the file, which that filter is the one reader of
-        // popnei to refuse. The block with more text
+        // popnei to refuse. So is a variant that `write_vars` was given out
+        // of the order a vars file is written in, which is the order of
+        // the source that was read. The block with more text
         // or more alleles in one column than a column of a batch takes is
         // one no call from Python reaches: 2147483647 bytes of text or
         // alleles in one block is more memory than a machine gives. A pass

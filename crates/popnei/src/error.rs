@@ -3034,6 +3034,38 @@ pub enum Error {
         found: String,
     },
 
+    /// A variant given to `write_vars` comes out of the order of a vars
+    /// file, "Sorted variants" of `docs/specs/io_vars.md`: its position is
+    /// below that of the variant before it on its chromosome, or its
+    /// chromosome had ended, a variant of another one having come after
+    /// its last. Two variants at one position are in order, and the
+    /// chromosomes can come in any order. In Python it is a `ValueError`
+    /// with the file the variants were read from, since the order is what
+    /// that source holds.
+    #[error(
+        "variant {var}, {chrom} {pos}, comes after variant {var_before}, {chrom_before} {pos_before}; {why}",
+        why = if chrom == chrom_before {
+            "the variants of a vars file are sorted, and the positions of a chromosome do not go down from one variant to the next".to_owned()
+        } else {
+            format!("the variants of a vars file are sorted, and the variants of a chromosome come together, so {chrom}, which had ended, does not come back")
+        }
+    )]
+    VarsVariantNotSorted {
+        /// Which variant it is, counted from 1 over the file.
+        var: u64,
+        /// The name of its chromosome.
+        chrom: String,
+        /// Its position.
+        pos: u64,
+        /// Which variant the one before it is, counted from 1 over the
+        /// file.
+        var_before: u64,
+        /// The name of the chromosome of the variant before it.
+        chrom_before: String,
+        /// The position of the variant before it.
+        pos_before: u64,
+    },
+
     /// A block of a VCF given to the VCF writer does not hold the text of
     /// its lines. The writer asks a VCF for it, so a block without it comes
     /// from a reader with a defect.
@@ -3944,7 +3976,8 @@ impl Error {
             // vars file that "The Rust interface" of `docs/specs/io_vars.md`
             // lists and the three of its extra fields, a field that is not
             // what the file says, a null in its column and a name asked for
-            // that the file has no field of, a variant whose position goes back within its
+            // that the file has no field of, a variant out of the order a
+            // vars file is written in, a variant whose position goes back within its
             // chromosome, which the filter by linkage disequilibrium is the
             // one reader of popnei to refuse, a pass that gave no variant,
             // the fields a consumer asked a block for and the name of a
@@ -3998,6 +4031,7 @@ impl Error {
             | Self::VarsExtraField { .. }
             | Self::VarsExtraFieldNull { .. }
             | Self::VarsExtraFieldNotInTheFile { .. }
+            | Self::VarsVariantNotSorted { .. }
             // The six of the density of the variants that are of the file:
             // a length of 0 or a chromosome twice among the lengths its
             // header gave, which no reader of popnei gives; a variant past
