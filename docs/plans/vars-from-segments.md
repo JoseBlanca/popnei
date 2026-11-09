@@ -189,7 +189,7 @@ Tasks:
   the exception, the Ctrl-C and the types of a field array. From "The
   writer of segments". Deliverables 1, 4, 5, 6. Needs 2.1, whose files it
   shares.
-- [ ] 2.3 The reading of the fields in Python: `var_fields` and
+- [x] 2.3 The reading of the fields in Python: `var_fields` and
   `gt_fields` of `Variants`, the extra names in `iter_blocks` with
   `select_extra_fields` on the source opened for the pass, the `extra` of
   the block handed to numpy read only, `Block.extra_fields`, its `repr`,

@@ -118,3 +118,20 @@ checks clean.
   whatever type numpy gives it, and a list of integers too large for
   numpy's `int64` is read value by value, so that `2**64 - 1` reaches a
   `uint64` field as an integer and not as a rounded float.
+- 2.3, 2ed485a (spec) and fbd67ef: `var_fields`, `gt_fields`, the extra
+  names of `iter_blocks` and `Block.extra_fields`, with 10 pytest tests
+  and a cargo test. The spec did not say where a name of `fields` is told
+  apart as one of the five or an extra field; the core does it in
+  `needs_of_the_fields_of_a_source`, which the spec of the block now has.
+
+Deliverables of work package 2, run on fbd67ef:
+
+1. `uv run pytest tests/test_vars_from_segments.py`: 64 passed.
+2. `uv run pytest -k unsorted`: 4 passed.
+3. The node tests of `allowUnsorted` in `test/vars.test.ts`: 2, passing
+   in `npm test`.
+4. and 5. `cargo test --workspace` 1569 passed; `--no-default-features`
+   1419; pytest 833; `npm test` 703; fmt, clippy, ruff and both wasm
+   checks clean.
+6. The docstrings and the doc comment of `writeVars` are in the commits
+   of the three tasks.
