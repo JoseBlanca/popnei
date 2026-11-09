@@ -1,7 +1,47 @@
 # Report: a vars file written from segments, with extra fields
 
 9 November 2026. The work report of `docs/plans/vars-from-segments.md`,
-under way on branch `spec/vars-from-segments`.
+which is **done**, on branch `spec/vars-from-segments`, not merged.
+
+## What there is now
+
+Issue 19 is built for Python. A user's code can write a vars file one
+stretch of the genome at a time with `popnei.write_vars_from_segments`,
+from dicts of arrays, without the whole genome in memory and without a
+VCF in between. The file can carry extra fields, named arrays of numbers
+with one value for each variant (the end of a region) or for each
+genotype (a posterior), of five types. They survive every filter, the
+filter of individuals keeping the values of the kept individuals,
+`write_vars` copies them, and `iter_blocks(fields=(..., "GP"))` gives them
+back in `block.extra_fields`; `variants.var_fields` and
+`variants.gt_fields` list them. The vars file is format 1.3; a reader of
+1.2 reads it and ignores the fields. `write_vars` and `writeVars` now
+refuse variants that are not sorted, unless `allow_unsorted=True` or
+`allowUnsorted: true`, and `write_vcf` refuses a file with extra fields.
+TypeScript has nothing else of this, as the owner decided.
+
+The checks on d78ab17, run on 9 November 2026: `cargo test --workspace`
+1569 passed, 2 ignored (1526 before the plan); `cargo test -p popnei
+--no-default-features` 1419 passed; pytest 886 passed (762 before);
+`npm test` 703 passed (701 before); `npm run test:browser` 9 passed; fmt,
+clippy, ruff and both wasm checks clean.
+
+Asked of the owner: the merge into `main`, and whether to open an issue
+for the byte sweep of the reader, which counts panics only on the thread
+of the test and so cannot fail on them (under "Work package 1").
+
+Decided during the work and written into the spec, each because a value
+would otherwise have been written wrong with no error, which the owner's
+rule forbids: a field of floats refuses an integer it cannot hold exactly
+and a finite value it overflows; lists of bools, masked arrays and a
+single number where an array is expected are refused; `individuals` of
+`write_vars_from_segments` and of `filter_individuals` that is a set is a
+`TypeError`, since a set gives the names in an order that changes from
+one run to the next while the genotypes keep theirs; an empty name, the
+allele `.` and an allele given twice are refused. The owner can undo any
+of them; each is in "The writer of segments" of `docs/specs/io_vars.md`.
+
+The rest of this report is the record of the work, by work package.
 
 ## Before the first task
 
@@ -135,3 +175,52 @@ Deliverables of work package 2, run on fbd67ef:
    checks clean.
 6. The docstrings and the doc comment of `writeVars` are in the commits
    of the three tasks.
+
+### The review of work package 2
+
+Six reviewers, spec, tests, errors, binding, api and numbers, read
+33c9bbe..fbd67ef. What held, all fixed in bc62dbb..d78ab17, with the
+spec first:
+
+- Values written wrong with no error: a list of bools taken as 1 and 0; a
+  masked array written with the values under its mask; a finite float
+  that overflows `float32` written as infinity; an integer rounded into a
+  float field; `individuals` given as a set, which gave each individual
+  the genotypes of another, in an order that changed with the hash seed of
+  Python; and the same in `filter_individuals`, outside the plan but the
+  same defect. Each found by one to three reviewers.
+- An exception of the user's code, or a Ctrl-C, raised while a segment
+  was turned into an array came out as a `ValueError` and lost its type.
+- The test of a Ctrl-C between segments did not reach the check it was
+  for: with the check removed it passed. It now fails without it.
+- Names that would break the VCF that `write_vcf` writes from the file:
+  an empty name, a tab in a name of an individual, the allele `.`, a space
+  in a name of `chrom_lengths`.
+- Messages that named neither the segment nor the key, a float in `gts`
+  reported as out of range, `None` as the type of a field taken as
+  `float64`, the five types written in three places, a docstring of
+  `write_vars` naming a source Python does not have, untested boundaries
+  (128 alleles, ploidy 255, `int64` fields).
+
+After the fixes, on d78ab17: the checks at the top of this report.
+
+## How the work went
+
+This part is for whoever next revises a skill or writes a plan; the owner
+can stop here.
+
+- The tokens of the subagents, as the `Agent` tool gave them: the seven
+  tasks took 1.19 million, the twelve reviews 1.36 million, the two rounds
+  of fixes 0.37 million. A review of six categories cost about what the
+  tasks it reviewed cost, and it found five values written wrong with no
+  error that the tests of the tasks had not, all in task 2.2, the one task
+  that turns input from Python into numbers. A plan with such a task could
+  give it a deliverable of its own: a list of the inputs a user can give,
+  each with what it becomes.
+- The spec was written and reviewed the same day, and still the tasks
+  found five things it did not say and two it said wrong; each went into
+  the spec as a commit of its own before the code, which kept the spec
+  and the code in step.
+- Running a task beside the review of the work package before it, 2.1
+  beside the review of work package 1, worked: they touched different
+  files, and the reviewers were told the tree was shared.

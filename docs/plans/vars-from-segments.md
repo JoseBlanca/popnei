@@ -1,6 +1,6 @@
 # Plan: a vars file written from segments, with extra fields
 
-9 November 2026. State: **under way**, approved by the owner on 9 November 2026, who
+9 November 2026. State: **done** on 9 November 2026, approved by the owner on 9 November 2026, who
 asked the session that wrote the spec to write the plan and carry it out.
 It builds what the specs gained on 9 November 2026 from issue 19: the
 extra fields of a vars file, named arrays of a value for each variant or
