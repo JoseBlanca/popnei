@@ -636,7 +636,7 @@ REMOVED = object()
 # segment of the worked example, and words its message holds.
 SEGMENTS_REFUSED = [
     pytest.param(
-        "colour", "red", "segment 1: has the key `colour`", id="a_key_of_no_field"
+        "colour", "red", "segment 2: has the key `colour`", id="a_key_of_no_field"
     ),
     pytest.param("chrom", REMOVED, "has no `chrom`", id="no_chrom"),
     pytest.param("alleles", REMOVED, "has no `alleles`", id="no_alleles"),
@@ -683,14 +683,14 @@ SEGMENTS_REFUSED = [
     pytest.param(
         "pos",
         [100, 5000.0],
-        "segment 1, variant 2: its position on chr1 is 5000.0, and a position is a "
+        "segment 2, variant 2: its position on chr1 is 5000.0, and a position is a "
         "whole number",
         id="pos_list_with_a_float",
     ),
     pytest.param(
         "pos",
         [100, -5],
-        "segment 1, variant 2: its position on chr1 is -5",
+        "segment 2, variant 2: its position on chr1 is -5",
         id="negative_pos",
     ),
     pytest.param(
@@ -702,32 +702,32 @@ SEGMENTS_REFUSED = [
     pytest.param(
         "gts",
         numpy.array([[[0, 1], [1, 1], [-2, -1]], [[2, 0], [0, 0], [1, 2]]]),
-        "segment 1, variant 1, chr1 100: `gts` holds the allele -2",
+        "segment 2, variant 1, chr1 100: `gts` holds the allele -2",
         id="allele_below_minus_1",
     ),
     pytest.param(
         "gts",
         numpy.array([[[0, 2], [1, 1], [-1, -1]], [[2, 0], [0, 0], [1, 2]]]),
-        "segment 1, variant 1, chr1 100: `gts` holds the allele 2, which is not "
+        "segment 2, variant 1, chr1 100: `gts` holds the allele 2, which is not "
         "among the 2 alleles of the variant",
         id="allele_2_of_a_variant_of_two",
     ),
     pytest.param(
         "alleles",
         [[], ["H0", "H1", "H2"]],
-        "segment 1, variant 1, chr1 100: it has no allele",
+        "segment 2, variant 1, chr1 100: it has no allele",
         id="variant_of_no_allele",
     ),
     pytest.param(
         "alleles",
         [["H0", ""], ["H0", "H1", "H2"]],
-        "segment 1, variant 1, chr1 100: one of its alleles is an empty text",
+        "segment 2, variant 1, chr1 100: one of its alleles is an empty text",
         id="empty_allele",
     ),
     pytest.param(
         "alleles",
         [["H0", "H1"], [f"H{number}" for number in range(129)]],
-        "segment 1, variant 2, chr1 5000: it has more than 128 alleles",
+        "segment 2, variant 2, chr1 5000: it has more than 128 alleles",
         id="129_alleles",
     ),
     pytest.param(
@@ -739,7 +739,7 @@ SEGMENTS_REFUSED = [
     pytest.param(
         "qual",
         [1.0, math.inf],
-        "segment 1, variant 2, chr1 5000: its quality is inf",
+        "segment 2, variant 2, chr1 5000: its quality is inf",
         id="infinite_quality",
     ),
     pytest.param(
@@ -751,13 +751,13 @@ SEGMENTS_REFUSED = [
     pytest.param(
         "chrom",
         ["chr1", "chr1\t"],
-        "segment 1, variant 2: the chromosome `chr1\t` holds a tab",
+        "segment 2, variant 2: the chromosome `chr1\t` holds a tab",
         id="tab_in_a_chromosome",
     ),
     pytest.param(
         "alleles",
         [["H0", "H1,H2"], ["H0", "H1", "H2"]],
-        "segment 1, variant 1, chr1 100: the allele `H1,H2` holds `,`",
+        "segment 2, variant 1, chr1 100: the allele `H1,H2` holds `,`",
         id="comma_in_an_allele",
     ),
     pytest.param(
@@ -769,7 +769,7 @@ SEGMENTS_REFUSED = [
     pytest.param(
         "id",
         ["rs1;rs2", None],
-        "segment 1, variant 1, chr1 100: the id `rs1;rs2` holds `;`",
+        "segment 2, variant 1, chr1 100: the id `rs1;rs2` holds `;`",
         id="semicolon_in_an_id",
     ),
     pytest.param(
@@ -785,24 +785,24 @@ SEGMENTS_REFUSED = [
         id="carriage_return_in_an_id",
     ),
     pytest.param(
-        "chrom", "", "segment 1: the chromosome is an empty text", id="empty_chrom"
+        "chrom", "", "segment 2: the chromosome is an empty text", id="empty_chrom"
     ),
     pytest.param(
         "chrom",
         ["chr1", ""],
-        "segment 1, variant 2: the chromosome is an empty text",
+        "segment 2, variant 2: the chromosome is an empty text",
         id="empty_chrom_of_one_variant",
     ),
     pytest.param(
         "alleles",
         [["H0", "."], ["H0", "H1", "H2"]],
-        "segment 1, variant 1, chr1 100: one of its alleles is `.`",
+        "segment 2, variant 1, chr1 100: one of its alleles is `.`",
         id="allele_dot",
     ),
     pytest.param(
         "alleles",
         [["H0", "H1"], ["H0", "H1", "H0"]],
-        "segment 1, variant 2, chr1 5000: the allele `H0` is given twice",
+        "segment 2, variant 2, chr1 5000: the allele `H0` is given twice",
         id="allele_twice",
     ),
 ]
@@ -813,12 +813,18 @@ def test_write_vars_from_segments_refuses_a_wrong_segment_and_leaves_no_file(
     tmp_path: Path, key: str, value: Any, words: str
 ) -> None:
     """Each wrong segment of "A call that fails", given after a segment that
-    is right, so that the file had been made: a `ValueError` that names the
-    segment, counted from 1, and the variant of it, and no file."""
+    is right, of 2 variants, a batch that was written before the wrong one
+    is read: a `ValueError` that names the segment, the second, and the
+    variant of it, and no file."""
     path = tmp_path / "refused.vars"
+    right = segment_at("chr1", 10)
+    right["pos"] = [10, 20]
+    for key_of_two in ["alleles", "END", "GP", "NODE_A"]:
+        right[key_of_two] = right[key_of_two] * 2
+    right["gts"] = numpy.concatenate([right["gts"], right["gts"]])
 
     with pytest.raises(ValueError) as refusal:
-        write([changed(key, value), third_segment()], path)
+        write([right, changed(key, value)], path)
 
     assert words in str(refusal.value)
     assert not path.exists()
