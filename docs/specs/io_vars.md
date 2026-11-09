@@ -912,8 +912,11 @@ How those values compress has not been measured.
   header of its source, which for a vars file are those of its key, so a
   file written from another file keeps its fields, after any filter.
 - `write_vcf` of `docs/specs/io_vcf.md` refuses a source that has extra
-  fields with a `ValueError` naming them, before it makes the file
-  (**Open 1**, below).
+  fields with a `ValueError` naming them, before it makes the file. The
+  owner decided it on 9 November 2026; the option not taken was to write
+  each variant field as an INFO field and each genotype field as a FORMAT
+  field, which can come when a user asks for a VCF of such a file. A user
+  with such a file gets no VCF of it, since no step takes a field away.
 - No calculation reads them, so none asks for them and a vars file reader
   asked by a calculation decompresses none of them.
 
@@ -957,13 +960,14 @@ keeps its arguments, whose `fields` is annotated as names of any text
 instead of the five of `Field`, which stays for the five. The `repr` of a
 block names the extra fields it holds after its columns.
 
-In TypeScript, `variants.varFields` and `variants.gtFields` are objects of
-the name of each field to the name of its type, and a block of
-`iterBlocks` has `extraFields`, an object of the name of each field asked
-for to an `Int32Array`, a `Float32Array` or a `Float64Array`, and to a
-`Float64Array` for the two types of 64 bit integers, for the reason
-`docs/specs/block.md` gives for the positions: a value whose size is above
-2^53 is an `Error` (**Open 2**, below).
+In TypeScript there is nothing of the extra fields yet: a file that has
+them opens, its calculations run and `writeVars` keeps its fields, since
+all of that is the core, but a TypeScript user cannot read them. The owner
+decided on 9 November 2026 that the TypeScript functions of the extra
+fields and of the writer of segments wait for a user who needs them; the
+option not taken was to build them with the Python ones, which keeps the
+two APIs the same, as the objectives ask, at the cost of turning every
+typed array of a segment into a block in the wasm binding crate.
 
 pyNei has no genotype fields. Its `VariantsChunk` of `pynei/variants.py`
 holds a pandas frame of the variants, `vars_info`, with any columns a user
@@ -1168,14 +1172,9 @@ are declared, there are genotype fields, the variants are checked to be
 sorted, a source of no variants is written, and the file of a call that
 failed is removed, where pyNei leaves it.
 
-In TypeScript it is `writeVarsFromSegments(segments, {individuals, ploidy,
-varFields, gtFields, chromLengths, numVarsPerBlock, allowUnsorted,
-onBytes})`, which takes any iterable of plain objects and gives back what
-`writeVars` gives, the `bytes` of the file or its pieces through
-`onBytes`. A segment has `gts` as one `Int8Array` of variants x
-individuals x ploidy, `pos` as a `Float64Array` or an array of numbers,
-and each field as the typed array that `extraFields` of "The extra fields"
-gives (**Open 2**, below).
+In TypeScript there is no writer of segments, by the decision of "The
+extra fields" above; `writeVars` gains `allowUnsorted`, since the check of
+the order is the core's and holds for both packages.
 
 ### How it runs
 
@@ -1231,7 +1230,8 @@ one block whose `extra_fields` holds `GP` alone, 3 x 3, equal to what
 went in with NaN in its place. After `filter_individuals(["i3", "i1"])` the
 `GP` of that block is NaN 0.9, 0.5 0.7 and 0.6 1.0, and `write_vars` of the
 filtered `Variants` gives a file whose `GP` reads back as that. `write_vcf`
-of it is the `ValueError` of **Open 1** and names `END`, `GP` and `NODE_A`.
+of it is the `ValueError` of "What carries them" and names `END`, `GP` and
+`NODE_A`.
 
 One pytest test for each `ValueError` and the `TypeError` of "A call that
 fails", each of which leaves no file at the path, and among them: chr1 5000
@@ -1522,47 +1522,14 @@ speed waits for that measurement.
 
 ## Open points
 
-The owner decided on 20 September 2026 the five points of the first version
-of this spec: a format of popnei's own that owes pyNei's nothing, lz4 in
-every build, the name `open_vars`, the regions of each batch in the footer,
-and every field in the file that `write_vars` makes. Each is written where it
-applies, with the option that was not taken. The two below came with the
-items of 9 November 2026. The owner decides them, and the implementer
-follows the "meanwhile" of each until they do.
-
-**Open 1. What `write_vcf` does with a source that has extra fields.**
-The VCF it writes has no place for them today: its INFO column is `.` and
-its FORMAT `GT`.
-
-- Refuse the source with a `ValueError` that names the fields, before the
-  file is made. Nothing is lost with no sign, and nothing is to build but
-  the check. A user with such a file gets no VCF of it, since no step
-  takes a field away.
-- Write each variant field as an INFO field and each genotype field as a
-  FORMAT field, with the lines of the header that declare them, Integer or
-  Float with `Number=1`. The VCF holds what the file holds and any tool
-  reads it. It is the writer formatting numbers for every genotype, a pass
-  that has not been measured, and a reader that reads such fields back
-  into extra fields is another item.
-
-The recommendation is to refuse, until a user asks for a VCF of such a
-file. Meanwhile the implementer builds the refusal.
-
-**Open 2. Whether the TypeScript functions are built with the Python
-ones.** The use case of issue 19 is a caller written in Python.
-
-- Build `writeVarsFromSegments`, `varFields`, `gtFields` and `extraFields`
-  with the rest. The two packages keep the same API, as the objectives
-  ask, at the cost of the conversion of every typed array of a segment in
-  the wasm binding crate and its tests under node.
-- Build the core and Python first, and the TypeScript functions in a later
-  plan. In the meantime a file with extra fields opens in TypeScript, its
-  calculations run and `writeVars` keeps its fields, since that is the
-  core, but a TypeScript user cannot read the fields or write such a file.
-
-The recommendation is the second. Meanwhile the implementer builds the
-second, and in TypeScript `allowUnsorted` of `writeVars` alone, since the
-check of the order is the core's and refuses for both packages.
+None. The owner decided on 20 September 2026 the five points of the first
+version of this spec: a format of popnei's own that owes pyNei's nothing,
+lz4 in every build, the name `open_vars`, the regions of each batch in the
+footer, and every field in the file that `write_vars` makes. On 9 November
+2026 they decided the two that came with the extra fields and the writer
+of segments: `write_vcf` refuses a source with extra fields, and the
+TypeScript functions of the two items wait for a user who needs them. Each
+is written where it applies, with the option that was not taken.
 
 ## Not in this spec
 
