@@ -3075,6 +3075,19 @@ pub enum Error {
         pos_before: u64,
     },
 
+    /// The source of segments that a binding crate reads a vars file from,
+    /// the code of its user that yields them, failed: it raised an exception
+    /// of its own language, which the core cannot carry. The reader of
+    /// segments keeps that exception, ends the pass with this, and the
+    /// binding crate raises the exception it kept in its place, as "A call
+    /// that fails" of the writer of segments of `docs/specs/io_vars.md`
+    /// says. A user who reads this message reads a reader that kept nothing,
+    /// which is a defect of the binding crate.
+    #[error(
+        "the source of the segments failed, and the exception it raised was not kept to be raised in the place of this one"
+    )]
+    SegmentsFailed,
+
     /// A block of a VCF given to the VCF writer does not hold the text of
     /// its lines. The writer asks a VCF for it, so a block without it comes
     /// from a reader with a defect.
@@ -3866,7 +3879,11 @@ impl Error {
             | Self::PcoaNotEuclidean {
                 from: crate::pca::pcoa::PcoaInput::Distances,
                 ..
-            } => false,
+            }
+            // The source of segments that failed, which is code of the
+            // user and no file: the binding crate raises the exception
+            // that code raised in its place.
+            | Self::SegmentsFailed => false,
             // The dataset a user gave, which is a file: a pass that gave
             // no variant with variance, a source of no individual, a
             // variant of more than two alleles among its called genotypes

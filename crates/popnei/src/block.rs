@@ -318,7 +318,8 @@ impl AllelesColumn {
     /// `num_vars` variants of [`ALLELES_PER_VARIANT`] alleles of
     /// [`BYTES_PER_ALLELE`] bytes.
     ///
-    /// Every reader of the crate that fills the alleles of a block starts
+    /// Every reader that fills the alleles of a block, the reader of
+    /// segments of the Python binding crate among them, starts
     /// its column here, with the variants a full block holds, and then
     /// pushes the alleles of one variant after another with
     /// [`AllelesColumn::push`]. The memory is asked for with `try_reserve`,
@@ -331,9 +332,7 @@ impl AllelesColumn {
     /// When the machine does not give the memory of the buffers, which the
     /// reader turns into the error of the crate that names the size that
     /// was asked for.
-    pub(crate) fn with_num_vars(
-        num_vars: usize,
-    ) -> std::result::Result<AllelesColumn, TryReserveError> {
+    pub fn with_num_vars(num_vars: usize) -> std::result::Result<AllelesColumn, TryReserveError> {
         // A number of variants that makes these saturate is far above what
         // any machine gives, and the reservation of it is the error.
         let num_alleles = num_vars.saturating_mul(ALLELES_PER_VARIANT);
@@ -361,9 +360,9 @@ impl AllelesColumn {
     /// what `Vec` does with a memory it is not given: an allocation that
     /// fails here ends the process. A reader that reserves for the block it
     /// builds does not reach it.
-    pub(crate) fn push(&mut self, alleles: &[String]) {
+    pub fn push<S: AsRef<str>>(&mut self, alleles: impl IntoIterator<Item = S>) {
         for allele in alleles {
-            self.texts.extend_from_slice(allele.as_bytes());
+            self.texts.extend_from_slice(allele.as_ref().as_bytes());
             self.allele_ends.push(self.texts.len());
         }
         self.var_ends.push(self.allele_ends.len());

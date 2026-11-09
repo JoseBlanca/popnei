@@ -1,7 +1,11 @@
 """Reading and writing a vars file, the file popnei keeps its variants in."""
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+import numpy
 
 from popnei import _core
 from popnei.variant import PassStats, Variants, _pass_stats_of
@@ -9,7 +13,9 @@ from popnei.variant import PassStats, Variants, _pass_stats_of
 
 @dataclass(frozen=True)
 class VarsWritten:
-    """What :func:`popnei.write_vars` gives back: the counts of its pass."""
+    """What :func:`popnei.write_vars` and
+    :func:`popnei.write_vars_from_segments` give back: the counts of their
+    pass."""
 
     pass_stats: PassStats
     """How many variants were written, and how many each filter of the
@@ -163,3 +169,167 @@ def write_vars(
         variants._source, path, num_vars_per_block, allow_unsorted, variants._steps
     )
     return VarsWritten(pass_stats=_pass_stats_of(counts))
+
+
+# The five types an extra field can have, as numpy names them.
+_FIELD_TYPES = ("int32", "int64", "uint64", "float32", "float64")
+
+
+def write_vars_from_segments(
+    segments: Iterable[Mapping[str, Any]],
+    path: str | Path,
+    individuals: Sequence[str],
+    ploidy: int,
+    var_fields: Mapping[str, str | numpy.dtype] = {},
+    gt_fields: Mapping[str, str | numpy.dtype] = {},
+    chrom_lengths: Mapping[str, int] | None = None,
+    num_vars_per_block: int | None = None,
+    allow_unsorted: bool = False,
+) -> VarsWritten:
+    """A vars file at `path` written from the segments that `segments`
+    yields, variants that the caller's code computes with no VCF in between.
+
+    A segment is a run of consecutive variants, a region of a genome, given
+    as a dict of arrays. The code that yields them can walk a genome region
+    by region without holding the whole of it in memory: the call keeps the
+    segment it was last given and the variants that wait for the next
+    batch of the file, `num_vars_per_block` at most. The file is opened
+    with :func:`popnei.open_vars`, and every filter and calculation of
+    popnei runs on it as on any other.
+
+    `individuals`, `ploidy`, `chrom_lengths` and the two declarations of the
+    fields go into the schema of the file, which is written before the
+    first segment is taken. Each segment is a dict with these keys:
+
+    - ``chrom``: the chromosome of each variant, or one ``str``, the
+      chromosome of every variant of the segment;
+    - ``pos``: integers, the position of each variant, 1 based; the number
+      of variants of the segment is the length of ``pos``, and every other
+      value has one for each variant;
+    - ``alleles``: for each variant a sequence of its alleles, each a text
+      that is not empty, the reference allele first, at most 128, so the
+      haplotypes of a region can be ``"H0"``, ``"H1"`` and so on;
+    - ``gts``: a numpy array of any integer type, variants x individuals x
+      ploidy, each value the number of an allele of its variant from 0, or
+      -1 for a missing allele;
+    - ``id``, optional: a text or ``None`` for each variant;
+    - ``qual``, optional: floats, NaN for a variant with no quality;
+    - each declared field, required: an array of one value for each variant
+      for a field of `var_fields`, and of variants x individuals for one of
+      `gt_fields`.
+
+    A segment of no variants is taken and writes nothing. A segment can
+    hold any number of variants: the batches of the file hold
+    `num_vars_per_block` variants each, the last aside, and ``None`` asks
+    for the size popnei chooses for the number of individuals.
+
+    An extra field is a named array of numbers that the variants carry
+    through the filters and into any vars file written from this one, and
+    that :meth:`Variants.iter_blocks` gives back when it is asked for by
+    name. A field of `var_fields` has one value for each variant, as an
+    INFO field of a VCF; one of `gt_fields` has one for each individual at
+    each variant, as a FORMAT field. Each is declared by its name and its
+    type, any spelling numpy takes of ``int32``, ``int64``, ``uint64``,
+    ``float32`` or ``float64``. A name starts with a letter or ``_`` and
+    holds letters, digits, ``_`` and ``.`` after it, is not the name of a
+    column of the file, ``chrom``, ``pos``, ``id``, ``alleles``, ``qual``,
+    ``gts`` and ``passed``, and is declared once. A missing value is the
+    caller's to choose, NaN or a number, since popnei does not read the
+    values. A field of integers takes integers of any integer type, a list
+    of them too, and refuses floats, even whole ones, and a value its type
+    does not hold, a negative one in a ``uint64`` field or 2**31 in an
+    ``int32`` one, which numpy would wrap into another number. A field of
+    floats takes floats and integers and rounds them to its type, so a
+    ``float32`` field holds the nearest ``float32`` of each value.
+
+    The variants have to be sorted unless `allow_unsorted` is ``True``: the
+    positions of a chromosome do not go down from one variant to the next,
+    and the variants of a chromosome come together, so a chromosome whose
+    variants have ended does not come back. Two variants at one position
+    are in order, and the chromosomes can come in any order. The check runs
+    over the whole file, across segments, and a variant out of that order
+    is a ``ValueError`` that names it and the one before it, counted among
+    the variants written. With ``allow_unsorted=True`` the variants are
+    written in the order they come.
+
+    What it gives back is a :class:`VarsWritten` whose ``pass_stats`` has
+    the number of variants written and an empty ``filtering``, since no
+    filter ran. The ``Variants`` of the file has ``keeps_passed`` false:
+    the file has no column of whether each variant passed a FILTER.
+
+    The arguments are checked before the file is made, and each that is
+    wrong is a ``ValueError``: no individual or two of one name, a ploidy
+    of 0 or above 255, a field of another type than the five, a name that
+    breaks the rule above or is declared twice, and a length of a
+    chromosome that is not above 0. A path that a file is already at is a
+    ``ValueError`` and nothing is written.
+
+    A segment that is wrong is a ``ValueError`` that names it and the
+    variant of it, both counted from 1, with its chromosome and its
+    position when those are not what is wrong: a key that is neither one of
+    the six above nor a declared field, or a required one missing; a value
+    whose length or shape does not agree with the variants, the individuals
+    and the ploidy; positions that are not integers or are negative, and
+    genotypes that are not integers; an allele of ``gts`` below -1 or not
+    among the alleles of its variant; a variant with no allele or more than
+    128, and an allele that is an empty text; a quality that is an
+    infinity; a field array its type does not take; and a tab, a newline, a
+    carriage return or a space in a chromosome, an id or an allele, a comma
+    in an allele and a semicolon in an id, which would break a VCF written
+    from the file. An item that is not a mapping is a ``TypeError``.
+
+    When anything fails after the file was made, the file is taken away, so
+    a failed call leaves nothing at the path and the same call can be made
+    again. An exception raised by `segments`, the caller's code, comes out
+    of the call as it was raised, with its traceback, after the file is
+    taken away. A Ctrl-C is raised when the next segment is asked for, and
+    takes the file away too.
+
+    pyNei writes a vars file from code of its user through a ``Variants``
+    over an object whose ``iter_vars_chunks`` yields chunks. Here the call
+    takes dicts and writes them at once, the fields are declared, there are
+    genotype fields, the variants are checked to be sorted, a source of no
+    variants is written, and the file of a call that failed is taken away,
+    where pyNei leaves it.
+    """
+    if isinstance(individuals, str):
+        raise TypeError(
+            f"`individuals` is the text {individuals!r}, and it is a sequence "
+            f"of the names of the individuals"
+        )
+    counts = _core.write_vars_from_segments(
+        segments,
+        path,
+        list(individuals),
+        ploidy,
+        _declared("var_fields", var_fields),
+        _declared("gt_fields", gt_fields),
+        None if chrom_lengths is None else list(chrom_lengths.items()),
+        num_vars_per_block,
+        allow_unsorted,
+    )
+    return VarsWritten(pass_stats=_pass_stats_of(counts))
+
+
+def _declared(
+    argument: str, fields: Mapping[str, str | numpy.dtype]
+) -> list[tuple[str, str]]:
+    """The name of each field of `fields` and the name numpy gives its
+    type, in their order, for the argument `argument`.
+
+    Raises a ``ValueError`` for a type that numpy does not read or that is
+    not one of the five of a field.
+    """
+    declared = []
+    for name, spelling in fields.items():
+        try:
+            type_name = numpy.dtype(spelling).name
+        except TypeError, ValueError:
+            type_name = None
+        if type_name not in _FIELD_TYPES:
+            raise ValueError(
+                f"`{argument}` gives the field `{name}` the type {spelling!r}, "
+                f"and a field is of one of {', '.join(_FIELD_TYPES)}"
+            )
+        declared.append((name, type_name))
+    return declared

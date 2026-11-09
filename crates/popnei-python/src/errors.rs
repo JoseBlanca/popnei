@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyOSError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 create_exception!(
@@ -251,6 +251,41 @@ pub(crate) enum PyPopneiError {
         /// Why it could not be taken away, as the system said it.
         problem: String,
     },
+    /// An argument of the writer of segments that the schema of the file
+    /// cannot hold, which this crate refuses before the file is made, under
+    /// the name of the argument: no individual or one named twice, a type
+    /// of a field that is not one of the five, and a length of a chromosome
+    /// that is not above 0.
+    Argument {
+        /// The name of the argument, as a Python user writes it.
+        name: &'static str,
+        /// What is wrong with it, which follows its name in the message.
+        problem: String,
+    },
+    /// A segment that the writer of segments refuses, "A call that fails"
+    /// of the writer of segments of `docs/specs/io_vars.md`: what a user's
+    /// code yielded, which names no file.
+    Segment {
+        /// Which segment it is, counted from 1 among the items of the
+        /// user's iterator, those of no variant among them.
+        segment: u64,
+        /// Which variant of the segment it is, counted from 1, when the
+        /// refusal is of one.
+        var: Option<u64>,
+        /// The chromosome and the position of that variant, when they are
+        /// known and are not what is wrong.
+        at: Option<(String, u64)>,
+        /// What is wrong.
+        problem: String,
+    },
+    /// An item of the segments that is not a mapping, which Python calls a
+    /// `TypeError`.
+    SegmentNotAMapping {
+        /// Which item it is, counted from 1.
+        segment: u64,
+        /// The name of its type.
+        found: String,
+    },
     /// Something that cannot happen unless this crate has a defect: a lock
     /// a panic left broken, or a chromosome whose number is not in the
     /// table of the reader that gave it.
@@ -426,6 +461,30 @@ impl From<PyPopneiError> for PyErr {
                 path,
                 problem,
             } => left_behind(PyErr::from(*error), &path, &problem),
+            PyPopneiError::Argument { name, problem } => {
+                PyValueError::new_err(format!("`{name}` {problem}"))
+            }
+            PyPopneiError::Segment {
+                segment,
+                var,
+                at,
+                problem,
+            } => {
+                let variant = match (var, at) {
+                    (Some(var), Some((chrom, pos))) => format!(", variant {var}, {chrom} {pos}"),
+                    (Some(var), None) => format!(", variant {var}"),
+                    (None, _) => String::new(),
+                };
+                PyValueError::new_err(format!(
+                    "segment {segment}{variant}: {problem} (the segments, and the variants of \
+                     each, are counted from 1)"
+                ))
+            }
+            PyPopneiError::SegmentNotAMapping { segment, found } => PyTypeError::new_err(format!(
+                "segment {segment} is a {found}, and a segment is a mapping of `chrom`, `pos`, \
+                 `alleles`, `gts` and the declared fields to their values (the segments are \
+                 counted from 1)"
+            )),
             PyPopneiError::Broken { message, path } => {
                 PyRuntimeError::new_err(of_the_file(message, path))
             }
@@ -577,6 +636,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VarsBlockColumns { .. }
         | popnei::Error::VarsBlockExtraFields { .. }
         | popnei::Error::VarsChromNameMissing { .. }
+        // The source of segments that failed, which the reader of segments
+        // gives only when it kept the error it failed with, and the call
+        // raises that one in its place: a user who reads this one met a
+        // reader that kept nothing.
+        | popnei::Error::SegmentsFailed
         // The three of the VCF writer, which are of the same kind: a block
         // that holds neither the text of its lines nor every column a line
         // is written from, a chromosome number its reader has no name for,

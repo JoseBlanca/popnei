@@ -443,6 +443,22 @@ fn extra_fields_fit(fields: &[ExtraFieldDecl]) -> Result<()> {
     Ok(())
 }
 
+/// That `fields` are extra fields a vars file can declare: what
+/// [`VarsWriter::set_extra_fields`] refuses, for a caller that checks the
+/// fields it was given before it makes the file they go into. The writer of
+/// segments of the Python binding crate is one, which refuses the fields a
+/// user declared before the path is taken.
+///
+/// # Errors
+///
+/// [`Error::VarsExtraField`] for the first field whose name is not one a
+/// field can have, by the rule of "The extra fields" of
+/// `docs/specs/io_vars.md`, is that of a column every vars file can have,
+/// or is given twice.
+pub fn check_extra_fields(fields: &[ExtraFieldDecl]) -> Result<()> {
+    extra_fields_fit(fields)
+}
+
 /// Whether `name` follows the rule of the VCF for the key of an INFO or a
 /// FORMAT field: a letter or `_`, and then letters, digits, `_` and `.`.
 fn a_name_of_a_field(name: &str) -> bool {

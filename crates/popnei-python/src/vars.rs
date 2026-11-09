@@ -180,16 +180,13 @@ pub(crate) fn write_vars(
 /// The source is opened with blocks of `num_vars_per_block`, or of the size
 /// of its own blocks for `None`.
 ///
-/// It makes the file, refusing a path that a file is at; releases the
-/// interpreter for the whole pass; flushes the bytes to the disc before it
-/// returns; and takes the file away when the pass fails or a Ctrl-C
-/// arrived, so that a call that failed leaves nothing behind.
+/// [`write_a_new_file`] makes the file and takes it away when the pass
+/// fails; an error of the pass names the file it is about, the source or
+/// the file being written.
 ///
 /// # Errors
 ///
-/// The ones [`file_at`] gives for the path, what the pass or `write`
-/// failed with, named for the file it is about, and the `KeyboardInterrupt`
-/// of a Ctrl-C.
+/// Those of [`write_a_new_file`], and what the pass or `write` failed with.
 pub(crate) fn write_the_pass(
     py: Python<'_>,
     source: &dyn OpenSource,
@@ -202,10 +199,41 @@ pub(crate) fn write_the_pass(
     ) -> Result<(BufWriter<File>, u64), popnei::Error>
     + Send,
 ) -> Result<PassCounts, PyPopneiError> {
+    let read = source.path().to_path_buf();
+    write_a_new_file(py, path, |file| {
+        the_pass(source, num_vars_per_block, steps, file, write)
+            // The file the error names is the one it is about: a wrong line
+            // of the VCF that was being read names that VCF, and a disc that
+            // filled up names the file that was being written, which the
+            // core keeps apart from an error of a source that could not be
+            // read.
+            .map_err(|error| of_the_file_it_is_about(error, &read, path))
+    })
+}
+
+/// A file made at `path` and filled by `pass`, which gives the counts of
+/// the pass it made: what every call of this crate that writes a file does
+/// around the pass that writes it.
+///
+/// It makes the file, refusing a path that a file is at; releases the
+/// interpreter for the whole of `pass`, which takes it back for itself
+/// where it needs it, as the reader of the writer of segments does for each
+/// segment; and takes the file away when `pass` fails or a Ctrl-C arrived,
+/// so that a call that failed leaves nothing behind.
+///
+/// # Errors
+///
+/// The ones [`file_at`] gives for the path, what `pass` failed with, and the
+/// `KeyboardInterrupt` of a Ctrl-C, each with a note when the file could not
+/// be taken away.
+pub(crate) fn write_a_new_file(
+    py: Python<'_>,
+    path: &Path,
+    pass: impl FnOnce(File) -> Result<PassCounts, PyPopneiError> + Send,
+) -> Result<PassCounts, PyPopneiError> {
     // A Ctrl-C that was pending when this was called is raised here, before
     // a file is made: what a user stopped leaves no file at the path.
     py.check_signals()?;
-    let read = source.path().to_path_buf();
     let file = file_at(path)?;
     // The whole source is read inside this one call, which is seconds for a
     // VCF of hundreds of megabytes, so the interpreter is released for all
@@ -218,9 +246,7 @@ pub(crate) fn write_the_pass(
         // this call as a `PanicException`; it is caught here for as long as
         // it takes to take the file away, since a file left at the path is
         // one the user's next call refuses as a path already taken.
-        catch_unwind(AssertUnwindSafe(|| {
-            the_pass(source, num_vars_per_block, steps, file, write)
-        }))
+        catch_unwind(AssertUnwindSafe(|| pass(file)))
     });
     let written = match written {
         Ok(written) => written,
@@ -234,14 +260,8 @@ pub(crate) fn write_the_pass(
     };
     let written = match written {
         Ok(counts) => counts,
-        Err(error) => {
+        Err(refusal) => {
             let taken = take_away(path);
-            // The file the error names is the one it is about: a wrong line
-            // of the VCF that was being read names that VCF, and a disc that
-            // filled up names the file that was being written, which the
-            // core keeps apart from an error of a source that could not be
-            // read.
-            let refusal = of_the_file_it_is_about(error, &read, path);
             return Err(with_what_was_left(refusal, path, taken));
         }
     };
@@ -281,6 +301,18 @@ fn the_pass(
     // variants it wrote, which no loop of this crate sees.
     let mut chain = chain_of(reader, steps)?;
     let (sink, num_vars) = write(&mut chain, BufWriter::new(file))?;
+    to_the_disc(sink)?;
+    Ok(pass_counts_of(num_vars, chain.as_ref(), steps))
+}
+
+/// What `sink` still holds, written to its file, and the file's bytes on the
+/// disc.
+///
+/// # Errors
+///
+/// The error of a file that could not be written, with what the file
+/// system said.
+pub(crate) fn to_the_disc(sink: BufWriter<File>) -> Result<(), popnei::Error> {
     // What the buffer still holds goes to the file here, where its
     // error is read; a buffer that is dropped writes it and loses it.
     let file = sink
@@ -290,8 +322,7 @@ fn the_pass(
     // where nothing reads what the close said: a file system that only
     // then says that it is full would leave a file that is not whole
     // after a call that returned and said nothing.
-    file.sync_all().map_err(not_written)?;
-    Ok(pass_counts_of(num_vars, chain.as_ref(), steps))
+    file.sync_all().map_err(not_written)
 }
 
 /// `error` with the file it is about, since a user reads which of the two
@@ -317,7 +348,11 @@ fn the_pass(
 /// number from 0 to 1 and a second filter of a kind the steps hold. What is
 /// wrong with an argument is wrong whatever file is read, and `errors.rs`
 /// drops the path they are given.
-fn of_the_file_it_is_about(error: popnei::Error, read: &Path, written: &Path) -> PyPopneiError {
+pub(crate) fn of_the_file_it_is_about(
+    error: popnei::Error,
+    read: &Path,
+    written: &Path,
+) -> PyPopneiError {
     let of_the_write = matches!(
         error,
         popnei::Error::FileNotWritten { .. }
