@@ -495,7 +495,7 @@ fn select_extra_fields_of_a_name_the_file_lacks_names_the_fields_it_has() {
         panic!("the name `DP` gave {error}");
     };
     assert_eq!(name, "DP");
-    assert_eq!(fields, &["`END`".to_owned(), "`GP`".to_owned()]);
+    assert_eq!(fields, &["END".to_owned(), "GP".to_owned()]);
     let message = error.to_string();
     assert!(message.contains("`DP`"), "{message}");
     assert!(message.contains("`END`, `GP`"), "{message}");

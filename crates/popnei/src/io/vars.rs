@@ -2122,7 +2122,7 @@ impl<R: Read + Seek> VarsReader<R> {
                                     .metadata
                                     .extra_fields
                                     .iter()
-                                    .map(|field| format!("`{}`", field.name))
+                                    .map(|field| field.name.clone())
                                     .collect(),
                             });
                         }

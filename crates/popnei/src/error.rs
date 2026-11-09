@@ -3008,13 +3008,16 @@ pub enum Error {
         "the vars file has no extra field `{name}`; {has}",
         has = match fields.as_slice() {
             [] => "it has none".to_owned(),
-            names => format!("its extra fields are {}", names.join(", ")),
+            names => format!(
+                "its extra fields are {}",
+                names.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ")
+            ),
         }
     )]
     VarsExtraFieldNotInTheFile {
         /// The name that was asked for.
         name: String,
-        /// The extra fields of the file, each in backquotes, in its order.
+        /// The names of the extra fields of the file, in its order.
         fields: Vec<String>,
     },
 
