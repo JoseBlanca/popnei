@@ -47,7 +47,7 @@ REFERENCE_VCF_DIR = Path(__file__).parent / "reference" / "vcf"
 # the schema a reader of another version looks at first.
 POPNEI_KEY = b"popnei"
 POPNEI_BATCHES_KEY = b"popnei_batches"
-FORMAT_VERSION = "1.2"
+FORMAT_VERSION = "1.3"
 
 # An allele that was not called, which bcftools prints as a dot.
 MISSING_ALLELE = -1
@@ -345,6 +345,8 @@ def test_write_vars_writes_a_file_of_no_batch_for_a_source_with_no_variants(
         "ploidy": 2,
         "num_vars_per_block": LARGEST_NUM_VARS_PER_BLOCK,
         "chrom_lengths": [],
+        "var_fields": [],
+        "gt_fields": [],
     }
     assert read.batches == []
     assert read.num_vars_of_each_batch == []

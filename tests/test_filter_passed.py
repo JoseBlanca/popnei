@@ -157,7 +157,7 @@ def test_filter_passed_over_a_vars_file_of_1_1_is_a_value_error_with_its_path(
         table = reader.read_all()
     popnei_key = b"popnei"
     schema_metadata[popnei_key] = schema_metadata[popnei_key].replace(
-        b'"format_version":"1.2"', b'"format_version":"1.1"'
+        b'"format_version":"1.3"', b'"format_version":"1.1"'
     )
     assert b'"format_version":"1.1"' in schema_metadata[popnei_key]
     table = table.drop_columns(["passed"]).replace_schema_metadata(schema_metadata)

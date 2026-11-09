@@ -530,12 +530,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // batch of lines that did not come back, which a panic inside it
         // leaves behind. Nothing a user asks for gives them, so a user who
         // gets one reports it instead of looking for what they typed wrong.
-        // The three of the vars file writer are of the same kind: a block
+        // The four of the vars file writer are of the same kind: a block
         // that does not hold the individuals of the file, one whose columns
-        // are not those of the first block written, and a chromosome number
-        // that the table given with the block has no name for. `write_vars`
-        // gives the writer the individuals, the fields and the table of one
-        // reader, so a user reaches them only through a reader with a
+        // are not those of the first block written, a chromosome number
+        // that the table given with the block has no name for, and a block
+        // whose extra fields are not those the writer declared. `write_vars`
+        // gives the writer the individuals, the fields, the extra fields of
+        // the header and the table of one reader, so a user reaches them only through a reader with a
         // defect. The three of the counts of one variant are of that kind
         // too, which `docs/specs/variant.md` says in "The Rust interface":
         // the counts have no function in Python, so the genotypes they
@@ -574,6 +575,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VcfParseNotFinished { .. }
         | popnei::Error::VarsBlockDoesNotFit { .. }
         | popnei::Error::VarsBlockColumns { .. }
+        | popnei::Error::VarsBlockExtraFields { .. }
         | popnei::Error::VarsChromNameMissing { .. }
         // The three of the VCF writer, which are of the same kind: a block
         // that holds neither the text of its lines nor every column a line

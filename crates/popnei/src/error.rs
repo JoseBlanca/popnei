@@ -2970,6 +2970,70 @@ pub enum Error {
         /// How many one column of a batch holds.
         largest: u64,
     },
+
+    /// An extra field of the vars file is not what its entry of the
+    /// `popnei` key says: the entry has no column, or a column of another
+    /// arrow type or, for a genotype field, of a width that is not the
+    /// individuals of the key; or its name is one the rule of
+    /// `docs/specs/io_vars.md` refuses, that of a column every vars file
+    /// can have, or one given twice. The writer of a vars file gives the
+    /// last three for the fields it is asked to write.
+    #[error("the extra field `{name}` of the vars file {problem}")]
+    VarsExtraField {
+        /// The name of the field.
+        name: String,
+        /// What is wrong with it, with the type or the width found and the
+        /// one expected.
+        problem: String,
+    },
+
+    /// The column of an extra field of the vars file has no value for one
+    /// of its variants: [`Error::VarsNullValue`] for a column whose name
+    /// the file gives, and not popnei.
+    #[error(
+        "the `{name}` column of the vars file has no value for its variant {var}, and every variant has one"
+    )]
+    VarsExtraFieldNull {
+        /// The name of the field.
+        name: String,
+        /// Which variant of the file it is, counted from 1, over the whole
+        /// file and not inside its batch.
+        var: u64,
+    },
+
+    /// The reader of a vars file was asked for an extra field the file has
+    /// not. A Python user names the fields in `iter_blocks(fields=...)`, so
+    /// the message lists the ones there are.
+    #[error(
+        "the vars file has no extra field `{name}`; {has}",
+        has = match fields.as_slice() {
+            [] => "it has none".to_owned(),
+            names => format!("its extra fields are {}", names.join(", ")),
+        }
+    )]
+    VarsExtraFieldNotInTheFile {
+        /// The name that was asked for.
+        name: String,
+        /// The extra fields of the file, each in backquotes, in its order.
+        fields: Vec<String>,
+    },
+
+    /// A block given to the vars file writer carries other extra fields
+    /// than the writer declared, or the writer was told of other fields
+    /// after its first block, whose schema already holds the ones declared.
+    /// `write_vars` declares the fields of the header of its reader, whose
+    /// blocks carry them, so a user reaches this only through a reader
+    /// with a defect.
+    #[error(
+        "the writer of the vars file declared the extra fields {declared} and was given {found}; every block of a vars file carries the extra fields its `popnei` key declares, which are fixed before the first block"
+    )]
+    VarsBlockExtraFields {
+        /// The fields declared, each as its name, its kind and its type.
+        declared: String,
+        /// The fields of the block, or of the late declaration.
+        found: String,
+    },
+
     /// A block of a VCF given to the VCF writer does not hold the text of
     /// its lines. The writer asks a VCF for it, so a block without it comes
     /// from a reader with a defect.
@@ -3836,6 +3900,7 @@ impl Error {
             | Self::VarsBlockDoesNotFit { .. }
             | Self::VarsBlockColumns { .. }
             | Self::VarsChromNameMissing { .. }
+            | Self::VarsBlockExtraFields { .. }
             | Self::VcfWriterFieldsMissing { .. }
             | Self::VcfWriterChromNameMissing { .. }
             | Self::VcfWriterPassedNotInTheHeader { .. }
@@ -3877,7 +3942,9 @@ impl Error {
             // when no ploidy was given, a wrong line of a BED
             // file and one with no region, the thirteen of the
             // vars file that "The Rust interface" of `docs/specs/io_vars.md`
-            // lists, a variant whose position goes back within its
+            // lists and the three of its extra fields, a field that is not
+            // what the file says, a null in its column and a name asked for
+            // that the file has no field of, a variant whose position goes back within its
             // chromosome, which the filter by linkage disequilibrium is the
             // one reader of popnei to refuse, a pass that gave no variant,
             // the fields a consumer asked a block for and the name of a
@@ -3928,6 +3995,9 @@ impl Error {
             | Self::VarsIndividualTwice { .. }
             | Self::VarsFileOfNoGenotypes { .. }
             | Self::VarsTextTooLarge { .. }
+            | Self::VarsExtraField { .. }
+            | Self::VarsExtraFieldNull { .. }
+            | Self::VarsExtraFieldNotInTheFile { .. }
             // The six of the density of the variants that are of the file:
             // a length of 0 or a chromosome twice among the lengths its
             // header gave, which no reader of popnei gives; a variant past
