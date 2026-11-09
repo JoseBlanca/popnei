@@ -378,6 +378,48 @@ def test_write_vars_leaves_no_file_when_the_vcf_fails_half_way(
     assert not path.exists()
 
 
+# Two variants of chr1, the second at a lower position than the first.
+_TWO_UNSORTED_LINES = [
+    "chr1\t5000\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+    "chr1\t100\t.\tG\tC\t.\tPASS\t.\tGT\t0/1\t1/1\t0/0",
+]
+
+
+def test_write_vars_refuses_unsorted_variants_and_leaves_no_file(
+    vcf_of_lines, tmp_path: Path
+) -> None:
+    """A VCF whose second variant is at a lower position than its first.
+
+    The error names both variants with their numbers and the VCF they were
+    read from, and the path is free afterwards.
+    """
+    vcf_path = vcf_of_lines(_TWO_UNSORTED_LINES)
+    path = tmp_path / "unsorted.vars"
+
+    with pytest.raises(ValueError) as refusal:
+        write_vars(open_vcf(vcf_path), path)
+
+    message = str(refusal.value)
+    assert message.startswith(str(vcf_path))
+    assert "variant 2, chr1 100, comes after variant 1, chr1 5000" in message
+    assert not path.exists()
+
+
+def test_write_vars_writes_unsorted_variants_in_their_order_when_allowed(
+    vcf_of_lines, tmp_path: Path
+) -> None:
+    """The same VCF with ``allow_unsorted=True``: the file holds the two
+    variants in the order the VCF has them."""
+    path = tmp_path / "unsorted.vars"
+
+    written = write_vars(
+        open_vcf(vcf_of_lines(_TWO_UNSORTED_LINES)), path, allow_unsorted=True
+    )
+
+    assert written.pass_stats.num_vars == 2
+    assert _pyarrow_reads(path).table.column("pos").to_pylist() == [5000, 100]
+
+
 # How many variants the VCF of the two tests that act while a call runs
 # holds. Both threads wait for the file the call makes and act when it is
 # there, and not after a time, because how long the pass takes is a fact of
@@ -410,7 +452,8 @@ def long_vcf(tmp_path_factory) -> Path:
     """A VCF of 100000 variants of the 50 individuals of `many.vcf`.
 
     Its data lines are those of `many.vcf`, one after another until there
-    are that many, so its variants are not sorted, which the writer takes.
+    are that many, so its variants are not sorted, and the tests that write
+    it pass ``allow_unsorted=True``.
     It is made once for the module: writing it is 23 MB of text.
     """
     path = tmp_path_factory.mktemp("long") / "long.vcf"
@@ -463,7 +506,7 @@ def test_write_vars_says_when_it_could_not_take_away_the_file_it_was_writing(
     try:
         watcher.start()
         with pytest.raises(ValueError, match="ind0") as refusal:
-            write_vars(open_vcf(vcf_path), path)
+            write_vars(open_vcf(vcf_path), path, allow_unsorted=True)
     finally:
         watcher.join(timeout=10)
         tmp_path.chmod(0o700)
@@ -513,7 +556,7 @@ def test_a_ctrl_c_while_write_vars_runs_is_raised_and_leaves_no_file(
     try:
         ctrl_c.start()
         with pytest.raises(KeyboardInterrupt):
-            write_vars(variants, path)
+            write_vars(variants, path, allow_unsorted=True)
     finally:
         ctrl_c.join(timeout=10)
         signal.signal(signal.SIGINT, handler)
@@ -675,7 +718,7 @@ def test_write_vars_of_the_private_module_names_the_type_it_was_given(
     path = tmp_path / "nothing.vars"
 
     with pytest.raises(TypeError, match="open_vars") as refusal:
-        _core.write_vars(123, path, None, _core.Steps([]))
+        _core.write_vars(123, path, None, False, _core.Steps([]))
 
     assert "`int`" in str(refusal.value)
     assert not path.exists()

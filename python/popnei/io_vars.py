@@ -63,7 +63,10 @@ def open_vars(path: str | Path) -> Variants:
 
 
 def write_vars(
-    variants: Variants, path: str | Path, num_vars_per_block: int | None = None
+    variants: Variants,
+    path: str | Path,
+    num_vars_per_block: int | None = None,
+    allow_unsorted: bool = False,
 ) -> VarsWritten:
     """Every variant of `variants` into a vars file at `path`.
 
@@ -95,6 +98,18 @@ def write_vars(
     `num_vars_per_block` is how many variants a batch of the file holds, the
     last one aside, and ``None`` asks for the size popnei chooses for the
     number of individuals of the source, which is the size of its blocks.
+
+    The variants have to be sorted unless `allow_unsorted` is ``True``: the
+    positions of a chromosome do not go down from one variant to the next,
+    and the variants of a chromosome come together, so a chromosome whose
+    variants have ended does not come back. Two variants at one position
+    are in order, and the chromosomes can come in any order. A variant out
+    of that order is a ``ValueError`` that names it and the one before it,
+    ``variant 2, chr1 100, comes after variant 1, chr1 5000``, and the file
+    is taken away as for any other error. With ``allow_unsorted=True`` the
+    variants are written in the order they come. A source with no
+    chromosomes and positions, a :class:`Variants` built from an array of
+    genotypes, is not checked.
 
     What it gives back is a :class:`VarsWritten` with the counts of the pass
     it made: how many variants were written, and how many each filter of the
@@ -129,7 +144,8 @@ def write_vars(
     `num_vars_per_block` is an argument here, where in pyNei the size
     belongs to the ``Variants``; a source with no variants is written, where
     pyNei raises a ``ValueError``; the file of a call that failed is taken
-    away; and every column is written, where pyNei writes the ones its
+    away; unsorted variants are refused unless `allow_unsorted` is
+    ``True``, where pyNei writes them; and every column is written, where pyNei writes the ones its
     chunks happen to carry.
     """
     if not isinstance(variants, Variants):
@@ -143,6 +159,6 @@ def write_vars(
             f"write_vars(open_vcf(vcf_path), path)"
         )
     counts = _core.write_vars(
-        variants._source, path, num_vars_per_block, variants._steps
+        variants._source, path, num_vars_per_block, allow_unsorted, variants._steps
     )
     return VarsWritten(pass_stats=_pass_stats_of(counts))

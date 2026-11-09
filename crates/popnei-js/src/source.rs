@@ -2158,7 +2158,9 @@ impl Write for PiecesToThePage {
 
 /// Every variant of `source`, through the steps of `steps`, as a vars
 /// file, one batch of `num_vars_per_block` variants after another, and
-/// `None` for the size popnei chooses for the individuals of the source.
+/// `None` for the size popnei chooses for the individuals of the source. A
+/// variant out of the order of the chromosomes and positions is an error
+/// unless `allow_unsorted` is true.
 ///
 /// The file is built in the memory of wasm, in pieces that cross one by one:
 /// a `Uint8Array` that were a view into that memory would stop being valid
@@ -2170,11 +2172,13 @@ impl Write for PiecesToThePage {
 /// # Errors
 ///
 /// When `num_vars_per_block` is 0, when the source cannot be read, when a
-/// block of it is not one a vars file holds, when the memory of the tab
-/// does not take the file, and the value `on_bytes` threw.
+/// block of it is not one a vars file holds, when a variant is out of
+/// order and `allow_unsorted` is false, when the memory of the tab does not
+/// take the file, and the value `on_bytes` threw.
 pub(crate) fn bytes_of_a_vars_file(
     source: &dyn OpenSource,
     num_vars_per_block: Option<usize>,
+    allow_unsorted: bool,
     steps: Steps,
     on_bytes: Option<Function>,
 ) -> Result<WrittenFile, JsPopneiError> {
@@ -2192,11 +2196,6 @@ pub(crate) fn bytes_of_a_vars_file(
         // over the blocks is the core's, and so is the count of the variants
         // it wrote, which no loop of this crate sees.
         let mut chain = chain_of(reader, steps.steps())?;
-        // The variants are written in the order they come, as they were
-        // before the core checked it, until task 2.1 of
-        // `docs/plans/vars-from-segments.md` makes this the `allowUnsorted`
-        // of `writeVars`.
-        let allow_unsorted = true;
         let (pieces, num_bytes, num_vars) = match on_bytes {
             None => {
                 let (written, num_vars) = popnei::io::vars::write_vars(
