@@ -308,6 +308,314 @@ def test_write_vars_from_segments_refuses_a_field_array_its_type_does_not_take(
     assert not path.exists()
 
 
+def one_variant_with(**values: Any) -> dict[str, Any]:
+    """A segment of one variant of the individual `only`, chr1 10, A C, with
+    `values` beside its four required keys."""
+    segment: dict[str, Any] = {
+        "chrom": "chr1",
+        "pos": [10],
+        "alleles": [["A", "C"]],
+        "gts": numpy.zeros((1, 1, 2), dtype=numpy.int8),
+    }
+    segment.update(values)
+    return segment
+
+
+def write_one_variant(path: Path, var_fields: dict[str, str], **values: Any) -> Any:
+    """`one_variant_with(**values)` written with the variant fields
+    `var_fields` and no genotype field."""
+    return write(
+        [one_variant_with(**values)],
+        path,
+        individuals=["only"],
+        var_fields=var_fields,
+        gt_fields={},
+    )
+
+
+# Each integer a field of floats is given, the type of that field, and
+# whether the type holds it exactly: 2**24 and 2**53 are held, the integer
+# after each is not, and 2**70, a power of two, is held by a float64.
+INTEGERS_INTO_FLOATS = [
+    pytest.param(2**24, "float32", True, id="2_to_the_24_into_float32"),
+    pytest.param(2**24 + 1, "float32", False, id="2_to_the_24_plus_1_into_float32"),
+    pytest.param(-(2**24) - 1, "float32", False, id="minus_2_to_the_24_minus_1"),
+    pytest.param(2**53, "float64", True, id="2_to_the_53_into_float64"),
+    pytest.param(2**53 + 1, "float64", False, id="2_to_the_53_plus_1_into_float64"),
+    pytest.param(2**70, "float64", True, id="2_to_the_70_into_float64"),
+    pytest.param(2**70 + 1, "float64", False, id="2_to_the_70_plus_1_into_float64"),
+    pytest.param(2**64 - 1, "float64", False, id="2_to_the_64_minus_1_into_float64"),
+]
+
+
+@pytest.mark.parametrize(("integer", "type_name", "held"), INTEGERS_INTO_FLOATS)
+def test_write_vars_from_segments_takes_an_integer_into_floats_only_when_held_exactly(
+    tmp_path: Path, integer: int, type_name: str, held: bool
+) -> None:
+    """An integer in a list for a field of floats is written when the type
+    holds it exactly, and is otherwise a `ValueError` that names the
+    segment, the variant, the field and the integer, and leaves no file."""
+    path = tmp_path / "integer.vars"
+
+    if held:
+        write_one_variant(path, {"X": type_name}, X=[integer])
+        _, table, _ = read_with_pyarrow(path)
+        assert table.column("X").to_pylist() == [float(integer)]
+        assert int(table.column("X").to_pylist()[0]) == integer
+        return
+    with pytest.raises(ValueError) as refusal:
+        write_one_variant(path, {"X": type_name}, X=[integer])
+    assert (
+        f"segment 1, variant 1, chr1 10: `X` holds the integer {integer}, which "
+        f"its type, {type_name}, does not hold exactly"
+    ) in str(refusal.value)
+    assert not path.exists()
+
+
+def test_write_vars_from_segments_refuses_an_int64_array_a_float32_field_rounds(
+    tmp_path: Path,
+) -> None:
+    """An `int64` array, not a list, into a `float32` field: 2**24 + 1 is the
+    `ValueError` as it is in a list."""
+    path = tmp_path / "int64.vars"
+
+    with pytest.raises(ValueError, match="`X` holds the integer 16777217"):
+        write_one_variant(
+            path, {"X": "float32"}, X=numpy.array([2**24 + 1], dtype=numpy.int64)
+        )
+
+    assert not path.exists()
+
+
+def test_write_vars_from_segments_refuses_a_finite_float_beyond_a_float32(
+    tmp_path: Path,
+) -> None:
+    """1e40 into a `float32` field would be an infinity: a `ValueError` that
+    names it. An infinity given as one is taken."""
+    path = tmp_path / "beyond.vars"
+
+    with pytest.raises(ValueError) as refusal:
+        write_one_variant(path, {"X": "float32"}, X=[1e40])
+
+    assert "segment 1, variant 1, chr1 10: `X` holds 1e40, beyond the largest " in (
+        str(refusal.value)
+    )
+    assert not path.exists()
+
+    write_one_variant(path, {"X": "float32"}, X=[math.inf])
+    _, table, _ = read_with_pyarrow(path)
+    assert table.column("X").to_pylist() == [math.inf]
+
+
+def test_write_vars_from_segments_refuses_a_quality_a_float32_does_not_hold(
+    tmp_path: Path,
+) -> None:
+    """`qual` is a `float32` in the file and follows the rule of a field of
+    floats: 2**24 + 1 and 1e40 are each a `ValueError`."""
+    path = tmp_path / "qual.vars"
+
+    with pytest.raises(ValueError, match="its quality is the integer 16777217"):
+        write_one_variant(path, {}, qual=[2**24 + 1])
+    with pytest.raises(ValueError, match="its quality is 1e40"):
+        write_one_variant(path, {}, qual=[1e40])
+
+    assert not path.exists()
+
+
+def test_write_vars_from_segments_writes_the_bounds_of_an_int64_field(
+    tmp_path: Path,
+) -> None:
+    """2**40 and -2**40, which an `int32` does not hold, into an `int64`
+    field, as a list."""
+    path = tmp_path / "int64.vars"
+    segment = one_variant_with(pos=[10, 11], X=[2**40, -(2**40)])
+    segment["alleles"] = [["A", "C"], ["A", "C"]]
+    segment["gts"] = numpy.zeros((2, 1, 2), dtype=numpy.int8)
+
+    write(
+        [segment], path, individuals=["only"], var_fields={"X": "int64"}, gt_fields={}
+    )
+
+    _, table, _ = read_with_pyarrow(path)
+    assert table.column("X").to_pylist() == [2**40, -(2**40)]
+
+
+def test_write_vars_from_segments_takes_an_array_of_the_other_byte_order(
+    tmp_path: Path,
+) -> None:
+    """An array of big endian integers and one of big endian floats, which
+    numpy makes on a little endian machine as on any other: converted to the
+    order of the machine and written with their values."""
+    path = tmp_path / "big_endian.vars"
+
+    write_one_variant(
+        path,
+        {"X": "uint64", "Y": "float32"},
+        pos=numpy.array([10], dtype=">i4"),
+        X=numpy.array([2**40 + 3], dtype=">u8"),
+        Y=numpy.array([0.5], dtype=">f8"),
+        qual=numpy.array([30.5], dtype=">f4"),
+    )
+
+    _, table, _ = read_with_pyarrow(path)
+    assert table.column("pos").to_pylist() == [10]
+    assert table.column("X").to_pylist() == [2**40 + 3]
+    assert table.column("Y").to_pylist() == [0.5]
+    assert table.column("qual").to_pylist() == [30.5]
+
+
+# Each value of a key of numbers that is refused whatever the type of the
+# key, as a change of the first segment of the worked example, and words of
+# its message.
+NUMBERS_REFUSED = [
+    pytest.param(
+        "END", [True, False], "`END` holds True, a truth value", id="list_of_bools"
+    ),
+    pytest.param(
+        "NODE_A",
+        [[1, True, -1], [3, 1, 2]],
+        "`NODE_A` holds True, a truth value",
+        id="one_bool_among_integers",
+    ),
+    pytest.param(
+        "GP",
+        [[0.9, 0.8, 0.1], [0.7, False, 0.5]],
+        "`GP` holds False, a truth value",
+        id="one_bool_among_floats",
+    ),
+    pytest.param(
+        "GP",
+        numpy.ones((2, 3), dtype=bool),
+        "`GP` is of the type bool, and it holds numbers",
+        id="array_of_bools_into_floats",
+    ),
+    pytest.param(
+        "pos",
+        numpy.array([True, True]),
+        "`pos` is of the type bool, and it holds integers",
+        id="array_of_bools_as_pos",
+    ),
+    pytest.param(
+        "GP",
+        numpy.ma.masked_array(numpy.ones((2, 3)), mask=numpy.zeros((2, 3))),
+        "`GP` is a masked array",
+        id="masked_array",
+    ),
+    pytest.param(
+        "qual", 30.0, "`qual` is 30.0, one value", id="a_scalar_for_the_variants"
+    ),
+    pytest.param(
+        "END",
+        numpy.array(4999, dtype=numpy.uint64),
+        "`END` is array(4999, dtype=uint64), one value",
+        id="an_array_of_no_dimension",
+    ),
+    pytest.param(
+        "END",
+        [4999, None],
+        "segment 1: `END` holds None, which is not a number",
+        id="none_among_integers",
+    ),
+    pytest.param(
+        "GP",
+        [[0.9, 0.8, 0.1], [0.7, "5", 0.5]],
+        "segment 1: `GP` holds '5', which is not a number",
+        id="a_text_among_floats",
+    ),
+    pytest.param(
+        "qual",
+        numpy.array([1 + 2j, 3j]),
+        "`qual` is of the type complex128, and it holds numbers",
+        id="complex_qualities",
+    ),
+    pytest.param(
+        "gts",
+        [[[0, 1.0], [1, 1], [-1, -1]], [[2, 0], [0, 0], [1, 2]]],
+        "segment 1, variant 1, chr1 100: `gts` holds the float 1.0, and it holds "
+        "integers",
+        id="a_float_in_a_list_of_gts",
+    ),
+    pytest.param(
+        "gts",
+        numpy.zeros((2, 3, 2), dtype=numpy.float16),
+        "`gts` is of the type float16, and it holds integers",
+        id="gts_of_float16",
+    ),
+    pytest.param(
+        "NODE_A",
+        numpy.zeros((2, 3), dtype=numpy.float16),
+        "`NODE_A` is of the type float16, and it holds integers",
+        id="float16_into_an_int32_field",
+    ),
+    pytest.param(
+        "END",
+        [4999, 2**70],
+        "segment 1, variant 2, chr1 5000: `END` holds 1180591620717411303424, which "
+        "its type, uint64, does not hold",
+        id="2_to_the_70_into_a_uint64_field",
+    ),
+]
+
+
+@pytest.mark.parametrize(("key", "value", "words"), NUMBERS_REFUSED)
+def test_write_vars_from_segments_refuses_what_is_not_numbers_of_the_variants(
+    tmp_path: Path, key: str, value: Any, words: str
+) -> None:
+    """Truth values, a masked array, a scalar, a value that is not a number,
+    and floats where integers go, named by the type the user gave: each a
+    `ValueError` that names the segment and the key, and no file."""
+    path = tmp_path / "refused.vars"
+    segment = first_segment()
+    segment[key] = value
+
+    with pytest.raises(ValueError) as refusal:
+        write([segment], path)
+
+    assert words in str(refusal.value)
+    assert not path.exists()
+
+
+def test_write_vars_from_segments_writes_a_variant_of_128_alleles_and_allele_127(
+    tmp_path: Path,
+) -> None:
+    """A variant of exactly 128 alleles, the most, with a genotype of the
+    allele 127, the last of them."""
+    path = tmp_path / "many_alleles.vars"
+    alleles = [f"H{number}" for number in range(128)]
+
+    write_one_variant(
+        path,
+        {},
+        alleles=[alleles],
+        gts=numpy.array([[[127, 0]]], dtype=numpy.int64),
+    )
+
+    _, table, _ = read_with_pyarrow(path)
+    assert table.column("alleles").to_pylist() == [alleles]
+    assert table.column("gts").to_pylist() == [[127, 0]]
+
+
+def test_write_vars_from_segments_writes_a_ploidy_of_255(tmp_path: Path) -> None:
+    """The largest ploidy, 255, with every allele of the genotype given."""
+    path = tmp_path / "ploidy.vars"
+    gts = numpy.zeros((1, 1, 255), dtype=numpy.int8)
+    gts[0, 0, 254] = 1
+
+    write(
+        [one_variant_with(gts=gts)],
+        path,
+        individuals=["only"],
+        ploidy=255,
+        var_fields={},
+        gt_fields={},
+    )
+
+    variants = open_vars(path)
+    assert variants.ploidy == 255
+    _, table, _ = read_with_pyarrow(path)
+    assert table.column("gts").to_pylist() == [[0] * 254 + [1]]
+
+
 def changed(key: str, value: Any) -> dict[str, Any]:
     """The first segment of the worked example with `value` at `key`, or
     without `key` when `value` is `REMOVED`."""
@@ -563,6 +871,11 @@ ARGUMENTS_REFUSED = [
         {"chrom_lengths": {"chr1": -100}},
         "`chrom_lengths` gives `chr1` the length -100",
         id="chrom_length_negative",
+    ),
+    pytest.param(
+        {"chrom_lengths": {"chr1": True}},
+        "`chrom_lengths` gives `chr1` the length True",
+        id="chrom_length_true",
     ),
 ]
 
