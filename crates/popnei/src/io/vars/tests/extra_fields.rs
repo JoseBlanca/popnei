@@ -1085,13 +1085,12 @@ fn an_extra_field_buffer_that_says_more_than_its_column_is_refused_before_arrow_
 
 /// How many panics the net of the reader caught in the sweep over four
 /// values of each byte of the file with extra fields, on 9 November 2026
-/// with arrow-rs 60: eight about a buffer whose length is not a whole
-/// number of the values of its column and three about a buffer of bits
-/// that is not long enough, asserts of arrow-rs that only the walk of the
-/// schema its decoder does would see. The sweep gave 20549 files in 0.22 s:
-/// 8753 errors, 11274 read as the whole file and 522 read as another file
-/// with no error.
-const PANICS_CAUGHT_WITH_FIELDS: u64 = 11;
+/// with arrow-rs 60: 6 about a buffer of bits that is not long enough and
+/// 16 about a buffer whose length is not a whole number of the values of
+/// its column, asserts of arrow-rs that only the walk of the schema its
+/// decoder does would see. The sweep gave 20549 files: 8753 errors, 11274
+/// read as the whole file and 522 read as another file with no error.
+const PANICS_CAUGHT_WITH_FIELDS: u64 = 22;
 
 /// The four variants of `cases.vcf` with a `float32` genotype field and an
 /// `int64` variant field, in batches of 3 and 1.
@@ -1134,43 +1133,20 @@ fn rows_and_fields_or_error(bytes: Vec<u8>) -> Result<RowsAndFields> {
 /// No change of one byte of a vars file with extra fields reaches a panic
 /// or an abort: the sweep of the reader, four values of each byte, over a
 /// file whose columns after `gts` are walked too.
-///
-/// Away from wasm it runs in a pool of one thread. The reader decodes the
-/// batches of a window on the threads of the pool it is called in, and
-/// `swept_with` counts the panics of the thread it runs on, so outside
-/// such a pool the panics the net caught happen on other threads and none
-/// is counted.
 #[test]
 fn no_change_of_one_byte_of_a_vars_file_with_extra_fields_reaches_a_panic() {
-    #[cfg(not(target_family = "wasm"))]
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(1)
-        .build()
-        .expect("a pool of one thread")
-        .install(the_sweep_with_extra_fields);
-    #[cfg(target_family = "wasm")]
-    the_sweep_with_extra_fields();
-}
-
-/// The body of the test above, inside its pool of one thread.
-fn the_sweep_with_extra_fields() {
     let whole = cases_with_a_float32_and_an_int64_field();
     let expected = rows_and_fields_or_error(whole.clone()).expect("the whole file is read");
     assert_eq!(expected.0.len(), 4);
     assert_eq!(expected.1.len(), 2);
 
-    let mut sweep = swept_with(&whole, &[0x00, 0xff], &expected, rows_and_fields_or_error);
-    for bit in [0x01_u8, 0x80] {
-        for (at, byte) in whole.iter().enumerate() {
-            let mut bytes = whole.clone();
-            bytes[at] = byte ^ bit;
-            match rows_and_fields_or_error(bytes) {
-                Err(_) => sweep.errors = sweep.errors.saturating_add(1),
-                Ok(read) if read == expected => sweep.the_same = sweep.the_same.saturating_add(1),
-                Ok(_) => sweep.others = sweep.others.saturating_add(1),
-            }
-        }
-    }
+    let sweep = swept_with(
+        &whole,
+        &[0x00, 0xff],
+        &[0x01, 0x80],
+        &expected,
+        rows_and_fields_or_error,
+    );
 
     assert!(sweep.errors > 100, "{} errors", sweep.errors);
     assert!(sweep.the_same > 100, "{} files read whole", sweep.the_same);
