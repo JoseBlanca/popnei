@@ -10,15 +10,25 @@ stretch of the genome at a time with `popnei.write_vars_from_segments`,
 from dicts of arrays, without the whole genome in memory and without a
 VCF in between. The file can carry extra fields, named arrays of numbers
 with one value for each variant (the end of a region) or for each
-genotype (a posterior), of five types. They survive every filter, the
+genotype (a posterior), each of `int32`, `int64`, `uint64`, `float32` or
+`float64`. They survive every filter, the
 filter of individuals keeping the values of the kept individuals,
 `write_vars` copies them, and `iter_blocks(fields=(..., "GP"))` gives them
 back in `block.extra_fields`; `variants.var_fields` and
-`variants.gt_fields` list them. The vars file is format 1.3; a reader of
-1.2 reads it and ignores the fields. `write_vars` and `writeVars` now
-refuse variants that are not sorted, unless `allow_unsorted=True` or
-`allowUnsorted: true`, and `write_vcf` refuses a file with extra fields.
-TypeScript has nothing else of this, as the owner decided.
+`variants.gt_fields` list them. TypeScript has nothing of this but
+`allowUnsorted`, as the owner decided.
+
+What changes for a user who does not call the new functions:
+
+- `write_vars` and `writeVars` refuse variants that are not sorted, a
+  position that goes down on its chromosome or a chromosome that comes
+  back, unless `allow_unsorted=True` or `allowUnsorted: true`. A user who
+  wrote an unsorted VCF to a vars file now gets a `ValueError` and no file.
+- `filter_individuals` refuses a set of names with a `TypeError`.
+- Every vars file written says format 1.3 and is 32 bytes longer, the two
+  empty lists of fields in its key; a reader of 1.2 reads it.
+- `write_vcf` refuses a vars file with extra fields, which only the new
+  writer makes.
 
 The checks on d78ab17, run on 9 November 2026: `cargo test --workspace`
 1569 passed, 2 ignored (1526 before the plan); `cargo test -p popnei
@@ -26,9 +36,16 @@ The checks on d78ab17, run on 9 November 2026: `cargo test --workspace`
 `npm test` 703 passed (701 before); `npm run test:browser` 9 passed; fmt,
 clippy, ruff and both wasm checks clean.
 
-Asked of the owner: the merge into `main`, and whether to open an issue
-for the byte sweep of the reader, which counts panics only on the thread
-of the test and so cannot fail on them (under "Work package 1").
+Asked of the owner: the merge into `main`; and whether to open an issue
+for an existing test that cannot fail. The test of the vars reader that
+changes every byte of a small file in turn and reads each damaged copy,
+to check that a damaged file gives an error and never a crash, counts the
+crashes it catches only on its own thread, while the reader decodes on
+other threads, so its check on them always passes. The copy of that test
+written for the extra fields runs on one thread and caught 11 crashes
+inside the arrow library, each turned into an error by the reader, none
+reaching the user; the old test would not have noticed one that did.
+Fixing it is a few lines, outside this plan.
 
 Decided during the work and written into the spec, each because a value
 would otherwise have been written wrong with no error, which the owner's
