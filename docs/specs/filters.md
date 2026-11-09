@@ -788,9 +788,10 @@ one before it. The other part of popnei that needs the same order is the
 cutting of the variants into the resampling groups of the standard errors
 of the distances between populations, `docs/specs/dists.md`, which
 refuses the same two cases where the groups are stretches of a
-chromosome. Everything else reads a source in any order, and
-`docs/specs/io_vars.md` has a test that writes a block of four variants
-that are not sorted, so these two refuse what the rest of popnei takes.
+chromosome. The vars file writers refuse it too, unless they are told
+otherwise, since 9 November 2026, as "Sorted variants" of
+`docs/specs/io_vars.md` says. Everything else reads a source in any
+order.
 Decided here: the alternative is to subtract two positions that can run
 backwards, which on a `u64` wraps to a distance of 18 million million
 million and puts the pair outside every window without a word.

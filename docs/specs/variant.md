@@ -37,7 +37,7 @@ column of a VCF, phred scaled: minus ten times the base ten logarithm of
 the probability that there is no variant at that site, so 30 is one in a
 thousand. `VCF_TEXT`, added on 26 September 2026, asks the
 VCF reader for the text of each line, which only the VCF writer of
-`docs/specs/io_vcf.md` wants; it is not in `ALL`, the six that
+`docs/specs/io_vcf.md` wants; it is not in `ALL`, the flags that
 `write_vars` asks for, because the vars file has no place for it.
 `PASSED`, whether each variant passed its FILTER, was added on 6 October
 2026 and is in `ALL`; the tests that
