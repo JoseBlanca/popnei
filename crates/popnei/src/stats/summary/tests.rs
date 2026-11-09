@@ -726,6 +726,7 @@ fn of_no_variants(block: &mut Block) {
         qual: None,
         passed: block.passed.as_ref().map(|_| Vec::new()),
         vcf_text: None,
+        extra: None,
     };
 }
 

@@ -81,6 +81,7 @@ fn block_at(positions: &[u64]) -> Block {
         qual: None,
         passed: None,
         vcf_text: None,
+        extra: None,
     }
 }
 
@@ -597,6 +598,7 @@ impl Recording {
                 chrom_lengths: Vec::new(),
                 vcf_meta_lines: None,
                 keeps_passed: false,
+                extra_fields: Vec::new(),
             },
         }
     }

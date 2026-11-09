@@ -1224,6 +1224,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 
@@ -1576,6 +1577,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 

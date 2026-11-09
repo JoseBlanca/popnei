@@ -1029,6 +1029,7 @@ fn the_dosages_of(
         qual: None,
         passed: None,
         vcf_text: None,
+        extra: None,
     };
     let dosages = LdDosages::of_block(&block, &[]);
     *gts = std::mem::take(&mut block.gts);
@@ -2495,6 +2496,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 
@@ -3334,6 +3336,7 @@ mod tests {
                     chrom_lengths: vec![("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)],
                     vcf_meta_lines: Some(vec!["##fileformat=VCFv4.3".to_owned()]),
                     keeps_passed: false,
+                    extra_fields: Vec::new(),
                 },
                 offers: Arc::new(AtomicUsize::new(0)),
                 num_skipped: 0,
@@ -3453,6 +3456,7 @@ mod tests {
                 chrom_lengths: vec![("chr1".to_owned(), 2000), ("chr2".to_owned(), 1500)],
                 vcf_meta_lines: Some(vec!["##fileformat=VCFv4.3".to_owned()]),
                 keeps_passed: false,
+                extra_fields: Vec::new(),
             }
         }
 
@@ -3716,6 +3720,97 @@ mod tests {
         );
         // And there is no block after the last one.
         assert!(filtered.next_block().expect("no more blocks").is_none());
+    }
+
+    /// The block of the variants of the worked example given, with a
+    /// variant field `END` of `int64` and a genotype field `GP` of
+    /// `float64` of the values given: the extra fields of
+    /// `docs/specs/io_vars.md`, which no reader gives yet.
+    fn with_end_and_gp(variants: &[usize], end: &[i64], gp: &[f64]) -> Block {
+        use crate::block::{ExtraField, ExtraFieldDecl, ExtraKind, ExtraType, ExtraValues};
+
+        let mut block = block_of_the_worked_example(variants);
+        block.extra = Some(vec![
+            ExtraField {
+                decl: ExtraFieldDecl {
+                    name: "END".to_owned(),
+                    kind: ExtraKind::Variant,
+                    ty: ExtraType::I64,
+                },
+                values: ExtraValues::I64(end.to_vec()),
+            },
+            ExtraField {
+                decl: ExtraFieldDecl {
+                    name: "GP".to_owned(),
+                    kind: ExtraKind::Genotype,
+                    ty: ExtraType::F64,
+                },
+                values: ExtraValues::F64(gp.to_vec()),
+            },
+        ]);
+        block
+    }
+
+    /// The values of `END` and of `GP` of a block that holds the two.
+    fn end_and_gp_of(block: &Block) -> (Vec<i64>, Vec<f64>) {
+        use crate::block::ExtraValues;
+
+        let Some([end, gp]) = block.extra.as_deref() else {
+            panic!("the block holds {:?}", block.extra);
+        };
+        let (ExtraValues::I64(end), ExtraValues::F64(gp)) = (&end.values, &gp.values) else {
+            panic!("END is {:?} and GP {:?}", end.values, gp.values);
+        };
+        (end.clone(), gp.clone())
+    }
+
+    /// The missing data filter at 0.2 keeps the variants 1 and 5 of the
+    /// worked example, whose missing rates are 0.2 and 0, and drops the
+    /// variants 4 and 6, whose rate is 1: the extra fields keep the values
+    /// of the two that stay, the variant field one each and the genotype
+    /// field the five of each.
+    #[test]
+    fn extra_fields_of_the_variants_a_filter_keeps_stay_in_its_block() {
+        let gp: Vec<f64> = (0..4)
+            .flat_map(|var| (0..5).map(move |individual| f64::from(10 * var + individual)))
+            .collect();
+        let source = GivenBlocks::of(vec![with_end_and_gp(
+            &[0, 3, 4, 5],
+            &[-10, -40, -50, -60],
+            &gp,
+        )]);
+        let mut filtered =
+            FilteredReader::new(source, VarFilter::new(MaxMissingRate(0.2)).unwrap()).unwrap();
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+
+        assert_eq!(positions_of_blocks(&blocks), [1, 5]);
+        blocks[0].check().expect("the block is of its size");
+        let (end, gp) = end_and_gp_of(&blocks[0]);
+        assert_eq!(end, [-10, -50]);
+        assert_eq!(gp, [0.0, 1.0, 2.0, 3.0, 4.0, 20.0, 21.0, 22.0, 23.0, 24.0]);
+    }
+
+    /// The filter of individuals keeping the third and the first, in that
+    /// order, gives each row of a genotype field as the value of the third
+    /// then that of the first, and leaves a variant field as it was.
+    #[test]
+    fn extra_fields_of_genotypes_keep_the_third_and_the_first_individual_through_the_filter() {
+        let source = GivenBlocks::of(vec![with_end_and_gp(
+            &[0, 1],
+            &[7, 8],
+            &[0.5, 1.5, 2.5, 3.5, 4.5, 10.5, 11.5, 12.5, 13.5, 14.5],
+        )]);
+        let mut of_two =
+            crate::filters::IndividualsReader::new(source, &["ind3".to_owned(), "ind1".to_owned()])
+                .expect("the reader of the two");
+        let blocks = blocks_of(&mut of_two).expect("the blocks");
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].num_individuals, 2);
+        blocks[0].check().expect("the block is of its size");
+        let (end, gp) = end_and_gp_of(&blocks[0]);
+        assert_eq!(end, [7, 8]);
+        assert_eq!(gp, [2.5, 0.5, 12.5, 10.5]);
     }
 
     /// After an error of its source the reader gives no block and does not
@@ -4063,6 +4158,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 

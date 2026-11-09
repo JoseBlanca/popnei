@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use thiserror::Error as ThisError;
 
-use crate::block::BlockSize;
+use crate::block::{BlockSize, ExtraType};
 use crate::filters::{BedLineProblem, FilteringStats};
 use crate::io::vcf::VcfPlace;
 use crate::ld::{MAX_ALLELES_OF_A_VARIANT, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES};
@@ -246,6 +246,37 @@ pub enum Error {
         found: usize,
         /// How many it has to hold.
         expected: usize,
+    },
+
+    /// An extra field of a block has not one value for each variant, or
+    /// for each genotype when it is a genotype field. It is
+    /// [`Error::BlockArrayOfAnotherSize`] for the arrays whose name a reader
+    /// does not know before it reads its source, and `Block::check` finds
+    /// it for the same reason.
+    #[error(
+        "the extra field `{name}` of a block holds {found} values, and a block of its size holds {expected}"
+    )]
+    BlockExtraFieldOfAnotherSize {
+        /// The name of the field.
+        name: String,
+        /// How many values it holds.
+        found: usize,
+        /// How many it has to hold.
+        expected: usize,
+    },
+
+    /// The values of an extra field of a block are of another type than
+    /// the field says it holds. The fields of a block are public, so a
+    /// reader with a defect can build one, and a writer would write the
+    /// values under a type that is not theirs. `Block::check` finds it.
+    #[error("the extra field `{name}` of a block says it holds {declared} and holds {found}")]
+    BlockExtraFieldOfAnotherType {
+        /// The name of the field.
+        name: String,
+        /// The type the field says it holds.
+        declared: ExtraType,
+        /// The type of its values.
+        found: ExtraType,
     },
 
     /// A filter gave `Block::retain_vars` a number of values other than
@@ -3795,6 +3826,8 @@ impl Error {
             | Self::MissingRateOfAPopOfNoIndividual { .. }
             | Self::BlocksDoNotFitTogether { .. }
             | Self::BlockArrayOfAnotherSize { .. }
+            | Self::BlockExtraFieldOfAnotherSize { .. }
+            | Self::BlockExtraFieldOfAnotherType { .. }
             | Self::ReaderGaveABlockOfNoVariants
             | Self::ReadAheadAnswerInPlaceOfABlock
             | Self::BlockWithNoGenotypeOfAVariant { .. }

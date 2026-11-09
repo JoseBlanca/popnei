@@ -730,6 +730,10 @@ impl<W: Write> VarsWriter<W> {
             // The vars file has no place for the text of the lines of a
             // VCF, which the writer of a vars file does not ask for.
             vcf_text: _,
+            // The columns of the extra fields are those of the format 1.3
+            // of `docs/specs/io_vars.md`, which this writer does not write
+            // yet.
+            extra: _,
         } = block;
         let mut arrays: Vec<ArrayRef> = Vec::new();
         let mut regions = Vec::new();
@@ -1560,6 +1564,7 @@ impl<R: Read + Seek> VarsReader<R> {
             chrom_lengths: metadata.chrom_lengths.clone(),
             vcf_meta_lines: None,
             keeps_passed: columns.passed.is_some(),
+            extra_fields: Vec::new(),
         };
         Ok(VarsReader {
             source,
@@ -2751,6 +2756,7 @@ fn block_of_the_batch(
         qual: None,
         passed: None,
         vcf_text: None,
+        extra: None,
     };
     // The texts of the alleles of one variant, written over for the next
     // one: nothing is allocated for each variant of the block.
@@ -3758,6 +3764,7 @@ mod tests {
             qual: Some(qual),
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 
@@ -4299,6 +4306,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let reader = GivenBlocks {
             ploidy: 4,
@@ -4771,7 +4779,7 @@ mod tests {
         };
         // The blocks of the test have no column of whether each variant
         // passed its FILTER.
-        let every_column = Needs::ALL.difference(Needs::PASSED);
+        let every_column = Needs::ALL.difference(Needs::PASSED | Needs::EXTRA);
         assert_eq!(*first, every_column);
         assert_eq!(*found, every_column.difference(Needs::QUAL));
         let message = error.to_string();
@@ -5451,7 +5459,10 @@ mod tests {
         assert_eq!(num_vars_of(&blocks), [3, 1]);
         for block in &blocks {
             assert_eq!(block.passed, None);
-            assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
+            assert_eq!(
+                block.fields(),
+                Needs::ALL.difference(Needs::PASSED | Needs::EXTRA)
+            );
         }
     }
 
@@ -5482,7 +5493,7 @@ mod tests {
     #[test]
     fn passed_column_of_a_file_of_1_2_is_left_out_by_a_reader_that_does_not_ask_for_it() {
         let bytes = many_vcf_written(Some(100));
-        let every_other = Needs::ALL.difference(Needs::PASSED);
+        let every_other = Needs::ALL.difference(Needs::PASSED | Needs::EXTRA);
 
         let (without, chroms_without) = blocks_read(bytes.clone(), every_other);
         let (with, chroms_with) = blocks_read(bytes, Needs::ALL);
@@ -5493,7 +5504,7 @@ mod tests {
             assert_eq!(block.fields(), every_other);
         }
         for block in &with {
-            assert_eq!(block.fields(), Needs::ALL);
+            assert_eq!(block.fields(), Needs::ALL.difference(Needs::EXTRA));
         }
         assert_eq!(
             rows_of(&without, &chroms_without),
@@ -6551,7 +6562,10 @@ mod tests {
         for block in &blocks {
             // The block the file was written from has no column of whether
             // each variant passed its FILTER, so the file has none.
-            assert_eq!(block.fields(), Needs::ALL.difference(Needs::PASSED));
+            assert_eq!(
+                block.fields(),
+                Needs::ALL.difference(Needs::PASSED | Needs::EXTRA)
+            );
             assert_eq!(block.num_individuals, CASES_INDIVIDUALS);
             assert_eq!(block.ploidy, CASES_PLOIDY);
         }
@@ -6700,6 +6714,7 @@ mod tests {
             qual: Some(vec![30.0; NUM_VARS]),
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let expected = block.gts.clone();
         let reader = GivenBlocks {
@@ -8363,6 +8378,7 @@ mod tests {
             qual: Some(vec![quality, f32::NAN]),
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 

@@ -287,6 +287,7 @@ impl<R: BlockReader> WithoutPassed<R> {
     fn over(reader: R) -> WithoutPassed<R> {
         let header = SourceHeader {
             keeps_passed: false,
+            extra_fields: Vec::new(),
             ..reader.header().clone()
         };
         WithoutPassed {
@@ -573,6 +574,7 @@ fn block_at(positions: &[u64], passed: Option<Vec<bool>>) -> Block {
         qual: None,
         passed,
         vcf_text: None,
+        extra: None,
     }
 }
 
@@ -604,6 +606,7 @@ impl Recording {
                 chrom_lengths: Vec::new(),
                 vcf_meta_lines: None,
                 keeps_passed: true,
+                extra_fields: Vec::new(),
             },
         }
     }

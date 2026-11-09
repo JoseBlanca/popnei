@@ -315,6 +315,9 @@ impl Blocks {
             // The text of the lines of a VCF is for its writer, and not a
             // field that `iter_blocks` gives.
             vcf_text: _,
+            // The extra fields of a vars file are not among the fields that
+            // `iter_blocks` gives yet.
+            extra: _,
         } = block;
         // The three dimensions are given to the array as it is built and
         // not by reshaping one of a single dimension, whose array would

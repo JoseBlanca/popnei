@@ -2865,6 +2865,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let mut reader = GivenBlocks::of(individuals, vec![block], false);
         calc_pop_dist_sums(
@@ -2959,6 +2960,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let mut reader = GivenBlocks::of(individuals, vec![block], false);
         sums_of_the_pass(
@@ -3005,6 +3007,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         };
         let mut reader = GivenBlocks::of(individuals, vec![block], false);
         calc_pop_dist_sums(
@@ -3155,6 +3158,7 @@ mod tests {
                 qual: None,
                 passed: None,
                 vcf_text: None,
+                extra: None,
             })
             .collect()
     }
@@ -4405,6 +4409,7 @@ mod tests {
             qual: None,
             passed: None,
             vcf_text: None,
+            extra: None,
         }
     }
 

@@ -786,6 +786,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             // asked for.
             header: SourceHeader {
                 keeps_passed: true,
+                extra_fields: Vec::new(),
                 ..SourceHeader::default()
             },
             chroms: ChromTable::new(),
@@ -1047,6 +1048,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             qual: self.reserved_column(Needs::QUAL, num_vars)?,
             passed: self.reserved_column(Needs::PASSED, num_vars)?,
             vcf_text,
+            extra: None,
         })
     }
 
@@ -4268,7 +4270,7 @@ mod tests {
         let mut reader = reader_over(&vcf, in_blocks_of(VcfOptions::default(), 1));
 
         let first = reader.next_block().unwrap().expect("the first block");
-        assert_eq!(first.fields(), Needs::ALL);
+        assert_eq!(first.fields(), Needs::ALL.difference(Needs::EXTRA));
         assert_eq!(first.id.as_deref(), Some(["rs1".to_string()].as_slice()));
 
         reader.set_needs(Needs::GTS);

@@ -2483,6 +2483,9 @@ impl Blocks {
             // The text of the lines of a VCF is for its writer, and not a
             // field that `iterBlocks` gives.
             vcf_text: _,
+            // TypeScript has nothing of the extra fields of a vars file, as
+            // "The extra fields" of `docs/specs/io_vars.md` says.
+            extra: _,
         } = block;
         let alleles = alleles.map(|column| alleles_of(&column)).transpose()?;
         let (alleles, num_alleles_per_var) = match alleles {

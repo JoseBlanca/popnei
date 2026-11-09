@@ -565,6 +565,8 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::MissingRateOfAPopOfNoIndividual { .. }
         | popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
+        | popnei::Error::BlockExtraFieldOfAnotherSize { .. }
+        | popnei::Error::BlockExtraFieldOfAnotherType { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
         | popnei::Error::ReadAheadAnswerInPlaceOfABlock
         | popnei::Error::BlockWithNoGenotypeOfAVariant { .. }

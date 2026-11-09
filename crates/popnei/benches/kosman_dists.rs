@@ -268,6 +268,7 @@ fn the_block() -> Block {
         qual: None,
         passed: None,
         vcf_text: None,
+        extra: None,
     }
 }
 
@@ -305,6 +306,7 @@ static NO_HEADER: SourceHeader = SourceHeader {
     chrom_lengths: Vec::new(),
     vcf_meta_lines: None,
     keeps_passed: false,
+    extra_fields: Vec::new(),
 };
 
 impl BlockReader for BlocksInMemory {
@@ -366,6 +368,7 @@ fn copy_of(block: &Block) -> Block {
         qual: None,
         passed: None,
         vcf_text: None,
+        extra: None,
     }
 }
 
