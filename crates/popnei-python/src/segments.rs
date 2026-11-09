@@ -732,26 +732,30 @@ impl SegmentReader {
     /// # Errors
     ///
     /// A text, which Python would read as a sequence of characters, and
-    /// anything that is not a sequence with a length.
+    /// anything that is not a sequence with a length, which Python says
+    /// with a `TypeError`. Any other exception raised while the value is
+    /// read, one of the user's own `__len__` among them, goes back as it was
+    /// raised.
     fn texts_of<'py>(
         &self,
         value: &Bound<'py, PyAny>,
         key: &str,
     ) -> Result<Vec<Bound<'py, PyAny>>, PyPopneiError> {
-        let not_a_sequence = || {
-            self.segment().refuses(format!(
-                "`{key}` is {value}, and it is a sequence of one value for each variant"
-            ))
+        let not_a_sequence = |error: Option<PyErr>| -> PyPopneiError {
+            match error {
+                Some(error) if !error.is_instance_of::<PyTypeError>(value.py()) => error.into(),
+                Some(_) | None => self.segment().refuses(format!(
+                    "`{key}` is {value}, and it is a sequence of one value for each variant"
+                )),
+            }
         };
         if value.is_instance_of::<PyString>() {
-            return Err(not_a_sequence());
+            return Err(not_a_sequence(None));
         }
-        let Ok(length) = value.len() else {
-            return Err(not_a_sequence());
-        };
-        let Ok(items) = value.try_iter() else {
-            return Err(not_a_sequence());
-        };
+        let length = value.len().map_err(|error| not_a_sequence(Some(error)))?;
+        let items = value
+            .try_iter()
+            .map_err(|error| not_a_sequence(Some(error)))?;
         let mut values = Vec::with_capacity(length);
         for item in items {
             values.push(item?);
@@ -839,8 +843,12 @@ impl SegmentReader {
             if of_the_var.is_instance_of::<PyString>() {
                 return Err(not_texts());
             }
-            let Ok(items) = of_the_var.try_iter() else {
-                return Err(not_texts());
+            let items = match of_the_var.try_iter() {
+                Ok(items) => items,
+                Err(error) if error.is_instance_of::<PyTypeError>(of_the_var.py()) => {
+                    return Err(not_texts());
+                }
+                Err(error) => return Err(error.into()),
             };
             texts.clear();
             for item in items {

@@ -1110,6 +1110,53 @@ def test_write_vars_from_segments_raises_the_exception_of_the_generator(
     assert not path.exists()
 
 
+class CallerFailed(Exception):
+    """An exception of the user's own code."""
+
+
+class FailsAsAnArray:
+    """A value whose `__array__`, which numpy calls to make an array of it,
+    raises an exception of the user's own."""
+
+    def __array__(self, dtype: Any = None, copy: Any = None) -> Any:
+        raise CallerFailed("the array could not be computed")
+
+
+class FailsAtItsLength:
+    """A sequence whose `__len__` raises an exception of the user's own."""
+
+    def __len__(self) -> int:
+        raise CallerFailed("the length could not be computed")
+
+    def __getitem__(self, index: int) -> Any:
+        raise IndexError(index)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        pytest.param("GP", FailsAsAnArray(), id="array_of_a_field"),
+        pytest.param("gts", FailsAsAnArray(), id="array_of_gts"),
+        pytest.param("alleles", FailsAtItsLength(), id="length_of_alleles"),
+        pytest.param("chrom", FailsAtItsLength(), id="length_of_chrom"),
+    ],
+)
+def test_write_vars_from_segments_raises_an_exception_of_a_value_as_it_was_raised(
+    tmp_path: Path, key: str, value: Any
+) -> None:
+    """An exception that the user's code raises while a value of a segment
+    is read, from its `__array__` or its `__len__`, is not the refusal of
+    the segment: it comes out of the call as it was raised, and no file."""
+    path = tmp_path / "failed.vars"
+    segment = first_segment()
+    segment[key] = value
+
+    with pytest.raises(CallerFailed):
+        write([segment], path)
+
+    assert not path.exists()
+
+
 def test_write_vars_from_segments_raises_a_ctrl_c_between_segments(
     tmp_path: Path,
 ) -> None:
