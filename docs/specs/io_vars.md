@@ -1339,7 +1339,12 @@ until this is called. It holds from the next block, as `set_needs` does.
 A name the file has no field of is an error naming the fields it has.
 The fields of a block are in the order of the file whatever the order of
 the names, and a block of a selection that names none has no extra
-field, `extra` of `None`, as one of a file that has none. It
+field, `extra` of `None`, as one of a file that has none. The extra
+fields of the header of the reader become the selected ones, in the order
+of the file, so that `write_vars` of a selected reader writes a file of
+those fields and does not refuse the blocks for lacking the others; every
+field of the file stays in its metadata, which is where `var_fields` and
+`gt_fields` of `Variants` read them when the file is opened. It
 is a method of the vars reader and not of `BlockReader`: the binding crate
 calls it on the source it opened for `iter_blocks`, before it puts the
 filters over it, and `write_vars` never calls it.
