@@ -156,7 +156,9 @@ pub fn num_vars_per_block_of_write_vcf(source: WriterSource) -> Option<usize> {
 /// [`Error::VcfWriterChromNameMissing`], and when a block holds a variant
 /// whose `passed` is false while the header of the source says it keeps no
 /// `passed`, [`Error::VcfWriterPassedNotInTheHeader`], the three of them
-/// defects of the reader; and when the sink fails, [`Error::FileNotWritten`]. The bytes
+/// defects of the reader; when the header of the source has extra fields,
+/// which a VCF has no place for, [`Error::VcfWriterExtraFields`], before
+/// anything is written; and when the sink fails, [`Error::FileNotWritten`]. The bytes
 /// written before the error are on the sink, and it is the caller that
 /// removes the file.
 pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
@@ -164,6 +166,15 @@ pub fn write_vcf<R: BlockReader + ?Sized, W: Write + Send>(
     sink: W,
     options: VcfWriteOptions,
 ) -> Result<(W, u64)> {
+    let extra_fields = &reader.header().extra_fields;
+    if !extra_fields.is_empty() {
+        return Err(Error::VcfWriterExtraFields {
+            fields: extra_fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect(),
+        });
+    }
     let from = match reader.header().vcf_meta_lines {
         Some(_) => LinesFrom::Text,
         None => LinesFrom::Columns,
@@ -684,7 +695,7 @@ mod tests {
         LinesFrom, LinesOf, VcfWriteOptions, WriterSource, num_vars_per_block_of_write_vcf,
         vcf_text_num_vars_per_block, write_vcf,
     };
-    use crate::block::{Block, BlockReader, SourceHeader};
+    use crate::block::{Block, BlockReader, ExtraFieldDecl, ExtraKind, ExtraType, SourceHeader};
     use crate::error::{Error, Result};
     use crate::filters::{
         FilteringStats, PassStep, RegionSelection, TheChromOfTheVariant, VarFilteringCriterion,
@@ -1521,6 +1532,41 @@ mod tests {
                     "every variant passed is {every_one_passed}, and the writer gave {other:?}"
                 ),
             }
+        }
+    }
+
+    /// A source with extra fields, which a vars file can have, is refused
+    /// before a byte is written, plain or bgzipped: the VCF written has no
+    /// place for them. The error names them in the order of the header.
+    #[test]
+    fn write_vcf_refuses_a_source_with_extra_fields_before_it_writes_anything() {
+        for options in [PLAIN, BGZIP] {
+            let mut reader = OneBlock::of_write_vcf(Needs::ALL);
+            reader.header.vcf_meta_lines = None;
+            reader.header.extra_fields = vec![
+                ExtraFieldDecl {
+                    name: "GP".to_owned(),
+                    kind: ExtraKind::Genotype,
+                    ty: ExtraType::F32,
+                },
+                ExtraFieldDecl {
+                    name: "END".to_owned(),
+                    kind: ExtraKind::Variant,
+                    ty: ExtraType::U64,
+                },
+            ];
+            let mut sink: Vec<u8> = Vec::new();
+            let error = match write_vcf(&mut reader, &mut sink, options) {
+                Ok((_, num_vars)) => panic!("{num_vars} variants were written"),
+                Err(error) => error,
+            };
+            let Error::VcfWriterExtraFields { ref fields } = error else {
+                panic!("not the error of the extra fields: {error:?}");
+            };
+            assert_eq!(fields, &["GP", "END"]);
+            assert!(error.to_string().contains("`GP`, `END`"), "{error}");
+            assert!(sink.is_empty(), "{} bytes were written", sink.len());
+            assert!(reader.block.is_some(), "a block was read");
         }
     }
 

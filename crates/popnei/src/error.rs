@@ -3090,6 +3090,22 @@ pub enum Error {
         column: &'static str,
     },
 
+    /// The source given to the VCF writer has extra fields, the named
+    /// values for each variant or each genotype that a vars file can carry,
+    /// "The extra fields" of `docs/specs/io_vars.md`. The VCF it writes has
+    /// no place for them, so it refuses the source before it writes
+    /// anything, as `docs/specs/io_vcf.md` has it. It is of the file that
+    /// was read, which it names in Python.
+    #[error(
+        "the source has the extra fields {}, and a VCF written by popnei has no place for them, so it is not written from a source that has some",
+        fields.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ")
+    )]
+    VcfWriterExtraFields {
+        /// The names of the fields, in the order of the header of the
+        /// source.
+        fields: Vec<String>,
+    },
+
     /// A member of bgzip that the VCF writer could not put together: a text
     /// of more bytes than a member holds, or a member of more bytes than its
     /// header can state. The writer cuts the text into members of 65280
@@ -4009,6 +4025,7 @@ impl Error {
             | Self::VcfHeader { .. }
             | Self::VcfDataLine { .. }
             | Self::VcfWriterColumnMissing { .. }
+            | Self::VcfWriterExtraFields { .. }
             | Self::VcfGenotypePloidy { .. }
             | Self::VcfPloidyNotRead { .. }
             | Self::VcfPloidyOfNoVariants
