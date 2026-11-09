@@ -380,7 +380,12 @@ fn extra_fields_of(
     };
     let not_pairs = || {
         not_a_vars_file(format!(
-            "`{key}` of the `{POPNEI_KEY}` key of its schema is {value}, which is not a json array of pairs of the name of a field and one of `int32`, `int64`, `uint64`, `float32` and `float64`"
+            "`{key}` of the `{POPNEI_KEY}` key of its schema is {value}, which is not a json array of pairs of the name of a field and one of {}",
+            ExtraType::ALL
+                .iter()
+                .map(|ty| format!("`{ty}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
         ))
     };
     let Some(pairs) = value.as_array() else {
@@ -406,15 +411,7 @@ fn extra_fields_of(
 /// The type of an extra field of that name, as the `popnei` key and numpy
 /// write it, or `None` for a name that is not one of the five.
 fn extra_type_of(name: &str) -> Option<ExtraType> {
-    [
-        ExtraType::I32,
-        ExtraType::I64,
-        ExtraType::U64,
-        ExtraType::F32,
-        ExtraType::F64,
-    ]
-    .into_iter()
-    .find(|ty| ty.to_string() == name)
+    ExtraType::ALL.into_iter().find(|ty| ty.to_string() == name)
 }
 
 /// That the names of the extra fields are ones a field can have: each

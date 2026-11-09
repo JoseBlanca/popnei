@@ -25,7 +25,7 @@ use crate::error::{Error, Result};
 use crate::filters::{FilteringStats, RegionSelection};
 use crate::io::vars::{
     BufferHolds, NodeHolds, UNCOMPRESSED_LENGTH_BYTES, VarsMetadata, VarsReader, VarsWriter,
-    a_name_of_a_field, metadata_as_json, metadata_from_json, what_the_buffers_hold,
+    a_name_of_a_field, extra_type_of, metadata_as_json, metadata_from_json, what_the_buffers_hold,
     what_the_nodes_hold, write_vars,
 };
 use crate::variant::{ChromTable, Needs};
@@ -565,6 +565,18 @@ fn set_extra_fields_refuses_a_name_no_extra_field_can_have() {
         assert_eq!(found, name);
         assert!(said.contains(problem), "{said}");
     }
+}
+
+/// Every one of the five types is parsed back from the name it is written
+/// with, and the list holds five different ones.
+#[test]
+fn every_extra_type_is_parsed_back_from_its_name() {
+    let names: Vec<String> = ExtraType::ALL.iter().map(ToString::to_string).collect();
+    assert_eq!(names, ["int32", "int64", "uint64", "float32", "float64"]);
+    for ty in ExtraType::ALL {
+        assert_eq!(extra_type_of(&ty.to_string()), Some(ty));
+    }
+    assert_eq!(extra_type_of("int8"), None);
 }
 
 /// The rule of the VCF for the key of an INFO or a FORMAT field.

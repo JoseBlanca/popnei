@@ -1329,6 +1329,19 @@ pub enum ExtraType {
     F64,
 }
 
+impl ExtraType {
+    /// The five types, in the order the spec lists them: the one list that
+    /// the reader of the `popnei` key parses a name with and that its
+    /// messages name.
+    pub const ALL: [ExtraType; 5] = [
+        ExtraType::I32,
+        ExtraType::I64,
+        ExtraType::U64,
+        ExtraType::F32,
+        ExtraType::F64,
+    ];
+}
+
 impl fmt::Display for ExtraType {
     /// The name of the type in the `popnei` key of a vars file and in
     /// numpy: `int32`, `int64`, `uint64`, `float32` or `float64`.
