@@ -908,10 +908,13 @@ How those values compress has not been measured.
 - The filter of individuals of `docs/specs/filters.md` keeps, in each
   genotype field, the values of the kept individuals in the order it keeps
   them, as it does with the genotypes. A variant field is left as it is.
-- `reblock` cuts and joins them with the rest of the block. It takes the
-  columns of two blocks it joins to be the same and does not check it, so
-  every reader gives each of its blocks the same columns and fields, which
-  the reader of segments below does by filling every column.
+- `reblock` cuts and joins them with the rest of the block. It joins two
+  blocks only when they have the same columns and the same extra fields,
+  in the same order, and otherwise gives the one that was waiting as a
+  shorter block, as `docs/specs/block.md` says; the writer then refuses a
+  block whose fields are not those it was given, so every reader gives
+  each of its blocks the same columns and fields, which the reader of
+  segments below does by filling every column.
 - `write_vars` writes them: the extra fields of a file are those of the
   header of its source, which for a vars file are those of its key, so a
   file written from another file keeps its fields, after any filter.
@@ -1368,9 +1371,10 @@ impl<W: Write> VarsWriter<W> {
     /// until this is called. It holds when it is called before the first
     /// block, as the lengths of the chromosomes do. A name the rule of
     /// "What they give" refuses, one of a column of "What it holds" and
-    /// one given twice are the error of a field of the file, and a call
-    /// after the first block, which would change a schema already
-    /// written, the error of a block whose fields are not those declared.
+    /// one given twice are the error of a field of the file. A call after
+    /// the first block with the fields already declared changes nothing,
+    /// and one with other fields, which would change a schema already
+    /// written, is the error of a block whose fields are not those declared.
     pub fn set_extra_fields(&mut self, fields: Vec<ExtraFieldDecl>) -> Result<()>;
     /// It writes `block` as one batch. `chroms` is the table of the reader
     /// the block came from, which holds the names behind its chromosome

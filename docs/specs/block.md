@@ -220,7 +220,8 @@ also what it was keeping for its next block: over that same reader, with
 blocks of 7, it gives the 28 blocks that the 200 variants fill, and then
 the error, and the 4 variants that were left over are not given.
 
-`reblock` joins blocks only when they have the same columns. When the
+`reblock` joins blocks only when they have the same columns and the same
+extra fields, in the same order. When the
 columns of its source change, which a change of `Needs` in the middle of a
 pass does, it gives what it was keeping as a shorter block first.
 
