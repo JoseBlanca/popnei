@@ -25,3 +25,13 @@ its spec, `spec/vars-from-segments`, as the earlier plans of an issue
 did, and not on a `plan/` branch. The owner approved the plan by asking
 for it to be written and carried out in one message, so it was not shown
 to them, nor sent to the `first-reader`, before the work.
+
+## Work package 1, while it runs
+
+- 1.1, 3dd24ec: the extra fields of a block, with 9 tests; `cargo test
+  --workspace` 1535 passed, 2 ignored. It added two cases to the error
+  of the crate that the spec did not name, an extra field of another size
+  and one of another type than it says, which `check` finds; the spec of
+  the block now names them. The check of deliverable 1 counted 3 tests on
+  95c5874 and not 0, three tests of gzip members whose names hold
+  `extra_field`; the plan says so now.

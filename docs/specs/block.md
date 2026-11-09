@@ -760,7 +760,10 @@ a smaller `num_vars_per_block`. Blocks that do not fit together, which `reblock`
 when a block of its source has another number of individuals or another
 ploidy than the source says it has. A block of no variants, which
 `reblock` refuses. A block whose arrays are not of its size, which `check`
-finds, with the array and the two sizes. A `keep` that has not one value
+finds, with the array and the two sizes, and an extra field whose values
+are not of its size or not of the type it says, with the field, which
+`check` finds too, both added on 9 November 2026 and both a
+`RuntimeError` in Python, since no reader of popnei gives such a block. A `keep` that has not one value
 for each variant of its block. A name that is not a field of a block. And
 an answer to an offer of regions that reaches the reader one block ahead
 where it asked for a block, a defect of popnei, a `RuntimeError` in

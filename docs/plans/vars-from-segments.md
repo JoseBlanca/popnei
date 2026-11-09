@@ -72,7 +72,8 @@ Deliverables:
    genotype field through the writer and the reader, `select_extra_fields`
    with one name, with `None` and with a name the file lacks, and one test
    for each error of the file of "In the file". `cargo test -p popnei --lib
-   extra_field -- --list` counts them, and counts 0 on 95c5874.
+   extra_field -- --list` counts them, and counts 3 on 95c5874, three
+   tests of gzip members in `io::vcf` whose names hold `extra_field`.
 2. The byte sweep of the reader, four values for each byte, also over the
    file of the four variants of `cases.vcf` with a `float32` genotype field
    and an `int64` variant field, with no panic out of the reader and no
@@ -95,7 +96,7 @@ Stands on: nothing of this plan.
 
 Tasks:
 
-- [ ] 1.1 The extra fields of a block: the types of the code block after
+- [x] 1.1 The extra fields of a block: the types of the code block after
   `Block` in "The Rust interface" of `docs/specs/block.md`, `extra` of
   `Block`, `extra_fields` of `SourceHeader`, `EXTRA` of `Needs` in `ALL`
   (`docs/specs/variant.md`), and what `fields`, `check`, `retain_vars`,
