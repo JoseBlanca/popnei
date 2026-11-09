@@ -633,7 +633,7 @@ REMOVED = object()
 # segment of the worked example, and words its message holds.
 SEGMENTS_REFUSED = [
     pytest.param(
-        "colour", "red", "segment 1: has the key colour", id="a_key_of_no_field"
+        "colour", "red", "segment 1: has the key `colour`", id="a_key_of_no_field"
     ),
     pytest.param("chrom", REMOVED, "has no `chrom`", id="no_chrom"),
     pytest.param("alleles", REMOVED, "has no `alleles`", id="no_alleles"),
@@ -781,6 +781,27 @@ SEGMENTS_REFUSED = [
         "the id `rs\r2` holds a carriage return",
         id="carriage_return_in_an_id",
     ),
+    pytest.param(
+        "chrom", "", "segment 1: the chromosome is an empty text", id="empty_chrom"
+    ),
+    pytest.param(
+        "chrom",
+        ["chr1", ""],
+        "segment 1, variant 2: the chromosome is an empty text",
+        id="empty_chrom_of_one_variant",
+    ),
+    pytest.param(
+        "alleles",
+        [["H0", "."], ["H0", "H1", "H2"]],
+        "segment 1, variant 1, chr1 100: one of its alleles is `.`",
+        id="allele_dot",
+    ),
+    pytest.param(
+        "alleles",
+        [["H0", "H1"], ["H0", "H1", "H0"]],
+        "segment 1, variant 2, chr1 5000: the allele `H0` is given twice",
+        id="allele_twice",
+    ),
 ]
 
 
@@ -877,6 +898,36 @@ ARGUMENTS_REFUSED = [
         "`chrom_lengths` gives `chr1` the length True",
         id="chrom_length_true",
     ),
+    pytest.param(
+        {"chrom_lengths": {"chr 1": 100}},
+        "`chrom_lengths` names `chr 1`, which holds a space",
+        id="space_in_a_chrom_of_chrom_lengths",
+    ),
+    pytest.param(
+        {"chrom_lengths": {"": 100}},
+        "`chrom_lengths` names a chromosome whose name is an empty text",
+        id="empty_chrom_of_chrom_lengths",
+    ),
+    pytest.param(
+        {"individuals": ["i1", "i\t2", "i3"]},
+        "`individuals` names `i\t2`, which holds a tab",
+        id="tab_in_an_individual",
+    ),
+    pytest.param(
+        {"individuals": ["i1", "", "i3"]},
+        "`individuals` names an individual whose name is an empty text",
+        id="empty_individual",
+    ),
+    pytest.param(
+        {"gt_fields": {"GP": None}},
+        "`gt_fields` gives the field `GP` the type None",
+        id="type_none",
+    ),
+    pytest.param(
+        {"num_vars_per_block": 0},
+        "`num_vars_per_block` is 0",
+        id="num_vars_per_block_0",
+    ),
 ]
 
 
@@ -897,6 +948,83 @@ def test_write_vars_from_segments_refuses_a_wrong_argument_before_the_file_is_ma
 
     assert words in str(refusal.value)
     assert not path.exists()
+
+
+# Each argument of the wrong kind, a `TypeError` before the file is made,
+# and words its message holds.
+ARGUMENTS_OF_THE_WRONG_KIND = [
+    pytest.param(
+        {"individuals": {"i1", "i2", "i3"}},
+        "`individuals` is a set",
+        id="individuals_as_a_set",
+    ),
+    pytest.param(
+        {"individuals": (name for name in INDIVIDUALS)},
+        "`individuals` is a generator",
+        id="individuals_as_a_generator",
+    ),
+    pytest.param(
+        {"chrom_lengths": [("chr1", 100)]},
+        "`chrom_lengths` is a list",
+        id="chrom_lengths_as_a_list",
+    ),
+]
+
+
+@pytest.mark.parametrize(("arguments", "words"), ARGUMENTS_OF_THE_WRONG_KIND)
+def test_write_vars_from_segments_refuses_an_argument_of_the_wrong_kind(
+    tmp_path: Path, arguments: dict[str, Any], words: str
+) -> None:
+    """`individuals` that is not a sequence, whose order a set would choose,
+    and `chrom_lengths` that is not a mapping: each a `TypeError` that names
+    the argument, and no file."""
+    path = tmp_path / "refused.vars"
+
+    with pytest.raises(TypeError) as refusal:
+        write([first_segment()], path, **arguments)
+
+    assert words in str(refusal.value)
+    assert not path.exists()
+
+
+def test_write_vars_from_segments_refuses_one_segment_given_as_the_segments(
+    tmp_path: Path,
+) -> None:
+    """One dict where an iterable of dicts goes: a `TypeError` that says
+    that one segment was given, and no file."""
+    path = tmp_path / "one.vars"
+
+    with pytest.raises(TypeError, match="one segment") as refusal:
+        write(first_segment(), path)
+
+    assert "[segment]" in str(refusal.value)
+    assert not path.exists()
+
+
+def test_write_vars_from_segments_takes_individuals_as_a_numpy_array(
+    tmp_path: Path,
+) -> None:
+    """A numpy array of the names is a sequence of them, in its order."""
+    path = tmp_path / "array.vars"
+
+    write([first_segment()], path, individuals=numpy.array(INDIVIDUALS))
+
+    assert open_vars(path).individuals == ("i1", "i2", "i3")
+
+
+def test_write_vars_from_segments_takes_none_for_id_and_qual(tmp_path: Path) -> None:
+    """`id` and `qual` given as `None` write what the keys left out write: no
+    id and no quality."""
+    path = tmp_path / "none.vars"
+    segment = first_segment()
+    segment["id"] = None
+    segment["qual"] = None
+
+    write([segment], path)
+
+    _, table, _ = read_with_pyarrow(path)
+    assert table.column("id").to_pylist() == [None, None]
+    assert table.column("qual").to_pylist() == [None, None]
 
 
 def test_write_vars_from_segments_refuses_a_path_that_a_file_is_at(

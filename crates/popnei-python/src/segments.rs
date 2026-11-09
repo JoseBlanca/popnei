@@ -100,11 +100,23 @@ pub(crate) fn write_vars_from_segments(
     let chrom_lengths = chrom_lengths
         .unwrap_or_default()
         .iter()
-        .map(|(chrom, length)| Ok((chrom.clone(), length_of(chrom, length)?)))
+        .map(|(chrom, length)| {
+            name_fits("chrom_lengths", "a chromosome", chrom)?;
+            Ok((chrom.clone(), length_of(chrom, length)?))
+        })
         .collect::<Result<Vec<(String, u64)>, PyPopneiError>>()?;
     let num_vars_per_block = num_vars_per_block
         .map(|asked_for| count_of("num_vars_per_block", asked_for))
         .transpose()?;
+    // `count_of` leaves the 0 to the core, whose message would not name
+    // the argument.
+    if num_vars_per_block == Some(0) {
+        return Err(PyPopneiError::Count {
+            name: "num_vars_per_block",
+            smallest: 1,
+            value: "0".to_owned(),
+        });
+    }
     // An object that cannot be iterated is the `TypeError` of Python,
     // before the file is made.
     let segments = segments.try_iter()?.unbind();
@@ -153,11 +165,12 @@ pub(crate) fn write_vars_from_segments(
 }
 
 /// That `individuals` can be the individuals of a vars file: one at least,
-/// each of its own name.
+/// each of its own name, which [`name_fits`].
 ///
 /// # Errors
 ///
-/// [`PyPopneiError::Argument`] for no individual and for a name given twice.
+/// [`PyPopneiError::Argument`] for no individual, for a name given twice
+/// and for one that [`name_fits`] refuses.
 fn individuals_fit(individuals: &[String]) -> Result<(), PyPopneiError> {
     if individuals.is_empty() {
         return Err(PyPopneiError::Argument {
@@ -168,6 +181,7 @@ fn individuals_fit(individuals: &[String]) -> Result<(), PyPopneiError> {
     }
     let mut named = HashSet::with_capacity(individuals.len());
     for name in individuals {
+        name_fits("individuals", "an individual", name)?;
         if !named.insert(name.as_str()) {
             return Err(PyPopneiError::Argument {
                 name: "individuals",
@@ -178,6 +192,27 @@ fn individuals_fit(individuals: &[String]) -> Result<(), PyPopneiError> {
         }
     }
     Ok(())
+}
+
+/// That `name`, which the argument `argument` gives to `what`, is a name a
+/// VCF that `write_vcf` writes from the file can hold: not empty, and with
+/// no tab, newline, carriage return or space.
+///
+/// # Errors
+///
+/// [`PyPopneiError::Argument`] for a name that is not.
+fn name_fits(argument: &'static str, what: &str, name: &str) -> Result<(), PyPopneiError> {
+    let problem = if name.is_empty() {
+        format!("names {what} whose name is an empty text")
+    } else if let Some(problem) = text_problem(name, "") {
+        format!("names `{name}`, which {problem}")
+    } else {
+        return Ok(());
+    };
+    Err(PyPopneiError::Argument {
+        name: argument,
+        problem,
+    })
 }
 
 /// The fields of one kind as the core declares them, from the name of each
@@ -590,8 +625,12 @@ impl SegmentReader {
                 Some(known)
             });
             if known != Some(true) {
+                let key = match key.cast::<PyString>() {
+                    Ok(text) => text.to_string(),
+                    Err(_) => key.repr()?.to_string(),
+                };
                 return Err(self.segment().refuses(format!(
-                    "has the key {key}, which is neither one of chrom, pos, alleles, gts, id \
+                    "has the key `{key}`, which is neither one of chrom, pos, alleles, gts, id \
                      and qual nor a declared field{}",
                     self.declared()
                 )));
@@ -660,15 +699,14 @@ impl SegmentReader {
     ///
     /// # Errors
     ///
-    /// A value that is neither a text nor a sequence of texts, and a text
-    /// that holds a tab, a newline, a carriage return or a space.
+    /// A value that is neither a text nor a sequence of texts, an empty
+    /// text, and a text that holds a tab, a newline, a carriage return or a
+    /// space.
     fn chrom_of(&mut self, chrom: &Bound<'_, PyAny>) -> Result<Chroms, PyPopneiError> {
         if let Ok(name) = chrom.cast::<PyString>() {
             let name = name.to_str()?;
-            if let Some(problem) = text_problem(name, "") {
-                return Err(self
-                    .segment()
-                    .refuses(format!("the chromosome `{name}` {problem}")));
+            if let Some(problem) = chrom_problem(name) {
+                return Err(self.segment().refuses(problem));
             }
             return Ok(Chroms::One(self.chroms.intern(name)));
         }
@@ -681,10 +719,8 @@ impl SegmentReader {
                 )));
             };
             let name = name.to_str()?;
-            if let Some(problem) = text_problem(name, "") {
-                return Err(self
-                    .variant(var, &[], &[], false)
-                    .refuses(format!("the chromosome `{name}` {problem}")));
+            if let Some(problem) = chrom_problem(name) {
+                return Err(self.variant(var, &[], &[], false).refuses(problem));
             }
             numbers.push(self.chroms.intern(name));
         }
@@ -767,9 +803,9 @@ impl SegmentReader {
     /// # Errors
     ///
     /// A value that is not one sequence of texts for each variant, a variant
-    /// with no allele or with more than [`MAX_ALLELES_OF_A_VARIANT`], and an
-    /// allele that is empty or holds a tab, a newline, a carriage return, a
-    /// space or a comma.
+    /// with no allele or with more than [`MAX_ALLELES_OF_A_VARIANT`], an
+    /// allele that is empty, is `.`, is given twice in its variant, or holds
+    /// a tab, a newline, a carriage return, a space or a comma.
     fn alleles_of(
         &self,
         alleles: &Bound<'_, PyAny>,
@@ -826,8 +862,26 @@ impl SegmentReader {
                             .to_owned(),
                     ));
                 }
+                if allele == "." {
+                    return Err(here().refuses(
+                        "one of its alleles is `.`, which a VCF reads as an allele that is \
+                         missing"
+                            .to_owned(),
+                    ));
+                }
                 if let Some(problem) = text_problem(allele, ",") {
                     return Err(here().refuses(format!("the allele `{allele}` {problem}")));
+                }
+                // At most 127 alleles before it, so the comparisons of a
+                // variant are bounded and allocate nothing.
+                if texts
+                    .iter()
+                    .any(|before| before.to_str().is_ok_and(|before| before == allele))
+                {
+                    return Err(here().refuses(format!(
+                        "the allele `{allele}` is given twice, and each allele of a variant is \
+                         another one"
+                    )));
                 }
                 texts.push(text);
             }
@@ -1384,6 +1438,15 @@ fn text_problem(text: &str, also: &str) -> Option<String> {
             other => format!("`{other}`"),
         }
     ))
+}
+
+/// What is wrong with `name` as a chromosome: an empty text, or what
+/// [`text_problem`] finds.
+fn chrom_problem(name: &str) -> Option<String> {
+    if name.is_empty() {
+        return Some("the chromosome is an empty text, and a chromosome has a name".to_owned());
+    }
+    text_problem(name, "").map(|problem| format!("the chromosome `{name}` {problem}"))
 }
 
 /// A number as a message shows it.

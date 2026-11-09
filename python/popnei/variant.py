@@ -429,9 +429,11 @@ class Variants:
         One name written as a string, ``filter_individuals("ind05")``, is a
         ``TypeError`` that says to write ``("ind05",)``: a string is a
         sequence of its letters and the call would ask for the individuals
-        ``i``, ``n``, ``d``, ``0`` and ``5``. What is no sequence at all,
-        and an element of it that is no name, are a ``TypeError`` that
-        names `individuals` and what was given.
+        ``i``, ``n``, ``d``, ``0`` and ``5``. What is no sequence at all, a
+        ``set`` among them, whose order is its own and would become the
+        order of the genotypes, and an element of it that is no name, are a
+        ``TypeError`` that names `individuals` and what was given. A numpy
+        array of names is taken.
         """
         if isinstance(individuals, str):
             # A string is a sequence of its letters, and one name written
@@ -441,16 +443,15 @@ class Variants:
                 f"`individuals` is a sequence of names and not one name: write "
                 f'individuals=("{individuals}",) for that one individual'
             )
-        try:
-            names = list(individuals)
-        except TypeError:
-            # What Python says of its own here, `'int' object is not
-            # iterable`, names neither the argument nor the call.
+        if not isinstance(individuals, Sequence | numpy.ndarray):
+            # The individuals are kept in the order given, and a set gives
+            # its names in an order of its own.
             raise TypeError(
-                f"`individuals` is a sequence of the names of the individuals "
-                f"to keep, and {individuals!r}, a "
-                f"{type(individuals).__name__}, was given"
-            ) from None
+                f"`individuals` is a {type(individuals).__name__}, and it is a "
+                f"sequence of the names of the individuals to keep, in the "
+                f"order to keep them, a list or a tuple: {individuals!r}"
+            )
+        names = list(individuals)
         for name in names:
             if not isinstance(name, str):
                 # pyo3 refuses it with `'int' object is not an instance of

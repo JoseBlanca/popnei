@@ -212,8 +212,10 @@ def write_vars_from_segments(
     - ``gts``: a numpy array of any integer type, variants x individuals x
       ploidy, each value the number of an allele of its variant from 0, or
       -1 for a missing allele;
-    - ``id``, optional: a text or ``None`` for each variant;
-    - ``qual``, optional: floats, NaN for a variant with no quality;
+    - ``id``, optional: a text or ``None`` for each variant, and ``None``
+      for the segment is the key left out;
+    - ``qual``, optional: floats, NaN for a variant with no quality, and
+      ``None`` for the segment is the key left out;
     - each declared field, required: an array of one value for each variant
       for a field of `var_fields`, and of variants x individuals for one of
       `gt_fields`.
@@ -239,8 +241,16 @@ def write_vars_from_segments(
     of them too, and refuses floats, even whole ones, and a value its type
     does not hold, a negative one in a ``uint64`` field or 2**31 in an
     ``int32`` one, which numpy would wrap into another number. A field of
-    floats takes floats and integers and rounds them to its type, so a
-    ``float32`` field holds the nearest ``float32`` of each value.
+    floats takes floats and rounds them to its type, so a ``float32`` field
+    holds the nearest ``float32`` of each value, and refuses a finite float
+    beyond the largest of its type, 1e40 in a ``float32`` one. It takes an
+    integer only when its type holds it exactly, so 2**24 + 1 in a
+    ``float32`` field and 2**53 + 1 in a ``float64`` one are refused;
+    ``qual`` follows the same rule. Every key of numbers refuses truth
+    values, a numpy masked array, whose mask would be lost, for which
+    ``.filled(...)`` gives the array to write, and a single value where it
+    has one for each variant. An array in the byte order of another machine
+    is taken.
 
     The variants have to be sorted unless `allow_unsorted` is ``True``: the
     positions of a chromosome do not go down from one variant to the next,
@@ -258,11 +268,17 @@ def write_vars_from_segments(
     the file has no column of whether each variant passed a FILTER.
 
     The arguments are checked before the file is made, and each that is
-    wrong is a ``ValueError``: no individual or two of one name, a ploidy
-    of 0 or above 255, a field of another type than the five, a name that
-    breaks the rule above or is declared twice, and a length of a
-    chromosome that is not above 0. A path that a file is already at is a
-    ``ValueError`` and nothing is written.
+    wrong is a ``ValueError``: no individual or two of one name, the name of
+    an individual or of a chromosome of `chrom_lengths` that is empty or
+    holds a tab, a newline, a carriage return or a space, a ploidy of 0 or
+    above 255, a field of another type than the five, ``None`` among them,
+    a name that breaks the rule above or is declared twice, a length of a
+    chromosome that is not above 0, and a `num_vars_per_block` of 0. A
+    path that a file is already at is a ``ValueError`` and nothing is
+    written. `individuals` that is not a sequence, a set among them, whose
+    order is its own, is a ``TypeError``, and a numpy array of names is
+    taken; so is `chrom_lengths` that is not a mapping, and `segments` that
+    is one segment.
 
     A segment that is wrong is a ``ValueError`` that names it and the
     variant of it, both counted from 1, with its chromosome and its
@@ -272,11 +288,13 @@ def write_vars_from_segments(
     and the ploidy; positions that are not integers or are negative, and
     genotypes that are not integers; an allele of ``gts`` below -1 or not
     among the alleles of its variant; a variant with no allele or more than
-    128, and an allele that is an empty text; a quality that is an
-    infinity; a field array its type does not take; and a tab, a newline, a
-    carriage return or a space in a chromosome, an id or an allele, a comma
-    in an allele and a semicolon in an id, which would break a VCF written
-    from the file. An item that is not a mapping is a ``TypeError``.
+    128, an allele that is an empty text or ``.``, and one given twice in a
+    variant; a quality that is an infinity; a value a key of numbers does
+    not take, by the rules above; an empty chromosome; and a tab, a
+    newline, a carriage return or a space in a chromosome, an id or an
+    allele, a comma in an allele and a semicolon in an id, which would break
+    a VCF written from the file. An item that is not a mapping is a
+    ``TypeError``.
 
     When anything fails after the file was made, the file is taken away, so
     a failed call leaves nothing at the path and the same call can be made
@@ -292,10 +310,28 @@ def write_vars_from_segments(
     variants is written, and the file of a call that failed is taken away,
     where pyNei leaves it.
     """
+    if isinstance(segments, Mapping):
+        raise TypeError(
+            "`segments` is one segment, a mapping, and it is an iterable of "
+            "segments: write [segment] to write that one"
+        )
     if isinstance(individuals, str):
         raise TypeError(
             f"`individuals` is the text {individuals!r}, and it is a sequence "
             f"of the names of the individuals"
+        )
+    if not isinstance(individuals, Sequence | numpy.ndarray):
+        # A set gives its names in an order of its own, which would become
+        # the order of the individuals of the file with nothing said.
+        raise TypeError(
+            f"`individuals` is a {type(individuals).__name__}, and it is a "
+            f"sequence of the names of the individuals in the order of the "
+            f"file, a list or a tuple"
+        )
+    if chrom_lengths is not None and not isinstance(chrom_lengths, Mapping):
+        raise TypeError(
+            f"`chrom_lengths` is a {type(chrom_lengths).__name__}, and it is a "
+            f"mapping of the name of each chromosome to its length, a dict"
         )
     counts = _core.write_vars_from_segments(
         segments,
@@ -322,8 +358,9 @@ def _declared(
     """
     declared = []
     for name, spelling in fields.items():
+        # numpy reads `None` as float64, which nobody who wrote it asked for.
         try:
-            type_name = numpy.dtype(spelling).name
+            type_name = None if spelling is None else numpy.dtype(spelling).name
         except TypeError, ValueError:
             type_name = None
         if type_name not in _FIELD_TYPES:
