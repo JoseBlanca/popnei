@@ -417,12 +417,20 @@ fn extra_type_of(name: &str) -> Option<ExtraType> {
 /// That the names of the extra fields are ones a field can have: each
 /// follows the rule of the key of an INFO or a FORMAT field of a VCF, so
 /// that a field can become one, is not the name of a column every vars
-/// file can have, and is the name of one field.
+/// file can have, and is the name of one field. It is what
+/// [`VarsWriter::set_extra_fields`] and the reader of a file refuse, and a
+/// caller that checks the fields it was given before it makes the file they
+/// go into calls it too: the writer of segments of the Python binding
+/// crate, which refuses the fields a user declared before the path is
+/// taken.
 ///
 /// # Errors
 ///
-/// The first field whose name is not, with what is wrong with it.
-fn extra_fields_fit(fields: &[ExtraFieldDecl]) -> Result<()> {
+/// [`Error::VarsExtraField`] for the first field whose name is not one a
+/// field can have, by the rule of "The extra fields" of
+/// `docs/specs/io_vars.md`, is that of a column every vars file can have,
+/// or is given twice.
+pub fn extra_fields_fit(fields: &[ExtraFieldDecl]) -> Result<()> {
     let mut named: HashSet<&str> = HashSet::with_capacity(fields.len());
     for field in fields {
         let name = field.name.as_str();
@@ -441,22 +449,6 @@ fn extra_fields_fit(fields: &[ExtraFieldDecl]) -> Result<()> {
         });
     }
     Ok(())
-}
-
-/// That `fields` are extra fields a vars file can declare: what
-/// [`VarsWriter::set_extra_fields`] refuses, for a caller that checks the
-/// fields it was given before it makes the file they go into. The writer of
-/// segments of the Python binding crate is one, which refuses the fields a
-/// user declared before the path is taken.
-///
-/// # Errors
-///
-/// [`Error::VarsExtraField`] for the first field whose name is not one a
-/// field can have, by the rule of "The extra fields" of
-/// `docs/specs/io_vars.md`, is that of a column every vars file can have,
-/// or is given twice.
-pub fn check_extra_fields(fields: &[ExtraFieldDecl]) -> Result<()> {
-    extra_fields_fit(fields)
 }
 
 /// Whether `name` follows the rule of the VCF for the key of an INFO or a

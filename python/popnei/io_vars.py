@@ -171,8 +171,9 @@ def write_vars(
     return VarsWritten(pass_stats=_pass_stats_of(counts))
 
 
-# The five types an extra field can have, as numpy names them.
-_FIELD_TYPES = ("int32", "int64", "uint64", "float32", "float64")
+# The five types an extra field can have, as numpy names them, from the
+# core, which holds the one list of them.
+_FIELD_TYPES = tuple(_core.extra_field_types())
 
 
 def write_vars_from_segments(

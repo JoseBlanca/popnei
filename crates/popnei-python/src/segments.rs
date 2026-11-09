@@ -96,7 +96,7 @@ pub(crate) fn write_vars_from_segments(
     }
     let mut fields = decls_of(&var_fields, ExtraKind::Variant)?;
     fields.extend(decls_of(&gt_fields, ExtraKind::Genotype)?);
-    popnei::io::vars::check_extra_fields(&fields)?;
+    popnei::io::vars::extra_fields_fit(&fields)?;
     let chrom_lengths = chrom_lengths
         .unwrap_or_default()
         .iter()
@@ -239,8 +239,8 @@ fn decls_of(
                         ExtraKind::Genotype => "gt_fields",
                     },
                     problem: format!(
-                        "gives the field `{name}` the type {ty}, and a field is of one of \
-                         int32, int64, uint64, float32 and float64"
+                        "gives the field `{name}` the type {ty}, and a field is of one of {}",
+                        extra_field_types().join(", ")
                     ),
                 });
             };
@@ -251,6 +251,16 @@ fn decls_of(
             })
         })
         .collect()
+}
+
+// The names of the five types an extra field can have, as numpy and the
+// `popnei` key of a vars file write them, in the order of the spec: the one
+// list the package and this crate check a declared type against. A `///`
+// comment here would become the `__doc__` of
+// `popnei._core.extra_field_types`, which no user reads.
+#[pyfunction]
+pub(crate) fn extra_field_types() -> Vec<String> {
+    ExtraType::ALL.iter().map(ToString::to_string).collect()
 }
 
 /// The length that `chrom_lengths` gives `chrom`, a whole number above 0.
