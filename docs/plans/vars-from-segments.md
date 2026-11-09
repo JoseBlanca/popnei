@@ -180,7 +180,7 @@ Tasks:
   tests over `long_vcf` and `tests/test_filter_passed.py`. From
   `allow_unsorted` under "The writer" and "Sorted variants". Deliverables
   2, 3, 4, 5, 6.
-- [ ] 2.2 The writer of segments: `SegmentReader` and its checks in the
+- [x] 2.2 The writer of segments: `SegmentReader` and its checks in the
   Python binding crate, the exception it keeps and raises again, the
   Ctrl-C between segments, `write_vars_from_segments` in
   `python/popnei/io_vars.py` and `__init__.py`, and the tests of

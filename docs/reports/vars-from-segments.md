@@ -109,3 +109,12 @@ checks clean.
 
 - 2.1, 33c9bbe: `allow_unsorted` in Python and `allowUnsorted` in
   TypeScript, with 2 pytest and 2 node tests.
+- 2.2, e70c5b0 (spec) and 0de1ceb: `write_vars_from_segments`, with
+  `SegmentReader` in the Python binding crate and 54 pytest tests; pytest
+  823 passed. The spec contradicted itself: its tests refused a `float64`
+  array for the `float32` field `GP`, which its rule of the types accepts;
+  the refused case is now a `float64` array for the `int32` field `NODE_A`.
+  Two decisions of the task: an empty list is taken as `pos` or a field
+  whatever type numpy gives it, and a list of integers too large for
+  numpy's `int64` is read value by value, so that `2**64 - 1` reaches a
+  `uint64` field as an integer and not as a rounded float.
