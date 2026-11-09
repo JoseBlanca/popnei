@@ -1249,7 +1249,10 @@ One pytest test for each `ValueError` and the `TypeError` of "A call that
 fails", each of which leaves no file at the path, and among them: chr1 5000
 then chr1 100, whose message holds both; chr1, chr2, chr1, refused although
 the positions go up, and both written with `allow_unsorted=True`; an
-allele 2 for a variant of the alleles H0 H1; a `float64` array for `GP`.
+allele 2 for a variant of the alleles H0 H1; a `float64` array for
+`NODE_A`, a field of integers, which the rule of "Its Python function"
+refuses, where a `float64` array for `GP` is taken and rounded to
+`float32`.
 A generator that yields the first segment above and then raises
 `RuntimeError("caller failed")` gives that `RuntimeError` and no file. A
 test of `write_vars` on a VCF written in the test whose second variant is
