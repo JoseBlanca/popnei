@@ -1054,8 +1054,9 @@ fn a_thousand_variants_with_fields() -> Vec<u8> {
 
 /// A buffer of an extra column that says it holds more than its column is
 /// refused before arrow-rs asks the machine for the memory it says, by
-/// the bound of the column and not by what lz4 gives, which for the values
-/// of `GP` would be some 90 times more.
+/// the bound of the column, 12000 bytes, and not by the loose bound of lz4
+/// alone, which for the 76 compressed bytes of the values of `GP` is
+/// 76 × 255 + 1024 = 20404 bytes, about 1.7 times as many.
 #[test]
 fn an_extra_field_buffer_that_says_more_than_its_column_is_refused_before_arrow_reads_it() {
     let whole = a_thousand_variants_with_fields();
