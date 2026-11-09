@@ -113,13 +113,13 @@ Tasks:
   `extra_fields` of its header; the errors. From "In the file" and the
   edits to "The Rust interface" and its list of errors. Deliverables 1
   (the vars tests), 2, 5, 6. Needs 1.1.
-- [ ] 1.3 The order: the check in `write_vars` of the core and its
+- [x] 1.3 The order: the check in `write_vars` of the core and its
   `allow_unsorted`, the error, both binding crates passing `false` until
   work package 2 gives them the argument, and the existing tests of
   unsorted blocks passing `true`. From "Sorted variants" and "How it runs"
   of "The writer of segments". Deliverables 3, 5, 6. Needs 1.2, since both
   change `write_vars`.
-- [ ] 1.4 The refusal of `write_vcf`, from the first case of "The cases a
+- [x] 1.4 The refusal of `write_vcf`, from the first case of "The cases a
   reader of the rules would not guess" of the VCF writer in
   `docs/specs/io_vcf.md`. Deliverables 4, 5, 6. Needs 1.1; can run beside
   1.2 and 1.3, whose files it does not touch.

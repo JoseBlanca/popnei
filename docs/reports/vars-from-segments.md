@@ -48,3 +48,25 @@ to them, nor sent to the `first-reader`, before the work.
   panics, all inside arrow-rs, none out of the reader. And
   `tests/reference/vars/make_of_1_1.py` asserts that popnei writes 1.2, so
   it fails if it is run again; task 1.3 fixes it.
+- 1.3 and 1.4, 421cfa1, 40a789c and 8478cf9: the order check of core
+  `write_vars` with 5 tests, the refusal of `write_vcf` with 1. Both
+  binding crates pass `allow_unsorted` true until task 2.1, because the
+  fixture `long_vcf` of the pytest tests is not sorted and would fail
+  otherwise. 421cfa1 makes `make_of_1_1.py` patch a file of 1.3, which
+  writes `of_1_1.vars` byte for byte as it is committed, and changes the
+  byte counts of two node tests of `progress.test.ts`, 42744 to 42776 and
+  12243560 to 12243592, since a file of 1.3 is longer by the two entries
+  of its key; the plan allowed only the version to change in existing
+  tests, and these counts are the same change.
+
+Deliverables of work package 1, run on 8478cf9:
+
+1. `cargo test -p popnei --lib extra_field -- --list`: 35 tests (3 of them
+   the gzip tests that were there before).
+2. The sweep over the file with extra fields passes, in the 1563 below.
+3. `cargo test -p popnei --lib not_sorted -- --list`: 6 tests, 5 new.
+   `cargo test -p popnei --lib -- extra_field not_sorted`: 41 passed.
+4. The `write_vcf` test is among the 35 of deliverable 1.
+5. `cargo test --workspace` 1563 passed, 2 ignored; pytest 762; `npm test`
+   701; `npm run test:browser` 9.
+6. fmt, clippy, `--no-default-features` 1413 passed, both wasm checks.
