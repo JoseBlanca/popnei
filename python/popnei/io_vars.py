@@ -96,10 +96,12 @@ def write_vars(
     a VCF, the chromosome, the position, the id, the alleles, the quality
     and the genotypes, and whether each variant passed its FILTER, whether
     or not the user will read them, so that it can stand in for the VCF in
-    any later analysis; a source that has no alleles to give, an array of
-    genotypes, gives a file without that column, and one that does not
-    keep whether its variants passed, a vars file written before that
-    column existed, gives one without it.
+    any later analysis; a source that does not keep whether its variants
+    passed, a vars file written before that column existed, gives a file
+    without that column. The extra fields of a vars source, those of
+    :attr:`Variants.var_fields` and :attr:`Variants.gt_fields`, are written
+    too, after a filter of individuals with the values of the individuals
+    it kept.
 
     `num_vars_per_block` is how many variants a batch of the file holds, the
     last one aside, and ``None`` asks for the size popnei chooses for the
@@ -114,9 +116,7 @@ def write_vars(
     ``the 2nd variant written, chr1 100, comes after the 1st, chr1 5000``,
     counted among the variants written, after any filter, and the file is
     taken away as for any other error. With ``allow_unsorted=True`` the
-    variants are written in the order they come. A source with no
-    chromosomes and positions, a :class:`Variants` built from an array of
-    genotypes, is not checked.
+    variants are written in the order they come.
 
     What it gives back is a :class:`VarsWritten` with the counts of the pass
     it made: how many variants were written, and how many each filter of the
