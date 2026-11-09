@@ -174,7 +174,7 @@ Stands on: work package 1.
 
 Tasks:
 
-- [ ] 2.1 `allow_unsorted` of `write_vars` in the Python binding crate and
+- [x] 2.1 `allow_unsorted` of `write_vars` in the Python binding crate and
   `python/popnei/io_vars.py`, and `allowUnsorted` of `writeVars` in
   `crates/popnei-js` and `js/popnei/src`, for both sources of each; the
   tests over `long_vcf` and `tests/test_filter_passed.py`. From

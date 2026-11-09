@@ -70,3 +70,42 @@ Deliverables of work package 1, run on 8478cf9:
 5. `cargo test --workspace` 1563 passed, 2 ignored; pytest 762; `npm test`
    701; `npm run test:browser` 9.
 6. fmt, clippy, `--no-default-features` 1413 passed, both wasm checks.
+
+### The review of work package 1
+
+Six reviewers, spec, tests, errors, architecture, api and numbers, read
+aa4715b..8478cf9. The numbers reviewer made seven one line changes that
+break the arithmetic and the tests caught each. What held, all fixed in
+900b39f..54e8966, with the spec first where it changed:
+
+- After `select_extra_fields` the header of the vars reader still listed
+  every field of the file while its blocks carried the selected ones, so a
+  writer given that reader refused every block with an error that blamed
+  popnei; found by two reviewers. The header now lists the selected fields.
+- The error of variants out of order counted the variants written, after
+  the filters, while the Python message names the source file. It now says
+  "the 2nd variant written" and says how to write them anyway, with the
+  name of the option of each package.
+- Two writer errors named the source file instead of the file written.
+- No pytest reached the new errors of the file from Python; five now do,
+  on files made with pyarrow.
+- Tests added: the comparison of the names of the fields when `reblock`
+  joins, a read of the fields with only some of the columns, floats of the
+  fields bit for bit with NaN and -0.0.
+- Smaller: names stored with backquotes in one error, the five types
+  written out twice by hand, a tuple of two numbers of one type, a
+  comment that gave lz4 90 times where it is 1.7.
+- The spec said `reblock` does not check the fields of the blocks it
+  joins; it does, and the spec says so now.
+
+Not taken: the free text of `VarsExtraField.problem` for five cases, which
+follows the pattern of the crate.
+
+After the fixes: `cargo test --workspace` 1568 passed, 2 ignored; pytest
+769; `npm test` 703; `npm run test:browser` 9; fmt, clippy, both wasm
+checks clean.
+
+## Work package 2, while it runs
+
+- 2.1, 33c9bbe: `allow_unsorted` in Python and `allowUnsorted` in
+  TypeScript, with 2 pytest and 2 node tests.
